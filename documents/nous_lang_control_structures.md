@@ -316,6 +316,7 @@ fold(function, collection, left/right) directional accumulation
 
 // Memory operations
 alloc(size/type) allocate memory
+store(ptr, value) replace value in allocated memory
 dealloc(ptr) free allocated memory
 ref(ptr) create reference copy
 ptr(type) allocate pointer

@@ -525,6 +525,31 @@ impl<'a> Checker<'a> {
                         None
                     })
             }
+            "store" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                let ptr_type = self.check_expr(&args[0], scope, function)?;
+                let value_type = self.check_expr(&args[1], scope, function)?;
+                let Some(expected) = ptr_type.name.strip_prefix("ptr_").map(TypeRef::new) else {
+                    self.diagnostics.push(SemanticDiagnostic::new(
+                        "N0310",
+                        "store expects a pointer as its first argument",
+                        Some(function.name.clone()),
+                    ));
+                    return None;
+                };
+                if value_type != expected {
+                    self.diagnostics.push(SemanticDiagnostic::new(
+                        "N0328",
+                        format!(
+                            "store expects value `{}` for pointer `{}` but got `{}`",
+                            expected.name, ptr_type.name, value_type.name
+                        ),
+                        Some(function.name.clone()),
+                    ));
+                    return None;
+                }
+                Some(TypeRef::new("void"))
+            }
             "dealloc" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let ptr_type = self.check_expr(&args[0], scope, function)?;
@@ -648,6 +673,12 @@ mod tests {
     #[test]
     fn validates_memory_builtins() {
         let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(41)\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + 1\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn validates_store_builtin() {
+        let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(0)\n    store(ptr, 41)\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + 1\n";
         assert!(validate_source(source).is_ok());
     }
 
@@ -793,6 +824,19 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0327")
+        );
+    }
+
+    #[test]
+    fn catches_store_value_type_mismatch() {
+        let diagnostics = validate_source(
+            "fn bad -> void\n    let ptr ptr_i64 = alloc(1)\n    store(ptr, false)\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0328")
         );
     }
 }

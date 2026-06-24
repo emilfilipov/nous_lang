@@ -14,6 +14,7 @@ The first executable runtime implements a deliberately small memory model so the
 
 - `alloc(value)` stores a runtime value in an internal heap slot and returns an interim pointer value.
 - `load(ptr)` reads a cloned value from a valid heap slot.
+- `store(ptr, value)` replaces the value in a valid heap slot. Static checking requires the stored value type to match the pointer element type.
 - `dealloc(ptr)` clears a heap slot and reports a runtime error on invalid or double deallocation.
 - Static semantic checking models pointer types with concrete names such as `ptr_i64`.
 - Region allocation, ARC/reference counting, GC policy, raw address access, and compile-time lifetime analysis remain planned work.
@@ -21,7 +22,8 @@ The first executable runtime implements a deliberately small memory model so the
 Example:
 ```nlang
 fn main -> i64
-    let ptr ptr_i64 = alloc(41)
+    let ptr ptr_i64 = alloc(0)
+    store(ptr, 41)
     let value i64 = load(ptr)
     dealloc(ptr)
     value + 1

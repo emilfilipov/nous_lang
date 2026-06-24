@@ -50,6 +50,18 @@ fn runs_memory_fixture() {
 }
 
 #[test]
+fn runs_store_fixture() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_store.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+#[test]
 fn runs_while_fixture() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_while.nl");
     let output = nlang()
@@ -251,4 +263,28 @@ fn rejects_array_index_out_of_bounds_at_runtime() {
 
     assert!(!output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("N0413"));
+}
+
+#[test]
+fn rejects_store_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/store_type_mismatch.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0328"));
+}
+
+#[test]
+fn rejects_store_after_dealloc_at_runtime() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/store_after_dealloc.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0406"));
 }

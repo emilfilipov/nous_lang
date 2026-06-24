@@ -13,7 +13,7 @@ The repository now contains the first executable alpha slice:
 - `nous_lexer`: validates `.nl` source paths, tokenizes source text, emits indentation/dedent tokens, recognizes the current core keywords, and rejects curly braces and semicolon terminators.
 - `nous_parser`: parses function declarations, typed parameters, return types, indentation-based bodies, `let` bindings, assignment, `return`, `break`, `continue`, expression statements, calls, array literals/indexing, arithmetic/comparison/logical expressions, `if`/`elif`/`else`, `while`, `loop`, and range `for` blocks into a structured AST.
 - `nous_semantics`: performs static checks for duplicate declarations, binding initializer types, assignment target/type validity, function call argument counts/types, return values, bool conditions, loop-control placement, arithmetic/comparison/logical operands, homogeneous non-empty arrays, array indexes, and the first pointer-style memory builtins.
-- `nous_runtime`: executes the validated AST in-process, including `main`, function calls, scoped locals, assignment, if/else branch values, while/infinite loops, range for loops, break/continue, array literals/indexing, arithmetic/comparison/logical expressions, and `alloc`/`load`/`dealloc` heap slots.
+- `nous_runtime`: executes the validated AST in-process, including `main`, function calls, scoped locals, assignment, if/else branch values, while/infinite loops, range for loops, break/continue, array literals/indexing, arithmetic/comparison/logical expressions, and `alloc`/`load`/`store`/`dealloc` heap slots.
 - `nous_cli`: exposes `nlang check <file.nl>` and `nlang run <file.nl>` through Cargo.
 - `nous_ir`: placeholder crate for the future semantic IR schema and lowering pipeline.
 - `tests/fixtures`: valid and invalid `.nl` fixtures for frontend, semantic, runtime, and CLI smoke checks.
@@ -27,7 +27,7 @@ The repository now contains the first executable alpha slice:
 | :--- | :--- | :--- | :--- | :--- |
 | **1.1** | **Lexer & Parser Implementation:** Implement the core components to read raw nlang source code and convert it into an Abstract Syntax Tree (AST). | `nous_lang_syntax_design.md` | High | Alpha functions/expressions/arrays/conditionals/loops/range-for done; ongoing for full language |
 | **1.2** | **Type System Integration:** Implement the type checker based on `nous_lang_type_system.md`. Ensure all AST nodes are correctly typed and checked before execution. | `nous_lang_type_system.md` | High | Alpha scalar/array/call/assignment/control-flow/logical checks done; ongoing for full language |
-| **1.3** | **Memory System Implementation:** Implement the memory allocator/deallocator based on `nous_lang_memory_management.md`. Ensure ARC and explicit allocation work correctly in the runtime environment. | `nous_lang_memory_management.md` | High | Initial heap-slot builtins done; ARC/regions pending |
+| **1.3** | **Memory System Implementation:** Implement the memory allocator/deallocator based on `nous_lang_memory_management.md`. Ensure ARC and explicit allocation work correctly in the runtime environment. | `nous_lang_memory_management.md` | High | Initial heap-slot `alloc`/`load`/`store`/`dealloc` builtins done; ARC/regions pending |
 | **1.4** | **Runtime Execution Engine:** Implement the core execution loop that traverses the AST, manages memory, resolves types, and executes nlang instructions. | All previous steps | Critical | Alpha AST runtime with loops, range-for, arrays, and indexing done; native backend pending |
 
 ## Epic 1.5: Offline Browser Documentation

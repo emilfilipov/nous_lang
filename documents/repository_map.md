@@ -40,7 +40,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `crates/nous_parser/`: AST model and parser for function declarations, typed parameters, return types, indentation blocks, `let`, assignment, `return`, `break`, `continue`, if/elif/else, while/loop/range-for, calls, literals, array literals/indexing, variables, arithmetic, comparison, and logical expressions.
 - `crates/nous_semantics/`: static validation for duplicate declarations, local binding types, assignment targets/types, function call arity/types, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical expression operand types, homogeneous non-empty arrays, array indexing, and interim pointer-style memory builtins.
 - `crates/nous_ir/`: placeholder IR lowering crate for the future semantic IR schema.
-- `crates/nous_runtime/`: in-process AST runtime for the current alpha subset, including `main`, function calls, scoped locals, assignment, branch results, while/loop/range-for execution, break/continue, array literals/indexing with runtime bounds checks, arithmetic/comparison/logical expressions with short-circuiting, and `alloc`/`load`/`dealloc` heap-slot memory builtins.
+- `crates/nous_runtime/`: in-process AST runtime for the current alpha subset, including `main`, function calls, scoped locals, assignment, branch results, while/loop/range-for execution, break/continue, array literals/indexing with runtime bounds checks, arithmetic/comparison/logical expressions with short-circuiting, and `alloc`/`load`/`store`/`dealloc` heap-slot memory builtins.
 - `crates/nous_cli/`: `nlang` command-line interface. Current commands: `check <file.nl>` and `run <file.nl>`.
 - `crates/nous_cli/tests/`: binary-level integration tests for the CLI pipeline, including valid checks, runtime execution, lexical errors, and semantic errors.
 - `tests/fixtures/valid/`: valid `.nl` smoke fixtures used by the frontend and CLI.
@@ -54,6 +54,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p nous_cli -- check tests/fixtures/valid/add.nl`: check a valid fixture through source validation, lexing, parsing, and semantic validation.
 - `cargo run -p nous_cli -- run tests/fixtures/valid/run_arithmetic.nl`: run a valid fixture through source validation, lexing, parsing, semantic validation, runtime execution, and stdout output.
 - `cargo run -p nous_cli -- run tests/fixtures/valid/run_memory.nl`: run the current memory builtin fixture through `alloc`, `load`, and `dealloc`.
+- `cargo run -p nous_cli -- run tests/fixtures/valid/run_store.nl`: run heap-slot mutation through `alloc`, `store`, `load`, and `dealloc`.
 - `cargo run -p nous_cli -- run tests/fixtures/valid/run_while.nl`: run assignment plus while-loop execution.
 - `cargo run -p nous_cli -- run tests/fixtures/valid/run_loop.nl`: run infinite-loop execution with break/continue.
 - `cargo run -p nous_cli -- run tests/fixtures/valid/run_logic.nl`: run boolean logic with `and`, `or`, and `not`.
@@ -71,6 +72,8 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p nous_cli -- check tests/fixtures/invalid/array_literal_type_mismatch.nl`: verify homogeneous array literal diagnostics.
 - `cargo run -p nous_cli -- check tests/fixtures/invalid/array_index_type_mismatch.nl`: verify array index type diagnostics.
 - `cargo run -p nous_cli -- run tests/fixtures/invalid/array_index_out_of_bounds.nl`: verify runtime array bounds diagnostics.
+- `cargo run -p nous_cli -- check tests/fixtures/invalid/store_type_mismatch.nl`: verify `store` value type diagnostics.
+- `cargo run -p nous_cli -- run tests/fixtures/invalid/store_after_dealloc.nl`: verify invalid pointer diagnostics after deallocation.
 - `python offline_docs/verify_offline_docs.py`: verify the self-contained offline browser documentation entry point.
 
 ## Planning And Tracking

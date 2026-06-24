@@ -28,7 +28,7 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Implemented expressions include literals, array literals, array indexing, variables, function calls with parentheses, arithmetic, comparisons, logical operators `and`/`or`/`not`, and grouped expressions.
 - Equality comparisons require matching operand types. Ordering comparisons `<`, `<=`, `>`, and `>=` currently require `i64` operands.
 - Implemented control flow is `if`/`elif`/`else`, `while`, range `for`, `loop`, `break`, and `continue` with indentation-only bodies.
-- Implemented memory builtins are `alloc(value)`, `load(ptr)`, and `dealloc(ptr)`.
+- Implemented memory builtins are `alloc(value)`, `load(ptr)`, `store(ptr, value)`, and `dealloc(ptr)`.
 - CLI commands are `nlang check <file.nl>` and `nlang run <file.nl>` through the Rust workspace.
 
 ## Language Philosophy
@@ -241,6 +241,7 @@ filter(coll, pred)   // Selective collection
 ### Memory Operations
 ```nlang
 alloc(size/type)      // Allocate memory
+store(ptr, value)     // Replace value in allocated memory
 dealloc(ptr)          // Free allocated memory
 ref(ptr)             // Create reference copy
 ptr(type)            // Create pointer
@@ -251,7 +252,8 @@ duplicate(value)     // Deep copy
 Current alpha memory form:
 ```nlang
 fn main -> i64
-    let ptr ptr_i64 = alloc(41)
+    let ptr ptr_i64 = alloc(0)
+    store(ptr, 41)
     let value i64 = load(ptr)
     dealloc(ptr)
     value + 1

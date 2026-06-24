@@ -405,11 +405,13 @@
           <tbody>
             <tr><td><code>alloc(value)</code></td><td>Stores a value in a runtime heap slot and returns an interim pointer such as <code>ptr_i64</code>.</td></tr>
             <tr><td><code>load(ptr)</code></td><td>Loads the value from a valid pointer.</td></tr>
+            <tr><td><code>store(ptr, value)</code></td><td>Replaces the value in a valid pointer slot. The stored value must match the pointer element type.</td></tr>
             <tr><td><code>dealloc(ptr)</code></td><td>Clears the heap slot. Invalid or double deallocation is a runtime error.</td></tr>
           </tbody>
         </table>
         <pre><code>fn main -> i64
-    let ptr ptr_i64 = alloc(41)
+    let ptr ptr_i64 = alloc(0)
+    store(ptr, 41)
     let value i64 = load(ptr)
     dealloc(ptr)
     value + 1</code></pre>
@@ -443,6 +445,7 @@ fn main -> i64
 
 fn main -> i64
     let ptr ptr_i64 = alloc(42)
+    store(ptr, 42)
     let value i64 = load(ptr)
     cleanup(ptr)
     value</code></pre>
@@ -467,6 +470,7 @@ fn main -> i64
             <tr><td><code>N0324</code></td><td>Array literal values do not all have the same type.</td></tr>
             <tr><td><code>N0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
             <tr><td><code>N0327</code></td><td>Ordering comparison operands are not both <code>i64</code>.</td></tr>
+            <tr><td><code>N0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
             <tr><td><code>N0413</code></td><td>Runtime array index is out of bounds.</td></tr>
           </tbody>
         </table>

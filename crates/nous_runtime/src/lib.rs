@@ -80,6 +80,7 @@ impl<'a> Runtime<'a> {
         match name {
             "alloc" => self.builtin_alloc(args),
             "load" => self.builtin_load(args),
+            "store" => self.builtin_store(args),
             "dealloc" => self.builtin_dealloc(args),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
@@ -360,6 +361,27 @@ impl<'a> Runtime<'a> {
             .ok_or_else(|| RuntimeError::new("N0406", format!("invalid pointer `{slot}`")))
     }
 
+    fn builtin_store(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [ptr, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("store", 2, args.len()))?;
+        let slot = ptr.as_ptr()?;
+        let Some(target) = self.heap.get_mut(slot) else {
+            return Err(RuntimeError::new(
+                "N0406",
+                format!("invalid pointer `{slot}`"),
+            ));
+        };
+        if target.is_none() {
+            return Err(RuntimeError::new(
+                "N0406",
+                format!("invalid pointer `{slot}`"),
+            ));
+        }
+        *target = Some(value);
+        Ok(Value::Void)
+    }
+
     fn builtin_dealloc(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [ptr]: [Value; 1] = args
             .try_into()
@@ -498,6 +520,12 @@ mod tests {
     }
 
     #[test]
+    fn runs_store_builtin() {
+        let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(0)\n    store(ptr, 41)\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + 1\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
     fn runs_if_expression_result() {
         let source = "fn main -> i64\n    if true\n        42\n    else\n        0\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
@@ -575,6 +603,13 @@ mod tests {
     fn rejects_double_dealloc() {
         let source =
             "fn main -> void\n    let ptr ptr_i64 = alloc(1)\n    dealloc(ptr)\n    dealloc(ptr)\n";
+        let error = run_source(source).expect_err("runtime error");
+        assert_eq!(error.code, "N0406");
+    }
+
+    #[test]
+    fn rejects_store_after_dealloc() {
+        let source = "fn main -> void\n    let ptr ptr_i64 = alloc(1)\n    dealloc(ptr)\n    store(ptr, 2)\n";
         let error = run_source(source).expect_err("runtime error");
         assert_eq!(error.code, "N0406");
     }

@@ -55,6 +55,7 @@ REQUIRED_PHRASES = [
     "short-circuit",
     "alloc(value)",
     "load(ptr)",
+    "store(ptr, value)",
     "dealloc(ptr)",
     "cargo run -p nous_cli -- check",
     "cargo run -p nous_cli -- run",
@@ -62,6 +63,7 @@ REQUIRED_PHRASES = [
     "N0324",
     "N0326",
     "N0327",
+    "N0328",
     "N0413",
     "Current Limitations",
 ]
