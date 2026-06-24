@@ -50,6 +50,30 @@ fn runs_memory_fixture() {
 }
 
 #[test]
+fn runs_while_fixture() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_while.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "4");
+}
+
+#[test]
+fn runs_loop_fixture() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_loop.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5");
+}
+
+#[test]
 fn rejects_forbidden_braces() {
     let fixture = workspace_root().join("tests/fixtures/invalid/brace.nl");
     let output = nlang()
@@ -71,4 +95,28 @@ fn rejects_type_mismatch() {
 
     assert!(!output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("N0303"));
+}
+
+#[test]
+fn rejects_assignment_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/assignment_type_mismatch.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0314"));
+}
+
+#[test]
+fn rejects_break_outside_loop() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/break_outside_loop.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0317"));
 }

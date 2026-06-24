@@ -21,10 +21,11 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Functions use `fn name param Type -> ReturnType` and return the last reachable expression unless an explicit `return` exits earlier.
 - Void functions use `-> void` and may use bare `return`.
 - Local bindings use `let name Type = expression`.
+- Existing local bindings can be updated with `name = expression` or numeric compound assignments `+=`, `-=`, `*=`, and `/=`.
 - Implemented scalar types are `i64`, `bool`, `string`, and `void`.
 - The current pointer spelling is an interim concrete type name such as `ptr_i64`.
 - Implemented expressions include literals, variables, function calls with parentheses, arithmetic, comparisons, and grouped expressions.
-- Implemented control flow is `if`/`elif`/`else` with indentation-only bodies.
+- Implemented control flow is `if`/`elif`/`else`, `while`, `loop`, `break`, and `continue` with indentation-only bodies.
 - Implemented memory builtins are `alloc(value)`, `load(ptr)`, and `dealloc(ptr)`.
 - CLI commands are `nlang check <file.nl>` and `nlang run <file.nl>` through the Rust workspace.
 
@@ -371,6 +372,26 @@ fn main -> i64
         42
     else
         0
+```
+
+### Loops
+```nlang
+fn main -> i64
+    let value i64 = 0
+    while value < 4
+        value += 1
+    value
+```
+
+```nlang
+fn main -> i64
+    let value i64 = 0
+    loop
+        value += 1
+        if value < 5
+            continue
+        break
+    value
 ```
 
 ## Future Extensions (Planned Features)

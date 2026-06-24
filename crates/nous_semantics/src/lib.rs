@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nous_parser::{BinaryOp, Expr, ExprKind, Function, Program, Stmt, TypeRef};
+use nous_parser::{AssignOp, BinaryOp, Expr, ExprKind, Function, Program, Stmt, TypeRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticDiagnostic {
@@ -40,6 +40,7 @@ struct Checker<'a> {
     program: &'a Program,
     signatures: HashMap<String, Signature>,
     diagnostics: Vec<SemanticDiagnostic>,
+    loop_depth: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -48,6 +49,7 @@ impl<'a> Checker<'a> {
             program,
             signatures: HashMap::new(),
             diagnostics: Vec::new(),
+            loop_depth: 0,
         }
     }
 
@@ -124,7 +126,10 @@ impl<'a> Checker<'a> {
         let mut last_type = None;
         for statement in statements {
             last_type = self.check_statement(statement, scope, function);
-            if matches!(statement, Stmt::Return(_)) {
+            if matches!(
+                statement,
+                Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_)
+            ) {
                 break;
             }
         }
@@ -159,6 +164,48 @@ impl<'a> Checker<'a> {
                 scope.locals.insert(name.clone(), ty.clone());
                 None
             }
+            Stmt::Assign {
+                name, op, value, ..
+            } => {
+                let expected = scope.locals.get(name).cloned();
+                let value_type = self.check_expr(value, scope, function);
+                match expected {
+                    Some(expected) => {
+                        if *op == AssignOp::Replace {
+                            if value_type.as_ref() != Some(&expected) {
+                                self.diagnostics.push(SemanticDiagnostic::new(
+                                    "N0314",
+                                    format!(
+                                        "assignment to `{name}` expects `{}` but got `{}`",
+                                        expected.name,
+                                        value_type
+                                            .as_ref()
+                                            .map(|ty| ty.name.as_str())
+                                            .unwrap_or("<unknown>")
+                                    ),
+                                    Some(function.name.clone()),
+                                ));
+                            }
+                        } else if expected != TypeRef::new("i64")
+                            || value_type.as_ref() != Some(&TypeRef::new("i64"))
+                        {
+                            self.diagnostics.push(SemanticDiagnostic::new(
+                                "N0315",
+                                format!("compound assignment to `{name}` requires i64 operands"),
+                                Some(function.name.clone()),
+                            ));
+                        }
+                    }
+                    None => {
+                        self.diagnostics.push(SemanticDiagnostic::new(
+                            "N0316",
+                            format!("assignment target `{name}` is not declared"),
+                            Some(function.name.clone()),
+                        ));
+                    }
+                }
+                None
+            }
             Stmt::Return(expr) => {
                 let actual = expr
                     .as_ref()
@@ -179,6 +226,26 @@ impl<'a> Checker<'a> {
                     ));
                 }
                 actual
+            }
+            Stmt::Break(_) => {
+                if self.loop_depth == 0 {
+                    self.diagnostics.push(SemanticDiagnostic::new(
+                        "N0317",
+                        "`break` can only appear inside a loop",
+                        Some(function.name.clone()),
+                    ));
+                }
+                None
+            }
+            Stmt::Continue(_) => {
+                if self.loop_depth == 0 {
+                    self.diagnostics.push(SemanticDiagnostic::new(
+                        "N0318",
+                        "`continue` can only appear inside a loop",
+                        Some(function.name.clone()),
+                    ));
+                }
+                None
             }
             Stmt::Expr(expr) => self.check_expr(expr, scope, function),
             Stmt::If {
@@ -212,6 +279,30 @@ impl<'a> Checker<'a> {
                 } else {
                     None
                 }
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                let condition_type = self.check_expr(condition, scope, function);
+                if condition_type.as_ref() != Some(&TypeRef::new("bool")) {
+                    self.diagnostics.push(SemanticDiagnostic::new(
+                        "N0305",
+                        "while condition must be bool",
+                        Some(function.name.clone()),
+                    ));
+                }
+                let mut loop_scope = scope.clone();
+                self.loop_depth += 1;
+                self.check_block(body, &mut loop_scope, function);
+                self.loop_depth -= 1;
+                None
+            }
+            Stmt::Loop { body, .. } => {
+                let mut loop_scope = scope.clone();
+                self.loop_depth += 1;
+                self.check_block(body, &mut loop_scope, function);
+                self.loop_depth -= 1;
+                None
             }
         }
     }
@@ -429,6 +520,12 @@ mod tests {
     }
 
     #[test]
+    fn validates_assignment_and_loops() {
+        let source = "fn main -> i64\n    let x i64 = 0\n    while x < 3\n        x += 1\n    x\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
     fn non_void_function_rejects_empty_return() {
         let diagnostics = validate_source("fn bad -> i64\n    return\n").expect_err("semantic");
         assert_eq!(diagnostics[0].code, "N0304");
@@ -442,6 +539,40 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0303")
+        );
+    }
+
+    #[test]
+    fn catches_assignment_type_mismatch() {
+        let diagnostics = validate_source(
+            "fn bad -> bool\n    let value bool = false\n    value = 1\n    value\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0314")
+        );
+    }
+
+    #[test]
+    fn catches_undeclared_assignment() {
+        let diagnostics =
+            validate_source("fn bad -> i64\n    value = 1\n    value\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0316")
+        );
+    }
+
+    #[test]
+    fn catches_break_outside_loop() {
+        let diagnostics = validate_source("fn bad -> void\n    break\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0317")
         );
     }
 }

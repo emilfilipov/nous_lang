@@ -43,13 +43,39 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    Assign {
+        name: String,
+        op: AssignOp,
+        value: Expr,
+        span: Span,
+    },
     Return(Option<Expr>),
+    Break(Span),
+    Continue(Span),
     Expr(Expr),
     If {
         branches: Vec<IfBranch>,
         else_body: Vec<Stmt>,
         span: Span,
     },
+    While {
+        condition: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    Loop {
+        body: Vec<Stmt>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Replace,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,8 +243,32 @@ impl<'a> Parser<'a> {
             return Some(Stmt::Return(expr));
         }
 
+        if self.eat_keyword(Keyword::Break).is_some() {
+            let span = self.previous().span;
+            self.expect_newline("expected newline after break statement");
+            return Some(Stmt::Break(span));
+        }
+
+        if self.eat_keyword(Keyword::Continue).is_some() {
+            let span = self.previous().span;
+            self.expect_newline("expected newline after continue statement");
+            return Some(Stmt::Continue(span));
+        }
+
         if self.eat_keyword(Keyword::If).is_some() {
             return self.parse_if();
+        }
+
+        if self.eat_keyword(Keyword::While).is_some() {
+            return self.parse_while();
+        }
+
+        if self.eat_keyword(Keyword::Loop).is_some() {
+            return self.parse_loop();
+        }
+
+        if self.next_is_assignment() {
+            return self.parse_assignment();
         }
 
         let span = self.peek().span;
@@ -240,6 +290,20 @@ impl<'a> Parser<'a> {
         Some(Stmt::Let {
             name,
             ty,
+            value,
+            span,
+        })
+    }
+
+    fn parse_assignment(&mut self) -> Option<Stmt> {
+        let span = self.peek().span;
+        let name = self.expect_identifier("expected assignment target")?;
+        let op = self.expect_assignment_op()?;
+        let value = self.parse_expr_line(span)?;
+        self.expect_newline("expected newline after assignment");
+        Some(Stmt::Assign {
+            name,
+            op,
             value,
             span,
         })
@@ -286,6 +350,29 @@ impl<'a> Parser<'a> {
             else_body,
             span,
         })
+    }
+
+    fn parse_while(&mut self) -> Option<Stmt> {
+        let span = self.previous().span;
+        let condition = self.parse_expr_line(span)?;
+        self.expect_newline("expected newline after while condition");
+        self.expect(TokenKindRef::Indent, "expected indented while body")?;
+        let body = self.parse_block(&[BlockEnd::Dedent]);
+        self.expect(TokenKindRef::Dedent, "expected while body dedent")?;
+        Some(Stmt::While {
+            condition,
+            body,
+            span,
+        })
+    }
+
+    fn parse_loop(&mut self) -> Option<Stmt> {
+        let span = self.previous().span;
+        self.expect_newline("expected newline after loop");
+        self.expect(TokenKindRef::Indent, "expected indented loop body")?;
+        let body = self.parse_block(&[BlockEnd::Dedent]);
+        self.expect(TokenKindRef::Dedent, "expected loop body dedent")?;
+        Some(Stmt::Loop { body, span })
     }
 
     fn parse_expr_line(&mut self, fallback_span: Span) -> Option<Expr> {
@@ -369,6 +456,35 @@ impl<'a> Parser<'a> {
         } else {
             false
         }
+    }
+
+    fn next_is_assignment(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Identifier(_))
+            && matches!(
+                self.tokens.get(self.cursor + 1).map(|token| &token.kind),
+                Some(TokenKind::Symbol(symbol))
+                    if matches!(symbol.as_str(), "=" | "+=" | "-=" | "*=" | "/=")
+            )
+    }
+
+    fn expect_assignment_op(&mut self) -> Option<AssignOp> {
+        let TokenKind::Symbol(symbol) = &self.peek().kind else {
+            self.error("N0208", "expected assignment operator", self.peek().span);
+            return None;
+        };
+        let op = match symbol.as_str() {
+            "=" => AssignOp::Replace,
+            "+=" => AssignOp::Add,
+            "-=" => AssignOp::Subtract,
+            "*=" => AssignOp::Multiply,
+            "/=" => AssignOp::Divide,
+            _ => {
+                self.error("N0208", "expected assignment operator", self.peek().span);
+                return None;
+            }
+        };
+        self.advance();
+        Some(op)
     }
 
     fn eat_keyword(&mut self, keyword: Keyword) -> Option<Token> {
@@ -618,6 +734,23 @@ mod tests {
             lex("fn main -> i64\n    let value i64 = add(1, 2)\n    value\n").expect("lex");
         let program = parse(&tokens).expect("parse");
         assert_eq!(program.functions[0].body.len(), 2);
+    }
+
+    #[test]
+    fn parses_assignment_and_while_loop() {
+        let source = "fn main -> i64\n    let x i64 = 0\n    while x < 3\n        x += 1\n    x\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert_eq!(program.functions[0].body.len(), 3);
+        assert!(matches!(program.functions[0].body[1], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn parses_loop_break_and_continue() {
+        let source = "fn main -> void\n    loop\n        continue\n        break\n    return\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert!(matches!(program.functions[0].body[0], Stmt::Loop { .. }));
     }
 
     #[test]

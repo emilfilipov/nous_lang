@@ -13,6 +13,39 @@ Control structures in Nous Lang are designed to be minimal, readable, and highly
 3. **Implicit Blocks**: Code blocks defined purely through indentation levels
 4. **Declarative Flow**: Control statements prefix operations rather than wrapping them
 
+## Current Alpha Implementation
+
+The current Rust toolchain implements these control forms:
+
+```nlang
+if condition
+    expression_or_statement
+elif other_condition
+    expression_or_statement
+else
+    expression_or_statement
+```
+
+```nlang
+while condition
+    statement
+```
+
+```nlang
+loop
+    if condition
+        break
+    continue
+```
+
+Current rules:
+
+- `if`, `elif`, and `while` conditions must type-check as `bool`.
+- `break` and `continue` are valid only inside `while` or `loop`.
+- `let` bindings introduced inside an indented block are scoped to that block.
+- Assignments update an existing binding in the nearest enclosing scope.
+- Numeric compound assignment supports `+=`, `-=`, `*=`, and `/=` for `i64`.
+
 ## Control Structure Keywords
 
 ### Conditional Statements (If-Else)
