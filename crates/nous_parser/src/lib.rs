@@ -63,6 +63,14 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+    For {
+        name: String,
+        start: Expr,
+        end: Expr,
+        step: Option<Expr>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Loop {
         body: Vec<Stmt>,
         span: Span,
@@ -274,6 +282,10 @@ impl<'a> Parser<'a> {
             return self.parse_while();
         }
 
+        if self.eat_keyword(Keyword::For).is_some() {
+            return self.parse_for();
+        }
+
         if self.eat_keyword(Keyword::Loop).is_some() {
             return self.parse_loop();
         }
@@ -377,6 +389,38 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_for(&mut self) -> Option<Stmt> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected loop variable after `for`")?;
+        if self.eat_keyword(Keyword::From).is_none() {
+            self.error("N0209", "expected `from` in for loop", self.peek().span);
+            return None;
+        }
+        let start = self.parse_expr_until_keywords(span, &[Keyword::To])?;
+        if self.eat_keyword(Keyword::To).is_none() {
+            self.error("N0210", "expected `to` in for loop", self.peek().span);
+            return None;
+        }
+        let end = self.parse_expr_until_keywords(span, &[Keyword::By])?;
+        let step = if self.eat_keyword(Keyword::By).is_some() {
+            Some(self.parse_expr_line(span)?)
+        } else {
+            None
+        };
+        self.expect_newline("expected newline after for loop header");
+        self.expect(TokenKindRef::Indent, "expected indented for body")?;
+        let body = self.parse_block(&[BlockEnd::Dedent]);
+        self.expect(TokenKindRef::Dedent, "expected for body dedent")?;
+        Some(Stmt::For {
+            name,
+            start,
+            end,
+            step,
+            body,
+            span,
+        })
+    }
+
     fn parse_loop(&mut self) -> Option<Stmt> {
         let span = self.previous().span;
         self.expect_newline("expected newline after loop");
@@ -387,11 +431,24 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr_line(&mut self, fallback_span: Span) -> Option<Expr> {
+        self.parse_expr_until(fallback_span, &[])
+    }
+
+    fn parse_expr_until_keywords(
+        &mut self,
+        fallback_span: Span,
+        keywords: &[Keyword],
+    ) -> Option<Expr> {
+        self.parse_expr_until(fallback_span, keywords)
+    }
+
+    fn parse_expr_until(&mut self, fallback_span: Span, keywords: &[Keyword]) -> Option<Expr> {
         let start = self.cursor;
         while !self.at(TokenKindRef::Newline)
             && !self.at(TokenKindRef::Indent)
             && !self.at(TokenKindRef::Dedent)
             && !self.at(TokenKindRef::Eof)
+            && !self.at_any_keyword(keywords)
         {
             self.advance();
         }
@@ -505,6 +562,12 @@ impl<'a> Parser<'a> {
         } else {
             None
         }
+    }
+
+    fn at_any_keyword(&self, keywords: &[Keyword]) -> bool {
+        keywords.iter().any(
+            |keyword| matches!(&self.peek().kind, TokenKind::Keyword(actual) if actual == keyword),
+        )
     }
 
     fn skip_newlines(&mut self) {
@@ -774,6 +837,25 @@ mod tests {
         let tokens = lex(source).expect("lex");
         let program = parse(&tokens).expect("parse");
         assert!(matches!(program.functions[0].body[0], Stmt::Loop { .. }));
+    }
+
+    #[test]
+    fn parses_for_loop() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 3\n        total += i\n    total\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert!(matches!(program.functions[0].body[1], Stmt::For { .. }));
+    }
+
+    #[test]
+    fn parses_for_loop_with_step() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 5 by 2\n        total += i\n    total\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert!(matches!(
+            program.functions[0].body[1],
+            Stmt::For { step: Some(_), .. }
+        ));
     }
 
     #[test]

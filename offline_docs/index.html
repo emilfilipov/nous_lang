@@ -346,6 +346,18 @@
         total += index
         index += 1
     total</code></pre>
+        <h3>Range for loops</h3>
+        <p><code>for</code> loops iterate over inclusive <code>i64</code> ranges. The default step is <code>1</code>; <code>by</code> supplies an explicit step, and runtime execution rejects step <code>0</code>.</p>
+        <pre><code>fn sum_range -> i64
+    let total i64 = 0
+    for i from 1 to 3
+        total += i
+    total</code></pre>
+        <pre><code>fn sum_descending -> i64
+    let total i64 = 0
+    for i from 5 to 1 by -2
+        total += i
+    total</code></pre>
         <h3>Loop, break, continue</h3>
         <pre><code>fn first_even_after start i64 -> i64
     let value i64 = start

@@ -25,7 +25,7 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Implemented scalar types are `i64`, `bool`, `string`, and `void`.
 - The current pointer spelling is an interim concrete type name such as `ptr_i64`.
 - Implemented expressions include literals, variables, function calls with parentheses, arithmetic, comparisons, logical operators `and`/`or`/`not`, and grouped expressions.
-- Implemented control flow is `if`/`elif`/`else`, `while`, `loop`, `break`, and `continue` with indentation-only bodies.
+- Implemented control flow is `if`/`elif`/`else`, `while`, range `for`, `loop`, `break`, and `continue` with indentation-only bodies.
 - Implemented memory builtins are `alloc(value)`, `load(ptr)`, and `dealloc(ptr)`.
 - CLI commands are `nlang check <file.nl>` and `nlang run <file.nl>` through the Rust workspace.
 
@@ -383,10 +383,12 @@ fn main -> i64
     value
 ```
 
-### Boolean Logic
 ```nlang
-fn main -> bool
-    not false and true or false
+fn main -> i64
+    let total i64 = 0
+    for i from 1 to 3
+        total += i
+    total
 ```
 
 ```nlang
@@ -398,6 +400,12 @@ fn main -> i64
             continue
         break
     value
+```
+
+### Boolean Logic
+```nlang
+fn main -> bool
+    not false and true or false
 ```
 
 ## Future Extensions (Planned Features)

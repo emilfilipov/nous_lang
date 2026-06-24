@@ -182,6 +182,45 @@ impl<'a> Runtime<'a> {
                 }
                 Ok(Control::Value(Value::Void))
             }
+            Stmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                let mut current = self.eval_expr(start, env)?.as_i64()?;
+                let end = self.eval_expr(end, env)?.as_i64()?;
+                let step = step
+                    .as_ref()
+                    .map(|expr| self.eval_expr(expr, env))
+                    .unwrap_or(Ok(Value::I64(1)))?
+                    .as_i64()?;
+                if step == 0 {
+                    return Err(RuntimeError::new("N0411", "for loop step cannot be zero"));
+                }
+
+                while if step > 0 {
+                    current <= end
+                } else {
+                    current >= end
+                } {
+                    env.push_scope();
+                    env.define(name.clone(), Value::I64(current));
+                    let result = self.eval_block(body, env);
+                    env.pop_scope();
+
+                    match result? {
+                        Control::Return(value) => return Ok(Control::Return(value)),
+                        Control::Break => break,
+                        Control::Continue | Control::Value(_) => {}
+                    }
+
+                    current += step;
+                }
+                Ok(Control::Value(Value::Void))
+            }
             Stmt::Loop { body, .. } => {
                 loop {
                     match self.eval_scoped_block(body, env)? {
@@ -456,6 +495,31 @@ mod tests {
     fn short_circuits_logical_expressions() {
         let source = "fn main -> bool\n    false and (1 / 0 == 0) or true\n";
         assert_eq!(run_source(source).expect("run"), Value::Bool(true));
+    }
+
+    #[test]
+    fn runs_for_loop() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 3\n        total += i\n    total\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(6));
+    }
+
+    #[test]
+    fn runs_for_loop_with_step() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 5 by 2\n        total += i\n    total\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(9));
+    }
+
+    #[test]
+    fn runs_descending_for_loop() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 3 to 1 by -1\n        total += i\n    total\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(6));
+    }
+
+    #[test]
+    fn rejects_zero_for_step() {
+        let source = "fn main -> i64\n    for i from 1 to 3 by 0\n        i\n    0\n";
+        let error = run_source(source).expect_err("runtime error");
+        assert_eq!(error.code, "N0411");
     }
 
     #[test]

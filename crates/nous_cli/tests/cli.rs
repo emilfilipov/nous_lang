@@ -86,6 +86,30 @@ fn runs_logic_fixture() {
 }
 
 #[test]
+fn runs_for_fixture() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_for.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "6");
+}
+
+#[test]
+fn runs_for_step_fixture() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_for_step.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "9");
+}
+
+#[test]
 fn rejects_forbidden_braces() {
     let fixture = workspace_root().join("tests/fixtures/invalid/brace.nl");
     let output = nlang()
@@ -143,4 +167,28 @@ fn rejects_logical_type_mismatch() {
 
     assert!(!output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("N0320"));
+}
+
+#[test]
+fn rejects_for_range_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/for_range_type_mismatch.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0321"));
+}
+
+#[test]
+fn rejects_for_zero_step_at_runtime() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/for_zero_step.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0411"));
 }

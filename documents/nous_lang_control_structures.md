@@ -32,6 +32,14 @@ while condition
 ```
 
 ```nlang
+for name from start to end
+    statement
+
+for name from start to end by step
+    statement
+```
+
+```nlang
 loop
     if condition
         break
@@ -41,7 +49,8 @@ loop
 Current rules:
 
 - `if`, `elif`, and `while` conditions must type-check as `bool`.
-- `break` and `continue` are valid only inside `while` or `loop`.
+- `for` ranges use inclusive `i64` start/end expressions with an optional `i64` step. The default step is `1`; runtime rejects step `0`.
+- `break` and `continue` are valid only inside `while`, `for`, or `loop`.
 - `let` bindings introduced inside an indented block are scoped to that block.
 - Assignments update an existing binding in the nearest enclosing scope.
 - Numeric compound assignment supports `+=`, `-=`, `*=`, and `/=` for `i64`.

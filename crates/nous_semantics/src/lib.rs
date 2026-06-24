@@ -297,6 +297,41 @@ impl<'a> Checker<'a> {
                 self.loop_depth -= 1;
                 None
             }
+            Stmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                for (label, expr) in [("start", start), ("end", end)] {
+                    let expr_type = self.check_expr(expr, scope, function);
+                    if expr_type.as_ref() != Some(&TypeRef::new("i64")) {
+                        self.diagnostics.push(SemanticDiagnostic::new(
+                            "N0321",
+                            format!("for loop {label} expression must be i64"),
+                            Some(function.name.clone()),
+                        ));
+                    }
+                }
+                if let Some(step) = step {
+                    let step_type = self.check_expr(step, scope, function);
+                    if step_type.as_ref() != Some(&TypeRef::new("i64")) {
+                        self.diagnostics.push(SemanticDiagnostic::new(
+                            "N0322",
+                            "for loop step expression must be i64",
+                            Some(function.name.clone()),
+                        ));
+                    }
+                }
+                let mut loop_scope = scope.clone();
+                loop_scope.locals.insert(name.clone(), TypeRef::new("i64"));
+                self.loop_depth += 1;
+                self.check_block(body, &mut loop_scope, function);
+                self.loop_depth -= 1;
+                None
+            }
             Stmt::Loop { body, .. } => {
                 let mut loop_scope = scope.clone();
                 self.loop_depth += 1;
@@ -557,6 +592,12 @@ mod tests {
     }
 
     #[test]
+    fn validates_for_loop() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 3\n        total += i\n    total\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
     fn validates_logical_expressions() {
         let source = "fn main -> bool\n    not false and true or false\n";
         assert!(validate_source(source).is_ok());
@@ -621,6 +662,30 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0320")
+        );
+    }
+
+    #[test]
+    fn catches_invalid_for_range_type() {
+        let diagnostics =
+            validate_source("fn bad -> i64\n    for i from false to 3\n        i\n    0\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0321")
+        );
+    }
+
+    #[test]
+    fn catches_invalid_for_step_type() {
+        let diagnostics =
+            validate_source("fn bad -> i64\n    for i from 1 to 3 by false\n        i\n    0\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0322")
         );
     }
 }
