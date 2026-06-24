@@ -16,7 +16,7 @@ This file maps the repository layout and explains where to find core information
 
 - `documents/core_language_rules.md`: canonical global rules for `.nl` source files, indentation-only scope, forbidden block delimiters, and no semicolon terminators.
 - `documents/language_specification.md`: top-level language specification and overview. Use this first for language behavior, philosophy, syntax reference, examples, and roadmap.
-- `documents/implementation_plan.md`: implementation plan for the compiler, runtime, CLI, installer, tests, and release workflow.
+- `documents/implementation_plan.md`: implementation plan for the compiler, runtime, offline browser documentation bundle, CLI, installer, tests, and release workflow.
 - `documents/nous_lang_syntax_design.md`: syntax design details for declarations, functions, data structures, operators, naming, comments, and examples.
 - `documents/nous_lang_type_system.md`: type-system details for primitives, composites, references, functions, inference, safety, aliases, generics, and OS-specific types.
 - `documents/nous_lang_memory_management.md`: memory model covering regions, stack allocation, heap allocation, lifetime tracking, GC hooks, safety checks, runtime memory APIs, and kernel memory examples.
@@ -60,6 +60,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - ClickUp folder: `Nous Lang` under the available `general` space.
 - Current ClickUp lists:
   - `01 Project Foundation`
+  - `01.5 Offline Browser Docs`
   - `02 Lexer Parser AST`
   - `03 Type System`
   - `04 Memory Runtime`

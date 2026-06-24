@@ -17,6 +17,7 @@ This repository defines and will implement Nous Lang, a compiled systems program
 - Canonical source extension: `.nl` until the language specification is intentionally changed.
 - Keep the syntax indentation-only. Curly braces are not block delimiters, and semicolons are not statement terminators.
 - Keep the implementation conservative: prefer a correct parser/type checker/runtime prototype over speculative backend complexity.
+- Maintain offline browser-based documentation from the start. The project must eventually ship a self-contained HTML documentation bundle that users can open locally without a server or internet access, and that bundle should be suitable for inclusion in the language toolchain installer.
 
 ## Core Documentation Map
 
@@ -86,6 +87,10 @@ Once Rust code exists:
 
 - Documentation is part of the product. Keep it current with every implementation update, concept change, command change, test change, or layout change.
 - If code changes syntax, typing, memory behavior, diagnostics, CLI behavior, runtime semantics, or build/test commands, update the matching document under `documents/`.
+- Offline browser documentation is a required product artifact. When the offline docs source or generated HTML bundle exists, update it alongside the Markdown source docs for every syntax, semantic, runtime, CLI, quick-start, example, diagnostic, or installer-facing change.
+- The offline documentation must be usable by opening a local HTML file directly in a browser. Do not require a development server, CDN, remote assets, or internet access for the basic documentation experience.
+- Keep offline docs organized for users, not only implementers: language overview, installation/setup, quick start, syntax reference, type system, memory model, control flow, examples, CLI usage, diagnostics, and current limitations should all be discoverable from the local entry page.
+- Treat docs examples as executable fixtures when practical. If an example is not yet supported by the current compiler/runtime, mark it clearly as planned or future syntax.
 - Keep `documents/core_language_rules.md` as the single source for repeated canonical rules. Do not copy that block into every subsystem document.
 - Keep `documents/repository_map.md` current and use it as the first navigation aid.
 - If documents duplicate substantial content, consolidate it into one canonical file and replace duplicates with references.
@@ -95,6 +100,7 @@ Once Rust code exists:
 
 - The requested change is implemented or the blocker is explicit.
 - Relevant docs are updated.
+- Offline browser documentation is updated when the change affects user-facing language behavior, examples, CLI usage, diagnostics, installation, or toolchain packaging, once the offline docs artifact exists.
 - `documents/repository_map.md` is still accurate.
 - Duplicate Markdown content has not been reintroduced.
 - Tests/checks relevant to the change have run.

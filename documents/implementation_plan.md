@@ -29,6 +29,18 @@ The repository now contains the first executable alpha slice:
 | **1.3** | **Memory System Implementation:** Implement the memory allocator/deallocator based on `nous_lang_memory_management.md`. Ensure ARC and explicit allocation work correctly in the runtime environment. | `nous_lang_memory_management.md` | High | Initial heap-slot builtins done; ARC/regions pending |
 | **1.4** | **Runtime Execution Engine:** Implement the core execution loop that traverses the AST, manages memory, resolves types, and executes nlang instructions. | All previous steps | Critical | Alpha AST runtime with loops done; native backend pending |
 
+## Epic 1.5: Offline Browser Documentation
+*Objective: Build and maintain a self-contained browser documentation bundle from ground zero so users can open a local HTML file and browse Nous Lang documentation without a server or internet connection. This artifact must later be bundle-ready for the language toolchain installer.*
+
+| Story | Description | Dependencies | Estimated Effort | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **1.5.1** | **Documentation Information Architecture:** Define the offline documentation structure, navigation, entry page, and content ownership for overview, quick start, installation/setup, syntax reference, type system, memory model, control flow, examples, CLI usage, diagnostics, current limitations, and roadmap. | `language_specification.md`, `repository_map.md` | Medium | To Do |
+| **1.5.2** | **Static HTML Documentation Generator:** Create a local build path that turns canonical Markdown/source documentation into a self-contained HTML bundle with no required network access, CDN, external fonts, or development server. | 1.5.1 | High | To Do |
+| **1.5.3** | **Offline Documentation Content Pass:** Bring the offline docs up to parity with the current language alpha: `.nl`, indentation-only blocks, functions, returns, `let`, assignment, control flow, memory builtins, CLI `check`/`run`, examples, and diagnostics. | 1.5.1, 1.5.2, Epic 1 | High | To Do |
+| **1.5.4** | **Executable Example Sync:** Ensure examples shown in the offline docs are backed by fixtures or tests when they claim to work, and clearly mark future/planned syntax that is not yet accepted by the compiler. | 1.5.3, Epic 5 | High | To Do |
+| **1.5.5** | **Offline Docs Verification:** Add checks that verify the generated HTML entry point exists, local links resolve, required sections are present, and the bundle can be opened from disk without missing assets. | 1.5.2, 1.5.3 | Medium | To Do |
+| **1.5.6** | **Installer Bundle Integration:** Prepare the offline docs output for packaging with the future toolchain installer and document where the installer should place the local entry page. | Epic 3, Epic 4 | Medium | To Do |
+
 ## Epic 2: System Integration & I/O Layer
 *Objective: Connect the runtime to the operating system and enable basic interaction.*
 
