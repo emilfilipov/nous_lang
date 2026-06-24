@@ -31,6 +31,8 @@ This guide covers the foundational syntax design for **Nous Lang** (nlang), a mi
 
 ## Syntax Elements
 
+Current alpha note: the implemented Rust parser accepts explicit local bindings as `let name Type = expression`, function calls with parentheses, array types as `array<T>`, array literals as `[value, ...]`, and array indexing as `values[index]`. Other forms in this design guide remain planned syntax unless they are also listed in `language_specification.md` under Current Alpha Implementation.
+
 ### 1. Variable Declaration & Binding
 
 **Traditional**: `int x = 5;` (6 tokens: int, x, =, 5, ; )

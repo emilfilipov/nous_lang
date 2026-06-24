@@ -347,6 +347,7 @@ impl<'a> Checker<'a> {
             ExprKind::Integer(_) => Some(TypeRef::new("i64")),
             ExprKind::Bool(_) => Some(TypeRef::new("bool")),
             ExprKind::String(_) => Some(TypeRef::new("string")),
+            ExprKind::Array(values) => self.check_array_literal(values, scope, function),
             ExprKind::Variable(name) => match scope.locals.get(name) {
                 Some(ty) => Some(ty.clone()),
                 None => {
@@ -358,6 +359,29 @@ impl<'a> Checker<'a> {
                     None
                 }
             },
+            ExprKind::Index { target, index } => {
+                let target_type = self.check_expr(target, scope, function);
+                let index_type = self.check_expr(index, scope, function);
+                if index_type.as_ref() != Some(&TypeRef::new("i64")) {
+                    self.diagnostics.push(SemanticDiagnostic::new(
+                        "N0326",
+                        "array index expression must be i64",
+                        Some(function.name.clone()),
+                    ));
+                }
+
+                match target_type.and_then(|ty| ty.array_element()) {
+                    Some(element_type) => Some(element_type),
+                    None => {
+                        self.diagnostics.push(SemanticDiagnostic::new(
+                            "N0325",
+                            "index target must be an array",
+                            Some(function.name.clone()),
+                        ));
+                        None
+                    }
+                }
+            }
             ExprKind::Unary { op, expr } => {
                 let expr_type = self.check_expr(expr, scope, function);
                 match op {
@@ -393,18 +417,30 @@ impl<'a> Checker<'a> {
                             None
                         }
                     }
-                    BinaryOp::Equal
-                    | BinaryOp::NotEqual
-                    | BinaryOp::Less
-                    | BinaryOp::LessEqual
-                    | BinaryOp::Greater
-                    | BinaryOp::GreaterEqual => {
+                    BinaryOp::Equal | BinaryOp::NotEqual => {
                         if left_type.is_some() && left_type == right_type {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::new(
                                 "N0308",
                                 "comparison operands must have the same type",
+                                Some(function.name.clone()),
+                            ));
+                            None
+                        }
+                    }
+                    BinaryOp::Less
+                    | BinaryOp::LessEqual
+                    | BinaryOp::Greater
+                    | BinaryOp::GreaterEqual => {
+                        if left_type.as_ref() == Some(&TypeRef::new("i64"))
+                            && right_type.as_ref() == Some(&TypeRef::new("i64"))
+                        {
+                            Some(TypeRef::new("bool"))
+                        } else {
+                            self.diagnostics.push(SemanticDiagnostic::new(
+                                "N0327",
+                                "ordering comparison operands must both be i64",
                                 Some(function.name.clone()),
                             ));
                             None
@@ -428,6 +464,36 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Call { name, args } => self.check_call(name, args, scope, function),
         }
+    }
+
+    fn check_array_literal(
+        &mut self,
+        values: &[Expr],
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let Some((first, rest)) = values.split_first() else {
+            self.diagnostics.push(SemanticDiagnostic::new(
+                "N0323",
+                "array literals must contain at least one value in the current alpha",
+                Some(function.name.clone()),
+            ));
+            return None;
+        };
+
+        let element_type = self.check_expr(first, scope, function)?;
+        for value in rest {
+            let value_type = self.check_expr(value, scope, function);
+            if value_type.as_ref() != Some(&element_type) {
+                self.diagnostics.push(SemanticDiagnostic::new(
+                    "N0324",
+                    "array literal values must all have the same type",
+                    Some(function.name.clone()),
+                ));
+            }
+        }
+
+        Some(TypeRef::new(format!("array<{}>", element_type.name)))
     }
 
     fn check_call(
@@ -604,6 +670,12 @@ mod tests {
     }
 
     #[test]
+    fn validates_array_literal_and_index() {
+        let source = "fn main -> i64\n    let values array<i64> = [1, 2, 3]\n    values[1]\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
     fn non_void_function_rejects_empty_return() {
         let diagnostics = validate_source("fn bad -> i64\n    return\n").expect_err("semantic");
         assert_eq!(diagnostics[0].code, "N0304");
@@ -686,6 +758,41 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0322")
+        );
+    }
+
+    #[test]
+    fn catches_array_literal_type_mismatch() {
+        let diagnostics =
+            validate_source("fn bad -> array<i64>\n    [1, false]\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0324")
+        );
+    }
+
+    #[test]
+    fn catches_array_index_type_mismatch() {
+        let diagnostics = validate_source(
+            "fn bad -> i64\n    let values array<i64> = [1, 2]\n    values[true]\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0326")
+        );
+    }
+
+    #[test]
+    fn catches_ordering_type_mismatch() {
+        let diagnostics =
+            validate_source("fn bad -> bool\n    false < true\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0327")
         );
     }
 }

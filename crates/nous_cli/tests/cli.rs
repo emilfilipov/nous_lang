@@ -110,6 +110,18 @@ fn runs_for_step_fixture() {
 }
 
 #[test]
+fn runs_array_fixture() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_array.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "6");
+}
+
+#[test]
 fn rejects_forbidden_braces() {
     let fixture = workspace_root().join("tests/fixtures/invalid/brace.nl");
     let output = nlang()
@@ -170,6 +182,18 @@ fn rejects_logical_type_mismatch() {
 }
 
 #[test]
+fn rejects_ordering_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/ordering_type_mismatch.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0327"));
+}
+
+#[test]
 fn rejects_for_range_type_mismatch() {
     let fixture = workspace_root().join("tests/fixtures/invalid/for_range_type_mismatch.nl");
     let output = nlang()
@@ -191,4 +215,40 @@ fn rejects_for_zero_step_at_runtime() {
 
     assert!(!output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("N0411"));
+}
+
+#[test]
+fn rejects_array_literal_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_literal_type_mismatch.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0324"));
+}
+
+#[test]
+fn rejects_array_index_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_type_mismatch.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0326"));
+}
+
+#[test]
+fn rejects_array_index_out_of_bounds_at_runtime() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.nl");
+    let output = nlang()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("N0413"));
 }

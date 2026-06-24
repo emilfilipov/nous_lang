@@ -17,9 +17,9 @@ Nous Lang implements a novel multi-phase compilation pipeline specifically optim
 The current Rust workspace implements a frontend and in-process execution pipeline:
 
 1. `nous_lexer` validates `.nl` paths, emits tokens, emits indentation/dedent structure, and rejects forbidden block delimiters.
-2. `nous_parser` builds an AST for functions, typed parameters, `let`, assignment, returns, break/continue, if/elif/else, while/loop/range-for blocks, calls, literals, variables, arithmetic, comparisons, and boolean logic.
-3. `nous_semantics` validates static types, local bindings, assignments, function calls, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical operands, and the interim pointer-style memory builtins.
-4. `nous_runtime` executes the validated AST directly, including `main`, calls, scoped locals, assignment, branch result values, while/loop/range-for control flow, arithmetic/comparisons, short-circuit boolean logic, and heap-slot memory operations.
+2. `nous_parser` builds an AST for functions, typed parameters, `let`, assignment, returns, break/continue, if/elif/else, while/loop/range-for blocks, calls, literals, array literals/indexing, variables, arithmetic, comparisons, and boolean logic.
+3. `nous_semantics` validates static types, local bindings, assignments, function calls, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical operands, homogeneous non-empty arrays, array indexes, and the interim pointer-style memory builtins.
+4. `nous_runtime` executes the validated AST directly, including `main`, calls, scoped locals, assignment, branch result values, while/loop/range-for control flow, array literals/indexing with runtime bounds checks, arithmetic/comparisons, short-circuit boolean logic, and heap-slot memory operations.
 5. `nous_cli` exposes the current pipeline as `nlang check <file.nl>` and `nlang run <file.nl>`.
 
 IR lowering, optimization, native code generation, linking, and binary output remain planned architecture stages.

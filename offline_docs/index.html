@@ -245,6 +245,7 @@
       <a href="#source-files">Source Files</a>
       <a href="#functions">Functions</a>
       <a href="#variables-assignment">Variables And Assignment</a>
+      <a href="#arrays">Arrays</a>
       <a href="#control-flow">Control Flow</a>
       <a href="#boolean-logic">Boolean Logic</a>
       <a href="#memory-builtins">Memory Builtins</a>
@@ -326,6 +327,20 @@
     total += 1
     total *= 42
     total</code></pre>
+      </section>
+
+      <section id="arrays">
+        <h2>Arrays</h2>
+        <p>The alpha supports homogeneous arrays with <code>array&lt;T&gt;</code> type spelling, non-empty array literals, and bounds-checked indexing.</p>
+        <pre><code>fn main -> i64
+    let values array&lt;i64&gt; = [2, 4, 6]
+    values[2]</code></pre>
+        <ul>
+          <li>Array literal values must all have the same static type.</li>
+          <li>Empty array literals are not accepted yet because empty-array inference is not implemented.</li>
+          <li>Index expressions require an <code>i64</code> index.</li>
+          <li>Out-of-bounds indexes are runtime errors.</li>
+        </ul>
       </section>
 
       <section id="control-flow">
@@ -431,6 +446,10 @@ fn main -> i64
     let value i64 = load(ptr)
     cleanup(ptr)
     value</code></pre>
+        <h3>Array indexing</h3>
+        <pre><code>fn main -> i64
+    let values array&lt;i64&gt; = [2, 4, 6]
+    values[2]</code></pre>
       </section>
 
       <section id="diagnostics">
@@ -445,6 +464,10 @@ fn main -> i64
             <tr><td><code>N0103</code></td><td>Semicolons are forbidden as statement terminators.</td></tr>
             <tr><td><code>N0208</code></td><td>Parser expected an assignment operator.</td></tr>
             <tr><td><code>N0301+</code></td><td>Semantic errors such as unknown names, type mismatch, invalid returns, or invalid loop control.</td></tr>
+            <tr><td><code>N0324</code></td><td>Array literal values do not all have the same type.</td></tr>
+            <tr><td><code>N0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
+            <tr><td><code>N0327</code></td><td>Ordering comparison operands are not both <code>i64</code>.</td></tr>
+            <tr><td><code>N0413</code></td><td>Runtime array index is out of bounds.</td></tr>
           </tbody>
         </table>
       </section>
@@ -457,8 +480,8 @@ fn main -> i64
         <ul>
           <li>No native code generation yet. Execution currently uses the AST runtime.</li>
           <li>The full region memory model, ARC/reference counting, and lifetime analysis are pending.</li>
-          <li>The type system currently covers the alpha scalar, call, local binding, assignment, control-flow, and interim pointer subset.</li>
-          <li>Standard library, I/O, modules, generics, structs, arrays, packages, and installer integration are future work.</li>
+          <li>The type system currently covers the alpha scalar, array, call, local binding, assignment, control-flow, and interim pointer subset.</li>
+          <li>Standard library, I/O, modules, generics beyond array element spelling, structs, packages, and installer integration are future work.</li>
           <li>The documentation bundle is currently hand-authored HTML. A generator from canonical docs is planned in Epic 1.5.</li>
         </ul>
       </section>

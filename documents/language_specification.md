@@ -23,8 +23,10 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Local bindings use `let name Type = expression`.
 - Existing local bindings can be updated with `name = expression` or numeric compound assignments `+=`, `-=`, `*=`, and `/=`.
 - Implemented scalar types are `i64`, `bool`, `string`, and `void`.
+- Implemented homogeneous arrays use `array<T>` type spelling, non-empty literals such as `[1, 2, 3]`, and bounds-checked indexing such as `values[0]`.
 - The current pointer spelling is an interim concrete type name such as `ptr_i64`.
-- Implemented expressions include literals, variables, function calls with parentheses, arithmetic, comparisons, logical operators `and`/`or`/`not`, and grouped expressions.
+- Implemented expressions include literals, array literals, array indexing, variables, function calls with parentheses, arithmetic, comparisons, logical operators `and`/`or`/`not`, and grouped expressions.
+- Equality comparisons require matching operand types. Ordering comparisons `<`, `<=`, `>`, and `>=` currently require `i64` operands.
 - Implemented control flow is `if`/`elif`/`else`, `while`, range `for`, `loop`, `break`, and `continue` with indentation-only bodies.
 - Implemented memory builtins are `alloc(value)`, `load(ptr)`, and `dealloc(ptr)`.
 - CLI commands are `nlang check <file.nl>` and `nlang run <file.nl>` through the Rust workspace.
@@ -222,7 +224,10 @@ type_instance = Type(field1: value1, field2: value2)  // Direct construction
 
 ### Collections
 ```nlang
-array[10] = [v1, v2, ..., v10]
+let values array<i64> = [1, 2, 3]
+values[0]
+
+# Planned collection helpers:
 map[key] = [key_value_pairs]
 
 len(collection)      // Length check
@@ -406,6 +411,13 @@ fn main -> i64
 ```nlang
 fn main -> bool
     not false and true or false
+```
+
+### Arrays
+```nlang
+fn main -> i64
+    let values array<i64> = [2, 4, 6]
+    values[2]
 ```
 
 ## Future Extensions (Planned Features)

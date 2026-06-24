@@ -8,6 +8,7 @@ pub enum Value {
     I64(i64),
     Bool(bool),
     String(String),
+    Array(Vec<Value>),
     Ptr(usize),
     Void,
 }
@@ -18,6 +19,14 @@ impl fmt::Display for Value {
             Self::I64(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::String(value) => write!(formatter, "{value}"),
+            Self::Array(values) => {
+                let values = values
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "[{values}]")
+            }
             Self::Ptr(slot) => write!(formatter, "ptr({slot})"),
             Self::Void => write!(formatter, "void"),
         }
@@ -250,7 +259,28 @@ impl<'a> Runtime<'a> {
             ExprKind::Integer(value) => Ok(Value::I64(*value)),
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::String(value) => Ok(Value::String(value.clone())),
+            ExprKind::Array(values) => values
+                .iter()
+                .map(|value| self.eval_expr(value, env))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
             ExprKind::Variable(name) => env.get(name),
+            ExprKind::Index { target, index } => {
+                let target = self.eval_expr(target, env)?;
+                let index = self.eval_expr(index, env)?.as_i64()?;
+                let Value::Array(values) = target else {
+                    return Err(RuntimeError::new("N0412", "index target is not an array"));
+                };
+                if index < 0 {
+                    return Err(RuntimeError::new(
+                        "N0413",
+                        format!("array index `{index}` is out of bounds"),
+                    ));
+                }
+                values.get(index as usize).cloned().ok_or_else(|| {
+                    RuntimeError::new("N0413", format!("array index `{index}` is out of bounds"))
+                })
+            }
             ExprKind::Unary { op, expr } => {
                 let value = self.eval_expr(expr, env)?;
                 match op {
@@ -513,6 +543,19 @@ mod tests {
     fn runs_descending_for_loop() {
         let source = "fn main -> i64\n    let total i64 = 0\n    for i from 3 to 1 by -1\n        total += i\n    total\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(6));
+    }
+
+    #[test]
+    fn runs_array_literal_and_index() {
+        let source = "fn main -> i64\n    let values array<i64> = [2, 4, 6]\n    values[2]\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(6));
+    }
+
+    #[test]
+    fn rejects_array_index_out_of_bounds() {
+        let source = "fn main -> i64\n    let values array<i64> = [1, 2]\n    values[3]\n";
+        let error = run_source(source).expect_err("runtime error");
+        assert_eq!(error.code, "N0413");
     }
 
     #[test]

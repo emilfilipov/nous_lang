@@ -17,6 +17,7 @@ REQUIRED_IDS = [
     "source-files",
     "functions",
     "variables-assignment",
+    "arrays",
     "control-flow",
     "boolean-logic",
     "memory-builtins",
@@ -34,6 +35,9 @@ REQUIRED_PHRASES = [
     "void",
     "let",
     "assignment",
+    "array&lt;T&gt;",
+    "non-empty array literals",
+    "bounds-checked indexing",
     "if",
     "elif",
     "else",
@@ -55,6 +59,10 @@ REQUIRED_PHRASES = [
     "cargo run -p nous_cli -- check",
     "cargo run -p nous_cli -- run",
     "Diagnostics",
+    "N0324",
+    "N0326",
+    "N0327",
+    "N0413",
     "Current Limitations",
 ]
 

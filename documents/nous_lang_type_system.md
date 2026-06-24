@@ -2,6 +2,19 @@
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
+## Current Alpha Type Checker
+
+The Rust alpha currently validates `i64`, `bool`, `string`, `void`, interim pointer types such as `ptr_i64`, and homogeneous arrays spelled `array<T>`.
+
+Implemented array rules:
+- Array literals use bracket syntax, for example `[1, 2, 3]`.
+- Array literals must be non-empty in the current alpha because empty-array inference is not implemented yet.
+- All array literal values must have the same static type.
+- Index expressions use `values[index]`.
+- Index expressions require an `array<T>` target and an `i64` index.
+- Runtime execution bounds-checks array indexes.
+- Equality comparisons require matching operand types; ordering comparisons currently require `i64` operands.
+
 ## Overview
 Nous Lang employs a **hybrid typing system** combining static type safety with automatic type inference, optimized for tiny LLM comprehension while maintaining strong guarantees for systems programming in OS development.
 

@@ -33,6 +33,13 @@ impl TypeRef {
     pub fn is_void(&self) -> bool {
         self.name == "void"
     }
+
+    pub fn array_element(&self) -> Option<TypeRef> {
+        self.name
+            .strip_prefix("array<")
+            .and_then(|name| name.strip_suffix('>'))
+            .map(TypeRef::new)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +110,12 @@ pub enum ExprKind {
     Integer(i64),
     Bool(bool),
     String(String),
+    Array(Vec<Expr>),
     Variable(String),
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
@@ -468,7 +480,20 @@ impl<'a> Parser<'a> {
             TokenKind::Identifier(name) => {
                 let name = name.clone();
                 self.advance();
-                Some(TypeRef::new(name))
+                if name == "array" && self.eat_symbol("<") {
+                    let element_type = self.expect_type("expected array element type")?;
+                    if !self.eat_symbol(">") {
+                        self.error(
+                            "N0203",
+                            "expected `>` after array element type",
+                            self.peek().span,
+                        );
+                        return None;
+                    }
+                    Some(TypeRef::new(format!("array<{}>", element_type.name)))
+                } else {
+                    Some(TypeRef::new(name))
+                }
             }
             TokenKind::Keyword(Keyword::Void) => {
                 self.advance();
@@ -631,7 +656,7 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, String> {
-        let mut left = self.parse_primary()?;
+        let mut left = self.parse_unary()?;
 
         while let Some((op, precedence)) = self.peek_binary_op() {
             if precedence < min_precedence {
@@ -651,6 +676,58 @@ impl<'a> ExprParser<'a> {
         }
 
         Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, String> {
+        let token = self.peek().ok_or("expected expression")?.clone();
+        match token.kind {
+            TokenKind::Keyword(Keyword::Not) => {
+                self.cursor += 1;
+                let expr = self.parse_unary()?;
+                Ok(Expr {
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(expr),
+                    },
+                    span: token.span,
+                })
+            }
+            TokenKind::Symbol(symbol) if symbol == "-" => {
+                self.cursor += 1;
+                let value = self.parse_unary()?;
+                Ok(Expr {
+                    kind: ExprKind::Binary {
+                        left: Box::new(Expr {
+                            kind: ExprKind::Integer(0),
+                            span: token.span,
+                        }),
+                        op: BinaryOp::Subtract,
+                        right: Box::new(value),
+                    },
+                    span: token.span,
+                })
+            }
+            _ => self.parse_postfix(),
+        }
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_primary()?;
+        while self.eat_symbol("[") {
+            let index = self.parse_binary(0)?;
+            if !self.eat_symbol("]") {
+                return Err("expected `]` after index expression".to_string());
+            }
+            let span = expr.span;
+            expr = Expr {
+                kind: ExprKind::Index {
+                    target: Box::new(expr),
+                    index: Box::new(index),
+                },
+                span,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
@@ -678,16 +755,6 @@ impl<'a> ExprParser<'a> {
                 kind: ExprKind::Bool(false),
                 span: token.span,
             }),
-            TokenKind::Keyword(Keyword::Not) => {
-                let expr = self.parse_primary()?;
-                Ok(Expr {
-                    kind: ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(expr),
-                    },
-                    span: token.span,
-                })
-            }
             TokenKind::Identifier(name) => {
                 if self.eat_symbol("(") {
                     let mut args = Vec::new();
@@ -713,26 +780,30 @@ impl<'a> ExprParser<'a> {
                     })
                 }
             }
+            TokenKind::Symbol(symbol) if symbol == "[" => {
+                let mut values = Vec::new();
+                if !self.eat_symbol("]") {
+                    loop {
+                        values.push(self.parse_binary(0)?);
+                        if self.eat_symbol("]") {
+                            break;
+                        }
+                        if !self.eat_symbol(",") {
+                            return Err("expected `,` or `]` in array literal".to_string());
+                        }
+                    }
+                }
+                Ok(Expr {
+                    kind: ExprKind::Array(values),
+                    span: token.span,
+                })
+            }
             TokenKind::Symbol(symbol) if symbol == "(" => {
                 let expr = self.parse_binary(0)?;
                 if !self.eat_symbol(")") {
                     return Err("expected `)` after grouped expression".to_string());
                 }
                 Ok(expr)
-            }
-            TokenKind::Symbol(symbol) if symbol == "-" => {
-                let value = self.parse_primary()?;
-                Ok(Expr {
-                    kind: ExprKind::Binary {
-                        left: Box::new(Expr {
-                            kind: ExprKind::Integer(0),
-                            span: token.span,
-                        }),
-                        op: BinaryOp::Subtract,
-                        right: Box::new(value),
-                    },
-                    span: token.span,
-                })
             }
             _ => Err("expected expression".to_string()),
         }
@@ -864,6 +935,14 @@ mod tests {
         let tokens = lex(source).expect("lex");
         let program = parse(&tokens).expect("parse");
         assert!(matches!(program.functions[0].body[0], Stmt::Expr(_)));
+    }
+
+    #[test]
+    fn parses_array_literal_and_index() {
+        let source = "fn main -> i64\n    let values array<i64> = [1, 2, 3]\n    values[1]\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert_eq!(program.functions[0].body.len(), 2);
     }
 
     #[test]
