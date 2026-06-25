@@ -18,6 +18,7 @@ pub enum DiagnosticPhase {
     Lexer,
     Parser,
     Semantic,
+    Ir,
     Runtime,
     Resource,
 }
@@ -29,6 +30,7 @@ impl fmt::Display for DiagnosticPhase {
             Self::Lexer => write!(formatter, "lexer"),
             Self::Parser => write!(formatter, "parser"),
             Self::Semantic => write!(formatter, "semantic"),
+            Self::Ir => write!(formatter, "ir"),
             Self::Runtime => write!(formatter, "runtime"),
             Self::Resource => write!(formatter, "resource"),
         }
@@ -271,6 +273,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         explanation: "Array indexes must be i64 expressions.",
         root_cause: "The index expression is not an i64.",
         suggested_fix: "Use an i64 literal, variable, or arithmetic expression as the index.",
+    },
+    DiagnosticEntry {
+        code: "N0501",
+        phase: DiagnosticPhase::Ir,
+        explanation: "The checked source program could not be lowered into typed IR.",
+        root_cause: "The semantic program and IR lowering rules disagree about a supported alpha construct.",
+        suggested_fix: "Report the source as a compiler bug and try the AST backend as a temporary workaround.",
     },
     DiagnosticEntry {
         code: "N0404",

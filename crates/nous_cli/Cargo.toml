@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 nous_diagnostics = { path = "../nous_diagnostics" }
+nous_ir = { path = "../nous_ir" }
 nous_lexer = { path = "../nous_lexer" }
 nous_parser = { path = "../nous_parser" }
 nous_runtime = { path = "../nous_runtime" }

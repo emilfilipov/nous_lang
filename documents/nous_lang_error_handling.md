@@ -19,6 +19,7 @@ Current diagnostic ranges:
 | `N0201-N0210` | Parser | Missing function body indentation or malformed expression. |
 | `N0300-N0328` | Semantic validation | Unknown name, type mismatch, invalid loop control, invalid builtin arguments. |
 | `N0400-N0418` | Runtime and host resources | Missing `main`, division by zero, invalid pointer, missing file, failed command invocation. |
+| `N0501` | IR lowering | Typed IR lowering failed after semantic validation. |
 
 Runtime CLI output uses:
 
@@ -30,6 +31,7 @@ The implemented runtime categories are:
 
 - `runtime`: execution errors such as division by zero, invalid pointer use, out-of-bounds array indexing, or wrong runtime value kind.
 - `resource`: host resource failures such as failed file reads/writes/appends or failed command invocation.
+- `ir`: typed IR lowering failures reported before an IR or bytecode backend starts executing.
 
 Language-level `try`, `catch`, recovery blocks, and compact `!0xXX` error tokens are planned and are not accepted by the current parser.
 
@@ -43,7 +45,7 @@ nlang check --verbose file.nl
 nlang check --format json file.nl
 ```
 
-The same flags are available for `nlang run`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
+The same flags are available for `nlang run`. `nlang run` defaults to the AST runtime and accepts `--backend ir` and `--backend bytecode` for the current alpha subset. IR lowering failures use code `N0501` and phase `ir`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
 
 ### Concise Output
 

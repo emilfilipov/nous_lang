@@ -88,6 +88,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0326` | semantic | Array index is not `i64`. | Index expression has wrong type. | Use an `i64` index. |
 | `N0327` | semantic | Ordering operands are not both `i64`. | `<`, `<=`, `>`, or `>=` used on non-`i64`. | Use `i64` operands. |
 | `N0328` | semantic | `store` value type mismatch. | Stored value does not match pointer element type. | Store a value matching the pointer type. |
+| `N0501` | ir | IR lowering failed. | A checked program did not match the current IR lowering contract. | Treat this as a compiler bug and retry with `--backend ast` as a workaround. |
 | `N0400` | runtime | Missing `main`. | Runtime cannot find an entrypoint. | Define `fn main`. |
 | `N0401` | runtime | Unknown function at runtime. | Runtime call target was not found. | Check semantic validation and function names. |
 | `N0402` | runtime | Runtime function arity mismatch. | Runtime call has wrong argument count. | Match the function signature. |
@@ -107,4 +108,3 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0416` | resource | Command launch failed. | Program not found or not executable. | Pass a valid executable and argv array. |
 | `N0417` | runtime | Expected string. | Runtime value kind was wrong. | Pass a string value. |
 | `N0418` | runtime | Expected `array<string>`. | Runtime value kind was wrong. | Pass an array of strings. |
-

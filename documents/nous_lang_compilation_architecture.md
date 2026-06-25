@@ -21,9 +21,10 @@ The current Rust workspace implements a frontend and in-process execution pipeli
 3. `nous_semantics` validates static types, local bindings, assignments, function calls, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical operands, homogeneous non-empty arrays, array indexes, interim pointer-style memory builtins, text file I/O builtins, and safe system command builtins. Successful validation returns `CheckedProgram` metadata with function signatures and inferred expression types.
 4. `nous_ir` lowers a `CheckedProgram` into typed semantic IR for the current alpha subset, including typed functions, parameters, statements, control flow, calls, builtins, and expressions.
 5. `nous_runtime` executes the validated AST directly, including `main`, calls, scoped locals, assignment, branch result values, while/loop/range-for control flow, array literals/indexing with runtime bounds checks, arithmetic/comparisons, short-circuit boolean logic, heap-slot memory operations including `alloc`/`load`/`store`/`dealloc`, text file I/O, and safe system command builtins.
-6. `nous_cli` exposes the current pipeline as `nlang check <file.nl>` and `nlang run <file.nl>`.
+6. `nous_ir` can also execute the lowered typed IR and lower it into an initial structured bytecode module with a bytecode VM entry point for the current alpha subset.
+7. `nous_cli` exposes the current pipeline as `nlang check <file.nl>` and `nlang run [--backend ast|ir|bytecode] <file.nl>`.
 
-Optimization, bytecode or native code generation, linking, and binary output remain planned architecture stages.
+Optimization, native code generation, linking, and binary output remain planned architecture stages.
 
 ### Stage 1: Lexical Analysis (Tokenizer)
 

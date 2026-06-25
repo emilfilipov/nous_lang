@@ -266,12 +266,12 @@
     <main>
       <section id="overview">
         <h2>Overview</h2>
-        <p>Nous Lang is implemented in Rust. The current alpha focuses on a clear, testable compiler frontend and an in-process runtime before native code generation.</p>
+        <p>Nous Lang is implemented in Rust. The current alpha focuses on a clear, testable compiler frontend plus AST, IR, and initial bytecode execution paths before native code generation.</p>
         <div class="status-grid">
           <div class="status-item"><strong>Extension</strong><code>.nl</code> is the canonical source file extension.</div>
           <div class="status-item"><strong>Blocks</strong>Indentation defines scope. Curly braces are rejected.</div>
           <div class="status-item"><strong>Statements</strong>Semicolons are not statement terminators.</div>
-          <div class="status-item"><strong>Runtime</strong><code>nlang run</code> executes the supported AST subset.</div>
+          <div class="status-item"><strong>Runtime</strong><code>nlang run</code> executes the supported subset with AST, IR, or bytecode backends.</div>
         </div>
       </section>
 
@@ -285,6 +285,8 @@
         <pre><code>cargo run -p nous_cli -- check hello.nl</code></pre>
         <p>Run it:</p>
         <pre><code>cargo run -p nous_cli -- run hello.nl</code></pre>
+        <p>Run it through the typed IR backend:</p>
+        <pre><code>cargo run -p nous_cli -- run --backend ir hello.nl</code></pre>
         <p>The current CLI is exposed through Cargo during development. The eventual installer will ship a direct <code>nlang</code> command.</p>
       </section>
 
@@ -474,7 +476,9 @@
           </thead>
           <tbody>
             <tr><td><code>cargo run -p nous_cli -- check path/to/file.nl</code></td><td>Validate extension, lex, parse, and run semantic checks.</td></tr>
-            <tr><td><code>cargo run -p nous_cli -- run path/to/file.nl</code></td><td>Validate and execute <code>main</code> in the alpha runtime.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- run path/to/file.nl</code></td><td>Validate and execute <code>main</code> in the default AST runtime.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- run --backend ir path/to/file.nl</code></td><td>Validate, lower to typed IR, and execute with the IR interpreter.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- run --backend bytecode path/to/file.nl</code></td><td>Validate, lower through typed IR into the initial structured bytecode backend, and execute it.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- check --verbose path/to/file.nl</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- check --format json path/to/file.nl</code></td><td>Print deterministic JSON diagnostics for tools, CI, editors, and LLM agents. <code>--diagnostic-format json</code> is also accepted.</td></tr>
           </tbody>
@@ -545,6 +549,7 @@ Suggested fix:
             <tr><td><code>N0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
             <tr><td><code>N0327</code></td><td>Ordering comparison operands are not both <code>i64</code>.</td></tr>
             <tr><td><code>N0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
+            <tr><td><code>N0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
             <tr><td><code>N0413</code></td><td>Runtime array index is out of bounds.</td></tr>
             <tr><td><code>N0414 [resource]</code></td><td>Runtime failed to read a text file.</td></tr>
             <tr><td><code>N0415 [resource]</code></td><td>Runtime failed to write or append a text file.</td></tr>
@@ -560,7 +565,7 @@ Suggested fix:
           <p>This page documents the current executable alpha. Planned syntax and systems features in the broader Markdown specs may not be accepted by the compiler yet.</p>
         </div>
         <ul>
-          <li>No native code generation yet. Execution currently uses the AST runtime.</li>
+          <li>No native code generation yet. Execution currently supports AST, typed IR, and an initial structured bytecode backend.</li>
           <li>The full region memory model, ARC/reference counting, and lifetime analysis are pending.</li>
           <li>The type system currently covers the alpha scalar, array, call, local binding, assignment, control-flow, and interim pointer subset.</li>
           <li>The current I/O surface is limited to text file builtins and direct program-plus-argv command calls; streams, binary I/O, memory mapping, async, sockets, and IPC are future work.</li>

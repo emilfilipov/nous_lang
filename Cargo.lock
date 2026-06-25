@@ -7,6 +7,7 @@ name = "nous_cli"
 version = "0.1.0"
 dependencies = [
  "nous_diagnostics",
+ "nous_ir",
  "nous_lexer",
  "nous_parser",
  "nous_runtime",
@@ -24,6 +25,7 @@ dependencies = [
  "nous_diagnostics",
  "nous_lexer",
  "nous_parser",
+ "nous_runtime",
  "nous_semantics",
 ]
 

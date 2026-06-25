@@ -66,10 +66,61 @@ fn runs_arithmetic_fixture() {
 }
 
 #[test]
+fn runs_arithmetic_fixture_with_ir_backend() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--backend",
+            "ir",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+#[test]
+fn runs_arithmetic_fixture_with_bytecode_backend() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--backend",
+            "bytecode",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+#[test]
 fn runs_memory_fixture() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_memory.nl");
     let output = nlang()
         .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+}
+
+#[test]
+fn runs_memory_fixture_with_ir_backend() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_memory.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--backend",
+            "ir",
+            fixture.to_str().expect("fixture path"),
+        ])
         .output()
         .expect("run cli");
 

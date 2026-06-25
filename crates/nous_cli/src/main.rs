@@ -7,10 +7,11 @@ use std::{
 use nous_diagnostics::{
     DiagnosticPhase, DiagnosticReport, render_concise, render_json, render_verbose,
 };
+use nous_ir::{lower, lower_to_bytecode, run_bytecode_main, run_main as run_ir_main};
 use nous_lexer::{Diagnostic, lex, validate_source_path};
 use nous_parser::{Program, parse};
 use nous_runtime::{ErrorCategory, RuntimeError, Value, run_main};
-use nous_semantics::validate;
+use nous_semantics::{CheckedProgram, validate};
 
 fn main() -> ExitCode {
     match run() {
@@ -30,7 +31,7 @@ fn run() -> Result<(), String> {
 
     match invocation.command {
         CommandName::Check => check(invocation.path, invocation.mode),
-        CommandName::Run => run_file(invocation.path, invocation.mode),
+        CommandName::Run => run_file(invocation.path, invocation.mode, invocation.backend),
         CommandName::Version => {
             println!("nlang {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -60,7 +61,7 @@ fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
     }
 }
 
-fn run_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
+fn run_file(path: PathBuf, mode: OutputMode, backend: Backend) -> Result<(), String> {
     let compiled = match compile(&path) {
         Ok(compiled) => compiled,
         Err(failure) => {
@@ -72,7 +73,32 @@ fn run_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
         }
     };
 
-    match run_main(&compiled.program) {
+    let result = match backend {
+        Backend::Ast => run_main(&compiled.program),
+        Backend::Ir => {
+            let module = lower(&compiled.checked).map_err(|error| {
+                format_reports(
+                    &[ir_report(error, &compiled.path)],
+                    mode,
+                    Some(&compiled.source),
+                )
+            })?;
+            run_ir_main(&module)
+        }
+        Backend::Bytecode => {
+            let module = lower(&compiled.checked).map_err(|error| {
+                format_reports(
+                    &[ir_report(error, &compiled.path)],
+                    mode,
+                    Some(&compiled.source),
+                )
+            })?;
+            let bytecode = lower_to_bytecode(&module);
+            run_bytecode_main(&bytecode)
+        }
+    };
+
+    match result {
         Ok(value) => {
             if mode == OutputMode::Json {
                 println!("{{\"status\":\"ok\",\"diagnostics\":[]}}");
@@ -137,34 +163,38 @@ fn compile(path: &PathBuf) -> Result<CompiledSource, CompileFailure> {
         }
     };
 
-    if let Err(diagnostics) = validate(&program) {
-        return Err(CompileFailure::with_source(
-            diagnostics
-                .into_iter()
-                .map(|diagnostic| {
-                    let mut report = DiagnosticReport::new(
-                        diagnostic.code,
-                        DiagnosticPhase::Semantic,
-                        diagnostic.message,
-                    )
-                    .with_source_path(path.display().to_string());
-                    if let Some(span) = diagnostic.span {
-                        report = report.with_span(span);
-                    }
-                    if let Some(function) = diagnostic.function {
-                        report = report.with_function(function);
-                    }
-                    report
-                })
-                .collect(),
-            source,
-        ));
-    }
+    let checked = match validate(&program) {
+        Ok(checked) => checked,
+        Err(diagnostics) => {
+            return Err(CompileFailure::with_source(
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| {
+                        let mut report = DiagnosticReport::new(
+                            diagnostic.code,
+                            DiagnosticPhase::Semantic,
+                            diagnostic.message,
+                        )
+                        .with_source_path(path.display().to_string());
+                        if let Some(span) = diagnostic.span {
+                            report = report.with_span(span);
+                        }
+                        if let Some(function) = diagnostic.function {
+                            report = report.with_function(function);
+                        }
+                        report
+                    })
+                    .collect(),
+                source,
+            ));
+        }
+    };
 
     Ok(CompiledSource {
         path: path.clone(),
         source,
         program,
+        checked,
     })
 }
 
@@ -195,6 +225,15 @@ fn runtime_report(error: RuntimeError, path: &Path) -> DiagnosticReport {
     report
 }
 
+fn ir_report(error: nous_ir::IrLoweringError, path: &Path) -> DiagnosticReport {
+    let mut report = DiagnosticReport::new("N0501", DiagnosticPhase::Ir, error.message)
+        .with_source_path(path.display().to_string());
+    if let Some(span) = error.span {
+        report = report.with_span(span);
+    }
+    report
+}
+
 fn format_reports(reports: &[DiagnosticReport], mode: OutputMode, source: Option<&str>) -> String {
     match mode {
         OutputMode::Concise => reports
@@ -219,6 +258,7 @@ struct CompiledSource {
     path: PathBuf,
     source: String,
     program: Program,
+    checked: CheckedProgram,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +288,7 @@ struct Invocation {
     command: CommandName,
     path: PathBuf,
     mode: OutputMode,
+    backend: Backend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +306,24 @@ enum OutputMode {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Ast,
+    Ir,
+    Bytecode,
+}
+
+impl Backend {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ast" => Some(Self::Ast),
+            "ir" => Some(Self::Ir),
+            "bytecode" => Some(Self::Bytecode),
+            _ => None,
+        }
+    }
+}
+
 fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
     let Some(command) = args.first() else {
         return Ok(None);
@@ -277,6 +336,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     command: CommandName::Version,
                     path: PathBuf::new(),
                     mode: OutputMode::Concise,
+                    backend: Backend::Ast,
                 }))
             } else {
                 Err("usage: nlang --version".to_string())
@@ -288,6 +348,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     command: CommandName::Help,
                     path: PathBuf::new(),
                     mode: OutputMode::Concise,
+                    backend: Backend::Ast,
                 }))
             } else {
                 Err("usage: nlang --help".to_string())
@@ -300,15 +361,15 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
 
 fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocation>, String> {
     let mut mode = OutputMode::Concise;
+    let mut backend = Backend::Ast;
     let mut cursor = 0;
+    let usage = command_usage(command);
 
     while let Some(arg) = args.get(cursor) {
         match arg.as_str() {
             "--verbose" => {
                 if mode != OutputMode::Concise {
-                    return Err(format!(
-                        "usage: nlang {command} [--verbose|--format json] <file.nl>"
-                    ));
+                    return Err(usage);
                 }
                 mode = OutputMode::Verbose;
                 cursor += 1;
@@ -317,11 +378,20 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 if mode != OutputMode::Concise
                     || args.get(cursor + 1).map(String::as_str) != Some("json")
                 {
-                    return Err(format!(
-                        "usage: nlang {command} [--verbose|--format json] <file.nl>"
-                    ));
+                    return Err(usage);
                 }
                 mode = OutputMode::Json;
+                cursor += 2;
+            }
+            "--backend" => {
+                if command != "run" {
+                    return Err(usage);
+                }
+                let Some(value) = args.get(cursor + 1).and_then(|value| Backend::parse(value))
+                else {
+                    return Err(usage);
+                };
+                backend = value;
                 cursor += 2;
             }
             _ => break,
@@ -329,14 +399,10 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     }
 
     let Some(path) = args.get(cursor) else {
-        return Err(format!(
-            "usage: nlang {command} [--verbose|--format json] <file.nl>"
-        ));
+        return Err(usage);
     };
     if args.get(cursor + 1).is_some() {
-        return Err(format!(
-            "usage: nlang {command} [--verbose|--format json] <file.nl>"
-        ));
+        return Err(usage);
     }
 
     Ok(Some(Invocation {
@@ -347,12 +413,21 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         },
         path: PathBuf::from(path),
         mode,
+        backend,
     }))
+}
+
+fn command_usage(command: &str) -> String {
+    match command {
+        "run" => "usage: nlang run [--backend ast|ir|bytecode] [--verbose|--format json] <file.nl>"
+            .to_string(),
+        _ => "usage: nlang check [--verbose|--format json] <file.nl>".to_string(),
+    }
 }
 
 fn print_help() {
     println!(
-        "nlang {}\n\nusage:\n  nlang check [--verbose|--format json] <file.nl>\n  nlang run [--verbose|--format json] <file.nl>\n  nlang --version",
+        "nlang {}\n\nusage:\n  nlang check [--verbose|--format json] <file.nl>\n  nlang run [--backend ast|ir|bytecode] [--verbose|--format json] <file.nl>\n  nlang --version",
         env!("CARGO_PKG_VERSION")
     );
 }

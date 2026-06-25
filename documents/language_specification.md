@@ -32,7 +32,8 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Implemented text file I/O builtins are `read_file(path)`, `write_file(path, content)`, `append_file(path, content)`, and `file_exists(path)`.
 - Implemented system command builtins are `sys_status(program, args)` and `sys_output(program, args)`, where `args` is `array<string>`. These execute a program with an argv array directly and do not invoke a shell.
 - Runtime resource failures use structured CLI formatting such as `N0414 [resource]: failed to read ...`.
-- CLI commands are `nlang check [--verbose|--format json] <file.nl>` and `nlang run [--verbose|--format json] <file.nl>` through the Rust workspace. `--diagnostic-format json` is also accepted as a JSON diagnostics alias.
+- The default execution backend is the AST runtime. `nlang run` also supports `--backend ir` and `--backend bytecode` for the current alpha subset.
+- CLI commands are `nlang check [--verbose|--format json] <file.nl>` and `nlang run [--backend ast|ir|bytecode] [--verbose|--format json] <file.nl>` through the Rust workspace. `--diagnostic-format json` is also accepted as a JSON diagnostics alias.
 
 ## Language Philosophy
 

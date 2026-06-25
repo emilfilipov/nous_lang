@@ -8,7 +8,7 @@ Alpha 1 is the first reviewable Nous Lang toolchain checkpoint. It is not the fu
 
 Alpha 1 is acceptable when the repository provides:
 
-- A Rust workspace with stable crates for lexing, parsing, semantic validation, diagnostics, runtime execution, CLI entry points, and initial IR work.
+- A Rust workspace with stable crates for lexing, parsing, semantic validation, diagnostics, runtime execution, CLI entry points, typed IR work, and initial bytecode execution.
 - Source validation for the canonical `.nl` extension.
 - Indentation-only block parsing with hard diagnostics for curly braces and semicolon terminators.
 - Function declarations with typed parameters, explicit return types, last-expression returns, explicit `return`, and `void` functions.
@@ -21,8 +21,8 @@ Alpha 1 is acceptable when the repository provides:
 - Interim heap-slot memory builtins: `alloc`, `load`, `store`, and `dealloc`.
 - Text file builtins: `read_file`, `write_file`, `append_file`, and `file_exists`.
 - Conservative system command builtins: `sys_status` and `sys_output` with direct program-plus-argv execution and no shell invocation.
-- `nlang check` and `nlang run` through `cargo run -p nous_cli -- ...` during development.
-- Concise, verbose, and deterministic JSON diagnostics for representative source, lexer, parser, semantic, runtime, and resource failures.
+- `nlang check` and `nlang run` through `cargo run -p nous_cli -- ...` during development, with `run --backend ast|ir|bytecode` for the current executable subset.
+- Concise, verbose, and deterministic JSON diagnostics for representative source, lexer, parser, semantic, IR, runtime, and resource failures.
 
 ## Required Documentation Surface
 
@@ -66,7 +66,6 @@ The Alpha 1 release note should include:
 Alpha 1 does not require:
 
 - Native code generation, linking, or binary output.
-- A bytecode VM.
 - A packaged installer or direct installed `nlang` executable.
 - Modules, packages, structs, traits, interfaces, pattern matching, or user-defined generics beyond current `array<T>` spelling.
 - Full region memory, ARC/reference counting, lifetime analysis, or GC hooks.
@@ -75,4 +74,4 @@ Alpha 1 does not require:
 
 ## Suggested Next Phase After Alpha 1
 
-Once Alpha 1 is accepted, the next phase should harden the typed semantic IR for the current executable subset and add an IR execution or bytecode backend before native code generation. This keeps the project conservative: preserve the working AST runtime while proving that a lower-level contract can support later optimization and native backends.
+Once Alpha 1 is accepted, the next phase should harden the typed semantic IR and initial bytecode backend with optimizer passes, backend snapshot tests, and a clearer lower-level bytecode instruction format before native code generation. This keeps the project conservative: preserve the working AST runtime while proving that a lower-level contract can support later optimization and native backends.

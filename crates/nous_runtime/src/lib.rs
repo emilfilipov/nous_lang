@@ -47,15 +47,15 @@ pub struct RuntimeError {
 }
 
 impl RuntimeError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self::categorized(code, ErrorCategory::Runtime, message)
     }
 
-    fn resource(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn resource(code: &'static str, message: impl Into<String>) -> Self {
         Self::categorized(code, ErrorCategory::Resource, message)
     }
 
-    fn categorized(
+    pub fn categorized(
         code: &'static str,
         category: ErrorCategory,
         message: impl Into<String>,
@@ -70,21 +70,21 @@ impl RuntimeError {
         }
     }
 
-    fn with_span(mut self, span: Span) -> Self {
+    pub fn with_span(mut self, span: Span) -> Self {
         if self.span.is_none() {
             self.span = Some(span);
         }
         self
     }
 
-    fn with_function(mut self, function: impl Into<String>) -> Self {
+    pub fn with_function(mut self, function: impl Into<String>) -> Self {
         if self.function.is_none() {
             self.function = Some(function.into());
         }
         self
     }
 
-    fn with_traceback(mut self, traceback: Vec<TraceFrame>) -> Self {
+    pub fn with_traceback(mut self, traceback: Vec<TraceFrame>) -> Self {
         if self.traceback.is_empty() {
             self.traceback = traceback;
         }
@@ -655,35 +655,35 @@ impl Env {
 }
 
 impl Value {
-    fn as_i64(&self) -> Result<i64, RuntimeError> {
+    pub fn as_i64(&self) -> Result<i64, RuntimeError> {
         match self {
             Self::I64(value) => Ok(*value),
             _ => Err(RuntimeError::new("N0407", "expected i64 value")),
         }
     }
 
-    fn as_bool(&self) -> Result<bool, RuntimeError> {
+    pub fn as_bool(&self) -> Result<bool, RuntimeError> {
         match self {
             Self::Bool(value) => Ok(*value),
             _ => Err(RuntimeError::new("N0408", "expected bool value")),
         }
     }
 
-    fn as_ptr(&self) -> Result<usize, RuntimeError> {
+    pub fn as_ptr(&self) -> Result<usize, RuntimeError> {
         match self {
             Self::Ptr(value) => Ok(*value),
             _ => Err(RuntimeError::new("N0409", "expected pointer value")),
         }
     }
 
-    fn as_string(&self) -> Result<String, RuntimeError> {
+    pub fn as_string(&self) -> Result<String, RuntimeError> {
         match self {
             Self::String(value) => Ok(value.clone()),
             _ => Err(RuntimeError::new("N0417", "expected string value")),
         }
     }
 
-    fn as_string_array(&self) -> Result<Vec<String>, RuntimeError> {
+    pub fn as_string_array(&self) -> Result<Vec<String>, RuntimeError> {
         match self {
             Self::Array(values) => values
                 .iter()

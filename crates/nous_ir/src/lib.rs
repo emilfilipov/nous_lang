@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::fs;
+use std::process::Command;
 
-use nous_diagnostics::Span;
+use nous_diagnostics::{Span, TraceFrame};
 use nous_parser::{AssignOp, BinaryOp, Expr, ExprKind, Function, Program, Stmt, TypeRef, UnaryOp};
+use nous_runtime::{RuntimeError, Value};
 use nous_semantics::{CheckedProgram, Signature};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +125,607 @@ impl IrLoweringError {
 
 pub fn lower(checked: &CheckedProgram) -> Result<IrModule, IrLoweringError> {
     Lowerer::new(&checked.program, &checked.info.signatures).lower_program()
+}
+
+pub fn run_main(module: &IrModule) -> Result<Value, RuntimeError> {
+    let mut runtime = IrRuntime::new(module)?;
+    runtime.call_function("main", Vec::new())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BytecodeModule {
+    pub functions: Vec<BytecodeFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BytecodeFunction {
+    pub name: String,
+    pub params: Vec<IrParam>,
+    pub return_type: TypeRef,
+    pub body: Vec<IrStmt>,
+    pub span: Span,
+}
+
+pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
+    BytecodeModule {
+        functions: module
+            .functions
+            .iter()
+            .map(|function| BytecodeFunction {
+                name: function.name.clone(),
+                params: function.params.clone(),
+                return_type: function.return_type.clone(),
+                body: function.body.clone(),
+                span: function.span,
+            })
+            .collect(),
+    }
+}
+
+pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError> {
+    let ir = IrModule {
+        functions: module
+            .functions
+            .iter()
+            .map(|function| IrFunction {
+                name: function.name.clone(),
+                params: function.params.clone(),
+                return_type: function.return_type.clone(),
+                body: function.body.clone(),
+                span: function.span,
+            })
+            .collect(),
+    };
+    run_main(&ir)
+}
+
+struct IrRuntime<'a> {
+    functions: HashMap<&'a str, &'a IrFunction>,
+    heap: Vec<Option<Value>>,
+    call_stack: Vec<TraceFrame>,
+}
+
+impl<'a> IrRuntime<'a> {
+    fn new(module: &'a IrModule) -> Result<Self, RuntimeError> {
+        let functions = module
+            .functions
+            .iter()
+            .map(|function| (function.name.as_str(), function))
+            .collect::<HashMap<_, _>>();
+
+        if !functions.contains_key("main") {
+            return Err(RuntimeError::new("N0400", "missing `main` function"));
+        }
+
+        Ok(Self {
+            functions,
+            heap: Vec::new(),
+            call_stack: Vec::new(),
+        })
+    }
+
+    fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        match name {
+            "alloc" => self.builtin_alloc(args),
+            "load" => self.builtin_load(args),
+            "store" => self.builtin_store(args),
+            "dealloc" => self.builtin_dealloc(args),
+            "read_file" => self.builtin_read_file(args),
+            "write_file" => self.builtin_write_file(args),
+            "append_file" => self.builtin_append_file(args),
+            "file_exists" => self.builtin_file_exists(args),
+            "sys_status" => self.builtin_sys_status(args),
+            "sys_output" => self.builtin_sys_output(args),
+            _ => {
+                let function = *self.functions.get(name).ok_or_else(|| {
+                    RuntimeError::new("N0401", format!("unknown function `{name}`"))
+                })?;
+
+                if function.params.len() != args.len() {
+                    return Err(RuntimeError::new(
+                        "N0402",
+                        format!(
+                            "function `{name}` expects {} arguments but got {}",
+                            function.params.len(),
+                            args.len()
+                        ),
+                    ));
+                }
+
+                let mut env = Env::default();
+                for (param, value) in function.params.iter().zip(args) {
+                    env.define(param.name.clone(), value);
+                }
+
+                self.call_stack.push(TraceFrame {
+                    function: function.name.clone(),
+                    span: Some(function.span),
+                });
+                let result = self.eval_block(&function.body, &mut env);
+                let traceback = self.call_stack.clone();
+                self.call_stack.pop();
+
+                match result.map_err(|error| error.with_traceback(traceback))? {
+                    Control::Return(value) | Control::Value(value) => Ok(value),
+                    Control::Break | Control::Continue => Err(RuntimeError::new(
+                        "N0410",
+                        "loop control escaped function body",
+                    )),
+                }
+            }
+        }
+    }
+
+    fn eval_block(
+        &mut self,
+        statements: &[IrStmt],
+        env: &mut Env,
+    ) -> Result<Control, RuntimeError> {
+        let mut last = Value::Void;
+
+        for statement in statements {
+            match self.eval_statement(statement, env)? {
+                Control::Return(value) => return Ok(Control::Return(value)),
+                Control::Break => return Ok(Control::Break),
+                Control::Continue => return Ok(Control::Continue),
+                Control::Value(value) => last = value,
+            }
+        }
+
+        Ok(Control::Value(last))
+    }
+
+    fn eval_statement(
+        &mut self,
+        statement: &IrStmt,
+        env: &mut Env,
+    ) -> Result<Control, RuntimeError> {
+        let span = statement_span(statement);
+        let result = match statement {
+            IrStmt::Let { name, value, .. } => {
+                let value = self.eval_expr(value, env)?;
+                env.define(name.clone(), value);
+                Ok(Control::Value(Value::Void))
+            }
+            IrStmt::Assign {
+                name, op, value, ..
+            } => {
+                let value = self.eval_expr(value, env)?;
+                let value = match op {
+                    AssignOp::Replace => value,
+                    AssignOp::Add => Value::I64(env.get(name)?.as_i64()? + value.as_i64()?),
+                    AssignOp::Subtract => Value::I64(env.get(name)?.as_i64()? - value.as_i64()?),
+                    AssignOp::Multiply => Value::I64(env.get(name)?.as_i64()? * value.as_i64()?),
+                    AssignOp::Divide => {
+                        let divisor = value.as_i64()?;
+                        if divisor == 0 {
+                            return Err(RuntimeError::new("N0404", "division by zero"));
+                        }
+                        Value::I64(env.get(name)?.as_i64()? / divisor)
+                    }
+                };
+                env.assign(name, value)?;
+                Ok(Control::Value(Value::Void))
+            }
+            IrStmt::Return(expr) => {
+                let value = expr
+                    .as_ref()
+                    .map(|expr| self.eval_expr(expr, env))
+                    .unwrap_or(Ok(Value::Void))?;
+                Ok(Control::Return(value))
+            }
+            IrStmt::Break(_) => Ok(Control::Break),
+            IrStmt::Continue(_) => Ok(Control::Continue),
+            IrStmt::Expr(expr) => self.eval_expr(expr, env).map(Control::Value),
+            IrStmt::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    let condition = self.eval_expr(&branch.condition, env)?;
+                    if condition.as_bool()? {
+                        return self.eval_scoped_block(&branch.body, env);
+                    }
+                }
+                self.eval_scoped_block(else_body, env)
+            }
+            IrStmt::While {
+                condition, body, ..
+            } => {
+                while self.eval_expr(condition, env)?.as_bool()? {
+                    match self.eval_scoped_block(body, env)? {
+                        Control::Return(value) => return Ok(Control::Return(value)),
+                        Control::Break => break,
+                        Control::Continue | Control::Value(_) => {}
+                    }
+                }
+                Ok(Control::Value(Value::Void))
+            }
+            IrStmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                let mut current = self.eval_expr(start, env)?.as_i64()?;
+                let end = self.eval_expr(end, env)?.as_i64()?;
+                let step = step
+                    .as_ref()
+                    .map(|expr| self.eval_expr(expr, env))
+                    .unwrap_or(Ok(Value::I64(1)))?
+                    .as_i64()?;
+                if step == 0 {
+                    return Err(RuntimeError::new("N0411", "for loop step cannot be zero"));
+                }
+
+                while if step > 0 {
+                    current <= end
+                } else {
+                    current >= end
+                } {
+                    env.push_scope();
+                    env.define(name.clone(), Value::I64(current));
+                    let result = self.eval_block(body, env);
+                    env.pop_scope();
+
+                    match result? {
+                        Control::Return(value) => return Ok(Control::Return(value)),
+                        Control::Break => break,
+                        Control::Continue | Control::Value(_) => {}
+                    }
+
+                    current += step;
+                }
+                Ok(Control::Value(Value::Void))
+            }
+            IrStmt::Loop { body, .. } => {
+                loop {
+                    match self.eval_scoped_block(body, env)? {
+                        Control::Return(value) => return Ok(Control::Return(value)),
+                        Control::Break => break,
+                        Control::Continue | Control::Value(_) => {}
+                    }
+                }
+                Ok(Control::Value(Value::Void))
+            }
+        };
+        result.map_err(|error| self.annotate_error(error, span))
+    }
+
+    fn eval_scoped_block(
+        &mut self,
+        statements: &[IrStmt],
+        env: &mut Env,
+    ) -> Result<Control, RuntimeError> {
+        env.push_scope();
+        let result = self.eval_block(statements, env);
+        env.pop_scope();
+        result
+    }
+
+    fn eval_expr(&mut self, expr: &IrExpr, env: &Env) -> Result<Value, RuntimeError> {
+        let result = match &expr.kind {
+            IrExprKind::Integer(value) => Ok(Value::I64(*value)),
+            IrExprKind::Bool(value) => Ok(Value::Bool(*value)),
+            IrExprKind::String(value) => Ok(Value::String(value.clone())),
+            IrExprKind::Array(values) => values
+                .iter()
+                .map(|value| self.eval_expr(value, env))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            IrExprKind::Variable(name) => env.get(name),
+            IrExprKind::Index { target, index } => {
+                let target = self.eval_expr(target, env)?;
+                let index = self.eval_expr(index, env)?.as_i64()?;
+                let Value::Array(values) = target else {
+                    return Err(RuntimeError::new("N0412", "index target is not an array"));
+                };
+                if index < 0 {
+                    return Err(RuntimeError::new(
+                        "N0413",
+                        format!("array index `{index}` is out of bounds"),
+                    ));
+                }
+                values.get(index as usize).cloned().ok_or_else(|| {
+                    RuntimeError::new("N0413", format!("array index `{index}` is out of bounds"))
+                })
+            }
+            IrExprKind::Unary { op, expr } => {
+                let value = self.eval_expr(expr, env)?;
+                match op {
+                    UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
+                }
+            }
+            IrExprKind::Binary { left, op, right } => {
+                if *op == BinaryOp::And {
+                    let left = self.eval_expr(left, env)?.as_bool()?;
+                    if !left {
+                        return Ok(Value::Bool(false));
+                    }
+                    let right = self.eval_expr(right, env)?.as_bool()?;
+                    return Ok(Value::Bool(right));
+                }
+                if *op == BinaryOp::Or {
+                    let left = self.eval_expr(left, env)?.as_bool()?;
+                    if left {
+                        return Ok(Value::Bool(true));
+                    }
+                    let right = self.eval_expr(right, env)?.as_bool()?;
+                    return Ok(Value::Bool(right));
+                }
+                let left = self.eval_expr(left, env)?;
+                let right = self.eval_expr(right, env)?;
+                self.eval_binary(left, *op, right)
+            }
+            IrExprKind::Call { name, args } => {
+                let values = args
+                    .iter()
+                    .map(|arg| self.eval_expr(arg, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.call_function(name, values)
+            }
+        };
+        result.map_err(|error| self.annotate_error(error, expr.span))
+    }
+
+    fn annotate_error(&self, error: RuntimeError, span: Span) -> RuntimeError {
+        let error = error.with_span(span);
+        match self.call_stack.last() {
+            Some(frame) => error
+                .with_function(frame.function.clone())
+                .with_traceback(self.call_stack.clone()),
+            None => error,
+        }
+    }
+
+    fn eval_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, RuntimeError> {
+        match op {
+            BinaryOp::Add => Ok(Value::I64(left.as_i64()? + right.as_i64()?)),
+            BinaryOp::Subtract => Ok(Value::I64(left.as_i64()? - right.as_i64()?)),
+            BinaryOp::Multiply => Ok(Value::I64(left.as_i64()? * right.as_i64()?)),
+            BinaryOp::Divide => {
+                let divisor = right.as_i64()?;
+                if divisor == 0 {
+                    Err(RuntimeError::new("N0404", "division by zero"))
+                } else {
+                    Ok(Value::I64(left.as_i64()? / divisor))
+                }
+            }
+            BinaryOp::Equal => Ok(Value::Bool(left == right)),
+            BinaryOp::NotEqual => Ok(Value::Bool(left != right)),
+            BinaryOp::Less => Ok(Value::Bool(left.as_i64()? < right.as_i64()?)),
+            BinaryOp::LessEqual => Ok(Value::Bool(left.as_i64()? <= right.as_i64()?)),
+            BinaryOp::Greater => Ok(Value::Bool(left.as_i64()? > right.as_i64()?)),
+            BinaryOp::GreaterEqual => Ok(Value::Bool(left.as_i64()? >= right.as_i64()?)),
+            BinaryOp::And | BinaryOp::Or => unreachable!("logical ops short-circuit in eval_expr"),
+        }
+    }
+
+    fn builtin_alloc(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("alloc", 1, args.len()))?;
+        self.heap.push(Some(value));
+        Ok(Value::Ptr(self.heap.len() - 1))
+    }
+
+    fn builtin_load(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [ptr]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("load", 1, args.len()))?;
+        let slot = ptr.as_ptr()?;
+        self.heap
+            .get(slot)
+            .and_then(|value| value.clone())
+            .ok_or_else(|| RuntimeError::new("N0406", format!("invalid pointer `{slot}`")))
+    }
+
+    fn builtin_store(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [ptr, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("store", 2, args.len()))?;
+        let slot = ptr.as_ptr()?;
+        let Some(target) = self.heap.get_mut(slot) else {
+            return Err(RuntimeError::new(
+                "N0406",
+                format!("invalid pointer `{slot}`"),
+            ));
+        };
+        if target.is_none() {
+            return Err(RuntimeError::new(
+                "N0406",
+                format!("invalid pointer `{slot}`"),
+            ));
+        }
+        *target = Some(value);
+        Ok(Value::Void)
+    }
+
+    fn builtin_dealloc(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [ptr]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("dealloc", 1, args.len()))?;
+        let slot = ptr.as_ptr()?;
+        let Some(value) = self.heap.get_mut(slot) else {
+            return Err(RuntimeError::new(
+                "N0406",
+                format!("invalid pointer `{slot}`"),
+            ));
+        };
+        if value.take().is_none() {
+            return Err(RuntimeError::new(
+                "N0406",
+                format!("invalid pointer `{slot}`"),
+            ));
+        }
+        Ok(Value::Void)
+    }
+
+    fn builtin_read_file(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [path]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("read_file", 1, args.len()))?;
+        let path = path.as_string()?;
+        fs::read_to_string(&path)
+            .map(Value::String)
+            .map_err(|error| {
+                RuntimeError::resource("N0414", format!("failed to read `{path}`: {error}"))
+            })
+    }
+
+    fn builtin_write_file(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [path, contents]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("write_file", 2, args.len()))?;
+        let path = path.as_string()?;
+        let contents = contents.as_string()?;
+        fs::write(&path, contents)
+            .map(|()| Value::Void)
+            .map_err(|error| {
+                RuntimeError::resource("N0415", format!("failed to write `{path}`: {error}"))
+            })
+    }
+
+    fn builtin_append_file(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [path, contents]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("append_file", 2, args.len()))?;
+        let path = path.as_string()?;
+        let contents = contents.as_string()?;
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(contents.as_bytes()))
+            .map(|()| Value::Void)
+            .map_err(|error| {
+                RuntimeError::resource("N0415", format!("failed to append `{path}`: {error}"))
+            })
+    }
+
+    fn builtin_file_exists(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [path]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("file_exists", 1, args.len()))?;
+        Ok(Value::Bool(fs::metadata(path.as_string()?).is_ok()))
+    }
+
+    fn builtin_sys_status(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [program, command_args]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("sys_status", 2, args.len()))?;
+        let program = program.as_string()?;
+        let command_args = command_args.as_string_array()?;
+        let output = Command::new(&program)
+            .args(command_args)
+            .output()
+            .map_err(|error| {
+                RuntimeError::resource("N0416", format!("failed to run `{program}`: {error}"))
+            })?;
+        Ok(Value::I64(output.status.code().unwrap_or(-1).into()))
+    }
+
+    fn builtin_sys_output(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [program, command_args]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("sys_output", 2, args.len()))?;
+        let program = program.as_string()?;
+        let command_args = command_args.as_string_array()?;
+        let output = Command::new(&program)
+            .args(command_args)
+            .output()
+            .map_err(|error| {
+                RuntimeError::resource("N0416", format!("failed to run `{program}`: {error}"))
+            })?;
+        Ok(Value::String(
+            String::from_utf8_lossy(&output.stdout).to_string(),
+        ))
+    }
+
+    fn wrong_arity(name: &str, expected: usize, actual: usize) -> RuntimeError {
+        RuntimeError::new(
+            "N0405",
+            format!("function `{name}` expects {expected} arguments but got {actual}"),
+        )
+    }
+}
+
+enum Control {
+    Return(Value),
+    Break,
+    Continue,
+    Value(Value),
+}
+
+fn statement_span(statement: &IrStmt) -> Span {
+    match statement {
+        IrStmt::Let { span, .. }
+        | IrStmt::Assign { span, .. }
+        | IrStmt::Break(span)
+        | IrStmt::Continue(span)
+        | IrStmt::If { span, .. }
+        | IrStmt::While { span, .. }
+        | IrStmt::For { span, .. }
+        | IrStmt::Loop { span, .. } => *span,
+        IrStmt::Return(Some(expr)) | IrStmt::Expr(expr) => expr.span,
+        IrStmt::Return(None) => Span::new(1, 1),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Env {
+    scopes: Vec<HashMap<String, Value>>,
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+        }
+    }
+}
+
+impl Env {
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn define(&mut self, name: String, value: Value) {
+        self.scopes
+            .last_mut()
+            .expect("env always has a scope")
+            .insert(name, value);
+    }
+
+    fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(slot) = scope.get_mut(name) {
+                *slot = value;
+                return Ok(());
+            }
+        }
+        Err(RuntimeError::new(
+            "N0403",
+            format!("unknown variable `{name}`"),
+        ))
+    }
+
+    fn get(&self, name: &str) -> Result<Value, RuntimeError> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .cloned()
+            .ok_or_else(|| RuntimeError::new("N0403", format!("unknown variable `{name}`")))
+    }
 }
 
 struct Lowerer<'a> {
@@ -438,6 +1042,7 @@ impl<'a> Lowerer<'a> {
 mod tests {
     use nous_lexer::lex;
     use nous_parser::parse;
+    use nous_runtime::run_main as run_ast_main;
     use nous_semantics::validate;
 
     use super::*;
@@ -447,6 +1052,19 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         let checked = validate(&program).expect("semantic");
         lower(&checked).expect("lower")
+    }
+
+    fn run_all_backends(source: &str) -> (Value, Value, Value) {
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let checked = validate(&program).expect("semantic");
+        let ir = lower(&checked).expect("lower");
+        let bytecode = lower_to_bytecode(&ir);
+        (
+            run_ast_main(&program).expect("ast run"),
+            run_main(&ir).expect("ir run"),
+            run_bytecode_main(&bytecode).expect("bytecode run"),
+        )
     }
 
     #[test]
@@ -489,5 +1107,49 @@ mod tests {
             panic!("expected load binding");
         };
         assert_eq!(value.ty, TypeRef::new("i64"));
+    }
+
+    #[test]
+    fn ir_and_bytecode_match_ast_for_core_execution() {
+        let sources = [
+            "fn add x i64 y i64 -> i64\n    x + y\n\nfn main -> i64\n    let value i64 = add(40, 2)\n    value\n",
+            "fn main -> i64\n    let x i64 = 0\n    while x < 4\n        x += 1\n    x\n",
+            "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 3\n        total += i\n    total\n",
+            "fn main -> bool\n    false and (1 / 0 == 0) or true\n",
+            "fn main -> i64\n    let values array<i64> = [1, 2, 3]\n    values[0] + values[2]\n",
+        ];
+
+        for source in sources {
+            let (ast, ir, bytecode) = run_all_backends(source);
+            assert_eq!(ir, ast);
+            assert_eq!(bytecode, ast);
+        }
+    }
+
+    #[test]
+    fn ir_and_bytecode_match_ast_for_memory_builtins() {
+        let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(0)\n    store(ptr, 41)\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + 1\n";
+        let (ast, ir, bytecode) = run_all_backends(source);
+        assert_eq!(ir, ast);
+        assert_eq!(bytecode, ast);
+    }
+
+    #[test]
+    fn ir_and_bytecode_preserve_runtime_errors() {
+        let source = "fn main -> i64\n    let values array<i64> = [1]\n    values[2]\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let checked = validate(&program).expect("semantic");
+        let ir = lower(&checked).expect("lower");
+        let bytecode = lower_to_bytecode(&ir);
+
+        let ast_error = run_ast_main(&program).expect_err("ast error");
+        let ir_error = run_main(&ir).expect_err("ir error");
+        let bytecode_error = run_bytecode_main(&bytecode).expect_err("bytecode error");
+
+        assert_eq!(ir_error.code, ast_error.code);
+        assert_eq!(bytecode_error.code, ast_error.code);
+        assert_eq!(ir_error.span, ast_error.span);
+        assert_eq!(bytecode_error.span, ast_error.span);
     }
 }
