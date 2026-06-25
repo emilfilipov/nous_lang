@@ -72,6 +72,8 @@ REQUIRED_PHRASES = [
     "cargo run -p nous_cli -- run",
     "--backend ir",
     "--backend bytecode",
+    "--optimize constant-fold",
+    "--optimize none",
     "--verbose",
     "--format json",
     "--diagnostic-format json",

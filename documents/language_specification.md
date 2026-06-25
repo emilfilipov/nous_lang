@@ -33,7 +33,8 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Implemented system command builtins are `sys_status(program, args)` and `sys_output(program, args)`, where `args` is `array<string>`. These execute a program with an argv array directly and do not invoke a shell.
 - Runtime resource failures use structured CLI formatting such as `N0414 [resource]: failed to read ...`.
 - The default execution backend is the AST runtime. `nlang run` also supports `--backend ir` and `--backend bytecode` for the current alpha subset.
-- CLI commands are `nlang check [--verbose|--format json] <file.nl>` and `nlang run [--backend ast|ir|bytecode] [--verbose|--format json] <file.nl>` through the Rust workspace. `--diagnostic-format json` is also accepted as a JSON diagnostics alias.
+- IR and bytecode execution can opt into the initial deterministic optimizer with `--optimize constant-fold`. The default is `--optimize none`.
+- CLI commands are `nlang check [--verbose|--format json] <file.nl>` and `nlang run [--backend ast|ir|bytecode] [--optimize none|constant-fold] [--verbose|--format json] <file.nl>` through the Rust workspace. `--diagnostic-format json` is also accepted as a JSON diagnostics alias.
 
 ## Language Philosophy
 

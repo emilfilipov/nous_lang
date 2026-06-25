@@ -127,6 +127,70 @@ pub fn lower(checked: &CheckedProgram) -> Result<IrModule, IrLoweringError> {
     Lowerer::new(&checked.program, &checked.info.signatures).lower_program()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptimizationConfig {
+    passes: Vec<OptimizationPass>,
+}
+
+impl OptimizationConfig {
+    pub fn none() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    pub fn constant_folding() -> Self {
+        Self {
+            passes: vec![OptimizationPass::ConstantFolding],
+        }
+    }
+
+    pub fn alpha_default() -> Self {
+        Self::constant_folding()
+    }
+
+    pub fn with_passes(passes: Vec<OptimizationPass>) -> Self {
+        Self { passes }
+    }
+
+    pub fn passes(&self) -> &[OptimizationPass] {
+        &self.passes
+    }
+}
+
+impl Default for OptimizationConfig {
+    fn default() -> Self {
+        Self::alpha_default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizationPass {
+    ConstantFolding,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OptimizationReport {
+    pub applied_passes: Vec<OptimizationPass>,
+    pub folded_expressions: usize,
+}
+
+pub fn optimize(module: &IrModule, config: &OptimizationConfig) -> (IrModule, OptimizationReport) {
+    let mut optimized = module.clone();
+    let mut report = OptimizationReport::default();
+
+    for pass in config.passes() {
+        match pass {
+            OptimizationPass::ConstantFolding => {
+                let mut folder = ConstantFolder::default();
+                optimized = folder.fold_module(&optimized);
+                report.folded_expressions += folder.folded_expressions;
+                report.applied_passes.push(*pass);
+            }
+        }
+    }
+
+    (optimized, report)
+}
+
 pub fn run_main(module: &IrModule) -> Result<Value, RuntimeError> {
     let mut runtime = IrRuntime::new(module)?;
     runtime.call_function("main", Vec::new())
@@ -177,6 +241,240 @@ pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError>
             .collect(),
     };
     run_main(&ir)
+}
+
+#[derive(Default)]
+struct ConstantFolder {
+    folded_expressions: usize,
+}
+
+impl ConstantFolder {
+    fn fold_module(&mut self, module: &IrModule) -> IrModule {
+        IrModule {
+            functions: module
+                .functions
+                .iter()
+                .map(|function| self.fold_function(function))
+                .collect(),
+        }
+    }
+
+    fn fold_function(&mut self, function: &IrFunction) -> IrFunction {
+        IrFunction {
+            name: function.name.clone(),
+            params: function.params.clone(),
+            return_type: function.return_type.clone(),
+            body: self.fold_block(&function.body),
+            span: function.span,
+        }
+    }
+
+    fn fold_block(&mut self, statements: &[IrStmt]) -> Vec<IrStmt> {
+        statements
+            .iter()
+            .map(|statement| self.fold_statement(statement))
+            .collect()
+    }
+
+    fn fold_statement(&mut self, statement: &IrStmt) -> IrStmt {
+        match statement {
+            IrStmt::Let {
+                name,
+                ty,
+                value,
+                span,
+            } => IrStmt::Let {
+                name: name.clone(),
+                ty: ty.clone(),
+                value: self.fold_expr(value),
+                span: *span,
+            },
+            IrStmt::Assign {
+                name,
+                op,
+                value,
+                span,
+            } => IrStmt::Assign {
+                name: name.clone(),
+                op: *op,
+                value: self.fold_expr(value),
+                span: *span,
+            },
+            IrStmt::Return(expr) => IrStmt::Return(expr.as_ref().map(|expr| self.fold_expr(expr))),
+            IrStmt::Break(span) => IrStmt::Break(*span),
+            IrStmt::Continue(span) => IrStmt::Continue(*span),
+            IrStmt::Expr(expr) => IrStmt::Expr(self.fold_expr(expr)),
+            IrStmt::If {
+                branches,
+                else_body,
+                span,
+            } => IrStmt::If {
+                branches: branches
+                    .iter()
+                    .map(|branch| IrIfBranch {
+                        condition: self.fold_expr(&branch.condition),
+                        body: self.fold_block(&branch.body),
+                    })
+                    .collect(),
+                else_body: self.fold_block(else_body),
+                span: *span,
+            },
+            IrStmt::While {
+                condition,
+                body,
+                span,
+            } => IrStmt::While {
+                condition: self.fold_expr(condition),
+                body: self.fold_block(body),
+                span: *span,
+            },
+            IrStmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                span,
+            } => IrStmt::For {
+                name: name.clone(),
+                start: self.fold_expr(start),
+                end: self.fold_expr(end),
+                step: step.as_ref().map(|step| self.fold_expr(step)),
+                body: self.fold_block(body),
+                span: *span,
+            },
+            IrStmt::Loop { body, span } => IrStmt::Loop {
+                body: self.fold_block(body),
+                span: *span,
+            },
+        }
+    }
+
+    fn fold_expr(&mut self, expr: &IrExpr) -> IrExpr {
+        match &expr.kind {
+            IrExprKind::Array(values) => IrExpr {
+                kind: IrExprKind::Array(values.iter().map(|value| self.fold_expr(value)).collect()),
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Index { target, index } => IrExpr {
+                kind: IrExprKind::Index {
+                    target: Box::new(self.fold_expr(target)),
+                    index: Box::new(self.fold_expr(index)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Unary { op, expr: inner } => {
+                let inner = self.fold_expr(inner);
+                match (op, &inner.kind) {
+                    (UnaryOp::Not, IrExprKind::Bool(value)) => {
+                        self.literal(expr, IrExprKind::Bool(!value))
+                    }
+                    _ => IrExpr {
+                        kind: IrExprKind::Unary {
+                            op: *op,
+                            expr: Box::new(inner),
+                        },
+                        ty: expr.ty.clone(),
+                        span: expr.span,
+                    },
+                }
+            }
+            IrExprKind::Binary { left, op, right } => {
+                let left = self.fold_expr(left);
+                let right = self.fold_expr(right);
+                match fold_binary(&left, *op, &right) {
+                    Some(kind) => self.literal(expr, kind),
+                    None => IrExpr {
+                        kind: IrExprKind::Binary {
+                            left: Box::new(left),
+                            op: *op,
+                            right: Box::new(right),
+                        },
+                        ty: expr.ty.clone(),
+                        span: expr.span,
+                    },
+                }
+            }
+            IrExprKind::Call { name, args } => IrExpr {
+                kind: IrExprKind::Call {
+                    name: name.clone(),
+                    args: args.iter().map(|arg| self.fold_expr(arg)).collect(),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Integer(_)
+            | IrExprKind::Bool(_)
+            | IrExprKind::String(_)
+            | IrExprKind::Variable(_) => expr.clone(),
+        }
+    }
+
+    fn literal(&mut self, original: &IrExpr, kind: IrExprKind) -> IrExpr {
+        self.folded_expressions += 1;
+        IrExpr {
+            kind,
+            ty: original.ty.clone(),
+            span: original.span,
+        }
+    }
+}
+
+fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind> {
+    match (&left.kind, op, &right.kind) {
+        (IrExprKind::Integer(left), BinaryOp::Add, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left + right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Subtract, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left - right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Multiply, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left * right))
+        }
+        (IrExprKind::Integer(_), BinaryOp::Divide, IrExprKind::Integer(0)) => None,
+        (IrExprKind::Integer(left), BinaryOp::Divide, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left / right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Equal, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Bool(left == right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::NotEqual, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Bool(left != right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Less, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Bool(left < right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::LessEqual, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Bool(left <= right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Greater, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Bool(left > right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::GreaterEqual, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Bool(left >= right))
+        }
+        (IrExprKind::Bool(left), BinaryOp::Equal, IrExprKind::Bool(right)) => {
+            Some(IrExprKind::Bool(left == right))
+        }
+        (IrExprKind::Bool(left), BinaryOp::NotEqual, IrExprKind::Bool(right)) => {
+            Some(IrExprKind::Bool(left != right))
+        }
+        (IrExprKind::Bool(left), BinaryOp::And, IrExprKind::Bool(right)) => {
+            Some(IrExprKind::Bool(*left && *right))
+        }
+        (IrExprKind::Bool(left), BinaryOp::Or, IrExprKind::Bool(right)) => {
+            Some(IrExprKind::Bool(*left || *right))
+        }
+        (IrExprKind::String(left), BinaryOp::Equal, IrExprKind::String(right)) => {
+            Some(IrExprKind::Bool(left == right))
+        }
+        (IrExprKind::String(left), BinaryOp::NotEqual, IrExprKind::String(right)) => {
+            Some(IrExprKind::Bool(left != right))
+        }
+        _ => None,
+    }
 }
 
 struct IrRuntime<'a> {
@@ -1107,6 +1405,73 @@ mod tests {
             panic!("expected load binding");
         };
         assert_eq!(value.ty, TypeRef::new("i64"));
+    }
+
+    #[test]
+    fn constant_folding_rewrites_pure_literal_expressions() {
+        let module = lower_source(
+            "fn main -> i64\n    let value i64 = (2 + 3) * (10 - 6)\n    if not false and 1 < 2\n        value + 22\n    else\n        0\n",
+        );
+
+        let (optimized, report) = optimize(&module, &OptimizationConfig::constant_folding());
+        assert_eq!(
+            report.applied_passes,
+            vec![OptimizationPass::ConstantFolding]
+        );
+        assert!(report.folded_expressions >= 5);
+
+        let function = &optimized.functions[0];
+        let IrStmt::Let { value, .. } = &function.body[0] else {
+            panic!("expected let statement");
+        };
+        assert_eq!(value.kind, IrExprKind::Integer(20));
+        let IrStmt::If { branches, .. } = &function.body[1] else {
+            panic!("expected if statement");
+        };
+        assert_eq!(branches[0].condition.kind, IrExprKind::Bool(true));
+    }
+
+    #[test]
+    fn constant_folding_preserves_runtime_divide_by_zero() {
+        let module = lower_source("fn main -> i64\n    1 / 0\n");
+        let (optimized, report) = optimize(&module, &OptimizationConfig::constant_folding());
+
+        assert_eq!(report.folded_expressions, 0);
+        assert_eq!(
+            run_main(&optimized).expect_err("division by zero").code,
+            "N0404"
+        );
+    }
+
+    #[test]
+    fn optimization_passes_can_be_disabled() {
+        let module = lower_source("fn main -> i64\n    40 + 2\n");
+        let (optimized, report) = optimize(&module, &OptimizationConfig::none());
+
+        assert_eq!(optimized, module);
+        assert!(report.applied_passes.is_empty());
+        assert_eq!(report.folded_expressions, 0);
+    }
+
+    #[test]
+    fn optimized_ir_and_bytecode_match_ast_execution() {
+        let source = "fn main -> i64\n    let folded i64 = (6 * 7) + (10 / 2)\n    folded - 5\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let checked = validate(&program).expect("semantic");
+        let ir = lower(&checked).expect("lower");
+        let (optimized, report) = optimize(&ir, &OptimizationConfig::constant_folding());
+        let bytecode = lower_to_bytecode(&optimized);
+
+        assert!(report.folded_expressions > 0);
+        assert_eq!(
+            run_main(&optimized).expect("optimized ir run"),
+            run_ast_main(&program).expect("ast run")
+        );
+        assert_eq!(
+            run_bytecode_main(&bytecode).expect("optimized bytecode run"),
+            run_ast_main(&program).expect("ast run")
+        );
     }
 
     #[test]

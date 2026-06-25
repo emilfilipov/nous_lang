@@ -287,6 +287,8 @@
         <pre><code>cargo run -p nous_cli -- run hello.nl</code></pre>
         <p>Run it through the typed IR backend:</p>
         <pre><code>cargo run -p nous_cli -- run --backend ir hello.nl</code></pre>
+        <p>Run it through the typed IR backend with the opt-in constant-folding optimizer:</p>
+        <pre><code>cargo run -p nous_cli -- run --backend ir --optimize constant-fold hello.nl</code></pre>
         <p>The current CLI is exposed through Cargo during development. The eventual installer will ship a direct <code>nlang</code> command.</p>
       </section>
 
@@ -479,6 +481,7 @@
             <tr><td><code>cargo run -p nous_cli -- run path/to/file.nl</code></td><td>Validate and execute <code>main</code> in the default AST runtime.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- run --backend ir path/to/file.nl</code></td><td>Validate, lower to typed IR, and execute with the IR interpreter.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- run --backend bytecode path/to/file.nl</code></td><td>Validate, lower through typed IR into the initial structured bytecode backend, and execute it.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- run --backend ir --optimize constant-fold path/to/file.nl</code></td><td>Run the IR backend with the current opt-in constant-folding optimizer. Use <code>--optimize none</code> to keep optimization disabled.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- check --verbose path/to/file.nl</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- check --format json path/to/file.nl</code></td><td>Print deterministic JSON diagnostics for tools, CI, editors, and LLM agents. <code>--diagnostic-format json</code> is also accepted.</td></tr>
           </tbody>
@@ -565,7 +568,7 @@ Suggested fix:
           <p>This page documents the current executable alpha. Planned syntax and systems features in the broader Markdown specs may not be accepted by the compiler yet.</p>
         </div>
         <ul>
-          <li>No native code generation yet. Execution currently supports AST, typed IR, and an initial structured bytecode backend.</li>
+          <li>No native code generation yet. Execution currently supports AST, typed IR, and an initial structured bytecode backend. The optimizer currently exposes only the opt-in constant-folding pass.</li>
           <li>The full region memory model, ARC/reference counting, and lifetime analysis are pending.</li>
           <li>The type system currently covers the alpha scalar, array, call, local binding, assignment, control-flow, and interim pointer subset.</li>
           <li>The current I/O surface is limited to text file builtins and direct program-plus-argv command calls; streams, binary I/O, memory mapping, async, sockets, and IPC are future work.</li>

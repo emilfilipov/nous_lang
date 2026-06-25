@@ -14,8 +14,8 @@ The repository now contains the first executable alpha slice:
 - `nous_parser`: parses function declarations, typed parameters, return types, indentation-based bodies, `let` bindings, assignment, `return`, `break`, `continue`, expression statements, calls, array literals/indexing, arithmetic/comparison/logical expressions, `if`/`elif`/`else`, `while`, `loop`, and range `for` blocks into a structured AST.
 - `nous_semantics`: performs static checks for duplicate declarations, binding initializer types, assignment target/type validity, function call argument counts/types, return values, bool conditions, loop-control placement, arithmetic/comparison/logical operands, homogeneous non-empty arrays, array indexes, pointer-style memory builtins, text file I/O builtins, and conservative system command builtins. Successful validation returns function signatures and inferred expression-type metadata for downstream lowering.
 - `nous_runtime`: executes the validated AST in-process, including `main`, function calls, scoped locals, assignment, if/else branch values, while/infinite loops, range for loops, break/continue, array literals/indexing, arithmetic/comparison/logical expressions, `alloc`/`load`/`store`/`dealloc` heap slots, text file I/O, structured resource errors, and direct program-plus-argv system command calls.
-- `nous_ir`: typed semantic IR schema, lowering from `CheckedProgram`, executable IR interpreter, initial structured bytecode lowering, and bytecode VM entry point for the current alpha subset.
-- `nous_cli`: exposes `nlang check <file.nl>` and `nlang run [--backend ast|ir|bytecode] <file.nl>` through Cargo.
+- `nous_ir`: typed semantic IR schema, lowering from `CheckedProgram`, deterministic optimization pass configuration with initial constant folding, executable IR interpreter, initial structured bytecode lowering, and bytecode VM entry point for the current alpha subset.
+- `nous_cli`: exposes `nlang check <file.nl>` and `nlang run [--backend ast|ir|bytecode] [--optimize none|constant-fold] <file.nl>` through Cargo.
 - `tests/fixtures`: valid and invalid `.nl` fixtures for frontend, semantic, runtime, and CLI smoke checks.
 - `crates/nous_cli/tests`: integration tests that run the compiled CLI binary end to end.
 - `offline_docs`: first self-contained offline browser documentation entry point plus a verifier for required alpha sections, local-only links/assets, and fixture-backed executable examples.
@@ -57,7 +57,7 @@ The repository now contains the first executable alpha slice:
 
 | Story | Description | Dependencies | Estimated Effort | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **3.1** | **Compiler Toolchain:** Implement the full compiler pipeline defined in `nous_lang_compilation_architecture.md` to handle source code compilation into machine-readable bytecode or an intermediate representation. | All Runtime Components | High | Typed semantic IR lowering, IR interpreter, CLI backend selection, and initial structured bytecode VM done for current alpha subset; optimization/native backend pending |
+| **3.1** | **Compiler Toolchain:** Implement the full compiler pipeline defined in `nous_lang_compilation_architecture.md` to handle source code compilation into machine-readable bytecode or an intermediate representation. | All Runtime Components | High | Typed semantic IR lowering, opt-in constant folding, IR interpreter, CLI backend selection, and initial structured bytecode VM done for current alpha subset; broader optimization/native backend pending |
 | **3.2** | **Build Script Generation:** Create a robust, platform-agnostic build script (e.g., using CMake or a custom script) that orchestrates the compilation of the compiler and runtime into a single binary. | 3.1 | Medium | To Do |
 | **3.3** | **Installer Creation:** Develop the installer logic to bundle the compiled nlang executable, necessary libraries, and documentation into a single user-friendly package (e.g., .exe or system package). | 3.2 | High | To Do |
 
@@ -66,7 +66,7 @@ The repository now contains the first executable alpha slice:
 
 | Story | Description | Dependencies | Estimated Effort | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **4.1** | **CLI Tool Implementation:** Implement the command-line interface (CLI) tool that allows users to invoke the compiled nlang executable (`nlang run script.nl`). | 3.3 | Medium | Initial `check` and `run` commands done; `run` supports `--backend ast|ir|bytecode` |
+| **4.1** | **CLI Tool Implementation:** Implement the command-line interface (CLI) tool that allows users to invoke the compiled nlang executable (`nlang run script.nl`). | 3.3 | Medium | Initial `check` and `run` commands done; `run` supports `--backend ast|ir|bytecode` and opt-in `--optimize constant-fold` for IR/bytecode |
 | **4.2** | **Installation & Setup:** Finalize the installation process, ensuring minimal user interaction and clear setup instructions are provided upon first launch. | 3.3, 4.1 | High | To Do |
 | **4.3** | **Documentation Finalization:** Review all documentation to ensure they align with the final installed product's usage patterns. | All previous steps | Low | To Do |
 
@@ -77,7 +77,7 @@ The repository now contains the first executable alpha slice:
 | :--- | :--- | :--- | :--- | :--- |
 | **5.1** | **Unit Test Framework Setup:** Define the structure for unit tests (e.g., using a Python-based harness or custom nlang testing runner). This must be lightweight and fast, aligning with our minimalistic philosophy. | All previous components | Medium | In Progress |
 | **5.2** | **Component Unit Testing:** Implement unit tests for each major component: Lexer (tokenization), Parser (AST generation), Memory Manager (allocation/deallocation), and Type Checker. | Stories 1.1, 1.2, 1.3 | High | In Progress |
-| **5.3** | **Integration Test Suite:** Develop end-to-end integration tests that verify the entire pipeline: `Source Code` -> `AST` -> `Runtime Execution`. This ensures the compiler and runtime work together correctly. | All previous steps | Critical | In Progress; CLI backend smoke tests and AST/IR/bytecode parity tests cover the alpha execution subset |
+| **5.3** | **Integration Test Suite:** Develop end-to-end integration tests that verify the entire pipeline: `Source Code` -> `AST` -> `Runtime Execution`. This ensures the compiler and runtime work together correctly. | All previous steps | Critical | In Progress; CLI backend smoke tests, optimizer CLI tests, and AST/IR/bytecode parity tests cover the alpha execution subset |
 | **5.4** | **Regression Test Protocol:** Establish a protocol for running the full suite (Unit + Integration) before any major feature addition or refactoring is committed to the codebase. | All previous steps | Medium | To Do |
 
 ## Epic 6: Diagnostics UX And Root-Cause Tracebacks

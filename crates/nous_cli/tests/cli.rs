@@ -100,6 +100,62 @@ fn runs_arithmetic_fixture_with_bytecode_backend() {
 }
 
 #[test]
+fn runs_logic_fixture_with_optimized_ir_backend() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--backend",
+            "ir",
+            "--optimize",
+            "constant-fold",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true");
+}
+
+#[test]
+fn runs_logic_fixture_with_optimized_bytecode_backend() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--backend",
+            "bytecode",
+            "--optimize",
+            "constant-fold",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "true");
+}
+
+#[test]
+fn rejects_optimizer_for_ast_backend() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--optimize",
+            "constant-fold",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("--backend ir|bytecode"), "{stderr}");
+}
+
+#[test]
 fn runs_memory_fixture() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_memory.nl");
     let output = nlang()

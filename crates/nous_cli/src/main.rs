@@ -7,7 +7,10 @@ use std::{
 use nous_diagnostics::{
     DiagnosticPhase, DiagnosticReport, render_concise, render_json, render_verbose,
 };
-use nous_ir::{lower, lower_to_bytecode, run_bytecode_main, run_main as run_ir_main};
+use nous_ir::{
+    OptimizationConfig, lower, lower_to_bytecode, optimize, run_bytecode_main,
+    run_main as run_ir_main,
+};
 use nous_lexer::{Diagnostic, lex, validate_source_path};
 use nous_parser::{Program, parse};
 use nous_runtime::{ErrorCategory, RuntimeError, Value, run_main};
@@ -31,7 +34,12 @@ fn run() -> Result<(), String> {
 
     match invocation.command {
         CommandName::Check => check(invocation.path, invocation.mode),
-        CommandName::Run => run_file(invocation.path, invocation.mode, invocation.backend),
+        CommandName::Run => run_file(
+            invocation.path,
+            invocation.mode,
+            invocation.backend,
+            invocation.optimization,
+        ),
         CommandName::Version => {
             println!("nlang {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -61,7 +69,12 @@ fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
     }
 }
 
-fn run_file(path: PathBuf, mode: OutputMode, backend: Backend) -> Result<(), String> {
+fn run_file(
+    path: PathBuf,
+    mode: OutputMode,
+    backend: Backend,
+    optimization: OptimizationMode,
+) -> Result<(), String> {
     let compiled = match compile(&path) {
         Ok(compiled) => compiled,
         Err(failure) => {
@@ -83,6 +96,7 @@ fn run_file(path: PathBuf, mode: OutputMode, backend: Backend) -> Result<(), Str
                     Some(&compiled.source),
                 )
             })?;
+            let module = optimize_module(module, optimization);
             run_ir_main(&module)
         }
         Backend::Bytecode => {
@@ -93,6 +107,7 @@ fn run_file(path: PathBuf, mode: OutputMode, backend: Backend) -> Result<(), Str
                     Some(&compiled.source),
                 )
             })?;
+            let module = optimize_module(module, optimization);
             let bytecode = lower_to_bytecode(&module);
             run_bytecode_main(&bytecode)
         }
@@ -110,6 +125,16 @@ fn run_file(path: PathBuf, mode: OutputMode, backend: Backend) -> Result<(), Str
         Err(error) => {
             let report = runtime_report(error, &compiled.path);
             Err(format_reports(&[report], mode, Some(&compiled.source)))
+        }
+    }
+}
+
+fn optimize_module(module: nous_ir::IrModule, optimization: OptimizationMode) -> nous_ir::IrModule {
+    match optimization {
+        OptimizationMode::None => module,
+        OptimizationMode::ConstantFold => {
+            let (module, _report) = optimize(&module, &OptimizationConfig::constant_folding());
+            module
         }
     }
 }
@@ -289,6 +314,7 @@ struct Invocation {
     path: PathBuf,
     mode: OutputMode,
     backend: Backend,
+    optimization: OptimizationMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +350,22 @@ impl Backend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptimizationMode {
+    None,
+    ConstantFold,
+}
+
+impl OptimizationMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "constant-fold" => Some(Self::ConstantFold),
+            _ => None,
+        }
+    }
+}
+
 fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
     let Some(command) = args.first() else {
         return Ok(None);
@@ -337,6 +379,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     path: PathBuf::new(),
                     mode: OutputMode::Concise,
                     backend: Backend::Ast,
+                    optimization: OptimizationMode::None,
                 }))
             } else {
                 Err("usage: nlang --version".to_string())
@@ -349,6 +392,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     path: PathBuf::new(),
                     mode: OutputMode::Concise,
                     backend: Backend::Ast,
+                    optimization: OptimizationMode::None,
                 }))
             } else {
                 Err("usage: nlang --help".to_string())
@@ -362,6 +406,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
 fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocation>, String> {
     let mut mode = OutputMode::Concise;
     let mut backend = Backend::Ast;
+    let mut optimization = OptimizationMode::None;
     let mut cursor = 0;
     let usage = command_usage(command);
 
@@ -394,6 +439,19 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 backend = value;
                 cursor += 2;
             }
+            "--optimize" => {
+                if command != "run" {
+                    return Err(usage);
+                }
+                let Some(value) = args
+                    .get(cursor + 1)
+                    .and_then(|value| OptimizationMode::parse(value))
+                else {
+                    return Err(usage);
+                };
+                optimization = value;
+                cursor += 2;
+            }
             _ => break,
         }
     }
@@ -403,6 +461,12 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     };
     if args.get(cursor + 1).is_some() {
         return Err(usage);
+    }
+    if backend == Backend::Ast && optimization != OptimizationMode::None {
+        return Err(
+            "usage: nlang run --backend ir|bytecode --optimize none|constant-fold <file.nl>"
+                .to_string(),
+        );
     }
 
     Ok(Some(Invocation {
@@ -414,20 +478,20 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         path: PathBuf::from(path),
         mode,
         backend,
+        optimization,
     }))
 }
 
 fn command_usage(command: &str) -> String {
     match command {
-        "run" => "usage: nlang run [--backend ast|ir|bytecode] [--verbose|--format json] <file.nl>"
-            .to_string(),
+        "run" => "usage: nlang run [--backend ast|ir|bytecode] [--optimize none|constant-fold] [--verbose|--format json] <file.nl>".to_string(),
         _ => "usage: nlang check [--verbose|--format json] <file.nl>".to_string(),
     }
 }
 
 fn print_help() {
     println!(
-        "nlang {}\n\nusage:\n  nlang check [--verbose|--format json] <file.nl>\n  nlang run [--backend ast|ir|bytecode] [--verbose|--format json] <file.nl>\n  nlang --version",
+        "nlang {}\n\nusage:\n  nlang check [--verbose|--format json] <file.nl>\n  nlang run [--backend ast|ir|bytecode] [--optimize none|constant-fold] [--verbose|--format json] <file.nl>\n  nlang --version",
         env!("CARGO_PKG_VERSION")
     );
 }
