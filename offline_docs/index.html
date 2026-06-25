@@ -187,6 +187,12 @@
       margin: 14px 0;
     }
 
+    .example-status {
+      margin-top: -6px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -272,8 +278,9 @@
       <section id="quick-start">
         <h2>Quick Start</h2>
         <p>Create a file named <code>hello.nl</code>:</p>
-        <pre><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_quick_start.nl" data-mode="run"><code>fn main -> i64
     42</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_quick_start.nl</code>.</p>
         <p>Check it:</p>
         <pre><code>cargo run -p nous_cli -- check hello.nl</code></pre>
         <p>Run it:</p>
@@ -295,47 +302,54 @@
       <section id="functions">
         <h2>Functions</h2>
         <p>Functions start with <code>fn</code>, followed by the name, typed parameters, an optional return arrow, and an indented body.</p>
-        <pre><code>fn add x i64 y i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/add.nl" data-mode="check"><code>fn add x i64 y i64 -> i64
     x + y</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/add.nl</code>.</p>
         <h3>Last-expression return</h3>
         <p>When a function body reaches its final expression normally, that expression is the return value.</p>
-        <pre><code>fn choose flag bool -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_choose.nl" data-mode="check"><code>fn choose flag bool -> i64
     if flag
         10
     else
         20</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_choose.nl</code>.</p>
         <h3>Explicit return</h3>
-        <pre><code>fn early value i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_early_return.nl" data-mode="check"><code>fn early value i64 -> i64
     if value &gt; 10
         return value
     10</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_early_return.nl</code>.</p>
         <h3>Void functions</h3>
         <p>A function that returns nothing declares <code>-> void</code>. It may use an empty <code>return</code>, or simply finish with no value-producing final expression.</p>
-        <pre><code>fn release ptr ptr_i64 -> void
+        <pre data-fixture="tests/fixtures/valid/docs_release_void.nl" data-mode="check"><code>fn release ptr ptr_i64 -> void
     dealloc(ptr)
     return</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_release_void.nl</code>.</p>
       </section>
 
       <section id="variables-assignment">
         <h2>Variables And Assignment</h2>
         <p>Use <code>let</code> to bind a local name with an explicit type and initializer.</p>
-        <pre><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_let_binding.nl" data-mode="run"><code>fn main -> i64
     let value i64 = 40
     value + 2</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_let_binding.nl</code>.</p>
         <p>Existing locals can be updated with regular assignment or numeric compound assignment.</p>
-        <pre><code>fn count -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_count_assignment.nl" data-mode="check"><code>fn count -> i64
     let total i64 = 0
     total += 1
     total *= 42
     total</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_count_assignment.nl</code>.</p>
       </section>
 
       <section id="arrays">
         <h2>Arrays</h2>
         <p>The alpha supports homogeneous arrays with <code>array&lt;T&gt;</code> type spelling, non-empty array literals, and bounds-checked indexing.</p>
-        <pre><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_array.nl" data-mode="run"><code>fn main -> i64
     let values array&lt;i64&gt; = [2, 4, 6]
     values[2]</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_array.nl</code>.</p>
         <ul>
           <li>Array literal values must all have the same static type.</li>
           <li>Empty array literals are not accepted yet because empty-array inference is not implemented.</li>
@@ -347,35 +361,39 @@
       <section id="control-flow">
         <h2>Control Flow</h2>
         <h3>If, elif, else</h3>
-        <pre><code>fn classify value i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_classify.nl" data-mode="check"><code>fn classify value i64 -> i64
     if value &lt; 0
         -1
     elif value == 0
         0
     else
         1</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_classify.nl</code>.</p>
         <h3>While loops</h3>
-        <pre><code>fn sum_to limit i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_sum_to.nl" data-mode="check"><code>fn sum_to limit i64 -> i64
     let total i64 = 0
     let index i64 = 0
     while index &lt; limit
         total += index
         index += 1
     total</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sum_to.nl</code>.</p>
         <h3>Range for loops</h3>
         <p><code>for</code> loops iterate over inclusive <code>i64</code> ranges. The default step is <code>1</code>; <code>by</code> supplies an explicit step, and runtime execution rejects step <code>0</code>.</p>
-        <pre><code>fn sum_range -> i64
+        <pre data-fixture="tests/fixtures/valid/run_for.nl" data-mode="run"><code>fn main -> i64
     let total i64 = 0
     for i from 1 to 3
         total += i
     total</code></pre>
-        <pre><code>fn sum_descending -> i64
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_for.nl</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/run_for_step.nl" data-mode="run"><code>fn main -> i64
     let total i64 = 0
     for i from 5 to 1 by -2
         total += i
     total</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_for_step.nl</code>.</p>
         <h3>Loop, break, continue</h3>
-        <pre><code>fn first_even_after start i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_first_even_after.nl" data-mode="check"><code>fn first_even_after start i64 -> i64
     let value i64 = start
     loop
         value += 1
@@ -384,16 +402,19 @@
         if value == 4
             break
     value</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_first_even_after.nl</code>.</p>
       </section>
 
       <section id="boolean-logic">
         <h2>Boolean Logic</h2>
         <p>The alpha supports boolean logic with <code>and</code>, <code>or</code>, and unary <code>not</code>. Logical operands must be <code>bool</code>, and <code>and</code>/<code>or</code> short-circuit during runtime execution.</p>
-        <pre><code>fn main -> bool
+        <pre data-fixture="tests/fixtures/valid/run_logic.nl" data-mode="run"><code>fn main -> bool
     not false and true or false</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_logic.nl</code>.</p>
         <p>Logical expressions can be used anywhere a <code>bool</code> is required, including branch and loop conditions.</p>
-        <pre><code>fn ready value i64 enabled bool -> bool
+        <pre data-fixture="tests/fixtures/valid/docs_ready_logic.nl" data-mode="check"><code>fn ready value i64 enabled bool -> bool
     enabled and value &gt; 0</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_ready_logic.nl</code>.</p>
       </section>
 
       <section id="memory-builtins">
@@ -410,12 +431,13 @@
             <tr><td><code>dealloc(ptr)</code></td><td>Clears the heap slot. Invalid or double deallocation is a runtime error.</td></tr>
           </tbody>
         </table>
-        <pre><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_store.nl" data-mode="run"><code>fn main -> i64
     let ptr ptr_i64 = alloc(0)
     store(ptr, 41)
     let value i64 = load(ptr)
     dealloc(ptr)
     value + 1</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_store.nl</code>.</p>
       </section>
 
       <section id="io-system">
@@ -434,12 +456,14 @@
             <tr><td><code>sys_output(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns stdout.</td></tr>
           </tbody>
         </table>
-        <pre><code>fn main -> string
-    write_file("target/example.txt", "alpha")
-    append_file("target/example.txt", " beta")
-    read_file("target/example.txt")</code></pre>
-        <pre><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_file_io.nl" data-mode="run"><code>fn main -> string
+    write_file("target/nous_fixture_io.txt", "alpha")
+    append_file("target/nous_fixture_io.txt", " beta")
+    read_file("target/nous_fixture_io.txt")</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_file_io.nl</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/docs_sys_status.nl" data-mode="check"><code>fn main -> i64
     sys_status("rustc", ["--version"])</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sys_status.nl</code>.</p>
       </section>
 
       <section id="cli">
@@ -460,14 +484,15 @@
       <section id="examples">
         <h2>Examples</h2>
         <h3>Arithmetic function call</h3>
-        <pre><code>fn add x i64 y i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/run_arithmetic.nl" data-mode="run"><code>fn add x i64 y i64 -> i64
     x + y
 
 fn main -> i64
     let value i64 = add(40, 2)
     value</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_arithmetic.nl</code>.</p>
         <h3>Void cleanup helper</h3>
-        <pre><code>fn cleanup ptr ptr_i64 -> void
+        <pre data-fixture="tests/fixtures/valid/docs_cleanup_helper.nl" data-mode="run"><code>fn cleanup ptr ptr_i64 -> void
     dealloc(ptr)
 
 fn main -> i64
@@ -476,15 +501,18 @@ fn main -> i64
     let value i64 = load(ptr)
     cleanup(ptr)
     value</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_cleanup_helper.nl</code>.</p>
         <h3>Array indexing</h3>
-        <pre><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_array.nl" data-mode="run"><code>fn main -> i64
     let values array&lt;i64&gt; = [2, 4, 6]
     values[2]</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_array.nl</code>.</p>
         <h3>Text file I/O</h3>
-        <pre><code>fn main -> string
-    write_file("target/example.txt", "alpha")
-    append_file("target/example.txt", " beta")
-    read_file("target/example.txt")</code></pre>
+        <pre data-fixture="tests/fixtures/valid/run_file_io.nl" data-mode="run"><code>fn main -> string
+    write_file("target/nous_fixture_io.txt", "alpha")
+    append_file("target/nous_fixture_io.txt", " beta")
+    read_file("target/nous_fixture_io.txt")</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_file_io.nl</code>.</p>
       </section>
 
       <section id="diagnostics">

@@ -4,4 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+nous_diagnostics = { path = "../nous_diagnostics" }
 nous_parser = { path = "../nous_parser" }
+nous_semantics = { path = "../nous_semantics" }
+
+[dev-dependencies]
+nous_lexer = { path = "../nous_lexer" }

@@ -18,6 +18,7 @@ This file maps the repository layout and explains where to find core information
 - `documents/core_language_rules.md`: canonical global rules for `.nl` source files, indentation-only scope, forbidden block delimiters, and no semicolon terminators.
 - `documents/language_specification.md`: top-level language specification and overview. Use this first for language behavior, philosophy, syntax reference, examples, and roadmap.
 - `documents/implementation_plan.md`: implementation plan for the compiler, runtime, offline browser documentation bundle, CLI, installer, tests, and release workflow.
+- `documents/alpha1_acceptance_criteria.md`: Alpha 1 release checklist covering required toolchain surface, documentation surface, verification gates, release evidence, non-goals, and the recommended next phase.
 - `documents/diagnostic_registry.md`: stable diagnostic code registry and output contract for concise, verbose, and JSON diagnostics.
 - `documents/nous_lang_syntax_design.md`: syntax design details for declarations, functions, data structures, operators, naming, comments, and examples.
 - `documents/nous_lang_type_system.md`: type-system details for primitives, composites, references, functions, inference, safety, aliases, generics, and OS-specific types.
@@ -31,7 +32,7 @@ This file maps the repository layout and explains where to find core information
 ## Offline Browser Docs
 
 - `offline_docs/index.html`: local browser entry point for alpha user documentation. It must remain self-contained with no server, CDN, remote fonts, or internet dependency.
-- `offline_docs/verify_offline_docs.py`: deterministic verifier for the offline docs entry point, required sections, required alpha topics, local anchors, and lack of remote dependencies.
+- `offline_docs/verify_offline_docs.py`: deterministic verifier for the offline docs entry point, required sections, required alpha topics, local anchors, lack of remote dependencies, and fixture-backed executable examples.
 
 ## Source Layout
 
@@ -40,12 +41,12 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `crates/nous_lexer/`: source extension validation, tokenization, indentation scanning, forbidden brace/semicolon diagnostics, core keyword recognition, and lexical tests.
 - `crates/nous_diagnostics/`: shared diagnostic data structures, registry metadata, concise/verbose renderers, and deterministic JSON rendering.
 - `crates/nous_parser/`: AST model and parser for function declarations, typed parameters, return types, indentation blocks, `let`, assignment, `return`, `break`, `continue`, if/elif/else, while/loop/range-for, calls, literals, array literals/indexing, variables, arithmetic, comparison, and logical expressions.
-- `crates/nous_semantics/`: static validation for duplicate declarations, local binding types, assignment targets/types, function call arity/types, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical expression operand types, homogeneous non-empty arrays, array indexing, interim pointer-style memory builtins, text file I/O builtins, and safe system command builtins.
-- `crates/nous_ir/`: placeholder IR lowering crate for the future semantic IR schema.
+- `crates/nous_semantics/`: static validation for duplicate declarations, local binding types, assignment targets/types, function call arity/types, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical expression operand types, homogeneous non-empty arrays, array indexing, interim pointer-style memory builtins, text file I/O builtins, and safe system command builtins. Successful validation returns `CheckedProgram` with function signatures and inferred expression-type metadata.
+- `crates/nous_ir/`: typed semantic IR schema and lowering from `CheckedProgram` for the current alpha subset, including typed functions, statements, control flow, calls, builtins, and expressions.
 - `crates/nous_runtime/`: in-process AST runtime for the current alpha subset, including `main`, function calls, scoped locals, assignment, branch results, while/loop/range-for execution, break/continue, array literals/indexing with runtime bounds checks, arithmetic/comparison/logical expressions with short-circuiting, `alloc`/`load`/`store`/`dealloc` heap-slot memory builtins, text file I/O builtins, direct program-plus-argv system command builtins, and categorized runtime/resource errors.
 - `crates/nous_cli/`: `nlang` command-line interface. Current commands: `check [--verbose|--format json] <file.nl>` and `run [--verbose|--format json] <file.nl>`.
 - `crates/nous_cli/tests/`: binary-level integration tests for the CLI pipeline, including valid checks, runtime execution, lexical errors, and semantic errors.
-- `tests/fixtures/valid/`: valid `.nl` smoke fixtures used by the frontend and CLI.
+- `tests/fixtures/valid/`: valid `.nl` smoke fixtures used by the frontend, CLI, and offline documentation example verification. Files prefixed with `docs_` back executable examples shown in `offline_docs/index.html`.
 - `tests/fixtures/invalid/`: invalid source fixtures for diagnostics and negative tests.
 
 ## Current Commands
@@ -85,7 +86,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p nous_cli -- check tests/fixtures/invalid/read_file_path_type.nl`: verify file builtin path type diagnostics.
 - `cargo run -p nous_cli -- check tests/fixtures/invalid/write_file_content_type.nl`: verify file builtin content type diagnostics.
 - `cargo run -p nous_cli -- check tests/fixtures/invalid/sys_args_type.nl`: verify system command builtin argv type diagnostics.
-- `python offline_docs/verify_offline_docs.py`: verify the self-contained offline browser documentation entry point.
+- `python offline_docs/verify_offline_docs.py`: verify the self-contained offline browser documentation entry point, including metadata, fixture content, and `nlang check`/`nlang run` execution for documented `.nl` examples.
 
 ## Planning And Tracking
 

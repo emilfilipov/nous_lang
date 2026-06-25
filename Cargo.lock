@@ -21,7 +21,10 @@ version = "0.1.0"
 name = "nous_ir"
 version = "0.1.0"
 dependencies = [
+ "nous_diagnostics",
+ "nous_lexer",
  "nous_parser",
+ "nous_semantics",
 ]
 
 [[package]]

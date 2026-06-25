@@ -39,6 +39,20 @@ impl SemanticDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedProgram {
     pub program: Program,
+    pub info: SemanticInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticInfo {
+    pub signatures: HashMap<String, Signature>,
+    pub expression_types: Vec<ExpressionType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpressionType {
+    pub function: String,
+    pub span: Span,
+    pub ty: TypeRef,
 }
 
 pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnostic>> {
@@ -47,6 +61,10 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
     if checker.diagnostics.is_empty() {
         Ok(CheckedProgram {
             program: program.clone(),
+            info: SemanticInfo {
+                signatures: checker.signatures,
+                expression_types: checker.expression_types,
+            },
         })
     } else {
         Err(checker.diagnostics)
@@ -56,6 +74,7 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
 struct Checker<'a> {
     program: &'a Program,
     signatures: HashMap<String, Signature>,
+    expression_types: Vec<ExpressionType>,
     diagnostics: Vec<SemanticDiagnostic>,
     loop_depth: usize,
 }
@@ -65,6 +84,7 @@ impl<'a> Checker<'a> {
         Self {
             program,
             signatures: HashMap::new(),
+            expression_types: Vec::new(),
             diagnostics: Vec::new(),
             loop_depth: 0,
         }
@@ -376,7 +396,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr, scope: &Scope, function: &Function) -> Option<TypeRef> {
-        match &expr.kind {
+        let inferred = match &expr.kind {
             ExprKind::Integer(_) => Some(TypeRef::new("i64")),
             ExprKind::Bool(_) => Some(TypeRef::new("bool")),
             ExprKind::String(_) => Some(TypeRef::new("string")),
@@ -506,7 +526,17 @@ impl<'a> Checker<'a> {
             ExprKind::Call { name, args } => {
                 self.check_call(name, args, expr.span, scope, function)
             }
+        };
+
+        if let Some(ty) = &inferred {
+            self.expression_types.push(ExpressionType {
+                function: function.name.clone(),
+                span: expr.span,
+                ty: ty.clone(),
+            });
         }
+
+        inferred
     }
 
     fn check_array_literal(
@@ -746,9 +776,9 @@ impl<'a> Checker<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Signature {
-    params: Vec<TypeRef>,
-    return_type: TypeRef,
+pub struct Signature {
+    pub params: Vec<TypeRef>,
+    pub return_type: TypeRef,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -814,6 +844,31 @@ mod tests {
     fn validates_array_literal_and_index() {
         let source = "fn main -> i64\n    let values array<i64> = [1, 2, 3]\n    values[1]\n";
         assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn checked_program_exposes_function_signatures() {
+        let checked = validate_source("fn add x i64 y i64 -> i64\n    x + y\n").expect("semantic");
+        let signature = checked.info.signatures.get("add").expect("signature");
+        assert_eq!(
+            signature.params,
+            vec![TypeRef::new("i64"), TypeRef::new("i64")]
+        );
+        assert_eq!(signature.return_type, TypeRef::new("i64"));
+    }
+
+    #[test]
+    fn checked_program_exposes_expression_types() {
+        let checked = validate_source(
+            "fn main -> i64\n    let values array<i64> = [1, 2, 3]\n    values[1]\n",
+        )
+        .expect("semantic");
+        assert!(checked.info.expression_types.iter().any(|expr_type| {
+            expr_type.function == "main" && expr_type.ty == TypeRef::new("array<i64>")
+        }));
+        assert!(checked.info.expression_types.iter().any(|expr_type| {
+            expr_type.function == "main" && expr_type.ty == TypeRef::new("i64")
+        }));
     }
 
     #[test]
