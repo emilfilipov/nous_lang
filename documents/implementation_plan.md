@@ -78,3 +78,16 @@ The repository now contains the first executable alpha slice:
 | **5.2** | **Component Unit Testing:** Implement unit tests for each major component: Lexer (tokenization), Parser (AST generation), Memory Manager (allocation/deallocation), and Type Checker. | Stories 1.1, 1.2, 1.3 | High | In Progress |
 | **5.3** | **Integration Test Suite:** Develop end-to-end integration tests that verify the entire pipeline: `Source Code` -> `AST` -> `Runtime Execution`. This ensures the compiler and runtime work together correctly. | All previous steps | Critical | In Progress |
 | **5.4** | **Regression Test Protocol:** Establish a protocol for running the full suite (Unit + Integration) before any major feature addition or refactoring is committed to the codebase. | All previous steps | Medium | To Do |
+
+## Epic 6: Diagnostics UX And Root-Cause Tracebacks
+*Objective: Make every compiler, runtime, and host-resource failure clear enough for both humans and LLM agents to identify the root cause, understand the relevant source context, and apply a likely fix.*
+
+| Story | Description | Dependencies | Estimated Effort | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **6.1** | **Unified Diagnostic Model:** Define a shared diagnostic structure with code, phase/category, severity, source path, span/range, function/context, primary message, explanation, root cause, suggested fix, and related notes. | Current lexer/parser/semantic/runtime diagnostic structs | High | To Do |
+| **6.2** | **Verbose CLI Diagnostics:** Add `--verbose` diagnostics for `check` and `run` with source excerpts, caret markers, root-cause explanation, and fix guidance. | 6.1 | High | To Do |
+| **6.3** | **Machine-Readable Diagnostics:** Add deterministic JSON output for `check` and `run`, suitable for editors, CI, and LLM agents. | 6.1 | Medium | To Do |
+| **6.4** | **Semantic Source Spans:** Extend semantic diagnostics so type, name, control-flow, and builtin argument errors point to the exact offending AST node instead of only the containing function. | 6.1, `nous_parser` spans | High | To Do |
+| **6.5** | **Runtime Tracebacks:** Track source context and lightweight call stacks through user-defined functions and failing builtins/expressions. | 6.1, `nous_runtime` | High | To Do |
+| **6.6** | **Diagnostic Registry:** Document every stable `N####` code with meaning, likely cause, example, and suggested fix; keep Markdown and offline browser docs synchronized. | 6.1 | Medium | To Do |
+| **6.7** | **Diagnostic Snapshot Tests:** Add representative CLI tests for lexer, parser, semantic, runtime, and resource diagnostics in concise, verbose, and JSON modes. | 6.2, 6.3 | High | To Do |

@@ -94,6 +94,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
   - `06 IR Optimization Codegen`
   - `07 CLI Build Installer`
   - `08 Tests Docs Release`
+  - `09 Diagnostics UX`
 
 ## Update Rules
 
