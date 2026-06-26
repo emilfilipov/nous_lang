@@ -172,6 +172,89 @@ fn rejects_invalid_bytecode_artifact() {
 }
 
 #[test]
+fn reports_invalid_bytecode_artifact_with_verbose_guidance() {
+    let root = workspace_root();
+    let artifact = root.join("target/invalid_artifact_verbose.nbc");
+    std::fs::write(
+        &artifact,
+        "{\"format\":\"not-nous\",\"version\":1,\"entry\":\"main\",\"module\":{\"functions\":[]}}",
+    )
+    .expect("write invalid artifact");
+
+    let output = nlang()
+        .args([
+            "run",
+            "--verbose",
+            artifact.to_str().expect("artifact path"),
+        ])
+        .output()
+        .expect("run artifact cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("N0601 [bytecode error]"), "{stderr}");
+    assert!(stderr.contains("Problem:"), "{stderr}");
+    assert!(stderr.contains("Root cause:"), "{stderr}");
+    assert!(stderr.contains("Suggested fix:"), "{stderr}");
+    let _ = std::fs::remove_file(artifact);
+}
+
+#[test]
+fn reports_invalid_bytecode_artifact_as_json() {
+    let root = workspace_root();
+    let artifact = root.join("target/invalid_artifact_json.nbc");
+    std::fs::write(
+        &artifact,
+        "{\"format\":\"not-nous\",\"version\":1,\"entry\":\"main\",\"module\":{\"functions\":[]}}",
+    )
+    .expect("write invalid artifact");
+
+    let output = nlang()
+        .args([
+            "run",
+            "--format",
+            "json",
+            artifact.to_str().expect("artifact path"),
+        ])
+        .output()
+        .expect("run artifact cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("\"code\":\"N0601\""), "{stderr}");
+    assert!(stderr.contains("\"phase\":\"bytecode\""), "{stderr}");
+    assert!(stderr.contains("\"root_cause\":"), "{stderr}");
+    let _ = std::fs::remove_file(artifact);
+}
+
+#[test]
+fn reports_compile_write_failure_as_json() {
+    let root = workspace_root();
+    let fixture = root.join("tests/fixtures/valid/run_arithmetic.nl");
+    let missing_dir = root.join("target/nous_missing_compile_dir");
+    let artifact = missing_dir.join("run_arithmetic.nbc");
+    let _ = std::fs::remove_dir_all(&missing_dir);
+
+    let output = nlang()
+        .args([
+            "compile",
+            "--format",
+            "json",
+            "-o",
+            artifact.to_str().expect("artifact path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("compile cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("\"code\":\"N0003\""), "{stderr}");
+    assert!(stderr.contains("\"phase\":\"resource\""), "{stderr}");
+    assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
+}
+
+#[test]
 fn runs_logic_fixture_with_optimized_ir_backend() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_logic.nl");
     let output = nlang()
@@ -262,8 +345,59 @@ fn rejects_optimizer_for_ast_backend() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("--backend ir|bytecode"), "{stderr}");
-    assert!(stderr.contains("dead-code|alpha"), "{stderr}");
+    assert!(stderr.contains("N0502 [optimizer error]"), "{stderr}");
+    assert!(
+        stderr.contains("--backend ir or --backend bytecode"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn reports_optimizer_backend_mismatch_with_verbose_guidance() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--verbose",
+            "--optimize",
+            "constant-fold",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("N0502 [optimizer error]"), "{stderr}");
+    assert!(stderr.contains("Problem:"), "{stderr}");
+    assert!(stderr.contains("Root cause:"), "{stderr}");
+    assert!(stderr.contains("Suggested fix:"), "{stderr}");
+    assert!(
+        stderr.contains("usage: nlang run --backend ir|bytecode"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn reports_optimizer_backend_mismatch_as_json() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--format",
+            "json",
+            "--optimize",
+            "constant-fold",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("\"code\":\"N0502\""), "{stderr}");
+    assert!(stderr.contains("\"phase\":\"optimizer\""), "{stderr}");
+    assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
 }
 
 #[test]

@@ -639,10 +639,18 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         return Err(usage);
     }
     if command == "run" && backend == Backend::Ast && optimization != OptimizationMode::None {
-        return Err(
-            "usage: nlang run --backend ir|bytecode --optimize none|constant-fold|dead-code|alpha <file.nl>"
-                .to_string(),
-        );
+        return Err(format_reports(
+            &[DiagnosticReport::new(
+                "N0502",
+                DiagnosticPhase::Optimizer,
+                "--optimize requires --backend ir or --backend bytecode",
+            )
+            .with_note(
+                "usage: nlang run --backend ir|bytecode --optimize none|constant-fold|dead-code|alpha <file.nl>",
+            )],
+            mode,
+            None,
+        ));
     }
     if command == "compile" && backend != Backend::Ast {
         return Err(usage);
