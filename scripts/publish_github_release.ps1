@@ -41,22 +41,22 @@ try {
         throw "release notes not found: $ReleaseNotes"
     }
 
-    git rev-parse --verify "refs/tags/$TagName" *> $null
-    if ($LASTEXITCODE -ne 0) {
+    $LocalTag = @(git tag --list $TagName)
+    if (-not $LocalTag) {
         git tag $TagName
         if ($LASTEXITCODE -ne 0) { throw "failed to create tag $TagName" }
         git push origin $TagName
         if ($LASTEXITCODE -ne 0) { throw "failed to push tag $TagName" }
     } else {
-        git ls-remote --exit-code --tags origin $TagName *> $null
-        if ($LASTEXITCODE -ne 0) {
+        $RemoteTag = @(git ls-remote --tags origin "refs/tags/$TagName")
+        if (-not $RemoteTag) {
             git push origin $TagName
             if ($LASTEXITCODE -ne 0) { throw "failed to push tag $TagName" }
         }
     }
 
-    gh release view $TagName *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $ExistingRelease = @(gh release list --limit 100 --json tagName --jq ".[] | select(.tagName == `"$TagName`") | .tagName")
+    if ($ExistingRelease) {
         throw "GitHub release already exists for $TagName"
     }
 
