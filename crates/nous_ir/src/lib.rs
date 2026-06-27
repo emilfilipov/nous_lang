@@ -156,10 +156,17 @@ impl OptimizationConfig {
         }
     }
 
+    pub fn copy_propagation() -> Self {
+        Self {
+            passes: vec![OptimizationPass::CopyPropagation],
+        }
+    }
+
     pub fn alpha_default() -> Self {
         Self {
             passes: vec![
                 OptimizationPass::ConstantFolding,
+                OptimizationPass::CopyPropagation,
                 OptimizationPass::DeadCodeElimination,
             ],
         }
@@ -183,6 +190,7 @@ impl Default for OptimizationConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimizationPass {
     ConstantFolding,
+    CopyPropagation,
     DeadCodeElimination,
 }
 
@@ -190,6 +198,7 @@ pub enum OptimizationPass {
 pub struct OptimizationReport {
     pub applied_passes: Vec<OptimizationPass>,
     pub folded_expressions: usize,
+    pub propagated_copies: usize,
     pub removed_dead_statements: usize,
 }
 
@@ -203,6 +212,12 @@ pub fn optimize(module: &IrModule, config: &OptimizationConfig) -> (IrModule, Op
                 let mut folder = ConstantFolder::default();
                 optimized = folder.fold_module(&optimized);
                 report.folded_expressions += folder.folded_expressions;
+                report.applied_passes.push(*pass);
+            }
+            OptimizationPass::CopyPropagation => {
+                let mut propagator = CopyPropagator::default();
+                optimized = propagator.propagate_module(&optimized);
+                report.propagated_copies += propagator.propagated_copies;
                 report.applied_passes.push(*pass);
             }
             OptimizationPass::DeadCodeElimination => {
@@ -660,6 +675,279 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
             Some(IrExprKind::Bool(left != right))
         }
         _ => None,
+    }
+}
+
+#[derive(Default)]
+struct CopyPropagator {
+    propagated_copies: usize,
+}
+
+impl CopyPropagator {
+    fn propagate_module(&mut self, module: &IrModule) -> IrModule {
+        IrModule {
+            functions: module
+                .functions
+                .iter()
+                .map(|function| self.propagate_function(function))
+                .collect(),
+        }
+    }
+
+    fn propagate_function(&mut self, function: &IrFunction) -> IrFunction {
+        IrFunction {
+            name: function.name.clone(),
+            params: function.params.clone(),
+            return_type: function.return_type.clone(),
+            body: self.propagate_block(&function.body, &mut HashMap::new()),
+            span: function.span,
+        }
+    }
+
+    fn propagate_block(
+        &mut self,
+        statements: &[IrStmt],
+        aliases: &mut HashMap<String, String>,
+    ) -> Vec<IrStmt> {
+        statements
+            .iter()
+            .map(|statement| self.propagate_statement(statement, aliases))
+            .collect()
+    }
+
+    fn propagate_statement(
+        &mut self,
+        statement: &IrStmt,
+        aliases: &mut HashMap<String, String>,
+    ) -> IrStmt {
+        match statement {
+            IrStmt::Let {
+                name,
+                ty,
+                value,
+                span,
+            } => {
+                let value = self.propagate_expr(value, aliases);
+                let has_call = expr_contains_call(&value);
+                if has_call {
+                    aliases.clear();
+                }
+                invalidate_alias(name, aliases);
+                if let IrExprKind::Variable(source) = &value.kind {
+                    let source = resolve_alias(source, aliases);
+                    if source != *name {
+                        aliases.insert(name.clone(), source);
+                    }
+                }
+                IrStmt::Let {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    value,
+                    span: *span,
+                }
+            }
+            IrStmt::Assign {
+                name,
+                op,
+                value,
+                span,
+            } => {
+                let value = self.propagate_expr(value, aliases);
+                if expr_contains_call(&value) {
+                    aliases.clear();
+                }
+                invalidate_alias(name, aliases);
+                IrStmt::Assign {
+                    name: name.clone(),
+                    op: *op,
+                    value,
+                    span: *span,
+                }
+            }
+            IrStmt::Return(expr) => {
+                let expr = expr.as_ref().map(|expr| self.propagate_expr(expr, aliases));
+                if expr.as_ref().is_some_and(expr_contains_call) {
+                    aliases.clear();
+                }
+                IrStmt::Return(expr)
+            }
+            IrStmt::Break(span) => IrStmt::Break(*span),
+            IrStmt::Continue(span) => IrStmt::Continue(*span),
+            IrStmt::Expr(expr) => {
+                let expr = self.propagate_expr(expr, aliases);
+                if expr_contains_call(&expr) {
+                    aliases.clear();
+                }
+                IrStmt::Expr(expr)
+            }
+            IrStmt::If {
+                branches,
+                else_body,
+                span,
+            } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| IrIfBranch {
+                        condition: self.propagate_expr(&branch.condition, aliases),
+                        body: self.propagate_block(&branch.body, &mut HashMap::new()),
+                    })
+                    .collect();
+                let else_body = self.propagate_block(else_body, &mut HashMap::new());
+                aliases.clear();
+                IrStmt::If {
+                    branches,
+                    else_body,
+                    span: *span,
+                }
+            }
+            IrStmt::While {
+                condition,
+                body,
+                span,
+            } => {
+                let condition = self.propagate_expr(condition, aliases);
+                let body = self.propagate_block(body, &mut HashMap::new());
+                aliases.clear();
+                IrStmt::While {
+                    condition,
+                    body,
+                    span: *span,
+                }
+            }
+            IrStmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                span,
+            } => {
+                let start = self.propagate_expr(start, aliases);
+                let end = self.propagate_expr(end, aliases);
+                let step = step.as_ref().map(|step| self.propagate_expr(step, aliases));
+                let body = self.propagate_block(body, &mut HashMap::new());
+                aliases.clear();
+                IrStmt::For {
+                    name: name.clone(),
+                    start,
+                    end,
+                    step,
+                    body,
+                    span: *span,
+                }
+            }
+            IrStmt::Loop { body, span } => {
+                let body = self.propagate_block(body, &mut HashMap::new());
+                aliases.clear();
+                IrStmt::Loop { body, span: *span }
+            }
+        }
+    }
+
+    fn propagate_expr(&mut self, expr: &IrExpr, aliases: &HashMap<String, String>) -> IrExpr {
+        match &expr.kind {
+            IrExprKind::Variable(name) => {
+                let replacement = resolve_alias(name, aliases);
+                if replacement != *name {
+                    self.propagated_copies += 1;
+                    IrExpr {
+                        kind: IrExprKind::Variable(replacement),
+                        ty: expr.ty.clone(),
+                        span: expr.span,
+                    }
+                } else {
+                    expr.clone()
+                }
+            }
+            IrExprKind::Array(values) => IrExpr {
+                kind: IrExprKind::Array(
+                    values
+                        .iter()
+                        .map(|value| self.propagate_expr(value, aliases))
+                        .collect(),
+                ),
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Index { target, index } => IrExpr {
+                kind: IrExprKind::Index {
+                    target: Box::new(self.propagate_expr(target, aliases)),
+                    index: Box::new(self.propagate_expr(index, aliases)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Unary { op, expr: inner } => IrExpr {
+                kind: IrExprKind::Unary {
+                    op: *op,
+                    expr: Box::new(self.propagate_expr(inner, aliases)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Binary { left, op, right } => IrExpr {
+                kind: IrExprKind::Binary {
+                    left: Box::new(self.propagate_expr(left, aliases)),
+                    op: *op,
+                    right: Box::new(self.propagate_expr(right, aliases)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Call { name, args } => IrExpr {
+                kind: IrExprKind::Call {
+                    name: name.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| self.propagate_expr(arg, aliases))
+                        .collect(),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Integer(_) | IrExprKind::Bool(_) | IrExprKind::String(_) => expr.clone(),
+        }
+    }
+}
+
+fn resolve_alias(name: &str, aliases: &HashMap<String, String>) -> String {
+    let mut current = name;
+    let mut seen = HashSet::new();
+    while let Some(next) = aliases.get(current).map(String::as_str) {
+        if !seen.insert(current) {
+            break;
+        }
+        current = next;
+    }
+    current.to_string()
+}
+
+fn invalidate_alias(name: &str, aliases: &mut HashMap<String, String>) {
+    let stale = aliases
+        .keys()
+        .filter(|alias| alias.as_str() == name || resolve_alias(alias, aliases) == name)
+        .cloned()
+        .collect::<Vec<_>>();
+    for alias in stale {
+        aliases.remove(&alias);
+    }
+}
+
+fn expr_contains_call(expr: &IrExpr) -> bool {
+    match &expr.kind {
+        IrExprKind::Call { .. } => true,
+        IrExprKind::Array(values) => values.iter().any(expr_contains_call),
+        IrExprKind::Index { target, index } => {
+            expr_contains_call(target) || expr_contains_call(index)
+        }
+        IrExprKind::Unary { expr, .. } => expr_contains_call(expr),
+        IrExprKind::Binary { left, right, .. } => {
+            expr_contains_call(left) || expr_contains_call(right)
+        }
+        IrExprKind::Integer(_)
+        | IrExprKind::Bool(_)
+        | IrExprKind::String(_)
+        | IrExprKind::Variable(_) => false,
     }
 }
 
@@ -1831,6 +2119,51 @@ mod tests {
     }
 
     #[test]
+    fn copy_propagation_rewrites_straight_line_aliases() {
+        let module = lower_source(
+            "fn main -> i64\n    let base i64 = 40\n    let alias i64 = base\n    let second i64 = alias\n    second + 2\n",
+        );
+        let (optimized, report) = optimize(&module, &OptimizationConfig::copy_propagation());
+
+        assert_eq!(
+            report.applied_passes,
+            vec![OptimizationPass::CopyPropagation]
+        );
+        assert_eq!(report.propagated_copies, 2);
+
+        let IrStmt::Let { value, .. } = &optimized.functions[0].body[2] else {
+            panic!("expected propagated let binding");
+        };
+        assert_eq!(value.kind, IrExprKind::Variable("base".to_string()));
+
+        let IrStmt::Expr(expr) = &optimized.functions[0].body[3] else {
+            panic!("expected final expression");
+        };
+        let IrExprKind::Binary { left, .. } = &expr.kind else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(left.kind, IrExprKind::Variable("base".to_string()));
+    }
+
+    #[test]
+    fn copy_propagation_invalidates_aliases_after_source_assignment() {
+        let source = "fn main -> i64\n    let source i64 = 1\n    let alias i64 = source\n    source = 2\n    alias\n";
+        let module = lower_source(source);
+        let (optimized, report) = optimize(&module, &OptimizationConfig::copy_propagation());
+
+        assert_eq!(report.propagated_copies, 0);
+        assert_eq!(
+            run_main(&optimized).expect("optimized run"),
+            run_all_backends(source).0
+        );
+
+        let IrStmt::Expr(expr) = &optimized.functions[0].body[3] else {
+            panic!("expected final expression");
+        };
+        assert_eq!(expr.kind, IrExprKind::Variable("alias".to_string()));
+    }
+
+    #[test]
     fn alpha_optimizer_runs_constant_folding_then_dead_code_elimination() {
         let module =
             lower_source("fn main -> i64\n    let value i64 = 40 + 2\n    return value\n    0\n");
@@ -1840,6 +2173,7 @@ mod tests {
             report.applied_passes,
             vec![
                 OptimizationPass::ConstantFolding,
+                OptimizationPass::CopyPropagation,
                 OptimizationPass::DeadCodeElimination
             ]
         );

@@ -94,4 +94,4 @@ Alpha 1 does not require:
 
 ## Suggested Next Phase After Alpha 1
 
-Once Alpha 1 is accepted, the next phase should harden the typed semantic IR and initial bytecode backend with remaining optimizer passes, backend snapshot tests, and a lower-level bytecode instruction format before native code generation. This keeps the project conservative: preserve the working AST runtime while proving that a lower-level contract can support later optimization and native backends.
+Once Alpha 1 is accepted, the next phase should harden the typed semantic IR and initial bytecode backend with remaining optimizer passes such as CSE and loop-invariant motion, backend snapshot tests, and a lower-level bytecode instruction format before native code generation. This keeps the project conservative: preserve the working AST runtime while proving that a lower-level contract can support later optimization and native backends.
