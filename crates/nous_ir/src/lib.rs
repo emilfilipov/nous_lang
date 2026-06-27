@@ -1630,12 +1630,22 @@ impl<'a> Lowerer<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use nous_lexer::lex;
     use nous_parser::parse;
     use nous_runtime::run_main as run_ast_main;
-    use nous_semantics::validate;
+    use nous_semantics::{validate, validate_executable};
 
     use super::*;
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
 
     fn lower_source(source: &str) -> IrModule {
         let tokens = lex(source).expect("lex");
@@ -1647,7 +1657,7 @@ mod tests {
     fn run_all_backends(source: &str) -> (Value, Value, Value) {
         let tokens = lex(source).expect("lex");
         let program = parse(&tokens).expect("parse");
-        let checked = validate(&program).expect("semantic");
+        let checked = validate_executable(&program).expect("semantic");
         let ir = lower(&checked).expect("lower");
         let bytecode = lower_to_bytecode(&ir);
         (
@@ -1655,6 +1665,41 @@ mod tests {
             run_main(&ir).expect("ir run"),
             run_bytecode_main(&bytecode).expect("bytecode run"),
         )
+    }
+
+    fn run_all_backend_variants(source: &str) -> (Value, Value, Value, Value, Value) {
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let checked = validate_executable(&program).expect("semantic");
+        let ir = lower(&checked).expect("lower");
+        let bytecode = lower_to_bytecode(&ir);
+        let (optimized, _) = optimize(&ir, &OptimizationConfig::alpha_default());
+        let optimized_bytecode = lower_to_bytecode(&optimized);
+
+        (
+            run_ast_main(&program).expect("ast run"),
+            run_main(&ir).expect("ir run"),
+            run_bytecode_main(&bytecode).expect("bytecode run"),
+            run_main(&optimized).expect("optimized ir run"),
+            run_bytecode_main(&optimized_bytecode).expect("optimized bytecode run"),
+        )
+    }
+
+    fn executable_fixture_source(path: &Path) -> Option<String> {
+        let source = fs::read_to_string(path).expect("fixture source");
+        let tokens = lex(&source).expect("fixture lex");
+        let program = parse(&tokens).expect("fixture parse");
+        validate_executable(&program).ok().map(|_| {
+            source.replace(
+                "target/nous_fixture_io.txt",
+                "target/nous_ir_fixture_io.txt",
+            )
+        })
+    }
+
+    fn cleanup_parity_files() {
+        fs::create_dir_all("target").expect("target directory");
+        let _ = fs::remove_file("target/nous_ir_fixture_io.txt");
     }
 
     #[test]
@@ -1914,6 +1959,52 @@ mod tests {
         let (ast, ir, bytecode) = run_all_backends(source);
         assert_eq!(ir, ast);
         assert_eq!(bytecode, ast);
+    }
+
+    #[test]
+    fn executable_valid_fixtures_match_across_backend_variants() {
+        cleanup_parity_files();
+        let fixture_dir = workspace_root().join("tests/fixtures/valid");
+        let mut fixtures = fs::read_dir(&fixture_dir)
+            .expect("valid fixture directory")
+            .map(|entry| entry.expect("fixture entry").path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("nl"))
+            .collect::<Vec<_>>();
+        fixtures.sort();
+
+        let mut covered = Vec::new();
+        for fixture in fixtures {
+            let Some(source) = executable_fixture_source(&fixture) else {
+                continue;
+            };
+            cleanup_parity_files();
+            let (ast, ir, bytecode, optimized_ir, optimized_bytecode) =
+                run_all_backend_variants(&source);
+            let name = fixture
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("fixture name");
+            assert_eq!(ir, ast, "{name}: IR result differs from AST");
+            assert_eq!(bytecode, ast, "{name}: bytecode result differs from AST");
+            assert_eq!(
+                optimized_ir, ast,
+                "{name}: optimized IR result differs from AST"
+            );
+            assert_eq!(
+                optimized_bytecode, ast,
+                "{name}: optimized bytecode result differs from AST"
+            );
+            covered.push(name.to_string());
+        }
+        cleanup_parity_files();
+
+        assert!(
+            covered.len() >= 10,
+            "expected broad executable fixture coverage, got {covered:?}"
+        );
+        assert!(covered.contains(&"run_file_io.nl".to_string()));
+        assert!(covered.contains(&"run_store.nl".to_string()));
+        assert!(covered.contains(&"run_for_step.nl".to_string()));
     }
 
     #[test]
