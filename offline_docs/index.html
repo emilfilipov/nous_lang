@@ -590,7 +590,7 @@ Suggested fix:
           <p>This page documents the current executable alpha. Planned syntax and systems features in the broader Markdown specs may not be accepted by the compiler yet.</p>
         </div>
         <ul>
-          <li>No native code generation yet. Execution currently supports AST, typed IR, an instruction-bytecode backend, and versioned <code>.nbc</code> bytecode artifacts. The optimizer currently exposes opt-in constant folding, conservative block-local copy propagation, block-local dead-code elimination, and the combined alpha pipeline.</li>
+          <li>No native code generation yet. Execution currently supports AST, typed IR, an instruction-bytecode backend, and versioned <code>.nbc</code> bytecode artifacts. The optimizer currently exposes opt-in constant folding, conservative common subexpression elimination, conservative block-local copy propagation, block-local dead-code elimination, and the combined alpha pipeline.</li>
           <li>The full region memory model, ARC/reference counting, and lifetime analysis are pending.</li>
           <li>The type system currently covers the alpha scalar, array, call, local binding, assignment, control-flow, and interim pointer subset.</li>
           <li>The current I/O surface is limited to text file builtins and direct program-plus-argv command calls; streams, binary I/O, memory mapping, async, sockets, and IPC are future work.</li>

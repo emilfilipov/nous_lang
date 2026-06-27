@@ -97,6 +97,7 @@ REQUIRED_PHRASES = [
     "--backend ir",
     "--backend bytecode",
     "--optimize constant-fold",
+    "common subexpression elimination",
     "copy propagation",
     "--optimize dead-code",
     "--optimize alpha",

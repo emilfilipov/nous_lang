@@ -156,6 +156,12 @@ impl OptimizationConfig {
         }
     }
 
+    pub fn common_subexpression_elimination() -> Self {
+        Self {
+            passes: vec![OptimizationPass::CommonSubexpressionElimination],
+        }
+    }
+
     pub fn copy_propagation() -> Self {
         Self {
             passes: vec![OptimizationPass::CopyPropagation],
@@ -166,6 +172,7 @@ impl OptimizationConfig {
         Self {
             passes: vec![
                 OptimizationPass::ConstantFolding,
+                OptimizationPass::CommonSubexpressionElimination,
                 OptimizationPass::CopyPropagation,
                 OptimizationPass::DeadCodeElimination,
             ],
@@ -190,6 +197,7 @@ impl Default for OptimizationConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimizationPass {
     ConstantFolding,
+    CommonSubexpressionElimination,
     CopyPropagation,
     DeadCodeElimination,
 }
@@ -198,6 +206,7 @@ pub enum OptimizationPass {
 pub struct OptimizationReport {
     pub applied_passes: Vec<OptimizationPass>,
     pub folded_expressions: usize,
+    pub eliminated_common_subexpressions: usize,
     pub propagated_copies: usize,
     pub removed_dead_statements: usize,
 }
@@ -212,6 +221,13 @@ pub fn optimize(module: &IrModule, config: &OptimizationConfig) -> (IrModule, Op
                 let mut folder = ConstantFolder::default();
                 optimized = folder.fold_module(&optimized);
                 report.folded_expressions += folder.folded_expressions;
+                report.applied_passes.push(*pass);
+            }
+            OptimizationPass::CommonSubexpressionElimination => {
+                let mut eliminator = CommonSubexpressionEliminator::default();
+                optimized = eliminator.eliminate_module(&optimized);
+                report.eliminated_common_subexpressions +=
+                    eliminator.eliminated_common_subexpressions;
                 report.applied_passes.push(*pass);
             }
             OptimizationPass::CopyPropagation => {
@@ -990,6 +1006,311 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
         }
         _ => None,
     }
+}
+
+#[derive(Default)]
+struct CommonSubexpressionEliminator {
+    eliminated_common_subexpressions: usize,
+}
+
+#[derive(Debug, Clone)]
+struct AvailableExpr {
+    variable: String,
+    dependencies: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ExprSignature {
+    key: String,
+    dependencies: HashSet<String>,
+}
+
+impl CommonSubexpressionEliminator {
+    fn eliminate_module(&mut self, module: &IrModule) -> IrModule {
+        IrModule {
+            functions: module
+                .functions
+                .iter()
+                .map(|function| self.eliminate_function(function))
+                .collect(),
+        }
+    }
+
+    fn eliminate_function(&mut self, function: &IrFunction) -> IrFunction {
+        IrFunction {
+            name: function.name.clone(),
+            params: function.params.clone(),
+            return_type: function.return_type.clone(),
+            body: self.eliminate_block(&function.body, &mut HashMap::new()),
+            span: function.span,
+        }
+    }
+
+    fn eliminate_block(
+        &mut self,
+        statements: &[IrStmt],
+        available: &mut HashMap<String, AvailableExpr>,
+    ) -> Vec<IrStmt> {
+        statements
+            .iter()
+            .map(|statement| self.eliminate_statement(statement, available))
+            .collect()
+    }
+
+    fn eliminate_statement(
+        &mut self,
+        statement: &IrStmt,
+        available: &mut HashMap<String, AvailableExpr>,
+    ) -> IrStmt {
+        match statement {
+            IrStmt::Let {
+                name,
+                ty,
+                value,
+                span,
+            } => {
+                let value = self.rewrite_expr(value);
+                if expr_contains_call(&value) {
+                    available.clear();
+                }
+                invalidate_available_exprs(name, available);
+
+                let value = match pure_expr_signature(&value) {
+                    Some(signature) => match available.get(&signature.key) {
+                        Some(existing) => {
+                            self.eliminated_common_subexpressions += 1;
+                            IrExpr {
+                                kind: IrExprKind::Variable(existing.variable.clone()),
+                                ty: value.ty.clone(),
+                                span: value.span,
+                            }
+                        }
+                        None => {
+                            available.insert(
+                                signature.key,
+                                AvailableExpr {
+                                    variable: name.clone(),
+                                    dependencies: signature.dependencies,
+                                },
+                            );
+                            value
+                        }
+                    },
+                    None => value,
+                };
+
+                IrStmt::Let {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    value,
+                    span: *span,
+                }
+            }
+            IrStmt::Assign {
+                name,
+                op,
+                value,
+                span,
+            } => {
+                let value = self.rewrite_expr(value);
+                if expr_contains_call(&value) {
+                    available.clear();
+                }
+                invalidate_available_exprs(name, available);
+                IrStmt::Assign {
+                    name: name.clone(),
+                    op: *op,
+                    value,
+                    span: *span,
+                }
+            }
+            IrStmt::Return(expr) => {
+                let expr = expr.as_ref().map(|expr| self.rewrite_expr(expr));
+                if expr.as_ref().is_some_and(expr_contains_call) {
+                    available.clear();
+                }
+                IrStmt::Return(expr)
+            }
+            IrStmt::Break(span) => IrStmt::Break(*span),
+            IrStmt::Continue(span) => IrStmt::Continue(*span),
+            IrStmt::Expr(expr) => {
+                let expr = self.rewrite_expr(expr);
+                if expr_contains_call(&expr) {
+                    available.clear();
+                }
+                IrStmt::Expr(expr)
+            }
+            IrStmt::If {
+                branches,
+                else_body,
+                span,
+            } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| IrIfBranch {
+                        condition: self.rewrite_expr(&branch.condition),
+                        body: self.eliminate_block(&branch.body, &mut HashMap::new()),
+                    })
+                    .collect();
+                let else_body = self.eliminate_block(else_body, &mut HashMap::new());
+                available.clear();
+                IrStmt::If {
+                    branches,
+                    else_body,
+                    span: *span,
+                }
+            }
+            IrStmt::While {
+                condition,
+                body,
+                span,
+            } => {
+                let condition = self.rewrite_expr(condition);
+                let body = self.eliminate_block(body, &mut HashMap::new());
+                available.clear();
+                IrStmt::While {
+                    condition,
+                    body,
+                    span: *span,
+                }
+            }
+            IrStmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                span,
+            } => {
+                let start = self.rewrite_expr(start);
+                let end = self.rewrite_expr(end);
+                let step = step.as_ref().map(|step| self.rewrite_expr(step));
+                let body = self.eliminate_block(body, &mut HashMap::new());
+                invalidate_available_exprs(name, available);
+                available.clear();
+                IrStmt::For {
+                    name: name.clone(),
+                    start,
+                    end,
+                    step,
+                    body,
+                    span: *span,
+                }
+            }
+            IrStmt::Loop { body, span } => {
+                let body = self.eliminate_block(body, &mut HashMap::new());
+                available.clear();
+                IrStmt::Loop { body, span: *span }
+            }
+        }
+    }
+
+    fn rewrite_expr(&mut self, expr: &IrExpr) -> IrExpr {
+        match &expr.kind {
+            IrExprKind::Array(values) => IrExpr {
+                kind: IrExprKind::Array(
+                    values
+                        .iter()
+                        .map(|value| self.rewrite_expr(value))
+                        .collect(),
+                ),
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Index { target, index } => IrExpr {
+                kind: IrExprKind::Index {
+                    target: Box::new(self.rewrite_expr(target)),
+                    index: Box::new(self.rewrite_expr(index)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Unary { op, expr: inner } => IrExpr {
+                kind: IrExprKind::Unary {
+                    op: *op,
+                    expr: Box::new(self.rewrite_expr(inner)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Binary { left, op, right } => IrExpr {
+                kind: IrExprKind::Binary {
+                    left: Box::new(self.rewrite_expr(left)),
+                    op: *op,
+                    right: Box::new(self.rewrite_expr(right)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Call { name, args } => IrExpr {
+                kind: IrExprKind::Call {
+                    name: name.clone(),
+                    args: args.iter().map(|arg| self.rewrite_expr(arg)).collect(),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
+            IrExprKind::Integer(_)
+            | IrExprKind::Bool(_)
+            | IrExprKind::String(_)
+            | IrExprKind::Variable(_) => expr.clone(),
+        }
+    }
+}
+
+fn invalidate_available_exprs(name: &str, available: &mut HashMap<String, AvailableExpr>) {
+    available.retain(|_, expr| expr.variable != name && !expr.dependencies.contains(name));
+}
+
+fn pure_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
+    let (key, dependencies) = match &expr.kind {
+        IrExprKind::Integer(value) => (format!("i64:{value}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Variable(name) => {
+            let mut dependencies = HashSet::new();
+            dependencies.insert(name.clone());
+            (format!("var:{name}:{}", expr.ty.name), dependencies)
+        }
+        IrExprKind::Array(values) => {
+            let signatures = values
+                .iter()
+                .map(pure_expr_signature)
+                .collect::<Option<Vec<_>>>()?;
+            combine_signatures("array", &expr.ty.name, signatures)
+        }
+        IrExprKind::Index { target, index } => {
+            let target = pure_expr_signature(target)?;
+            let index = pure_expr_signature(index)?;
+            combine_signatures("index", &expr.ty.name, vec![target, index])
+        }
+        IrExprKind::Unary { op, expr: inner } => {
+            let inner = pure_expr_signature(inner)?;
+            combine_signatures(&format!("unary:{op:?}"), &expr.ty.name, vec![inner])
+        }
+        IrExprKind::Binary { left, op, right } => {
+            let left = pure_expr_signature(left)?;
+            let right = pure_expr_signature(right)?;
+            combine_signatures(&format!("binary:{op:?}"), &expr.ty.name, vec![left, right])
+        }
+        IrExprKind::Call { .. } => return None,
+    };
+
+    Some(ExprSignature { key, dependencies })
+}
+
+fn combine_signatures(
+    prefix: &str,
+    ty: &str,
+    signatures: Vec<ExprSignature>,
+) -> (String, HashSet<String>) {
+    let mut dependencies = HashSet::new();
+    let mut parts = Vec::new();
+    for signature in signatures {
+        dependencies.extend(signature.dependencies);
+        parts.push(signature.key);
+    }
+    (format!("{prefix}:{ty}({})", parts.join(",")), dependencies)
 }
 
 #[derive(Default)]
@@ -2478,7 +2799,53 @@ mod tests {
     }
 
     #[test]
-    fn alpha_optimizer_runs_constant_folding_then_dead_code_elimination() {
+    fn common_subexpression_elimination_reuses_prior_pure_binding() {
+        let source = "fn main -> i64\n    let base i64 = 4\n    let first i64 = (base + 1) * (base + 2)\n    let second i64 = (base + 1) * (base + 2)\n    first + second\n";
+        let module = lower_source(source);
+        let (optimized, report) = optimize(
+            &module,
+            &OptimizationConfig::common_subexpression_elimination(),
+        );
+
+        assert_eq!(
+            report.applied_passes,
+            vec![OptimizationPass::CommonSubexpressionElimination]
+        );
+        assert_eq!(report.eliminated_common_subexpressions, 1);
+        assert_eq!(
+            run_main(&optimized).expect("optimized run"),
+            run_all_backends(source).0
+        );
+
+        let IrStmt::Let { value, .. } = &optimized.functions[0].body[2] else {
+            panic!("expected second binding");
+        };
+        assert_eq!(value.kind, IrExprKind::Variable("first".to_string()));
+    }
+
+    #[test]
+    fn common_subexpression_elimination_invalidates_after_assignment() {
+        let source = "fn main -> i64\n    let source i64 = 1\n    let first i64 = source + 1\n    source = 2\n    let second i64 = source + 1\n    first + second\n";
+        let module = lower_source(source);
+        let (optimized, report) = optimize(
+            &module,
+            &OptimizationConfig::common_subexpression_elimination(),
+        );
+
+        assert_eq!(report.eliminated_common_subexpressions, 0);
+        assert_eq!(
+            run_main(&optimized).expect("optimized run"),
+            run_all_backends(source).0
+        );
+
+        let IrStmt::Let { value, .. } = &optimized.functions[0].body[3] else {
+            panic!("expected second binding");
+        };
+        assert!(matches!(value.kind, IrExprKind::Binary { .. }));
+    }
+
+    #[test]
+    fn alpha_optimizer_runs_alpha_pass_pipeline() {
         let module =
             lower_source("fn main -> i64\n    let value i64 = 40 + 2\n    return value\n    0\n");
         let (optimized, report) = optimize(&module, &OptimizationConfig::alpha_default());
@@ -2487,6 +2854,7 @@ mod tests {
             report.applied_passes,
             vec![
                 OptimizationPass::ConstantFolding,
+                OptimizationPass::CommonSubexpressionElimination,
                 OptimizationPass::CopyPropagation,
                 OptimizationPass::DeadCodeElimination
             ]
