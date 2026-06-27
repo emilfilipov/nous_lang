@@ -15,7 +15,7 @@ use nous_ir::{
 use nous_lexer::{Diagnostic, lex, validate_source_path};
 use nous_parser::{Program, parse};
 use nous_runtime::{ErrorCategory, RuntimeError, Value, run_main};
-use nous_semantics::{CheckedProgram, validate};
+use nous_semantics::{CheckedProgram, validate, validate_executable};
 
 fn main() -> ExitCode {
     match run() {
@@ -119,7 +119,7 @@ fn compile_file(
     mode: OutputMode,
     optimization: OptimizationMode,
 ) -> Result<(), String> {
-    let compiled = match compile(&path) {
+    let compiled = match compile(&path, SourceMode::Executable) {
         Ok(compiled) => compiled,
         Err(failure) => {
             return Err(format_reports(
@@ -171,7 +171,7 @@ fn compile_file(
 }
 
 fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
-    match compile(&path) {
+    match compile(&path, SourceMode::Library) {
         Ok(compiled) => {
             if mode == OutputMode::Json {
                 println!("{{\"status\":\"ok\",\"diagnostics\":[]}}");
@@ -201,7 +201,7 @@ fn run_file(
         return run_bytecode_artifact(path, mode);
     }
 
-    let compiled = match compile(&path) {
+    let compiled = match compile(&path, SourceMode::Executable) {
         Ok(compiled) => compiled,
         Err(failure) => {
             return Err(format_reports(
@@ -410,7 +410,7 @@ fn optimize_module(module: nous_ir::IrModule, optimization: OptimizationMode) ->
     }
 }
 
-fn compile(path: &PathBuf) -> Result<CompiledSource, CompileFailure> {
+fn compile(path: &PathBuf, source_mode: SourceMode) -> Result<CompiledSource, CompileFailure> {
     if let Err(diagnostic) = validate_source_path(path) {
         return Err(CompileFailure::without_source(vec![frontend_report(
             diagnostic,
@@ -459,7 +459,10 @@ fn compile(path: &PathBuf) -> Result<CompiledSource, CompileFailure> {
         }
     };
 
-    let checked = match validate(&program) {
+    let checked = match match source_mode {
+        SourceMode::Library => validate(&program),
+        SourceMode::Executable => validate_executable(&program),
+    } {
         Ok(checked) => checked,
         Err(diagnostics) => {
             return Err(CompileFailure::with_source(
@@ -492,6 +495,12 @@ fn compile(path: &PathBuf) -> Result<CompiledSource, CompileFailure> {
         program,
         checked,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceMode {
+    Library,
+    Executable,
 }
 
 fn frontend_report(

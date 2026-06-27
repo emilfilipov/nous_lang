@@ -18,6 +18,7 @@ This document freezes the installable Alpha 1 surface. If another design documen
 - Function parameters require explicit types.
 - Non-void functions return the last reachable expression unless `return expression` exits earlier.
 - Void functions use `-> void` and may use bare `return`.
+- Executable source passed to `nlang compile` or source `nlang run` must define `fn main -> Type` with zero parameters. `nlang check` can still validate helper/library-style functions that do not define `main`.
 - Local bindings use `let name Type = expression`.
 - Existing local bindings can be updated with `=`, `+=`, `-=`, `*=`, and `/=` when the types are valid.
 
@@ -65,6 +66,7 @@ This document freezes the installable Alpha 1 surface. If another design documen
   - `nlang examples`
   - `nlang --version`
 - `--diagnostic-format json` is accepted as a JSON diagnostics alias.
+- `nlang compile` and source `nlang run` require a zero-argument `main` entry point before lowering or execution. Invalid executable entry points report `N0329`.
 - `nlang compile` writes a versioned `.nbc` bytecode artifact with a format marker, artifact version, metadata, entry point, function table, compatibility checks, and bytecode module. `nlang inspect` prints artifact metadata and function signatures without executing the program.
 
 ## Diagnostics

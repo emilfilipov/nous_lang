@@ -66,6 +66,7 @@ if ($actual -ne $expected) { throw "checksum mismatch" }
 - Memory builtins: `alloc`, `load`, `store`, and `dealloc`.
 - Text file builtins: `read_file`, `write_file`, `append_file`, and `file_exists`.
 - Safe program-plus-argv command builtins: `sys_status` and `sys_output`.
+- Executable source passed to `nlang compile` or source `nlang run` must define zero-argument `main`; helper-only files remain valid for `nlang check`.
 
 See [alpha1_language_surface.md](alpha1_language_surface.md) for the frozen feature surface.
 
@@ -103,6 +104,7 @@ Notable codes:
 
 - `N0003`: compiled artifact write failure.
 - `N0211`: planned syntax such as imports, modules, structs, or try/catch is not supported in Alpha 1.
+- `N0329`: executable entry point is missing or has parameters.
 - `N0501`: IR lowering failure.
 - `N0502`: optimizer mode requires IR or bytecode backend.
 - `N0601`: malformed, unsupported, or incompatible `.nbc` artifact.

@@ -70,6 +70,8 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1
 - `nlang help`
 - `nlang --version`
 
+`nlang check` can validate helper/library-style `.nl` files without `main`. `nlang compile` and source `nlang run` require executable source with zero-argument `main`; invalid entry points report `N0329`.
+
 ## Documentation
 
 - [Alpha 1 language surface](documents/alpha1_language_surface.md)

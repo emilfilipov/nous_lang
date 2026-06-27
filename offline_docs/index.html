@@ -484,11 +484,11 @@ cargo run -p nous_cli -- run hello.nbc</code></pre>
             <tr><th>Command</th><th>Purpose</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>cargo run -p nous_cli -- check path/to/file.nl</code></td><td>Validate extension, lex, parse, and run semantic checks.</td></tr>
-            <tr><td><code>cargo run -p nous_cli -- compile --optimize alpha -o path/to/file.nbc path/to/file.nl</code></td><td>Validate, lower through typed IR, run the current alpha optimizer pipeline, and write a versioned <code>.nbc</code> bytecode artifact with metadata and a function table.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- check path/to/file.nl</code></td><td>Validate extension, lex, parse, and run semantic checks. This can check helper/library-style functions without <code>main</code>.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- compile --optimize alpha -o path/to/file.nbc path/to/file.nl</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current alpha optimizer pipeline, and write a versioned <code>.nbc</code> bytecode artifact with metadata and a function table.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- inspect path/to/file.nbc</code></td><td>Print artifact format, version, entry point, metadata target/payload, and function count without executing the program.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- inspect --format json path/to/file.nbc</code></td><td>Print bytecode artifact metadata and function signatures as deterministic JSON for tools.</td></tr>
-            <tr><td><code>cargo run -p nous_cli -- run path/to/file.nl</code></td><td>Validate and execute <code>main</code> in the default AST runtime.</td></tr>
+            <tr><td><code>cargo run -p nous_cli -- run path/to/file.nl</code></td><td>Validate and execute zero-argument <code>main</code> in the default AST runtime.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- run path/to/file.nbc</code></td><td>Load and execute a compiled bytecode artifact.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- run --backend ir path/to/file.nl</code></td><td>Validate, lower to typed IR, and execute with the IR interpreter.</td></tr>
             <tr><td><code>cargo run -p nous_cli -- run --backend bytecode path/to/file.nl</code></td><td>Validate, lower through typed IR into the initial structured bytecode backend, and execute it.</td></tr>
@@ -571,6 +571,7 @@ Suggested fix:
             <tr><td><code>N0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
             <tr><td><code>N0327</code></td><td>Ordering comparison operands are not both <code>i64</code>.</td></tr>
             <tr><td><code>N0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
+            <tr><td><code>N0329</code></td><td>Executable source passed to <code>compile</code> or source <code>run</code> is missing zero-argument <code>main</code>.</td></tr>
             <tr><td><code>N0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
             <tr><td><code>N0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
             <tr><td><code>N0601 [bytecode]</code></td><td>Compiled <code>.nbc</code> artifact is malformed, unsupported, or fails metadata/function table compatibility checks.</td></tr>

@@ -295,6 +295,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Use an i64 literal, variable, or arithmetic expression as the index.",
     },
     DiagnosticEntry {
+        code: "N0329",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "Executable source files must expose a zero-argument main entry point.",
+        root_cause: "The program passed to compile or run either has no main function or declares parameters on main.",
+        suggested_fix: "Add `fn main -> Type` with no parameters, then call helper functions from inside main.",
+    },
+    DiagnosticEntry {
         code: "N0501",
         phase: DiagnosticPhase::Ir,
         explanation: "The checked source program could not be lowered into typed IR.",

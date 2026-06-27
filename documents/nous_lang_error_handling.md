@@ -17,7 +17,7 @@ Current diagnostic ranges:
 | `N0001-N0003` | Source path and host file loading/writing | Invalid extension, unreadable source file, or failed artifact write. |
 | `N0101-N0104` | Lexer | Forbidden curly braces or semicolon terminators. |
 | `N0201-N0211` | Parser | Missing function body indentation, malformed expression, or planned syntax rejected by the Alpha 1 parser. |
-| `N0300-N0328` | Semantic validation | Unknown name, type mismatch, invalid loop control, invalid builtin arguments. |
+| `N0300-N0329` | Semantic validation | Unknown name, type mismatch, invalid loop control, invalid builtin arguments, and invalid executable entry points. |
 | `N0400-N0418` | Runtime and host resources | Missing `main`, division by zero, invalid pointer, missing file, failed command invocation. |
 | `N0501` | IR lowering | Typed IR lowering failed after semantic validation. |
 | `N0601` | Bytecode artifact | Compiled `.nbc` artifact is malformed or unsupported. |

@@ -797,6 +797,63 @@ fn reports_type_mismatch_as_ordered_json() {
 }
 
 #[test]
+fn check_allows_library_style_source_without_main() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/missing_main.nl");
+    let output = nlang()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(stdout(&output).contains("ok:"), "{output:?}");
+}
+
+#[test]
+fn compile_requires_zero_argument_main_entrypoint() {
+    let root = workspace_root();
+    let fixture = root.join("tests/fixtures/invalid/missing_main.nl");
+    let artifact = root.join("target/missing_main.nbc");
+    let _ = std::fs::remove_file(&artifact);
+
+    let output = nlang()
+        .args([
+            "compile",
+            "-o",
+            artifact.to_str().expect("artifact path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("N0329 [semantic error]"), "{stderr}");
+    assert!(stderr.contains("zero-argument `main`"), "{stderr}");
+    assert!(!artifact.exists(), "{artifact:?}");
+}
+
+#[test]
+fn run_rejects_main_with_parameters_as_json() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/main_with_parameter.nl");
+    let output = nlang()
+        .args([
+            "run",
+            "--format",
+            "json",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+
+    let stderr = stderr(&output);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr.contains("\"code\":\"N0329\""), "{stderr}");
+    assert!(stderr.contains("\"phase\":\"semantic\""), "{stderr}");
+    assert!(stderr.contains("\"function\":\"main\""), "{stderr}");
+    assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
+}
+
+#[test]
 fn rejects_assignment_type_mismatch() {
     let fixture = workspace_root().join("tests/fixtures/invalid/assignment_type_mismatch.nl");
     let output = nlang()

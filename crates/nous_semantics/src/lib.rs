@@ -71,6 +71,40 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
     }
 }
 
+pub fn validate_executable(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnostic>> {
+    let checked = validate(program)?;
+    validate_entrypoint(program)?;
+    Ok(checked)
+}
+
+pub fn validate_entrypoint(program: &Program) -> Result<(), Vec<SemanticDiagnostic>> {
+    let Some(main) = program
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+    else {
+        return Err(vec![SemanticDiagnostic::new(
+            "N0329",
+            "executable source must define a zero-argument `main` function",
+            None,
+        )]);
+    };
+
+    if main.params.is_empty() {
+        Ok(())
+    } else {
+        Err(vec![SemanticDiagnostic::at(
+            "N0329",
+            format!(
+                "executable `main` must take zero arguments but declares {}",
+                main.params.len()
+            ),
+            Some(main.name.clone()),
+            main.span,
+        )])
+    }
+}
+
 struct Checker<'a> {
     program: &'a Program,
     signatures: HashMap<String, Signature>,
@@ -1031,5 +1065,24 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0313")
         );
+    }
+
+    #[test]
+    fn executable_validation_requires_main_entrypoint() {
+        let tokens = lex("fn add x i64 y i64 -> i64\n    x + y\n").expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let diagnostics = validate_executable(&program).expect_err("entrypoint");
+
+        assert_eq!(diagnostics[0].code, "N0329");
+    }
+
+    #[test]
+    fn executable_validation_rejects_main_parameters() {
+        let tokens = lex("fn main arg i64 -> i64\n    arg\n").expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let diagnostics = validate_executable(&program).expect_err("entrypoint");
+
+        assert_eq!(diagnostics[0].code, "N0329");
+        assert_eq!(diagnostics[0].function.as_deref(), Some("main"));
     }
 }
