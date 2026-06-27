@@ -2731,10 +2731,11 @@ impl<'a> Lowerer<'a> {
                 span,
             } => {
                 let value = self.lower_expr(value, scope)?;
-                scope.insert(name.clone(), ty.clone());
+                let binding_type = ty.clone().unwrap_or_else(|| value.ty.clone());
+                scope.insert(name.clone(), binding_type.clone());
                 Ok(IrStmt::Let {
                     name: name.clone(),
-                    ty: ty.clone(),
+                    ty: binding_type,
                     value,
                     span: *span,
                 })

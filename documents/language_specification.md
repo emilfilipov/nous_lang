@@ -20,10 +20,11 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Blocks are indentation-only. Curly braces and semicolon terminators are compile errors.
 - Functions use `fn name param Type -> ReturnType` and return the last reachable expression unless an explicit `return` exits earlier.
 - Void functions use `-> void` and may use bare `return`.
-- Local bindings use `let name Type = expression`.
+- Local bindings use `let name Type = expression` for explicit annotations or `let name = expression` when the initializer type is unambiguous.
 - Existing local bindings can be updated with `name = expression` or numeric compound assignments `+=`, `-=`, `*=`, and `/=`.
 - Implemented scalar types are `i64`, `bool`, `string`, and `void`.
 - Implemented homogeneous arrays use `array<T>` type spelling, non-empty literals such as `[1, 2, 3]`, and bounds-checked indexing such as `values[0]`.
+- Omitted local binding annotations are inferred from literals, function calls, array literals, and other expressions that already have a concrete type. Empty arrays and `void` initializers cannot infer a local type.
 - The current pointer spelling is an interim concrete type name such as `ptr_i64`.
 - Implemented expressions include literals, array literals, array indexing, variables, function calls with parentheses, arithmetic, comparisons, logical operators `and`/`or`/`not`, and grouped expressions.
 - Equality comparisons require matching operand types. Ordering comparisons `<`, `<=`, `>`, and `>=` currently require `i64` operands.

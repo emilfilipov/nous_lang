@@ -123,7 +123,7 @@ statement =
   | expr ;
 
 let_stmt =
-    "let" IDENT type "=" expr ;
+    "let" IDENT [ type ] "=" expr ;
 
 assignment_stmt =
     IDENT assignment_op expr ;
@@ -141,7 +141,7 @@ continue_stmt =
     "continue" ;
 ```
 
-Statements are line-oriented. No semicolon terminator is accepted.
+Statements are line-oriented. No semicolon terminator is accepted. A `let` annotation is optional only when the initializer has a concrete semantic type; empty arrays and `void` initializers cannot provide an inferred local type.
 
 ## Control Flow
 

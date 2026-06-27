@@ -60,7 +60,7 @@ if ($actual -ne $expected) { throw "checksum mismatch" }
 - Indentation-only blocks; curly braces and semicolon terminators are errors.
 - Functions with typed parameters and explicit return types.
 - Last-expression returns, explicit `return`, and `-> void`.
-- `let` bindings, assignment, and numeric compound assignment.
+- `let` bindings with explicit or inferred local types, assignment, and numeric compound assignment.
 - `i64`, `bool`, `string`, `void`, `array<T>`, and interim pointer spellings such as `ptr_i64`.
 - Arithmetic, equality, ordering, boolean logic, grouped expressions, calls, arrays, and indexing.
 - `if`/`elif`/`else`, `while`, inclusive range `for`, `loop`, `break`, and `continue`.

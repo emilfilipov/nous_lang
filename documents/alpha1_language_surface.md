@@ -19,7 +19,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Non-void functions return the last reachable expression unless `return expression` exits earlier.
 - Void functions use `-> void` and may use bare `return`.
 - Executable source passed to `nlang compile` or source `nlang run` must define `fn main -> Type` with zero parameters. `nlang check` can still validate helper/library-style functions that do not define `main`.
-- Local bindings use `let name Type = expression`.
+- Local bindings use `let name Type = expression` for explicit annotations or `let name = expression` when the initializer type is unambiguous.
 - Existing local bindings can be updated with `=`, `+=`, `-=`, `*=`, and `/=` when the types are valid.
 
 ## Types
@@ -29,6 +29,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Array literals must be non-empty and homogeneous, such as `[1, 2, 3]`.
 - Array indexing is bounds-checked at runtime and requires an `i64` index.
 - Interim pointer type names use concrete spellings such as `ptr_i64`.
+- Omitted local binding annotations are inferred from the initializer expression. Empty arrays and `void` initializers cannot supply an inferred local type.
 
 ## Expressions
 

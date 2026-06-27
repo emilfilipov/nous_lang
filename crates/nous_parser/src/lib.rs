@@ -47,7 +47,7 @@ impl TypeRef {
 pub enum Stmt {
     Let {
         name: String,
-        ty: TypeRef,
+        ty: Option<TypeRef>,
         value: Expr,
         span: Span,
     },
@@ -323,7 +323,11 @@ impl<'a> Parser<'a> {
     fn parse_let(&mut self) -> Option<Stmt> {
         let span = self.previous().span;
         let name = self.expect_identifier("expected binding name after `let`")?;
-        let ty = self.expect_type("expected binding type")?;
+        let ty = if self.at_symbol("=") {
+            None
+        } else {
+            Some(self.expect_type("expected binding type or `=` for inferred binding")?)
+        };
         if !self.eat_symbol("=") {
             self.error("N0206", "expected `=` in let binding", self.peek().span);
             return None;
@@ -557,6 +561,10 @@ impl<'a> Parser<'a> {
         } else {
             false
         }
+    }
+
+    fn at_symbol(&self, symbol: &str) -> bool {
+        matches!(&self.peek().kind, TokenKind::Symbol(actual) if actual == symbol)
     }
 
     fn next_is_assignment(&self) -> bool {
@@ -969,6 +977,16 @@ mod tests {
             lex("fn main -> i64\n    let value i64 = add(1, 2)\n    value\n").expect("lex");
         let program = parse(&tokens).expect("parse");
         assert_eq!(program.functions[0].body.len(), 2);
+    }
+
+    #[test]
+    fn parses_inferred_let_binding() {
+        let tokens = lex("fn main -> i64\n    let value = add(1, 2)\n    value\n").expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Let { ty, .. } = &program.functions[0].body[0] else {
+            panic!("expected let statement");
+        };
+        assert_eq!(ty, &None);
     }
 
     #[test]

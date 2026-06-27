@@ -40,6 +40,7 @@ REQUIRED_PHRASES = [
     "zero-argument main",
     "void",
     "let",
+    "inferred local type",
     "assignment",
     "array&lt;T&gt;",
     "non-empty array literals",

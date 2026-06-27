@@ -169,6 +169,31 @@ fn runs_arithmetic_fixture_with_bytecode_backend() {
 }
 
 #[test]
+fn runs_inferred_let_fixture_on_all_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_inferred_let.nl");
+    for args in [
+        vec!["run", fixture.to_str().expect("fixture path")],
+        vec![
+            "run",
+            "--backend",
+            "ir",
+            fixture.to_str().expect("fixture path"),
+        ],
+        vec![
+            "run",
+            "--backend",
+            "bytecode",
+            fixture.to_str().expect("fixture path"),
+        ],
+    ] {
+        let output = nlang().args(args).output().expect("run cli");
+
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+    }
+}
+
+#[test]
 fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_arithmetic.nl");

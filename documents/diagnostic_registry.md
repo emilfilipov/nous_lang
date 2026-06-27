@@ -55,7 +55,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0203` | parser | Expected type syntax. | Type annotation is missing or malformed. | Use current type spelling such as `i64`, `bool`, `string`, or `array<T>`. |
 | `N0204` | parser | Expected identifier. | A name is missing where required. | Add a valid identifier. |
 | `N0205` | parser | Expected structural token. | Missing newline, indent, or dedent. | Check indentation and required block bodies. |
-| `N0206` | parser | Expected `=` in a let binding. | A `let` statement lacks an initializer separator. | Use `let name Type = expression`. |
+| `N0206` | parser | Expected `=` in a let binding. | A `let` statement lacks an initializer separator. | Use `let name Type = expression` or `let name = expression`. |
 | `N0207` | parser | Invalid expression. | Unsupported or malformed expression syntax. | Use supported expression forms and matching delimiters. |
 | `N0208` | parser | Expected assignment operator. | Assignment statement has malformed operator. | Use `=`, `+=`, `-=`, `*=`, or `/=`. |
 | `N0209` | parser | Expected `from` in for loop. | Range loop header is malformed. | Use `for name from start to end`. |
@@ -64,7 +64,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0300` | semantic | Duplicate function. | Two functions share a name. | Rename or remove one function. |
 | `N0301` | semantic | Non-void function has no final value of declared type. | Control reaches the end without the expected value. | Add a final expression or return the declared type. |
 | `N0302` | semantic | Duplicate parameter. | Function has repeated parameter names. | Rename one parameter. |
-| `N0303` | semantic | Binding initializer type mismatch. | Declared local type differs from initializer type. | Match the declared type and initializer. |
+| `N0303` | semantic | Binding initializer type mismatch. | Declared local type differs from initializer type, or an inferred binding cannot get a concrete local type. | Match the declared type and initializer, or add an explicit usable annotation. |
 | `N0304` | semantic | Return type mismatch. | Return expression differs from function return type. | Return the declared type or change the signature. |
 | `N0305` | semantic | Condition is not bool. | `if` or `while` condition has non-bool type. | Use a bool expression. |
 | `N0306` | semantic | Unknown variable. | Name is not visible in current scope. | Add a `let`, parameter, or fix the name. |

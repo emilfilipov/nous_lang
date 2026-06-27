@@ -12,7 +12,7 @@ Alpha 1 is acceptable when the repository provides:
 - Source validation for the canonical `.nl` extension.
 - Indentation-only block parsing with hard diagnostics for curly braces and semicolon terminators.
 - Function declarations with typed parameters, explicit return types, last-expression returns, explicit `return`, and `void` functions.
-- Local `let` bindings with explicit types.
+- Local `let` bindings with explicit types or initializer-based inferred types.
 - Assignment and numeric compound assignment for existing locals.
 - Scalar values for `i64`, `bool`, `string`, and `void`.
 - Homogeneous non-empty `array<T>` literals and bounds-checked indexing.

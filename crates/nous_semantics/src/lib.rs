@@ -219,22 +219,38 @@ impl<'a> Checker<'a> {
                 name, ty, value, ..
             } => {
                 let value_type = self.check_expr(value, scope, function);
-                if value_type.as_ref() != Some(ty) {
+                let binding_type = match ty {
+                    Some(declared) => {
+                        if value_type.as_ref() != Some(declared) {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "N0303",
+                                format!(
+                                    "binding `{name}` declares `{}` but initializer has `{}`",
+                                    declared.name,
+                                    value_type
+                                        .as_ref()
+                                        .map(|ty| ty.name.as_str())
+                                        .unwrap_or("<unknown>")
+                                ),
+                                Some(function.name.clone()),
+                                value.span,
+                            ));
+                        }
+                        declared.clone()
+                    }
+                    None => value_type
+                        .clone()
+                        .unwrap_or_else(|| TypeRef::new("<unknown>")),
+                };
+                if ty.is_none() && binding_type.is_void() {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "N0303",
-                        format!(
-                            "binding `{name}` declares `{}` but initializer has `{}`",
-                            ty.name,
-                            value_type
-                                .as_ref()
-                                .map(|ty| ty.name.as_str())
-                                .unwrap_or("<unknown>")
-                        ),
+                        format!("binding `{name}` cannot infer type from a void initializer"),
                         Some(function.name.clone()),
                         value.span,
                     ));
                 }
-                scope.locals.insert(name.clone(), ty.clone());
+                scope.locals.insert(name.clone(), binding_type);
                 None
             }
             Stmt::Assign {
@@ -845,6 +861,12 @@ mod tests {
     }
 
     #[test]
+    fn validates_inferred_bindings() {
+        let source = "fn add x i64 y i64 -> i64\n    x + y\n\nfn main -> i64\n    let value = add(1, 2)\n    let values = [value, 4]\n    values[0]\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
     fn validates_memory_builtins() {
         let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(41)\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + 1\n";
         assert!(validate_source(source).is_ok());
@@ -928,6 +950,18 @@ mod tests {
             "fn bad -> bool\n    let value bool = false\n    value = 1\n    value\n",
         )
         .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0314")
+        );
+    }
+
+    #[test]
+    fn catches_assignment_type_mismatch_after_inference() {
+        let diagnostics =
+            validate_source("fn bad -> i64\n    let value = 1\n    value = false\n    value\n")
+                .expect_err("semantic");
         assert!(
             diagnostics
                 .iter()

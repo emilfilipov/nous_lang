@@ -341,11 +341,19 @@ cargo run -p nous_cli -- run hello.nbc</code></pre>
 
       <section id="variables-assignment">
         <h2>Variables And Assignment</h2>
-        <p>Use <code>let</code> to bind a local name with an explicit type and initializer.</p>
+        <p>Use <code>let</code> to bind a local name with an explicit type and initializer, or omit the type when the initializer has a concrete inferred local type.</p>
         <pre data-fixture="tests/fixtures/valid/docs_let_binding.nl" data-mode="run"><code>fn main -> i64
     let value i64 = 40
     value + 2</code></pre>
         <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_let_binding.nl</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/run_inferred_let.nl" data-mode="run"><code>fn add x i64 y i64 -> i64
+    x + y
+
+fn main -> i64
+    let value = add(40, 2)
+    let values = [value, 1]
+    values[0]</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_inferred_let.nl</code>.</p>
         <p>Existing locals can be updated with regular assignment or numeric compound assignment.</p>
         <pre data-fixture="tests/fixtures/valid/docs_count_assignment.nl" data-mode="check"><code>fn count -> i64
     let total i64 = 0
