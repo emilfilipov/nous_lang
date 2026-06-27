@@ -22,7 +22,7 @@ The current Rust workspace implements a frontend and in-process execution pipeli
 4. `nous_ir` lowers a `CheckedProgram` into typed semantic IR for the current alpha subset, including typed functions, parameters, statements, control flow, calls, builtins, and expressions.
 5. `nous_runtime` executes the validated AST directly, including `main`, calls, scoped locals, assignment, branch result values, while/loop/range-for control flow, array literals/indexing with runtime bounds checks, arithmetic/comparisons, short-circuit boolean logic, heap-slot memory operations including `alloc`/`load`/`store`/`dealloc`, text file I/O, and safe system command builtins.
 6. `nous_ir` provides a deterministic optimization pass framework. Implemented passes are constant folding for pure literal arithmetic, comparisons, boolean logic, string equality, and unary `not`, conservative block-local copy propagation for simple variable aliases, plus dead-code elimination for statements after unconditional `return`, `break`, or `continue` in the same block. Constant folding deliberately leaves divide-by-zero expressions intact so runtime diagnostics are preserved.
-7. `nous_ir` can also execute the lowered typed IR, lower it into an initial structured bytecode module, and encode/decode a versioned `.nbc` bytecode artifact for the current alpha subset.
+7. `nous_ir` can also execute the lowered typed IR, lower it into an explicit instruction-bytecode module, and encode/decode a versioned `.nbc` bytecode artifact for the current alpha subset.
 8. `nous_cli` exposes the current pipeline as `nlang check <file.nl>`, `nlang compile [--optimize none|constant-fold|dead-code|alpha] [-o output.nbc] <file.nl>`, `nlang inspect <file.nbc>`, `nlang run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] <file.nl|file.nbc>`, `nlang docs`, and `nlang examples`. Optimization is opt-in and applies only to IR/bytecode source runs and compiled bytecode artifacts.
 
 Additional optimization passes, native code generation, linking, and binary output remain planned architecture stages.
@@ -130,14 +130,14 @@ Transforms IR into efficient machine code with systems-level optimizations.
 
 #### Current Alpha Bytecode Artifact
 
-The current compiler artifact is a JSON `.nbc` file with a format marker, artifact version, metadata, entry point, function table, and structured bytecode module:
+The current compiler artifact is a JSON `.nbc` file with a format marker, artifact version, metadata, entry point, function table, and instruction-bytecode module:
 
 - `format`: `nous-bytecode`
-- `version`: artifact version, currently `2`
+- `version`: artifact version, currently `3`
 - `metadata`: deterministic producer, target, and payload metadata
 - `entry`: currently `main`
 - `function_table`: declared bytecode function signatures used for compatibility checks
-- `module`: the initial structured bytecode module
+- `module`: bytecode functions containing dedicated `instructions` rather than raw IR statements
 
 `nlang compile file.nl -o file.nbc` writes this artifact, `nlang inspect file.nbc` prints artifact metadata and function signatures, and `nlang run file.nbc` executes it through the bytecode VM entry point. Unsupported artifact format, version, target, payload, entry values, duplicate functions, or function-table/module mismatches produce `N0601 [bytecode error]`.
 

@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 pub const BYTECODE_ARTIFACT_FORMAT: &str = "nous-bytecode";
 pub const BYTECODE_ARTIFACT_EXTENSION: &str = "nbc";
-pub const BYTECODE_ARTIFACT_VERSION: u32 = 2;
-const BYTECODE_ARTIFACT_PAYLOAD: &str = "structured-bytecode";
+pub const BYTECODE_ARTIFACT_VERSION: u32 = 3;
+const BYTECODE_ARTIFACT_PAYLOAD: &str = "instruction-bytecode";
 const BYTECODE_ARTIFACT_TARGET: &str = "alpha1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,8 +247,89 @@ pub struct BytecodeFunction {
     pub name: String,
     pub params: Vec<IrParam>,
     pub return_type: TypeRef,
-    pub body: Vec<IrStmt>,
+    pub instructions: Vec<BytecodeInstruction>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BytecodeInstruction {
+    Let {
+        name: String,
+        ty: TypeRef,
+        value: BytecodeExpr,
+        span: Span,
+    },
+    Assign {
+        name: String,
+        op: AssignOp,
+        value: BytecodeExpr,
+        span: Span,
+    },
+    Return(Option<BytecodeExpr>),
+    Break(Span),
+    Continue(Span),
+    Expr(BytecodeExpr),
+    If {
+        branches: Vec<BytecodeIfBranch>,
+        else_body: Vec<BytecodeInstruction>,
+        span: Span,
+    },
+    While {
+        condition: BytecodeExpr,
+        body: Vec<BytecodeInstruction>,
+        span: Span,
+    },
+    For {
+        name: String,
+        start: BytecodeExpr,
+        end: BytecodeExpr,
+        step: Option<BytecodeExpr>,
+        body: Vec<BytecodeInstruction>,
+        span: Span,
+    },
+    Loop {
+        body: Vec<BytecodeInstruction>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BytecodeIfBranch {
+    pub condition: BytecodeExpr,
+    pub body: Vec<BytecodeInstruction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BytecodeExpr {
+    pub kind: BytecodeExprKind,
+    pub ty: TypeRef,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BytecodeExprKind {
+    Integer(i64),
+    Bool(bool),
+    String(String),
+    Array(Vec<BytecodeExpr>),
+    Variable(String),
+    Index {
+        target: Box<BytecodeExpr>,
+        index: Box<BytecodeExpr>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<BytecodeExpr>,
+    },
+    Binary {
+        left: Box<BytecodeExpr>,
+        op: BinaryOp,
+        right: Box<BytecodeExpr>,
+    },
+    Call {
+        name: String,
+        args: Vec<BytecodeExpr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,7 +501,7 @@ pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
                 name: function.name.clone(),
                 params: function.params.clone(),
                 return_type: function.return_type.clone(),
-                body: function.body.clone(),
+                instructions: lower_bytecode_block(&function.body),
                 span: function.span,
             })
             .collect(),
@@ -432,16 +513,249 @@ pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError>
         functions: module
             .functions
             .iter()
-            .map(|function| IrFunction {
-                name: function.name.clone(),
-                params: function.params.clone(),
-                return_type: function.return_type.clone(),
-                body: function.body.clone(),
-                span: function.span,
-            })
+            .map(bytecode_function_to_ir)
             .collect(),
     };
     run_main(&ir)
+}
+
+fn lower_bytecode_block(statements: &[IrStmt]) -> Vec<BytecodeInstruction> {
+    statements.iter().map(lower_bytecode_instruction).collect()
+}
+
+fn lower_bytecode_instruction(statement: &IrStmt) -> BytecodeInstruction {
+    match statement {
+        IrStmt::Let {
+            name,
+            ty,
+            value,
+            span,
+        } => BytecodeInstruction::Let {
+            name: name.clone(),
+            ty: ty.clone(),
+            value: lower_bytecode_expr(value),
+            span: *span,
+        },
+        IrStmt::Assign {
+            name,
+            op,
+            value,
+            span,
+        } => BytecodeInstruction::Assign {
+            name: name.clone(),
+            op: *op,
+            value: lower_bytecode_expr(value),
+            span: *span,
+        },
+        IrStmt::Return(expr) => BytecodeInstruction::Return(expr.as_ref().map(lower_bytecode_expr)),
+        IrStmt::Break(span) => BytecodeInstruction::Break(*span),
+        IrStmt::Continue(span) => BytecodeInstruction::Continue(*span),
+        IrStmt::Expr(expr) => BytecodeInstruction::Expr(lower_bytecode_expr(expr)),
+        IrStmt::If {
+            branches,
+            else_body,
+            span,
+        } => BytecodeInstruction::If {
+            branches: branches
+                .iter()
+                .map(|branch| BytecodeIfBranch {
+                    condition: lower_bytecode_expr(&branch.condition),
+                    body: lower_bytecode_block(&branch.body),
+                })
+                .collect(),
+            else_body: lower_bytecode_block(else_body),
+            span: *span,
+        },
+        IrStmt::While {
+            condition,
+            body,
+            span,
+        } => BytecodeInstruction::While {
+            condition: lower_bytecode_expr(condition),
+            body: lower_bytecode_block(body),
+            span: *span,
+        },
+        IrStmt::For {
+            name,
+            start,
+            end,
+            step,
+            body,
+            span,
+        } => BytecodeInstruction::For {
+            name: name.clone(),
+            start: lower_bytecode_expr(start),
+            end: lower_bytecode_expr(end),
+            step: step.as_ref().map(lower_bytecode_expr),
+            body: lower_bytecode_block(body),
+            span: *span,
+        },
+        IrStmt::Loop { body, span } => BytecodeInstruction::Loop {
+            body: lower_bytecode_block(body),
+            span: *span,
+        },
+    }
+}
+
+fn lower_bytecode_expr(expr: &IrExpr) -> BytecodeExpr {
+    let kind = match &expr.kind {
+        IrExprKind::Integer(value) => BytecodeExprKind::Integer(*value),
+        IrExprKind::Bool(value) => BytecodeExprKind::Bool(*value),
+        IrExprKind::String(value) => BytecodeExprKind::String(value.clone()),
+        IrExprKind::Array(values) => {
+            BytecodeExprKind::Array(values.iter().map(lower_bytecode_expr).collect())
+        }
+        IrExprKind::Variable(name) => BytecodeExprKind::Variable(name.clone()),
+        IrExprKind::Index { target, index } => BytecodeExprKind::Index {
+            target: Box::new(lower_bytecode_expr(target)),
+            index: Box::new(lower_bytecode_expr(index)),
+        },
+        IrExprKind::Unary { op, expr } => BytecodeExprKind::Unary {
+            op: *op,
+            expr: Box::new(lower_bytecode_expr(expr)),
+        },
+        IrExprKind::Binary { left, op, right } => BytecodeExprKind::Binary {
+            left: Box::new(lower_bytecode_expr(left)),
+            op: *op,
+            right: Box::new(lower_bytecode_expr(right)),
+        },
+        IrExprKind::Call { name, args } => BytecodeExprKind::Call {
+            name: name.clone(),
+            args: args.iter().map(lower_bytecode_expr).collect(),
+        },
+    };
+
+    BytecodeExpr {
+        kind,
+        ty: expr.ty.clone(),
+        span: expr.span,
+    }
+}
+
+fn bytecode_function_to_ir(function: &BytecodeFunction) -> IrFunction {
+    IrFunction {
+        name: function.name.clone(),
+        params: function.params.clone(),
+        return_type: function.return_type.clone(),
+        body: bytecode_block_to_ir(&function.instructions),
+        span: function.span,
+    }
+}
+
+fn bytecode_block_to_ir(instructions: &[BytecodeInstruction]) -> Vec<IrStmt> {
+    instructions
+        .iter()
+        .map(bytecode_instruction_to_ir)
+        .collect()
+}
+
+fn bytecode_instruction_to_ir(instruction: &BytecodeInstruction) -> IrStmt {
+    match instruction {
+        BytecodeInstruction::Let {
+            name,
+            ty,
+            value,
+            span,
+        } => IrStmt::Let {
+            name: name.clone(),
+            ty: ty.clone(),
+            value: bytecode_expr_to_ir(value),
+            span: *span,
+        },
+        BytecodeInstruction::Assign {
+            name,
+            op,
+            value,
+            span,
+        } => IrStmt::Assign {
+            name: name.clone(),
+            op: *op,
+            value: bytecode_expr_to_ir(value),
+            span: *span,
+        },
+        BytecodeInstruction::Return(expr) => IrStmt::Return(expr.as_ref().map(bytecode_expr_to_ir)),
+        BytecodeInstruction::Break(span) => IrStmt::Break(*span),
+        BytecodeInstruction::Continue(span) => IrStmt::Continue(*span),
+        BytecodeInstruction::Expr(expr) => IrStmt::Expr(bytecode_expr_to_ir(expr)),
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            span,
+        } => IrStmt::If {
+            branches: branches
+                .iter()
+                .map(|branch| IrIfBranch {
+                    condition: bytecode_expr_to_ir(&branch.condition),
+                    body: bytecode_block_to_ir(&branch.body),
+                })
+                .collect(),
+            else_body: bytecode_block_to_ir(else_body),
+            span: *span,
+        },
+        BytecodeInstruction::While {
+            condition,
+            body,
+            span,
+        } => IrStmt::While {
+            condition: bytecode_expr_to_ir(condition),
+            body: bytecode_block_to_ir(body),
+            span: *span,
+        },
+        BytecodeInstruction::For {
+            name,
+            start,
+            end,
+            step,
+            body,
+            span,
+        } => IrStmt::For {
+            name: name.clone(),
+            start: bytecode_expr_to_ir(start),
+            end: bytecode_expr_to_ir(end),
+            step: step.as_ref().map(bytecode_expr_to_ir),
+            body: bytecode_block_to_ir(body),
+            span: *span,
+        },
+        BytecodeInstruction::Loop { body, span } => IrStmt::Loop {
+            body: bytecode_block_to_ir(body),
+            span: *span,
+        },
+    }
+}
+
+fn bytecode_expr_to_ir(expr: &BytecodeExpr) -> IrExpr {
+    let kind = match &expr.kind {
+        BytecodeExprKind::Integer(value) => IrExprKind::Integer(*value),
+        BytecodeExprKind::Bool(value) => IrExprKind::Bool(*value),
+        BytecodeExprKind::String(value) => IrExprKind::String(value.clone()),
+        BytecodeExprKind::Array(values) => {
+            IrExprKind::Array(values.iter().map(bytecode_expr_to_ir).collect())
+        }
+        BytecodeExprKind::Variable(name) => IrExprKind::Variable(name.clone()),
+        BytecodeExprKind::Index { target, index } => IrExprKind::Index {
+            target: Box::new(bytecode_expr_to_ir(target)),
+            index: Box::new(bytecode_expr_to_ir(index)),
+        },
+        BytecodeExprKind::Unary { op, expr } => IrExprKind::Unary {
+            op: *op,
+            expr: Box::new(bytecode_expr_to_ir(expr)),
+        },
+        BytecodeExprKind::Binary { left, op, right } => IrExprKind::Binary {
+            left: Box::new(bytecode_expr_to_ir(left)),
+            op: *op,
+            right: Box::new(bytecode_expr_to_ir(right)),
+        },
+        BytecodeExprKind::Call { name, args } => IrExprKind::Call {
+            name: name.clone(),
+            args: args.iter().map(bytecode_expr_to_ir).collect(),
+        },
+    };
+
+    IrExpr {
+        kind,
+        ty: expr.ty.clone(),
+        span: expr.span,
+    }
 }
 
 #[derive(Default)]
@@ -2196,10 +2510,14 @@ mod tests {
         assert_eq!(artifact.format, BYTECODE_ARTIFACT_FORMAT);
         assert_eq!(artifact.version, BYTECODE_ARTIFACT_VERSION);
         assert_eq!(artifact.metadata.target, "alpha1");
-        assert_eq!(artifact.metadata.payload, "structured-bytecode");
+        assert_eq!(artifact.metadata.payload, "instruction-bytecode");
         assert_eq!(artifact.entry, "main");
         assert_eq!(artifact.function_table.len(), 1);
         assert_eq!(artifact.function_table[0].name, "main");
+        assert!(matches!(
+            artifact.module.functions[0].instructions[0],
+            BytecodeInstruction::Expr(_)
+        ));
         assert_eq!(
             run_bytecode_main(&artifact.module).expect("run artifact bytecode"),
             Value::I64(42)
@@ -2223,7 +2541,7 @@ mod tests {
     #[test]
     fn bytecode_artifact_rejects_missing_entry_function() {
         let invalid = format!(
-            "{{\"format\":\"{BYTECODE_ARTIFACT_FORMAT}\",\"version\":{BYTECODE_ARTIFACT_VERSION},\"entry\":\"main\",\"metadata\":{{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"structured-bytecode\"}},\"function_table\":[],\"module\":{{\"functions\":[]}}}}"
+            "{{\"format\":\"{BYTECODE_ARTIFACT_FORMAT}\",\"version\":{BYTECODE_ARTIFACT_VERSION},\"entry\":\"main\",\"metadata\":{{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"instruction-bytecode\"}},\"function_table\":[],\"module\":{{\"functions\":[]}}}}"
         );
         let error = decode_bytecode_artifact(&invalid).expect_err("missing entry");
 

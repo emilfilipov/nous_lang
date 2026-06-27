@@ -90,6 +90,8 @@ REQUIRED_PHRASES = [
     "publish_github_release.ps1",
     "RELEASE_NOTES.md",
     ".nbc",
+    "instruction-bytecode",
+    "function instructions",
     "function table",
     "metadata",
     "--backend ir",

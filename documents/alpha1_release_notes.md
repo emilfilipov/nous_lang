@@ -88,11 +88,11 @@ See [alpha1_language_surface.md](alpha1_language_surface.md) for the frozen feat
 `nlang compile` writes a versioned `.nbc` JSON artifact with:
 
 - `format`: `nous-bytecode`
-- `version`: `2`
+- `version`: `3`
 - deterministic metadata
 - entry point
 - function table
-- structured bytecode module
+- instruction-bytecode module with dedicated function `instructions`
 
 `nlang inspect file.nbc` prints artifact metadata and function signatures without executing the program. `nlang run file.nbc` validates format, version, metadata target/payload, entry support, entry presence, duplicate functions, and function-table/module compatibility before execution.
 

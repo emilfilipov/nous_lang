@@ -67,7 +67,7 @@ This document freezes the installable Alpha 1 surface. If another design documen
   - `nlang --version`
 - `--diagnostic-format json` is accepted as a JSON diagnostics alias.
 - `nlang compile` and source `nlang run` require a zero-argument `main` entry point before lowering or execution. Invalid executable entry points report `N0329`.
-- `nlang compile` writes a versioned `.nbc` bytecode artifact with a format marker, artifact version, metadata, entry point, function table, compatibility checks, and bytecode module. `nlang inspect` prints artifact metadata and function signatures without executing the program.
+- `nlang compile` writes a versioned `.nbc` instruction-bytecode artifact with a format marker, artifact version, metadata, entry point, function table, compatibility checks, and bytecode module instructions. `nlang inspect` prints artifact metadata and function signatures without executing the program.
 
 ## Diagnostics
 

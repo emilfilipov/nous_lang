@@ -191,9 +191,10 @@ fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
     assert!(stdout(&compile).contains("compiled:"), "{compile:?}");
     let artifact_text = std::fs::read_to_string(&artifact).expect("artifact");
     assert!(artifact_text.contains("\"format\": \"nous-bytecode\""));
-    assert!(artifact_text.contains("\"version\": 2"));
+    assert!(artifact_text.contains("\"version\": 3"));
     assert!(artifact_text.contains("\"metadata\""));
     assert!(artifact_text.contains("\"function_table\""));
+    assert!(artifact_text.contains("\"instructions\""));
 
     let run = nlang()
         .args(["run", artifact.to_str().expect("artifact path")])
@@ -235,7 +236,7 @@ fn inspects_bytecode_artifact() {
         inspect_stdout.contains("format: nous-bytecode"),
         "{inspect_stdout}"
     );
-    assert!(inspect_stdout.contains("version: 2"), "{inspect_stdout}");
+    assert!(inspect_stdout.contains("version: 3"), "{inspect_stdout}");
     assert!(inspect_stdout.contains("entry: main"), "{inspect_stdout}");
     assert!(inspect_stdout.contains("functions:"), "{inspect_stdout}");
 
