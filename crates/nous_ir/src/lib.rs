@@ -168,11 +168,18 @@ impl OptimizationConfig {
         }
     }
 
+    pub fn loop_invariant_motion() -> Self {
+        Self {
+            passes: vec![OptimizationPass::LoopInvariantMotion],
+        }
+    }
+
     pub fn alpha_default() -> Self {
         Self {
             passes: vec![
                 OptimizationPass::ConstantFolding,
                 OptimizationPass::CommonSubexpressionElimination,
+                OptimizationPass::LoopInvariantMotion,
                 OptimizationPass::CopyPropagation,
                 OptimizationPass::DeadCodeElimination,
             ],
@@ -198,6 +205,7 @@ impl Default for OptimizationConfig {
 pub enum OptimizationPass {
     ConstantFolding,
     CommonSubexpressionElimination,
+    LoopInvariantMotion,
     CopyPropagation,
     DeadCodeElimination,
 }
@@ -207,6 +215,7 @@ pub struct OptimizationReport {
     pub applied_passes: Vec<OptimizationPass>,
     pub folded_expressions: usize,
     pub eliminated_common_subexpressions: usize,
+    pub hoisted_loop_invariants: usize,
     pub propagated_copies: usize,
     pub removed_dead_statements: usize,
 }
@@ -228,6 +237,12 @@ pub fn optimize(module: &IrModule, config: &OptimizationConfig) -> (IrModule, Op
                 optimized = eliminator.eliminate_module(&optimized);
                 report.eliminated_common_subexpressions +=
                     eliminator.eliminated_common_subexpressions;
+                report.applied_passes.push(*pass);
+            }
+            OptimizationPass::LoopInvariantMotion => {
+                let mut mover = LoopInvariantMover::default();
+                optimized = mover.move_module(&optimized);
+                report.hoisted_loop_invariants += mover.hoisted_loop_invariants;
                 report.applied_passes.push(*pass);
             }
             OptimizationPass::CopyPropagation => {
@@ -1311,6 +1326,341 @@ fn combine_signatures(
         parts.push(signature.key);
     }
     (format!("{prefix}:{ty}({})", parts.join(",")), dependencies)
+}
+
+#[derive(Default)]
+struct LoopInvariantMover {
+    hoisted_loop_invariants: usize,
+    next_temp: usize,
+    reserved_names: HashSet<String>,
+}
+
+impl LoopInvariantMover {
+    fn move_module(&mut self, module: &IrModule) -> IrModule {
+        IrModule {
+            functions: module
+                .functions
+                .iter()
+                .map(|function| self.move_function(function))
+                .collect(),
+        }
+    }
+
+    fn move_function(&mut self, function: &IrFunction) -> IrFunction {
+        self.next_temp = 0;
+        self.reserved_names = collect_function_variable_names(function);
+        let mut available = function
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
+
+        IrFunction {
+            name: function.name.clone(),
+            params: function.params.clone(),
+            return_type: function.return_type.clone(),
+            body: self.move_block(&function.body, &mut available),
+            span: function.span,
+        }
+    }
+
+    fn move_block(
+        &mut self,
+        statements: &[IrStmt],
+        available: &mut HashSet<String>,
+    ) -> Vec<IrStmt> {
+        let mut moved = Vec::new();
+
+        for statement in statements {
+            let statements = self.move_statement(statement, available);
+            for statement in statements {
+                add_available_declaration(&statement, available);
+                moved.push(statement);
+            }
+        }
+
+        moved
+    }
+
+    fn move_statement(&mut self, statement: &IrStmt, available: &HashSet<String>) -> Vec<IrStmt> {
+        match statement {
+            IrStmt::If {
+                branches,
+                else_body,
+                span,
+            } => {
+                let branches = branches
+                    .iter()
+                    .map(|branch| {
+                        let mut branch_available = available.clone();
+                        IrIfBranch {
+                            condition: branch.condition.clone(),
+                            body: self.move_block(&branch.body, &mut branch_available),
+                        }
+                    })
+                    .collect();
+                let mut else_available = available.clone();
+                vec![IrStmt::If {
+                    branches,
+                    else_body: self.move_block(else_body, &mut else_available),
+                    span: *span,
+                }]
+            }
+            IrStmt::While {
+                condition,
+                body,
+                span,
+            } => {
+                let mut body_available = available.clone();
+                let body = self.move_block(body, &mut body_available);
+                let (mut hoisted, body) = self.hoist_loop_body(body, available);
+                hoisted.push(IrStmt::While {
+                    condition: condition.clone(),
+                    body,
+                    span: *span,
+                });
+                hoisted
+            }
+            IrStmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                span,
+            } => {
+                let mut body_available = available.clone();
+                body_available.insert(name.clone());
+                let body = self.move_block(body, &mut body_available);
+                let (mut hoisted, body) = self.hoist_loop_body(body, available);
+                hoisted.push(IrStmt::For {
+                    name: name.clone(),
+                    start: start.clone(),
+                    end: end.clone(),
+                    step: step.clone(),
+                    body,
+                    span: *span,
+                });
+                hoisted
+            }
+            IrStmt::Loop { body, span } => {
+                let mut body_available = available.clone();
+                let body = self.move_block(body, &mut body_available);
+                let (mut hoisted, body) = self.hoist_loop_body(body, available);
+                hoisted.push(IrStmt::Loop { body, span: *span });
+                hoisted
+            }
+            IrStmt::Let { .. }
+            | IrStmt::Assign { .. }
+            | IrStmt::Return(_)
+            | IrStmt::Break(_)
+            | IrStmt::Continue(_)
+            | IrStmt::Expr(_) => vec![statement.clone()],
+        }
+    }
+
+    fn hoist_loop_body(
+        &mut self,
+        body: Vec<IrStmt>,
+        pre_loop_available: &HashSet<String>,
+    ) -> (Vec<IrStmt>, Vec<IrStmt>) {
+        let mut loop_declared = HashSet::new();
+        collect_declared_names(&body, &mut loop_declared);
+        let mut loop_mutated = HashSet::new();
+        collect_mutated_names(&body, &mut loop_mutated);
+
+        let mut hoisted = Vec::new();
+        let mut rewritten_body = Vec::new();
+
+        for statement in body {
+            let IrStmt::Let {
+                name,
+                ty,
+                value,
+                span,
+            } = statement
+            else {
+                rewritten_body.push(statement);
+                continue;
+            };
+
+            let Some(signature) = loop_invariant_expr_signature(&value) else {
+                rewritten_body.push(IrStmt::Let {
+                    name,
+                    ty,
+                    value,
+                    span,
+                });
+                continue;
+            };
+
+            if !is_hoist_worthwhile(&value)
+                || !signature
+                    .dependencies
+                    .iter()
+                    .all(|name| pre_loop_available.contains(name))
+                || signature
+                    .dependencies
+                    .iter()
+                    .any(|name| loop_declared.contains(name) || loop_mutated.contains(name))
+            {
+                rewritten_body.push(IrStmt::Let {
+                    name,
+                    ty,
+                    value,
+                    span,
+                });
+                continue;
+            }
+
+            let temp = self.next_temp_name();
+            let temp_expr_span = value.span;
+            hoisted.push(IrStmt::Let {
+                name: temp.clone(),
+                ty: ty.clone(),
+                value,
+                span,
+            });
+            rewritten_body.push(IrStmt::Let {
+                name,
+                ty: ty.clone(),
+                value: IrExpr {
+                    kind: IrExprKind::Variable(temp),
+                    ty,
+                    span: temp_expr_span,
+                },
+                span,
+            });
+            self.hoisted_loop_invariants += 1;
+        }
+
+        (hoisted, rewritten_body)
+    }
+
+    fn next_temp_name(&mut self) -> String {
+        loop {
+            let name = format!("__nous_loop_invariant_{}", self.next_temp);
+            self.next_temp += 1;
+            if self.reserved_names.insert(name.clone()) {
+                return name;
+            }
+        }
+    }
+}
+
+fn add_available_declaration(statement: &IrStmt, available: &mut HashSet<String>) {
+    if let IrStmt::Let { name, .. } = statement {
+        available.insert(name.clone());
+    }
+}
+
+fn collect_function_variable_names(function: &IrFunction) -> HashSet<String> {
+    let mut names = function
+        .params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<HashSet<_>>();
+    collect_declared_names(&function.body, &mut names);
+    names
+}
+
+fn collect_declared_names(statements: &[IrStmt], names: &mut HashSet<String>) {
+    for statement in statements {
+        match statement {
+            IrStmt::Let { name, .. } => {
+                names.insert(name.clone());
+            }
+            IrStmt::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    collect_declared_names(&branch.body, names);
+                }
+                collect_declared_names(else_body, names);
+            }
+            IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
+                collect_declared_names(body, names);
+            }
+            IrStmt::For { name, body, .. } => {
+                names.insert(name.clone());
+                collect_declared_names(body, names);
+            }
+            IrStmt::Assign { .. }
+            | IrStmt::Return(_)
+            | IrStmt::Break(_)
+            | IrStmt::Continue(_)
+            | IrStmt::Expr(_) => {}
+        }
+    }
+}
+
+fn collect_mutated_names(statements: &[IrStmt], names: &mut HashSet<String>) {
+    for statement in statements {
+        match statement {
+            IrStmt::Assign { name, .. } => {
+                names.insert(name.clone());
+            }
+            IrStmt::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    collect_mutated_names(&branch.body, names);
+                }
+                collect_mutated_names(else_body, names);
+            }
+            IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
+                collect_mutated_names(body, names);
+            }
+            IrStmt::For { name, body, .. } => {
+                names.insert(name.clone());
+                collect_mutated_names(body, names);
+            }
+            IrStmt::Let { .. }
+            | IrStmt::Return(_)
+            | IrStmt::Break(_)
+            | IrStmt::Continue(_)
+            | IrStmt::Expr(_) => {}
+        }
+    }
+}
+
+fn loop_invariant_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
+    let (key, dependencies) = match &expr.kind {
+        IrExprKind::Integer(value) => (format!("i64:{value}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Variable(name) => {
+            let mut dependencies = HashSet::new();
+            dependencies.insert(name.clone());
+            (format!("var:{name}:{}", expr.ty.name), dependencies)
+        }
+        IrExprKind::Unary { op, expr: inner } => {
+            let inner = loop_invariant_expr_signature(inner)?;
+            combine_signatures(&format!("unary:{op:?}"), &expr.ty.name, vec![inner])
+        }
+        IrExprKind::Binary { left, op, right } => {
+            if matches!(op, BinaryOp::Divide) {
+                return None;
+            }
+            let left = loop_invariant_expr_signature(left)?;
+            let right = loop_invariant_expr_signature(right)?;
+            combine_signatures(&format!("binary:{op:?}"), &expr.ty.name, vec![left, right])
+        }
+        IrExprKind::Array(_) | IrExprKind::Index { .. } | IrExprKind::Call { .. } => return None,
+    };
+
+    Some(ExprSignature { key, dependencies })
+}
+
+fn is_hoist_worthwhile(expr: &IrExpr) -> bool {
+    matches!(
+        expr.kind,
+        IrExprKind::Unary { .. } | IrExprKind::Binary { .. }
+    )
 }
 
 #[derive(Default)]
@@ -2845,6 +3195,88 @@ mod tests {
     }
 
     #[test]
+    fn loop_invariant_motion_hoists_safe_binding_from_for_body() {
+        let source = "fn main -> i64\n    let base i64 = 3\n    let total i64 = 0\n    for i from 1 to 3\n        let invariant i64 = (base + 1) * 2\n        total += invariant + i\n    total\n";
+        let module = lower_source(source);
+        let (optimized, report) = optimize(&module, &OptimizationConfig::loop_invariant_motion());
+
+        assert_eq!(
+            report.applied_passes,
+            vec![OptimizationPass::LoopInvariantMotion]
+        );
+        assert_eq!(report.hoisted_loop_invariants, 1);
+        assert_eq!(
+            run_main(&optimized).expect("optimized run"),
+            run_all_backends(source).0
+        );
+
+        let function = &optimized.functions[0];
+        let IrStmt::Let {
+            name: temp_name,
+            value: temp_value,
+            ..
+        } = &function.body[2]
+        else {
+            panic!("expected hoisted temp binding");
+        };
+        assert!(temp_name.starts_with("__nous_loop_invariant_"));
+        assert!(matches!(temp_value.kind, IrExprKind::Binary { .. }));
+
+        let IrStmt::For { body, .. } = &function.body[3] else {
+            panic!("expected for loop after hoisted binding");
+        };
+        let IrStmt::Let { value, .. } = &body[0] else {
+            panic!("expected rewritten loop binding");
+        };
+        assert_eq!(value.kind, IrExprKind::Variable(temp_name.clone()));
+    }
+
+    #[test]
+    fn loop_invariant_motion_keeps_loop_variable_dependency_in_place() {
+        let source = "fn main -> i64\n    let total i64 = 0\n    for i from 1 to 3\n        let value i64 = i + 1\n        total += value\n    total\n";
+        let module = lower_source(source);
+        let (optimized, report) = optimize(&module, &OptimizationConfig::loop_invariant_motion());
+
+        assert_eq!(report.hoisted_loop_invariants, 0);
+        assert_eq!(
+            run_main(&optimized).expect("optimized run"),
+            run_all_backends(source).0
+        );
+
+        let IrStmt::For { body, .. } = &optimized.functions[0].body[1] else {
+            panic!("expected for loop");
+        };
+        let IrStmt::Let { value, .. } = &body[0] else {
+            panic!("expected loop-local binding");
+        };
+        assert!(matches!(value.kind, IrExprKind::Binary { .. }));
+    }
+
+    #[test]
+    fn loop_invariant_motion_does_not_hoist_potential_runtime_failure() {
+        let source = "fn main -> i64\n    while false\n        let value i64 = 1 / 0\n    42\n";
+        let module = lower_source(source);
+        let (optimized, report) = optimize(&module, &OptimizationConfig::loop_invariant_motion());
+
+        assert_eq!(report.hoisted_loop_invariants, 0);
+        assert_eq!(run_main(&optimized).expect("optimized run"), Value::I64(42));
+
+        let IrStmt::While { body, .. } = &optimized.functions[0].body[0] else {
+            panic!("expected while loop");
+        };
+        let IrStmt::Let { value, .. } = &body[0] else {
+            panic!("expected loop-local binding");
+        };
+        assert!(matches!(
+            value.kind,
+            IrExprKind::Binary {
+                op: BinaryOp::Divide,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn alpha_optimizer_runs_alpha_pass_pipeline() {
         let module =
             lower_source("fn main -> i64\n    let value i64 = 40 + 2\n    return value\n    0\n");
@@ -2855,6 +3287,7 @@ mod tests {
             vec![
                 OptimizationPass::ConstantFolding,
                 OptimizationPass::CommonSubexpressionElimination,
+                OptimizationPass::LoopInvariantMotion,
                 OptimizationPass::CopyPropagation,
                 OptimizationPass::DeadCodeElimination
             ]

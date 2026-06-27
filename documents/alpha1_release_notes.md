@@ -160,8 +160,8 @@ powershell -ExecutionPolicy Bypass -File scripts\publish_github_release.ps1
 - I/O is limited to text file builtins and direct program-plus-argv command calls.
 - Offline docs are hand-authored HTML; a generated docs pipeline is still planned.
 - Alpha 1 distribution is a Windows portable archive with optional user PATH helper scripts, not a full MSI/NSIS-style installer.
-- Optimizer support is intentionally conservative: constant folding, block-local CSE for repeated pure bindings, block-local copy propagation for simple aliases, and block-local dead-code elimination are implemented; loop-invariant motion is deferred to the next optimizer phase.
+- Optimizer support is intentionally conservative: constant folding, block-local CSE for repeated pure bindings, conservative loop-invariant motion for safe loop-body bindings, block-local copy propagation for simple aliases, and block-local dead-code elimination are implemented.
 
 ## Next Phase
 
-The next phase should keep the working AST runtime and installable package intact while hardening the typed IR and bytecode backend with loop-invariant motion, broader backend snapshots, and a fuller instruction-bytecode VM.
+The next phase should keep the working AST runtime and installable package intact while hardening the typed IR and bytecode backend with broader backend snapshots, more bytecode instruction validation, and a fuller instruction-bytecode VM.

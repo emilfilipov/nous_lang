@@ -98,6 +98,7 @@ REQUIRED_PHRASES = [
     "--backend bytecode",
     "--optimize constant-fold",
     "common subexpression elimination",
+    "loop-invariant motion",
     "copy propagation",
     "--optimize dead-code",
     "--optimize alpha",
