@@ -80,6 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1
 - [Language specification](documents/language_specification.md)
 - [Implementation plan](documents/implementation_plan.md)
 - [Diagnostic registry](documents/diagnostic_registry.md)
+- [Contributor guide for language features](documents/contributor_guide.md)
 - [Repository map](documents/repository_map.md)
 
 The offline browser documentation is bundled in the package as `docs\index.html` and can be opened directly from disk.
