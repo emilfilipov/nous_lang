@@ -24,6 +24,7 @@ This file maps the repository layout and explains where to find core information
 - `documents/language_specification.md`: top-level language specification and overview. Use this first for language behavior, philosophy, syntax reference, examples, and roadmap.
 - `documents/implementation_plan.md`: implementation plan for the compiler, runtime, offline browser documentation bundle, CLI, installer, tests, and release workflow.
 - `documents/contributor_guide.md`: contributor checklist for adding or changing language features across lexer/parser/semantics/runtime/IR/CLI layers, fixtures, docs, offline docs, verification, commits, and ClickUp evidence.
+- `documents/name_research.md`: rename research for replacing the Nous Lang name, including candidate assessment, collision evidence, recommendation, and clearance checklist.
 - `documents/alpha1_acceptance_criteria.md`: Alpha 1 release checklist covering required toolchain surface, documentation surface, verification gates, release evidence, non-goals, and the recommended next phase.
 - `documents/alpha1_release_notes.md`: Alpha 1 package release notes, supported surface, commands, artifact contract, verification evidence, known limitations, and next-phase guidance.
 - `documents/diagnostic_registry.md`: stable diagnostic code registry and output contract for concise, verbose, and JSON diagnostics.
