@@ -26,6 +26,7 @@ This file maps the repository layout and explains where to find core information
 - `documents/contributor_guide.md`: contributor checklist for adding or changing language features across lexer/parser/semantics/runtime/IR/CLI layers, fixtures, docs, offline docs, verification, commits, and ClickUp evidence.
 - `documents/name_research.md`: rename research for replacing the Lullaby name, including candidate assessment, collision evidence, recommendation, and clearance checklist.
 - `documents/post_alpha_roadmap.md`: repo-owned sequence for the current post-Alpha 1 backlog: memory-aware IR operations, static offline-doc generation, platform-agnostic build orchestration, installer packaging, and native code generation.
+- `documents/portable_package_ci_workflow.yml`: GitHub Actions workflow template for host-native Ubuntu, Windows, and macOS portable-package verification. Copy it to `.github/workflows/portable-package.yml` from an authenticated session with GitHub `workflow` scope to activate it.
 - `documents/alpha1_acceptance_criteria.md`: Alpha 1 release checklist covering required toolchain surface, documentation surface, verification gates, release evidence, non-goals, and the recommended next phase.
 - `documents/alpha1_release_notes.md`: Alpha 1 package release notes, supported surface, commands, artifact contract, verification evidence, known limitations, and next-phase guidance.
 - `documents/diagnostic_registry.md`: stable diagnostic code registry and output contract for concise, verbose, and JSON diagnostics.
@@ -43,6 +44,10 @@ This file maps the repository layout and explains where to find core information
 - `offline_docs/index.html`: local browser entry point for alpha user documentation. It must remain self-contained with no server, CDN, remote fonts, or internet dependency.
 - `offline_docs/generate_offline_docs.py`: initial standard-library generator that renders canonical Markdown sources into a self-contained HTML bundle under `target/offline_docs/index.html` by default.
 - `offline_docs/verify_offline_docs.py`: deterministic verifier for the shipped and generated offline docs entry points, required sections, required alpha topics, local anchors, lack of remote dependencies, and fixture-backed executable examples.
+
+## CI
+
+- `documents/portable_package_ci_workflow.yml`: workflow template for formatting, workspace tests, clippy, shipped offline docs, generated offline docs, and portable package driver verification on Ubuntu, Windows, and macOS GitHub Actions hosts. The template is not active until copied under `.github/workflows/` with GitHub `workflow` scope.
 
 ## Examples
 
