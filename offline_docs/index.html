@@ -297,7 +297,7 @@
 cargo run -p lullaby_cli -- build --optimize alpha -o hello-build.lbc hello.lullaby
 cargo run -p lullaby_cli -- inspect hello.lbc
 cargo run -p lullaby_cli -- run hello.lbc</code></pre>
-        <p>During development, the CLI is available through Cargo. The Alpha 1 portable package builds a direct <code>bin\lullaby.exe</code> command, bundles <code>docs\index.html</code>, includes <code>install.cmd</code> and <code>uninstall.cmd</code> for optional user PATH setup, ships user-facing examples such as <code>examples\valid\calculator.lullaby</code>, emits <code>lullaby-alpha1-windows-x64.zip.sha256</code>, and supports <code>lullaby docs</code> and <code>lullaby examples</code> to locate local resources.</p>
+        <p>During development, the CLI is available through Cargo. The Alpha 1 portable package builds a direct <code>bin\lullaby.exe</code> command, bundles <code>docs\index.html</code>, includes <code>install.cmd</code> and <code>uninstall.cmd</code> for optional user PATH setup, ships user-facing examples such as <code>examples\valid\calculator.lullaby</code>, emits <code>lullaby-alpha1-windows-x64.zip.sha256</code>, and supports <code>lullaby docs</code> and <code>lullaby examples</code> to locate local resources. The cross-platform package driver also prepares <code>install.sh</code> and <code>uninstall.sh</code> for Linux/macOS portable archives after those targets are validated.</p>
       </section>
 
       <section id="source-files">
@@ -604,7 +604,7 @@ Suggested fix:
           <li>Typed IR now reports Alpha 1 memory operations and bounds-checked indexing with safety metadata for backend work, and version 4 <code>.lbc</code> artifacts preserve that metadata in <code>memory_operations</code>. The full region memory model, ARC/reference counting, cleanup insertion, and lifetime analysis are pending.</li>
           <li>The type system currently covers the alpha scalar, array, call, local binding, assignment, control-flow, and interim pointer subset.</li>
           <li>The current I/O surface is limited to text file builtins and direct program-plus-argv command calls; streams, binary I/O, memory mapping, async, sockets, and IPC are future work.</li>
-          <li>Modules, generics beyond array element spelling, structs, packages, and a full installer are future work. The current Alpha 1 distribution path is a Windows portable archive with optional user PATH helper scripts.</li>
+          <li>Modules, generics beyond array element spelling, structs, packages, and a full installer are future work. The current Alpha 1 distribution path is a Windows portable archive with optional user PATH helper scripts; the cross-platform package driver also prepares Unix PATH helpers for future Linux/macOS archives.</li>
           <li>Planned syntax keywords such as <code>import</code>, <code>module</code>, <code>struct</code>, <code>match</code>, and <code>try</code> are rejected with <code>N0211 [parser]</code> until their feature areas are implemented.</li>
           <li>The checked-in documentation bundle is currently hand-authored HTML. The standard-library generator from canonical docs is available at <code>offline_docs/generate_offline_docs.py</code>, emits package-ready quick start, CLI reference, package layout, diagnostics, limitations, shipped-doc parity sections, and fixture-backed examples, and is now used by the Windows portable package path.</li>
         </ul>

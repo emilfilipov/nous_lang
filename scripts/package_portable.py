@@ -120,13 +120,21 @@ def package_readme(package_name: str, target_tag: str, commit: str, license_stat
     example = ".\\examples\\valid\\calculator.lullaby" if "windows" in target_tag else "./examples/valid/calculator.lullaby"
     artifact = ".\\examples\\valid\\calculator.lbc" if "windows" in target_tag else "./examples/valid/calculator.lbc"
 
-    optional_path = ""
+    path_helpers = "install.cmd / install.ps1 and uninstall.cmd / uninstall.ps1"
     if "windows" in target_tag:
         optional_path = """
 Optional PATH setup:
 - Run install.cmd from this directory to add bin\\lullaby.exe to your user PATH.
 - Open a new shell, then run: lullaby --version
 - Run uninstall.cmd from this directory to remove this package from your user PATH.
+"""
+    else:
+        path_helpers = "install.sh and uninstall.sh"
+        optional_path = """
+Optional PATH setup:
+- Run ./install.sh from this directory to add bin/lullaby to your user PATH.
+- Open a new shell, then run: lullaby --version
+- Run ./uninstall.sh from this directory to remove this package from your user PATH.
 """
 
     return f"""Lullaby Alpha 1 portable package
@@ -141,6 +149,7 @@ Layout:
 - examples/: executable and invalid diagnostic .lullaby examples
 - RELEASE_NOTES.md: release notes, verification evidence, and known limitations
 - MANIFEST.json: package metadata
+- {path_helpers}: optional user PATH setup and cleanup
 
 Quick start:
 1. Open a shell in this directory.
@@ -235,6 +244,15 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         shutil.copy2(REPO_ROOT / "scripts" / "uninstall_windows_path.ps1", package_root / "uninstall.ps1")
         shutil.copy2(REPO_ROOT / "scripts" / "install.cmd", package_root / "install.cmd")
         shutil.copy2(REPO_ROOT / "scripts" / "uninstall.cmd", package_root / "uninstall.cmd")
+        path_helpers = ["install.cmd", "install.ps1", "uninstall.cmd", "uninstall.ps1"]
+    else:
+        install_sh = package_root / "install.sh"
+        uninstall_sh = package_root / "uninstall.sh"
+        shutil.copy2(REPO_ROOT / "scripts" / "install_unix_path.sh", install_sh)
+        shutil.copy2(REPO_ROOT / "scripts" / "uninstall_unix_path.sh", uninstall_sh)
+        install_sh.chmod(0o755)
+        uninstall_sh.chmod(0o755)
+        path_helpers = ["install.sh", "uninstall.sh"]
 
     commit = git_commit()
     write_text(package_root / "README.txt", package_readme(package_name, target_tag, commit, license_status))
@@ -249,6 +267,7 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         "examples": "examples",
         "release_notes": "RELEASE_NOTES.md",
         "archive": archive_path.name,
+        "path_helpers": path_helpers,
         "license_status": license_status,
     }
     write_text(package_root / "MANIFEST.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -287,6 +306,21 @@ def verify_package(package_root: Path, archive_path: Path, checksum_path: Path, 
     ):
         if not path.exists():
             raise FileNotFoundError(f"missing packaged file: {path}")
+
+    if "windows" in target_tag:
+        helper_names = ("install.cmd", "install.ps1", "uninstall.cmd", "uninstall.ps1")
+    else:
+        helper_names = ("install.sh", "uninstall.sh")
+    for helper_name in helper_names:
+        helper_path = package_root / helper_name
+        if not helper_path.exists():
+            raise FileNotFoundError(f"missing packaged PATH helper: {helper_path}")
+
+    manifest = json.loads((package_root / "MANIFEST.json").read_text(encoding="utf-8"))
+    if manifest.get("binary") != f"bin/{binary_name(target_tag)}":
+        raise RuntimeError("package manifest binary path does not match the target")
+    if manifest.get("path_helpers") != list(helper_names):
+        raise RuntimeError("package manifest PATH helpers do not match the packaged helper files")
 
     expected_checksum = f"{sha256_file(archive_path)}  {archive_path.name}"
     actual_checksum = checksum_path.read_text(encoding="utf-8").strip()

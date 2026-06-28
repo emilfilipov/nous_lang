@@ -72,7 +72,8 @@ Goal: move from a Windows-first portable archive to a packaging plan that can pr
 Recommended sequence:
 
 - Keep portable archives as the first cross-platform package type.
-- Put the CLI under `bin/`, generated offline docs under `docs/`, examples under `examples/`, release notes and `MANIFEST.json` at package root, and checksums next to archives on every platform.
+- Put the CLI under `bin/`, generated offline docs under `docs/`, examples under `examples/`, release notes and `MANIFEST.json` at package root, optional user PATH helpers at package root, and checksums next to archives on every platform.
+- Ship reversible, user-scoped PATH helpers in portable archives: `install.cmd`/`install.ps1` plus `uninstall.cmd`/`uninstall.ps1` on Windows, and `install.sh` plus `uninstall.sh` on Linux/macOS.
 - Add platform-specific installers only after portable archive verification is stable.
 - Treat PATH setup as optional and user-scoped unless the installer format has an explicit consent step.
 

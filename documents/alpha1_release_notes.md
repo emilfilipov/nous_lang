@@ -164,7 +164,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish_github_release.ps1
 - No region memory, ARC/reference counting, lifetime analysis, or GC hooks yet.
 - I/O is limited to text file builtins and direct program-plus-argv command calls.
 - Offline docs have both a checked-in hand-authored entry page and a generated package entry page; release packages now generate and verify their offline docs during packaging.
-- Alpha 1 distribution is a Windows portable archive with optional user PATH helper scripts, not a full MSI/NSIS-style installer.
+- Alpha 1 distribution is a Windows portable archive with optional user PATH helper scripts, not a full MSI/NSIS-style installer. The cross-platform portable package driver also prepares Unix `install.sh`/`uninstall.sh` helpers for Linux and macOS archives once those release assets are validated.
 - Optimizer support is intentionally conservative: constant folding, block-local CSE for repeated pure bindings, conservative loop-invariant motion for safe loop-body bindings, block-local copy propagation for simple aliases, and block-local dead-code elimination are implemented.
 
 ## Next Phase
