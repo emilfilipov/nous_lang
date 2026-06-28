@@ -36,6 +36,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "markdown reference verification failed" }
 
     & (Join-Path $ScriptDir "package_windows_portable.ps1") -PackageName $PackageName
+    python scripts\package_portable.py --package-name "$PackageName-portable" --skip-build --verify
+    if ($LASTEXITCODE -ne 0) { throw "cross-platform portable package verification failed" }
 
     if (-not (Test-Path -LiteralPath $Lullaby)) {
         throw "packaged lullaby.exe not found: $Lullaby"

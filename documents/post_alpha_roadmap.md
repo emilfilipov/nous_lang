@@ -46,8 +46,8 @@ Goal: define one release orchestration path that can build and verify the toolch
 Recommended sequence:
 
 - Keep Cargo as the compiler/runtime build engine.
-- Add a cross-platform release driver that normalizes target triples, output layout, docs generation, examples, checksums, and smoke tests.
-- Preserve `scripts/package_windows_portable.ps1` as the Windows implementation until a cross-platform script reaches feature parity.
+- Use `scripts/package_portable.py` as the initial cross-platform release driver for target tags, output layout, generated docs, examples, checksums, manifests, archives, and host-compatible smoke tests.
+- Preserve `scripts/package_windows_portable.ps1` as the Windows Alpha 1 implementation while `scripts/package_portable.py` reaches parity across non-Windows hosts.
 - Add CI jobs only after the local release driver is deterministic.
 
 Minimum target matrix:
@@ -64,7 +64,7 @@ Goal: move from a Windows-first portable archive to a packaging plan that can pr
 Recommended sequence:
 
 - Keep portable archives as the first cross-platform package type.
-- Put the CLI under `bin/`, generated offline docs under `docs/`, examples under `examples/`, and checksums next to archives on every platform.
+- Put the CLI under `bin/`, generated offline docs under `docs/`, examples under `examples/`, release notes and `MANIFEST.json` at package root, and checksums next to archives on every platform.
 - Add platform-specific installers only after portable archive verification is stable.
 - Treat PATH setup as optional and user-scoped unless the installer format has an explicit consent step.
 
