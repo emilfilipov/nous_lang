@@ -216,7 +216,7 @@ fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
     assert!(stdout(&compile).contains("compiled:"), "{compile:?}");
     let artifact_text = std::fs::read_to_string(&artifact).expect("artifact");
     assert!(artifact_text.contains("\"format\": \"lullaby-bytecode\""));
-    assert!(artifact_text.contains("\"version\": 4"));
+    assert!(artifact_text.contains("\"version\": 5"));
     assert!(artifact_text.contains("\"metadata\""));
     assert!(artifact_text.contains("\"function_table\""));
     assert!(artifact_text.contains("\"memory_operations\""));
@@ -255,7 +255,7 @@ fn builds_fixture_to_bytecode_artifact_and_runs_it() {
     assert!(stdout(&build).contains("compiled:"), "{build:?}");
     let artifact_text = std::fs::read_to_string(&artifact).expect("artifact");
     assert!(artifact_text.contains("\"format\": \"lullaby-bytecode\""));
-    assert!(artifact_text.contains("\"version\": 4"));
+    assert!(artifact_text.contains("\"version\": 5"));
     assert!(artifact_text.contains("\"instructions\""));
 
     let inspect = lullaby()
@@ -305,7 +305,7 @@ fn inspects_bytecode_artifact() {
         inspect_stdout.contains("format: lullaby-bytecode"),
         "{inspect_stdout}"
     );
-    assert!(inspect_stdout.contains("version: 4"), "{inspect_stdout}");
+    assert!(inspect_stdout.contains("version: 5"), "{inspect_stdout}");
     assert!(inspect_stdout.contains("entry: main"), "{inspect_stdout}");
     assert!(inspect_stdout.contains("functions:"), "{inspect_stdout}");
     assert!(
@@ -325,19 +325,19 @@ fn inspects_bytecode_artifact() {
     assert!(verbose.status.success(), "{verbose:?}");
     let verbose_stdout = stdout(&verbose);
     assert!(
-        verbose_stdout.contains("memory operation: main allocate"),
+        verbose_stdout.contains("memory operation: #0 main allocate"),
         "{verbose_stdout}"
     );
     assert!(
-        verbose_stdout.contains("memory operation: main store"),
+        verbose_stdout.contains("memory operation: #1 main store"),
         "{verbose_stdout}"
     );
     assert!(
-        verbose_stdout.contains("memory operation: main load"),
+        verbose_stdout.contains("memory operation: #2 main load"),
         "{verbose_stdout}"
     );
     assert!(
-        verbose_stdout.contains("memory operation: main deallocate"),
+        verbose_stdout.contains("memory operation: #3 main deallocate"),
         "{verbose_stdout}"
     );
 
@@ -367,6 +367,7 @@ fn inspects_bytecode_artifact() {
         json_stdout.contains("\"kind\":\"allocate\""),
         "{json_stdout}"
     );
+    assert!(json_stdout.contains("\"sequence\":0"), "{json_stdout}");
     assert!(json_stdout.contains("\"kind\":\"store\""), "{json_stdout}");
     let _ = std::fs::remove_file(artifact);
 }
@@ -517,7 +518,7 @@ fn reports_invalid_bytecode_instruction_contract_as_json() {
     let artifact = root.join("target/invalid_instruction_artifact_json.lbc");
     std::fs::write(
         &artifact,
-        "{\"format\":\"lullaby-bytecode\",\"version\":4,\"metadata\":{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"}}],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"instructions\":[{\"Break\":{\"line\":1,\"column\":1}}],\"span\":{\"line\":1,\"column\":1}}]}}",
+        "{\"format\":\"lullaby-bytecode\",\"version\":5,\"metadata\":{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"}}],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"instructions\":[{\"Break\":{\"line\":1,\"column\":1}}],\"span\":{\"line\":1,\"column\":1}}]}}",
     )
     .expect("write invalid instruction artifact");
 

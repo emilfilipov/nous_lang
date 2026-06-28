@@ -1,6 +1,7 @@
 [
   {
     "function": "main",
+    "sequence": 0,
     "span": {
       "line": 3,
       "column": 5

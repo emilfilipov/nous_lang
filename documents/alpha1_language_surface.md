@@ -69,7 +69,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
   - `lullaby --version`
 - `--diagnostic-format json` is accepted as a JSON diagnostics alias.
 - `lullaby compile`, `lullaby build`, and source `lullaby run` require a zero-argument `main` entry point before lowering or execution. Invalid executable entry points report `N0329`.
-- `lullaby compile` and its artifact-generation alias `lullaby build` write a versioned `.lbc` instruction-bytecode artifact with a format marker, artifact version, metadata, entry point, function table, memory operation metadata, compatibility checks, and bytecode module instructions. `lullaby inspect` prints artifact metadata, function signatures, and memory operation counts without executing the program.
+- `lullaby compile` and its artifact-generation alias `lullaby build` write a versioned `.lbc` instruction-bytecode artifact with a format marker, artifact version, metadata, entry point, function table, ordered memory operation metadata, compatibility checks, and bytecode module instructions. `lullaby inspect` prints artifact metadata, function signatures, and memory operation counts without executing the program.
 
 ## Diagnostics
 

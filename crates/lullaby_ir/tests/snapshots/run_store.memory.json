@@ -1,6 +1,7 @@
 [
   {
     "function": "main",
+    "sequence": 0,
     "span": {
       "line": 2,
       "column": 23
@@ -25,6 +26,7 @@
   },
   {
     "function": "main",
+    "sequence": 1,
     "span": {
       "line": 3,
       "column": 5
@@ -49,6 +51,7 @@
   },
   {
     "function": "main",
+    "sequence": 2,
     "span": {
       "line": 4,
       "column": 21
@@ -73,6 +76,7 @@
   },
   {
     "function": "main",
+    "sequence": 3,
     "span": {
       "line": 5,
       "column": 5

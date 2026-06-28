@@ -391,7 +391,8 @@ fn inspect_json(path: &Path, artifact: &BytecodeArtifact) -> String {
 
 fn format_memory_operation(operation: &IrMemoryOperation) -> String {
     format!(
-        "{} {} at {}:{} live={} bounds={} mutates={} cleanup={} unsafe={}",
+        "#{} {} {} at {}:{} live={} bounds={} mutates={} cleanup={} unsafe={}",
+        operation.sequence,
         operation.function,
         memory_operation_kind_label(&operation.kind),
         operation.span.line,
@@ -406,8 +407,9 @@ fn format_memory_operation(operation: &IrMemoryOperation) -> String {
 
 fn memory_operation_json(operation: &IrMemoryOperation) -> String {
     format!(
-        "{{\"function\":\"{}\",\"kind\":\"{}\",\"span\":{{\"line\":{},\"column\":{}}},\"safety\":{{\"requires_live_resource\":{},\"requires_bounds_check\":{},\"mutates_memory\":{},\"cleanup_role\":\"{}\",\"unsafe_boundary\":{}}}}}",
+        "{{\"function\":\"{}\",\"sequence\":{},\"kind\":\"{}\",\"span\":{{\"line\":{},\"column\":{}}},\"safety\":{{\"requires_live_resource\":{},\"requires_bounds_check\":{},\"mutates_memory\":{},\"cleanup_role\":\"{}\",\"unsafe_boundary\":{}}}}}",
         json_escape(&operation.function),
+        operation.sequence,
         json_escape(memory_operation_kind_label(&operation.kind)),
         operation.span.line,
         operation.span.column,

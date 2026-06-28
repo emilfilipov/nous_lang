@@ -94,11 +94,11 @@ See [alpha1_language_surface.md](alpha1_language_surface.md) for the frozen feat
 - deterministic metadata
 - entry point
 - function table
-- memory operation metadata for allocation, load, store, deallocation, and bounds-checked indexing
+- memory operation metadata for allocation, load, store, deallocation, and bounds-checked indexing, including artifact-order sequence numbers for backend lowering
 - instruction-bytecode module with dedicated function `instructions`
 - instruction-contract validation for entry-point shape and loop-control placement
 
-`lullaby inspect file.lbc` prints artifact metadata, function signatures, and memory operation counts without executing the program. `lullaby inspect --verbose file.lbc` prints individual memory operations and safety metadata, and JSON inspect output includes the `memory_operations` array. `lullaby run file.lbc` validates format, version, metadata target/payload, entry support, entry presence, duplicate functions, function-table/module compatibility, and memory-operation/module compatibility before execution.
+`lullaby inspect file.lbc` prints artifact metadata, function signatures, and memory operation counts without executing the program. `lullaby inspect --verbose file.lbc` prints individual memory operations, sequence numbers, and safety metadata, and JSON inspect output includes the `memory_operations` array with `sequence` fields. `lullaby run file.lbc` validates format, version, metadata target/payload, entry support, entry presence, duplicate functions, function-table/module compatibility, and memory-operation/module compatibility before execution.
 
 ## Diagnostics
 

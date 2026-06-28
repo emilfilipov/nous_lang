@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub const BYTECODE_ARTIFACT_FORMAT: &str = "lullaby-bytecode";
 pub const BYTECODE_ARTIFACT_EXTENSION: &str = "lbc";
-pub const BYTECODE_ARTIFACT_VERSION: u32 = 4;
+pub const BYTECODE_ARTIFACT_VERSION: u32 = 5;
 const BYTECODE_ARTIFACT_PAYLOAD: &str = "instruction-bytecode";
 const BYTECODE_ARTIFACT_TARGET: &str = "alpha1";
 
@@ -120,6 +120,7 @@ pub enum IrExprKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IrMemoryOperation {
     pub function: String,
+    pub sequence: usize,
     pub span: Span,
     pub kind: IrMemoryOperationKind,
     pub safety: IrMemorySafety,
@@ -408,6 +409,7 @@ fn collect_memory_operations_from_expr(
             collect_memory_operations_from_expr(function, index, operations);
             operations.push(IrMemoryOperation {
                 function: function.to_string(),
+                sequence: operations.len(),
                 span: expr.span,
                 kind: IrMemoryOperationKind::BoundsCheck {
                     target_type: target.ty.clone(),
@@ -434,7 +436,10 @@ fn collect_memory_operations_from_expr(
                 collect_memory_operations_from_expr(function, arg, operations);
             }
             if let Some(operation) = classify_memory_call(function, name, args, expr) {
-                operations.push(operation);
+                operations.push(IrMemoryOperation {
+                    sequence: operations.len(),
+                    ..operation
+                });
             }
         }
         IrExprKind::Integer(_)
@@ -486,6 +491,7 @@ fn classify_memory_call(
 
     Some(IrMemoryOperation {
         function: function.to_string(),
+        sequence: 0,
         span: expr.span,
         kind,
         safety,
@@ -529,10 +535,34 @@ fn memory_safety_for_kind(kind: &IrMemoryOperationKind) -> Option<IrMemorySafety
             cleanup_role: IrCleanupRole::CheckedAccess,
             unsafe_boundary: false,
         }),
-        IrMemoryOperationKind::RegionCreate { .. }
-        | IrMemoryOperationKind::RegionResize { .. }
-        | IrMemoryOperationKind::Copy { .. }
-        | IrMemoryOperationKind::Cleanup { .. } => None,
+        IrMemoryOperationKind::RegionCreate { .. } => Some(IrMemorySafety {
+            requires_live_resource: false,
+            requires_bounds_check: false,
+            mutates_memory: true,
+            cleanup_role: IrCleanupRole::CreatesResource,
+            unsafe_boundary: false,
+        }),
+        IrMemoryOperationKind::RegionResize { .. } => Some(IrMemorySafety {
+            requires_live_resource: true,
+            requires_bounds_check: false,
+            mutates_memory: true,
+            cleanup_role: IrCleanupRole::UsesResource,
+            unsafe_boundary: true,
+        }),
+        IrMemoryOperationKind::Copy { .. } => Some(IrMemorySafety {
+            requires_live_resource: true,
+            requires_bounds_check: false,
+            mutates_memory: true,
+            cleanup_role: IrCleanupRole::UsesResource,
+            unsafe_boundary: true,
+        }),
+        IrMemoryOperationKind::Cleanup { .. } => Some(IrMemorySafety {
+            requires_live_resource: true,
+            requires_bounds_check: false,
+            mutates_memory: true,
+            cleanup_role: IrCleanupRole::ReleasesResource,
+            unsafe_boundary: false,
+        }),
     }
 }
 
@@ -796,6 +826,7 @@ fn collect_bytecode_memory_operations_from_expr(
             if let Some(safety) = memory_safety_for_kind(&kind) {
                 operations.push(IrMemoryOperation {
                     function: function.to_string(),
+                    sequence: operations.len(),
                     span: expr.span,
                     kind,
                     safety,
@@ -814,7 +845,10 @@ fn collect_bytecode_memory_operations_from_expr(
                 collect_bytecode_memory_operations_from_expr(function, arg, operations);
             }
             if let Some(operation) = classify_bytecode_memory_call(function, name, args, expr) {
-                operations.push(operation);
+                operations.push(IrMemoryOperation {
+                    sequence: operations.len(),
+                    ..operation
+                });
             }
         }
         BytecodeExprKind::Integer(_)
@@ -865,6 +899,7 @@ fn classify_bytecode_memory_call(
 
     Some(IrMemoryOperation {
         function: function.to_string(),
+        sequence: 0,
         span: expr.span,
         kind,
         safety,
@@ -3545,6 +3580,13 @@ mod tests {
         let operations = analyze_memory_operations(&module);
 
         assert_eq!(operations.len(), 5);
+        assert_eq!(
+            operations
+                .iter()
+                .map(|operation| operation.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
         assert_eq!(operations[0].function, "main");
         assert!(matches!(
             operations[0].kind,
@@ -3594,6 +3636,58 @@ mod tests {
             IrCleanupRole::ReleasesResource
         );
         assert!(operations[4].safety.mutates_memory);
+    }
+
+    #[test]
+    fn planned_memory_operation_kinds_have_safety_metadata() {
+        let cases = [
+            (
+                IrMemoryOperationKind::RegionCreate {
+                    region_type: TypeRef::new("region"),
+                },
+                IrCleanupRole::CreatesResource,
+                false,
+                true,
+                false,
+            ),
+            (
+                IrMemoryOperationKind::RegionResize {
+                    region_type: TypeRef::new("region"),
+                },
+                IrCleanupRole::UsesResource,
+                true,
+                true,
+                true,
+            ),
+            (
+                IrMemoryOperationKind::Copy {
+                    source_type: TypeRef::new("ptr_i64"),
+                    target_type: TypeRef::new("ptr_i64"),
+                },
+                IrCleanupRole::UsesResource,
+                true,
+                true,
+                true,
+            ),
+            (
+                IrMemoryOperationKind::Cleanup {
+                    resource_type: TypeRef::new("ptr_i64"),
+                },
+                IrCleanupRole::ReleasesResource,
+                true,
+                true,
+                false,
+            ),
+        ];
+
+        for (kind, role, requires_live_resource, mutates_memory, unsafe_boundary) in cases {
+            let safety = memory_safety_for_kind(&kind).expect("planned memory safety");
+            assert_eq!(safety.cleanup_role, role);
+            assert_eq!(safety.requires_live_resource, requires_live_resource);
+            assert_eq!(safety.mutates_memory, mutates_memory);
+            assert_eq!(safety.unsafe_boundary, unsafe_boundary);
+            assert!(!safety.requires_bounds_check);
+        }
     }
 
     #[test]

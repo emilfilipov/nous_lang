@@ -17,7 +17,7 @@ The first executable runtime implements a deliberately small memory model so the
 - `store(ptr, value)` replaces the value in a valid heap slot. Static checking requires the stored value type to match the pointer element type.
 - `dealloc(ptr)` clears a heap slot and reports a runtime error on invalid or double deallocation.
 - Static semantic checking models pointer types with concrete names such as `ptr_i64`.
-- Typed IR analysis reports Alpha 1 memory operations with safety metadata for live-resource requirements, bounds checks, memory mutation, cleanup role, and unsafe-boundary handling. Current reported operations are `alloc`, `load`, `store`, `dealloc`, and array-index bounds checks. Version 4 `.lbc` bytecode artifacts preserve this metadata in `memory_operations`, and artifact decoding validates that the metadata still matches the module instructions.
+- Typed IR analysis reports Alpha 1 memory operations with artifact-order sequence metadata and safety metadata for live-resource requirements, bounds checks, memory mutation, cleanup role, and unsafe-boundary handling. Current reported operations are `alloc`, `load`, `store`, `dealloc`, and array-index bounds checks. Region create, region resize, copy, and compiler cleanup operation kinds now have safety metadata reserved for future lowering. Version 5 `.lbc` bytecode artifacts preserve this metadata in `memory_operations`, and artifact decoding validates that the metadata still matches the module instructions.
 - Region allocation, ARC/reference counting, GC policy, raw address access, and compile-time lifetime analysis remain planned work.
 
 Example:
