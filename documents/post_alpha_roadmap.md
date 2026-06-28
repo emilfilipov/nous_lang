@@ -51,7 +51,7 @@ Recommended sequence:
 - Keep Cargo as the compiler/runtime build engine.
 - Use `scripts/package_portable.py` as the initial cross-platform release driver for target tags, output layout, generated docs, examples, checksums, manifests, archives, and host-compatible smoke tests.
 - Preserve `scripts/package_windows_portable.ps1` as the Windows Alpha 1 implementation while `scripts/package_portable.py` reaches parity across non-Windows hosts.
-- `documents/portable_package_ci_workflow.yml` provides the GitHub Actions workflow to run formatting, tests, clippy, offline-doc verification, generated-doc verification, and `scripts/package_portable.py --verify` on Windows, Linux, and macOS hosts. It must be copied to `.github/workflows/portable-package.yml` from a session or token with GitHub `workflow` scope.
+- `documents/portable_package_ci_workflow.yml` provides the GitHub Actions workflow to run formatting, tests, clippy, offline-doc verification, generated-doc verification, and explicit target-triple `scripts/package_portable.py --target <triple> --target-tag <os-arch> --verify` package jobs on Windows, Linux, and macOS hosts. It must be copied to `.github/workflows/portable-package.yml` from a session or token with GitHub `workflow` scope.
 
 Minimum target matrix:
 
@@ -63,8 +63,7 @@ Minimum target matrix:
 Remaining work:
 
 - Activate the GitHub Actions workflow under `.github/workflows/portable-package.yml` once the GitHub token/session has `workflow` scope.
-- Add explicit target-triple package jobs once host-native packaging is stable on all three CI operating systems.
-- Promote the portable package archives to release assets after host-native package verification is proven on Windows, Linux, and macOS.
+- Promote the portable package archives to release assets after target-triple package verification is proven on Windows, Linux, and macOS.
 
 ## 4. Installer Packaging
 
