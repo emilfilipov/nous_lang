@@ -1,0 +1,95 @@
+[
+  {
+    "function": "main",
+    "span": {
+      "line": 2,
+      "column": 23
+    },
+    "kind": {
+      "Allocate": {
+        "value_type": {
+          "name": "i64"
+        },
+        "pointer_type": {
+          "name": "ptr_i64"
+        }
+      }
+    },
+    "safety": {
+      "requires_live_resource": false,
+      "requires_bounds_check": false,
+      "mutates_memory": true,
+      "cleanup_role": "CreatesResource",
+      "unsafe_boundary": false
+    }
+  },
+  {
+    "function": "main",
+    "span": {
+      "line": 3,
+      "column": 5
+    },
+    "kind": {
+      "Store": {
+        "pointer_type": {
+          "name": "ptr_i64"
+        },
+        "value_type": {
+          "name": "i64"
+        }
+      }
+    },
+    "safety": {
+      "requires_live_resource": true,
+      "requires_bounds_check": false,
+      "mutates_memory": true,
+      "cleanup_role": "UsesResource",
+      "unsafe_boundary": true
+    }
+  },
+  {
+    "function": "main",
+    "span": {
+      "line": 4,
+      "column": 21
+    },
+    "kind": {
+      "Load": {
+        "pointer_type": {
+          "name": "ptr_i64"
+        },
+        "value_type": {
+          "name": "i64"
+        }
+      }
+    },
+    "safety": {
+      "requires_live_resource": true,
+      "requires_bounds_check": false,
+      "mutates_memory": false,
+      "cleanup_role": "UsesResource",
+      "unsafe_boundary": true
+    }
+  },
+  {
+    "function": "main",
+    "span": {
+      "line": 5,
+      "column": 5
+    },
+    "kind": {
+      "Deallocate": {
+        "pointer_type": {
+          "name": "ptr_i64"
+        }
+      }
+    },
+    "safety": {
+      "requires_live_resource": true,
+      "requires_bounds_check": false,
+      "mutates_memory": true,
+      "cleanup_role": "ReleasesResource",
+      "unsafe_boundary": true
+    }
+  }
+]

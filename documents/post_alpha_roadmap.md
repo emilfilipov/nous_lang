@@ -14,11 +14,12 @@ Current increment:
 - Each reported operation carries safety metadata for live-resource requirements, bounds-check requirements, memory mutation, cleanup role, and unsafe-boundary handling.
 - The optimizer uses the same runtime-checking barrier model for memory calls and bounds-checked indexing, so future passes do not need to rediscover side effects ad hoc.
 - Version 4 `.lbc` artifacts preserve bytecode-level `memory_operations`, artifact decoding validates those operations against module instructions, and `lullaby inspect` reports memory operation counts/details.
+- Backend snapshot tests under `crates/lullaby_ir/tests/memory_snapshots.rs` pin the current Alpha 1 bytecode memory metadata for heap-slot operations and bounds-checked array indexing.
 
 Remaining work:
 
 - Add first-class IR forms or lowering metadata for `region_create`, `region_resize`, copy operations, and compiler-inserted cleanup.
-- Add backend snapshot tests that assert memory operation metadata for representative Alpha 1 and planned region/copy fixtures.
+- Extend backend memory snapshots when planned region/copy/cleanup operations become parseable and lowerable.
 - Use this metadata as a prerequisite for native backend lowering and alias analysis.
 
 ## 2. Static Offline Documentation Generator

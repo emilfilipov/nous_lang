@@ -1,0 +1,26 @@
+[
+  {
+    "function": "main",
+    "span": {
+      "line": 3,
+      "column": 5
+    },
+    "kind": {
+      "BoundsCheck": {
+        "target_type": {
+          "name": "array<i64>"
+        },
+        "index_type": {
+          "name": "i64"
+        }
+      }
+    },
+    "safety": {
+      "requires_live_resource": false,
+      "requires_bounds_check": true,
+      "mutates_memory": false,
+      "cleanup_role": "CheckedAccess",
+      "unsafe_boundary": false
+    }
+  }
+]
