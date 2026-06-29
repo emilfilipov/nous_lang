@@ -12,11 +12,13 @@ Implemented now:
 - A deterministic `alpha1_native_backend_contract()` baseline.
 - `alpha1_value_layout(TypeRef)` coverage for the current Alpha 1 type surface: `void`, `i64`, `bool`, `string`, `array<T>`, and `ptr_*`.
 - Unit tests for target selection, current value layouts, cleanup sequencing, and JSON round-trip stability.
+- A checked-in JSON snapshot under `crates/lullaby_ir/tests/snapshots/alpha1_native_backend_contract.json`.
 
 Not implemented yet:
 
 - Machine-code lowering.
 - Object file writing.
+- Object-emission snapshots.
 - Linker orchestration.
 - Native runtime packaging.
 
@@ -82,4 +84,4 @@ Native backend diagnostics must use the shared `N####` diagnostic model. Target-
 
 ## Next Backend Work
 
-The next native backend checkpoint should use this contract to add backend snapshots or a prototype object-emission crate/module for `x86_64-pc-windows-msvc`. It should not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+The next native backend checkpoint should use this contract to add object-emission snapshots or a prototype object-emission crate/module for `x86_64-pc-windows-msvc`. It should not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.

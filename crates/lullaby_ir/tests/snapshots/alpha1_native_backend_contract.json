@@ -1,0 +1,106 @@
+{
+  "name": "alpha1-native-backend-contract",
+  "first_target": {
+    "triple": "x86_64-pc-windows-msvc",
+    "architecture": "X86_64",
+    "object_format": "Coff",
+    "pointer_width_bits": 64,
+    "endian": "Little"
+  },
+  "supported_targets": [
+    {
+      "triple": "x86_64-pc-windows-msvc",
+      "architecture": "X86_64",
+      "object_format": "Coff",
+      "pointer_width_bits": 64,
+      "endian": "Little"
+    },
+    {
+      "triple": "x86_64-unknown-linux-gnu",
+      "architecture": "X86_64",
+      "object_format": "Elf",
+      "pointer_width_bits": 64,
+      "endian": "Little"
+    },
+    {
+      "triple": "x86_64-apple-darwin",
+      "architecture": "X86_64",
+      "object_format": "MachO",
+      "pointer_width_bits": 64,
+      "endian": "Little"
+    },
+    {
+      "triple": "aarch64-apple-darwin",
+      "architecture": "Aarch64",
+      "object_format": "MachO",
+      "pointer_width_bits": 64,
+      "endian": "Little"
+    }
+  ],
+  "calling_convention": {
+    "name": "lullaby-alpha1-internal-abi",
+    "entry_function": "main",
+    "parameter_order": "SourceOrder",
+    "return_strategy": "DirectForScalarAndHandleValues",
+    "call_boundary_alignment_bytes": 16,
+    "variadic_calls_allowed": false
+  },
+  "stack_frame": {
+    "call_boundary_alignment_bytes": 16,
+    "slot_classes": [
+      "Parameter",
+      "Local",
+      "Temporary",
+      "Spill",
+      "CleanupRecord"
+    ],
+    "cleanup_order": "MemoryOperationSequence"
+  },
+  "pointer_layout": {
+    "pointer_width_bits": 64,
+    "null_is_valid_safe_value": false,
+    "type_tag_source": "TypeRef plus semantic expression metadata",
+    "safety_requirements": [
+      "load/store/dealloc require live-resource memory metadata",
+      "safe source operations must not lower a null pointer value"
+    ]
+  },
+  "array_layout": {
+    "representation": "RuntimeDescriptorHandle",
+    "descriptor_fields": [
+      "length: i64",
+      "data: pointer-sized contiguous element storage handle"
+    ],
+    "element_layout_source": "alpha1_value_layout(element TypeRef)",
+    "safety_requirements": [
+      "index expressions are checked against descriptor length before element access",
+      "descriptor handles are pointer-sized values owned by runtime cleanup metadata"
+    ]
+  },
+  "resource_cleanup": {
+    "sequence_source": "IrMemoryOperation.sequence",
+    "explicit_release_role": "ExplicitRelease",
+    "compiler_cleanup_role": "CompilerCleanup",
+    "requirements": [
+      "native lowering must preserve deterministic memory-operation sequence order",
+      "cleanup lowering must share the same live-resource metadata as bytecode artifacts"
+    ]
+  },
+  "diagnostics": {
+    "phase": "native",
+    "code_family": "N####",
+    "requirements": [
+      "backend failures must report shared diagnostic codes",
+      "target-specific failures must include the target triple"
+    ]
+  },
+  "object_emission": {
+    "first_target_triple": "x86_64-pc-windows-msvc",
+    "first_object_format": "Coff",
+    "linker_workflow_in_scope": false,
+    "notes": [
+      "prototype object emission before linker orchestration",
+      "do not bypass AST, IR, or bytecode validation paths"
+    ]
+  }
+}
