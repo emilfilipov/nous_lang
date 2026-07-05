@@ -4,7 +4,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 $SearchRoots = @(
     (Join-Path $RepoRoot "README.md"),
-    (Join-Path $RepoRoot "AGENTS.md"),
+    (Join-Path $RepoRoot "CLAUDE.md"),
     (Join-Path $RepoRoot "documents")
 )
 $StaleMarkers = @(

@@ -1,4 +1,4 @@
-# Lullaby Agent Guide
+# Lullaby — CLAUDE.md
 
 This repository defines and will implement Lullaby, a compiled systems programming language optimized for concise syntax, strong typing, memory safety, and LLM-friendly source generation.
 
