@@ -179,6 +179,7 @@ impl<'a> Checker<'a> {
         }
 
         let block_type = self.check_block(&function.body, &mut scope, function);
+        self.check_lifetimes(function);
         if function.return_type.is_void() {
             return;
         }
@@ -506,6 +507,133 @@ impl<'a> Checker<'a> {
                 Some(function.name.clone()),
                 decl.span,
             ));
+        }
+    }
+
+    /// Conservative compile-time lifetime analysis.
+    ///
+    /// - A borrowed `ref<T>` may not be returned from a function, because the
+    ///   borrow cannot outlive the owner it points into (`N0351`).
+    /// - Straight-line use-after-free / double-free of a resource freed by
+    ///   `dealloc`/`rc_release` is reported (`N0350`). The per-block cleanup
+    ///   ordering itself is the deterministic plan produced by
+    ///   `lullaby_ir::frame_layout`.
+    fn check_lifetimes(&mut self, function: &Function) {
+        if function.return_type.reference_target().is_some() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "N0351",
+                format!(
+                    "function `{}` returns borrowed `{}`, which cannot escape its owner's scope",
+                    function.name, function.return_type.name
+                ),
+                Some(function.name.clone()),
+                function.span,
+            ));
+        }
+        let mut freed: HashSet<String> = HashSet::new();
+        self.walk_lifetimes(&function.body, &mut freed, function);
+    }
+
+    fn walk_lifetimes(&mut self, body: &[Stmt], freed: &mut HashSet<String>, function: &Function) {
+        for statement in body {
+            match statement {
+                Stmt::Let { name, value, .. } => {
+                    self.check_freed_uses(value, freed, function);
+                    // Re-binding revives a name.
+                    freed.remove(name);
+                }
+                Stmt::Assign { name, value, .. } => {
+                    self.check_freed_uses(value, freed, function);
+                    freed.remove(name);
+                }
+                Stmt::Return(Some(expr)) | Stmt::Expr(expr) => {
+                    if let Some(target) = free_call_target(expr) {
+                        // The freeing call may double-free an already-dead resource.
+                        if freed.contains(target) {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "N0350",
+                                format!("`{target}` is used after it was already freed"),
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                        }
+                        freed.insert(target.to_string());
+                    } else {
+                        self.check_freed_uses(expr, freed, function);
+                    }
+                }
+                Stmt::If {
+                    branches,
+                    else_body,
+                    ..
+                } => {
+                    for branch in branches {
+                        self.check_freed_uses(&branch.condition, freed, function);
+                        self.walk_lifetimes(&branch.body, &mut freed.clone(), function);
+                    }
+                    self.walk_lifetimes(else_body, &mut freed.clone(), function);
+                }
+                Stmt::While {
+                    condition, body, ..
+                } => {
+                    self.check_freed_uses(condition, freed, function);
+                    self.walk_lifetimes(body, &mut freed.clone(), function);
+                }
+                Stmt::For {
+                    start,
+                    end,
+                    step,
+                    body,
+                    ..
+                } => {
+                    self.check_freed_uses(start, freed, function);
+                    self.check_freed_uses(end, freed, function);
+                    if let Some(step) = step {
+                        self.check_freed_uses(step, freed, function);
+                    }
+                    self.walk_lifetimes(body, &mut freed.clone(), function);
+                }
+                Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+                    self.walk_lifetimes(body, &mut freed.clone(), function);
+                }
+                Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Region(_) => {}
+            }
+        }
+    }
+
+    /// Flag any use of a freed binding inside an expression.
+    fn check_freed_uses(&mut self, expr: &Expr, freed: &HashSet<String>, function: &Function) {
+        match &expr.kind {
+            ExprKind::Variable(name) => {
+                if freed.contains(name) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "N0350",
+                        format!("`{name}` is used after it was freed"),
+                        Some(function.name.clone()),
+                        expr.span,
+                    ));
+                }
+            }
+            ExprKind::Array(values) => {
+                for value in values {
+                    self.check_freed_uses(value, freed, function);
+                }
+            }
+            ExprKind::Index { target, index } => {
+                self.check_freed_uses(target, freed, function);
+                self.check_freed_uses(index, freed, function);
+            }
+            ExprKind::Unary { expr, .. } => self.check_freed_uses(expr, freed, function),
+            ExprKind::Binary { left, right, .. } => {
+                self.check_freed_uses(left, freed, function);
+                self.check_freed_uses(right, freed, function);
+            }
+            ExprKind::Call { args, .. } => {
+                for arg in args {
+                    self.check_freed_uses(arg, freed, function);
+                }
+            }
+            ExprKind::Integer(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
         }
     }
 
@@ -1032,6 +1160,24 @@ struct Scope {
     locals: HashMap<String, TypeRef>,
 }
 
+/// If `expr` is a resource-freeing call (`dealloc(x)` or `rc_release(x)`) whose
+/// argument is a plain variable, return that variable name.
+fn free_call_target(expr: &Expr) -> Option<&str> {
+    let ExprKind::Call { name, args } = &expr.kind else {
+        return None;
+    };
+    if !matches!(name.as_str(), "dealloc" | "rc_release") {
+        return None;
+    }
+    match args.as_slice() {
+        [arg] => match &arg.kind {
+            ExprKind::Variable(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use lullaby_lexer::lex;
@@ -1273,6 +1419,49 @@ mod tests {
     fn validates_io_and_system_builtins() {
         let source = "fn main -> bool\n    write_file(\"target/lullaby_semantics_io.txt\", \"alpha\")\n    append_file(\"target/lullaby_semantics_io.txt\", \" beta\")\n    let content string = read_file(\"target/lullaby_semantics_io.txt\")\n    let exists bool = file_exists(\"target/lullaby_semantics_io.txt\")\n    let status i64 = sys_status(\"rustc\", [\"--version\"])\n    content == \"alpha beta\" and exists and status == 0\n";
         assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn detects_use_after_free_at_compile_time() {
+        let diagnostics = validate_source(
+            "fn main -> i64\n    let p ptr_i64 = alloc(1)\n    dealloc(p)\n    unsafe\n        ptr_read(p)\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0350")
+        );
+    }
+
+    #[test]
+    fn detects_double_free_at_compile_time() {
+        let diagnostics = validate_source(
+            "fn main -> void\n    let p ptr_i64 = alloc(1)\n    dealloc(p)\n    dealloc(p)\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0350")
+        );
+    }
+
+    #[test]
+    fn allows_use_before_free() {
+        let source = "fn main -> i64\n    let p ptr_i64 = alloc(1)\n    let v i64 = 0\n    unsafe\n        v = ptr_read(p)\n    dealloc(p)\n    v\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_returning_borrowed_reference() {
+        let diagnostics = validate_source("fn leak h rc<i64> -> ref<i64>\n    rc_borrow(h)\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0351")
+        );
     }
 
     #[test]

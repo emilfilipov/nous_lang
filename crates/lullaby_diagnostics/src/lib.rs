@@ -337,6 +337,20 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Give each region a unique name.",
     },
     DiagnosticEntry {
+        code: "N0350",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A resource is used after it was freed (use-after-free or double-free).",
+        root_cause: "A binding was read, written, or freed again after a straight-line `dealloc`/`rc_release`.",
+        suggested_fix: "Remove the later use, or reallocate/rebind before using the resource again.",
+    },
+    DiagnosticEntry {
+        code: "N0351",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A borrowed `ref<T>` cannot escape the scope of the owner it points into.",
+        root_cause: "A function declared a `ref<T>` return type, which would let a borrow outlive its owner.",
+        suggested_fix: "Return an owning `rc<T>` (or a value) instead of a borrowed `ref<T>`.",
+    },
+    DiagnosticEntry {
         code: "N0501",
         phase: DiagnosticPhase::Ir,
         explanation: "The checked source program could not be lowered into typed IR.",

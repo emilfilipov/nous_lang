@@ -1,4 +1,5 @@
 fn main -> void
     let ptr ptr_i64 = alloc(1)
-    dealloc(ptr)
+    if true
+        dealloc(ptr)
     store(ptr, 2)

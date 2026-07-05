@@ -952,15 +952,17 @@ mod tests {
 
     #[test]
     fn rejects_double_dealloc() {
-        let source =
-            "fn main -> void\n    let ptr ptr_i64 = alloc(1)\n    dealloc(ptr)\n    dealloc(ptr)\n";
+        // The free is inside a branch, so the conservative compile-time
+        // lifetime analysis does not track it out; the runtime N0406 guard
+        // still catches the double free.
+        let source = "fn main -> void\n    let ptr ptr_i64 = alloc(1)\n    if true\n        dealloc(ptr)\n    dealloc(ptr)\n";
         let error = run_source(source).expect_err("runtime error");
         assert_eq!(error.code, "N0406");
     }
 
     #[test]
     fn rejects_store_after_dealloc() {
-        let source = "fn main -> void\n    let ptr ptr_i64 = alloc(1)\n    dealloc(ptr)\n    store(ptr, 2)\n";
+        let source = "fn main -> void\n    let ptr ptr_i64 = alloc(1)\n    if true\n        dealloc(ptr)\n    store(ptr, 2)\n";
         let error = run_source(source).expect_err("runtime error");
         assert_eq!(error.code, "N0406");
     }
@@ -1007,7 +1009,9 @@ mod tests {
 
     #[test]
     fn rejects_use_after_rc_release() {
-        let source = "fn main -> i64\n    let handle rc<i64> = rc_new(1)\n    rc_release(handle)\n    rc_get(handle)\n";
+        // Release inside a branch escapes the conservative compile-time
+        // analysis; the runtime guard still reports the dangling handle.
+        let source = "fn main -> i64\n    let handle rc<i64> = rc_new(1)\n    if true\n        rc_release(handle)\n    rc_get(handle)\n";
         let error = run_source(source).expect_err("runtime error");
         assert_eq!(error.code, "N0406");
     }

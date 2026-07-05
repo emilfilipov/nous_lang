@@ -1223,6 +1223,18 @@ fn rejects_store_type_mismatch() {
 }
 
 #[test]
+fn rejects_use_after_free_at_compile_time() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/use_after_free.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr(&output).contains("N0350"), "{}", stderr(&output));
+}
+
+#[test]
 fn rejects_store_after_dealloc_at_runtime() {
     let fixture = workspace_root().join("tests/fixtures/invalid/store_after_dealloc.lullaby");
     let output = lullaby()

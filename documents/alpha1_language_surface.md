@@ -57,6 +57,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Reference builtins: `rc_new(value)` creates an `rc<T>`; `rc_clone(rc<T>)` shares ownership; `rc_release(rc<T>)` drops one owner and frees at zero; `rc_get(rc<T>)`/`ref_get(ref<T>)` read the referent; `rc_borrow(rc<T>)` yields a `ref<T>`.
 - `unsafe` block: an indented block introduced by `unsafe` in which raw-pointer operations are permitted. `ptr_read(ptr<T>)` and `ptr_write(ptr<T>, value)` require an `unsafe` context (`N0330` otherwise); `unsafe` is a transparent scope, so bindings inside it remain visible afterward.
 - Region declarations: `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]` declares a named memory region. Size must be positive, alignment (if present) must be a power of two, and kind must be `static` or `dynamic` (`N0340`); region names must be unique within a function (`N0341`). Regions are compile-time metadata in Alpha 1 (surfaced as `RegionCreate` in memory analysis) with no runtime allocation yet.
+- Lifetime analysis: a conservative compile-time pass rejects straight-line use-after-free and double-free of resources freed by `dealloc`/`rc_release` (`N0350`), and rejects returning a borrowed `ref<T>` from a function (`N0351`). Freeing inside a branch is not tracked out of that branch; the runtime `N0406` guard remains as defense-in-depth. Deterministic per-block cleanup ordering is provided by `lullaby_ir::frame_layout`.
 
 ## CLI And Artifacts
 
