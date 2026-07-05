@@ -10,6 +10,7 @@ use lullaby_runtime::{RuntimeError, Value};
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
 
+pub mod frame_layout;
 pub mod native_contract;
 pub mod native_object;
 
