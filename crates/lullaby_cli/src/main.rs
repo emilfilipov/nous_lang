@@ -879,7 +879,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 "--optimize requires --backend ir or --backend bytecode",
             )
             .with_note(
-                "usage: lullaby run --backend ir|bytecode --optimize none|constant-fold|dead-code|alpha <file.lullaby>",
+                "usage: lullaby run --backend ir|bytecode --optimize none|constant-fold|dead-code|alpha <file.lby>",
             )],
             mode,
             None,
@@ -907,17 +907,17 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
 
 fn command_usage(command: &str) -> String {
     match command {
-        "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>".to_string(),
-        "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>".to_string(),
+        "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
+        "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
-        "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lullaby>\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
-        _ => "usage: lullaby check [--verbose|--format json] <file.lullaby>".to_string(),
+        "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
+        _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
 }
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lullaby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lullaby>\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
         env!("CARGO_PKG_VERSION")
     );
 }

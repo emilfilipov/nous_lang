@@ -54,9 +54,14 @@ Suggested public spelling:
 - Formal: **Lullaby**
 - Compiler/CLI: `lullaby`
 - Repository/package possibilities: `lullaby` or `lullaby-lang`
-- File extension: `.lullaby`
+- File extension: `.lby` (canonical), with `.lullaby` accepted as a legacy alias.
 
-The long extension is deliberate: it is clear in examples, searchable in docs, and reinforces the brand during the alpha period.
+The long `.lullaby` extension was used during early alpha because it is clear in
+examples and searchable in docs. It has now been shortened to the canonical
+`.lby` (following the follow-up decision below and the convention of short
+source extensions such as `.rs`, `.py`, and `.rb`). `.lby` is distinctive,
+clearly maps to Lullaby, and has no meaningful collision in the source-language
+space. The lexer still accepts `.lullaby` so existing sources keep compiling.
 
 ## Why Not Seer
 
@@ -76,5 +81,5 @@ Before publishing broadly:
 1. Check USPTO/EUIPO/WIPO trademark records for Lullaby and likely package names.
 2. Check domain options such as `lullaby-lang.org`, `lullabylang.org`, and `lullaby.dev`.
 3. Reserve or verify package names in crates.io, npm, PyPI, GitHub, and VS Code extension marketplace.
-4. Decide whether `.lullaby` remains the canonical extension long term or receives a shorter alias later.
+4. Resolved: the canonical extension is now `.lby`; `.lullaby` remains an accepted legacy alias for backward compatibility.
 5. Rename external project surfaces that live outside this repository, including the GitHub repository and ClickUp folder/list references.

@@ -8,13 +8,13 @@ These examples are intended for users of the packaged `lullaby` tool.
 From the repository root:
 
 ```powershell
-cargo run -p lullaby_cli -- run examples/valid/calculator.lullaby
-cargo run -p lullaby_cli -- check examples/invalid/type_mismatch.lullaby
+cargo run -p lullaby_cli -- run examples/valid/calculator.lby
+cargo run -p lullaby_cli -- check examples/invalid/type_mismatch.lby
 ```
 
 From the portable package root:
 
 ```powershell
-.\bin\lullaby.exe run .\examples\valid\calculator.lullaby
-.\bin\lullaby.exe check .\examples\invalid\type_mismatch.lullaby
+.\bin\lullaby.exe run .\examples\valid\calculator.lby
+.\bin\lullaby.exe check .\examples\invalid\type_mismatch.lby
 ```

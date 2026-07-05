@@ -6,19 +6,21 @@ For the installable Alpha 1 feature freeze, see [alpha1_language_surface.md](alp
 
 ## Canonical Source Extension
 
-Lullaby source files use the `.lullaby` file extension.
+Lullaby source files use the `.lby` file extension. The original alpha
+extension `.lullaby` remains accepted as a backward-compatible legacy alias, so
+existing sources keep compiling, but new files and examples should use `.lby`.
 
 Examples:
 
 ```text
-main.lullaby
-kernel.lullaby
-memory.lullaby
-driver.lullaby
-allocator.lullaby
+main.lby
+kernel.lby
+memory.lby
+driver.lby
+allocator.lby
 ```
 
-The compiler, installer, tests, examples, CLI, diagnostics, generated project templates, and documentation must consistently use `.lullaby` unless the language specification is intentionally changed.
+The compiler, installer, tests, examples, CLI, diagnostics, generated project templates, and documentation should use `.lby` as the canonical extension unless the language specification is intentionally changed; `.lullaby` is accepted only for backward compatibility.
 
 ## Indentation-Only Scope
 

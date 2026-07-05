@@ -80,7 +80,12 @@ fn runs_user_facing_valid_examples() {
     let mut examples = std::fs::read_dir(&examples_dir)
         .expect("examples directory")
         .map(|entry| entry.expect("example entry").path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("lullaby"))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("lby") | Some("lullaby")
+            )
+        })
         .collect::<Vec<_>>();
     examples.sort();
     assert!(!examples.is_empty(), "expected user-facing examples");
@@ -129,7 +134,12 @@ fn rejects_user_facing_invalid_examples() {
     let mut examples = std::fs::read_dir(&examples_dir)
         .expect("invalid examples directory")
         .map(|entry| entry.expect("example entry").path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("lullaby"))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("lby") | Some("lullaby")
+            )
+        })
         .collect::<Vec<_>>();
     examples.sort();
     assert!(

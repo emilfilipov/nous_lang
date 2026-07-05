@@ -6,7 +6,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 
 ## Source And Blocks
 
-- Source files use the `.lullaby` extension.
+- Source files use the `.lby` extension (`.lullaby` is accepted as a legacy alias).
 - Scope is indentation-only.
 - Curly braces are rejected as block delimiters.
 - Semicolons are rejected as statement terminators.
