@@ -1,0 +1,6 @@
+fn main -> void
+    println("Hello, world")
+    print("partial ")
+    println("line")
+    warn("heads up")
+    flush()

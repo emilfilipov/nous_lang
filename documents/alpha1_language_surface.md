@@ -52,6 +52,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Text file builtins: `read_file(path)`, `write_file(path, content)`, `append_file(path, content)`, and `file_exists(path)`.
 - System command builtins: `sys_status(program, args)` and `sys_output(program, args)`, where `args` is `array<string>`.
 - System command builtins execute a program with an argv array directly and do not invoke a shell.
+- Standard stream builtins: `print(text)` and `println(text)` write a `string` to stdout, `warn(text)` writes a `string` line to stderr, and `flush()` flushes stdout. Each returns `void`.
 
 ## CLI And Artifacts
 

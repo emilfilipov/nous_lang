@@ -149,6 +149,10 @@ impl<'a> Runtime<'a> {
             "file_exists" => self.builtin_file_exists(args),
             "sys_status" => self.builtin_sys_status(args),
             "sys_output" => self.builtin_sys_output(args),
+            "print" => self.builtin_print("print", args, false),
+            "println" => self.builtin_print("println", args, true),
+            "warn" => self.builtin_warn(args),
+            "flush" => self.builtin_flush(args),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("N0401", format!("unknown function `{name}`"))
@@ -572,6 +576,55 @@ impl<'a> Runtime<'a> {
         ))
     }
 
+    fn builtin_print(
+        &self,
+        name: &'static str,
+        args: Vec<Value>,
+        newline: bool,
+    ) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let [text]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity(name, 1, args.len()))?;
+        let text = text.as_string()?;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let result = if newline {
+            writeln!(handle, "{text}")
+        } else {
+            write!(handle, "{text}")
+        };
+        result.map_err(|error| {
+            RuntimeError::resource("N0419", format!("failed to write to stdout: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
+    fn builtin_warn(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let [text]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("warn", 1, args.len()))?;
+        let text = text.as_string()?;
+        let stderr = std::io::stderr();
+        let mut handle = stderr.lock();
+        writeln!(handle, "{text}").map_err(|error| {
+            RuntimeError::resource("N0419", format!("failed to write to stderr: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
+    fn builtin_flush(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        if !args.is_empty() {
+            return Err(Self::wrong_arity("flush", 0, args.len()));
+        }
+        std::io::stdout().flush().map_err(|error| {
+            RuntimeError::resource("N0419", format!("failed to flush stdout: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
     fn wrong_arity(name: &str, expected: usize, actual: usize) -> RuntimeError {
         RuntimeError::new(
             "N0405",
@@ -848,6 +901,12 @@ mod tests {
     fn runs_safe_system_status_builtin() {
         let source = "fn main -> i64\n    sys_status(\"rustc\", [\"--version\"])\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(0));
+    }
+
+    #[test]
+    fn runs_standard_stream_builtins() {
+        let source = "fn main -> void\n    println(\"hello\")\n    print(\"a\")\n    warn(\"w\")\n    flush()\n";
+        assert_eq!(run_source(source).expect("run"), Value::Void);
     }
 
     #[test]

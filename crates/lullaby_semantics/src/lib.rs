@@ -721,6 +721,15 @@ impl<'a> Checker<'a> {
                     "string"
                 }))
             }
+            "print" | "println" | "warn" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_arg_type(name, 1, &args[0], "string", scope, function)?;
+                Some(TypeRef::new("void"))
+            }
+            "flush" => {
+                self.expect_arg_count(name, args, 0, function)?;
+                Some(TypeRef::new("void"))
+            }
             _ => {
                 let Some(signature) = self.signatures.get(name).cloned() else {
                     self.diagnostics.push(SemanticDiagnostic::at(
@@ -1079,6 +1088,34 @@ mod tests {
     fn validates_io_and_system_builtins() {
         let source = "fn main -> bool\n    write_file(\"target/lullaby_semantics_io.txt\", \"alpha\")\n    append_file(\"target/lullaby_semantics_io.txt\", \" beta\")\n    let content string = read_file(\"target/lullaby_semantics_io.txt\")\n    let exists bool = file_exists(\"target/lullaby_semantics_io.txt\")\n    let status i64 = sys_status(\"rustc\", [\"--version\"])\n    content == \"alpha beta\" and exists and status == 0\n";
         assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn validates_standard_stream_builtins() {
+        let source = "fn main -> void\n    println(\"hello\")\n    print(\"partial\")\n    warn(\"careful\")\n    flush()\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn catches_stream_builtin_argument_type_mismatch() {
+        let diagnostics =
+            validate_source("fn bad -> void\n    println(1)\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0313")
+        );
+    }
+
+    #[test]
+    fn catches_stream_builtin_arity_mismatch() {
+        let diagnostics =
+            validate_source("fn bad -> void\n    flush(\"x\")\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0312")
+        );
     }
 
     #[test]

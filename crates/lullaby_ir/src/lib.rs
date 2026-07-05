@@ -2637,6 +2637,10 @@ impl<'a> IrRuntime<'a> {
             "file_exists" => self.builtin_file_exists(args),
             "sys_status" => self.builtin_sys_status(args),
             "sys_output" => self.builtin_sys_output(args),
+            "print" => self.builtin_print("print", args, false),
+            "println" => self.builtin_print("println", args, true),
+            "warn" => self.builtin_warn(args),
+            "flush" => self.builtin_flush(args),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("N0401", format!("unknown function `{name}`"))
@@ -3067,6 +3071,55 @@ impl<'a> IrRuntime<'a> {
         ))
     }
 
+    fn builtin_print(
+        &self,
+        name: &'static str,
+        args: Vec<Value>,
+        newline: bool,
+    ) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let [text]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity(name, 1, args.len()))?;
+        let text = text.as_string()?;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        let result = if newline {
+            writeln!(handle, "{text}")
+        } else {
+            write!(handle, "{text}")
+        };
+        result.map_err(|error| {
+            RuntimeError::resource("N0419", format!("failed to write to stdout: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
+    fn builtin_warn(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let [text]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("warn", 1, args.len()))?;
+        let text = text.as_string()?;
+        let stderr = std::io::stderr();
+        let mut handle = stderr.lock();
+        writeln!(handle, "{text}").map_err(|error| {
+            RuntimeError::resource("N0419", format!("failed to write to stderr: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
+    fn builtin_flush(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        if !args.is_empty() {
+            return Err(Self::wrong_arity("flush", 0, args.len()));
+        }
+        std::io::stdout().flush().map_err(|error| {
+            RuntimeError::resource("N0419", format!("failed to flush stdout: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
     fn wrong_arity(name: &str, expected: usize, actual: usize) -> RuntimeError {
         RuntimeError::new(
             "N0405",
@@ -3445,7 +3498,8 @@ impl<'a> Lowerer<'a> {
                         IrLoweringError::new("load call argument is not a pointer", Some(span))
                     })?
             }
-            "store" | "dealloc" | "write_file" | "append_file" => TypeRef::new("void"),
+            "store" | "dealloc" | "write_file" | "append_file" | "print" | "println" | "warn"
+            | "flush" => TypeRef::new("void"),
             "read_file" | "sys_output" => TypeRef::new("string"),
             "file_exists" => TypeRef::new("bool"),
             "sys_status" => TypeRef::new("i64"),

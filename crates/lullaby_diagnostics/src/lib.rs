@@ -357,6 +357,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         root_cause: "The program name may not exist on PATH or may be blocked by host permissions.",
         suggested_fix: "Pass an executable program name and an array<string> of arguments.",
     },
+    DiagnosticEntry {
+        code: "N0419",
+        phase: DiagnosticPhase::Resource,
+        explanation: "The runtime could not write to or flush a standard stream.",
+        root_cause: "Writing to stdout/stderr failed, usually because the stream was closed or the pipe was broken.",
+        suggested_fix: "Ensure the output stream stays open, or redirect it to a writable destination.",
+    },
 ];
 
 pub fn render_concise(report: &DiagnosticReport) -> String {

@@ -113,3 +113,4 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0416` | resource | Command launch failed. | Program not found or not executable. | Pass a valid executable and argv array. |
 | `N0417` | runtime | Expected string. | Runtime value kind was wrong. | Pass a string value. |
 | `N0418` | runtime | Expected `array<string>`. | Runtime value kind was wrong. | Pass an array of strings. |
+| `N0419` | resource | Standard stream write or flush failed. | stdout/stderr was closed or the pipe was broken. | Keep the output stream open or redirect it to a writable destination. |

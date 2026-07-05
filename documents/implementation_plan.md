@@ -53,7 +53,7 @@ The repository now contains the first executable alpha slice:
 
 | Story | Description | Dependencies | Estimated Effort | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **2.1** | **I/O System Integration:** Implement the I/O layer based on `lullaby_input_output.md`. Focus on file system access (reading/writing) for standard library operations. | `lullaby_input_output.md` | High | Alpha text file builtins done: `read_file`, `write_file`, `append_file`, `file_exists`; streams/binary/mmap planned |
+| **2.1** | **I/O System Integration:** Implement the I/O layer based on `lullaby_input_output.md`. Focus on file system access (reading/writing) for standard library operations. | `lullaby_input_output.md` | High | Alpha text file builtins done: `read_file`, `write_file`, `append_file`, `file_exists`; standard stream builtins done: `print`, `println`, `warn` (stderr), `flush`; binary/mmap planned |
 | **2.2** | **Error Handling Integration:** Integrate the error handling system (`lullaby_error_handling.md`) into the runtime to ensure all compilation and runtime errors are gracefully reported in a structured format. | `lullaby_error_handling.md` | Medium | Alpha structured runtime/resource error formatting done; language-level try/catch planned |
 | **2.3** | **System Call Abstraction:** Define the interface for executing low-level OS commands (e.g., system calls) that lullaby code can invoke safely. | N/A (New Design) | High | Alpha direct program-plus-argv abstraction done: `sys_status`, `sys_output`; no shell invocation |
 

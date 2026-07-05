@@ -97,6 +97,33 @@ fn runs_user_facing_valid_examples() {
 }
 
 #[test]
+fn runs_standard_streams_across_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_streams.lullaby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        let stdout = stdout(&output);
+        let stderr = stderr(&output);
+        assert!(
+            stdout.contains("Hello, world") && stdout.contains("partial line"),
+            "{backend} stdout: {stdout}"
+        );
+        // Warnings go to stderr, not stdout, and are separately observable.
+        assert!(stderr.contains("heads up"), "{backend} stderr: {stderr}");
+        assert!(!stdout.contains("heads up"), "{backend} stdout: {stdout}");
+    }
+}
+
+#[test]
 fn rejects_user_facing_invalid_examples() {
     let examples_dir = workspace_root().join("examples/invalid");
     let mut examples = std::fs::read_dir(&examples_dir)
