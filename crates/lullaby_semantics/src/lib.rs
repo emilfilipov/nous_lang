@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lullaby_diagnostics::Span;
 use lullaby_parser::{
-    AssignOp, BinaryOp, Expr, ExprKind, Function, Program, Stmt, TypeRef, UnaryOp,
+    AssignOp, BinaryOp, Expr, ExprKind, Function, Program, RegionDecl, Stmt, TypeRef, UnaryOp,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +114,7 @@ struct Checker<'a> {
     diagnostics: Vec<SemanticDiagnostic>,
     loop_depth: usize,
     unsafe_depth: usize,
+    region_names: HashSet<String>,
 }
 
 impl<'a> Checker<'a> {
@@ -125,6 +126,7 @@ impl<'a> Checker<'a> {
             diagnostics: Vec::new(),
             loop_depth: 0,
             unsafe_depth: 0,
+            region_names: HashSet::new(),
         }
     }
 
@@ -160,6 +162,7 @@ impl<'a> Checker<'a> {
     }
 
     fn validate_function(&mut self, function: &Function) {
+        self.region_names.clear();
         let mut scope = Scope::default();
         for param in &function.params {
             if scope
@@ -456,6 +459,53 @@ impl<'a> Checker<'a> {
                 self.unsafe_depth -= 1;
                 block_type
             }
+            Stmt::Region(decl) => {
+                self.check_region(decl, function);
+                None
+            }
+        }
+    }
+
+    fn check_region(&mut self, decl: &RegionDecl, function: &Function) {
+        if decl.size <= 0 {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "N0340",
+                format!("region `{}` size must be positive", decl.name),
+                Some(function.name.clone()),
+                decl.span,
+            ));
+        }
+        if let Some(align) = decl.align
+            && (align <= 0 || (align & (align - 1)) != 0)
+        {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "N0340",
+                format!(
+                    "region `{}` alignment must be a positive power of two",
+                    decl.name
+                ),
+                Some(function.name.clone()),
+                decl.span,
+            ));
+        }
+        if !matches!(decl.kind.as_str(), "static" | "dynamic") {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "N0340",
+                format!(
+                    "region `{}` kind `{}` must be `static` or `dynamic`",
+                    decl.name, decl.kind
+                ),
+                Some(function.name.clone()),
+                decl.span,
+            ));
+        }
+        if !self.region_names.insert(decl.name.clone()) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "N0341",
+                format!("duplicate region `{}`", decl.name),
+                Some(function.name.clone()),
+                decl.span,
+            ));
         }
     }
 
@@ -1223,6 +1273,48 @@ mod tests {
     fn validates_io_and_system_builtins() {
         let source = "fn main -> bool\n    write_file(\"target/lullaby_semantics_io.txt\", \"alpha\")\n    append_file(\"target/lullaby_semantics_io.txt\", \" beta\")\n    let content string = read_file(\"target/lullaby_semantics_io.txt\")\n    let exists bool = file_exists(\"target/lullaby_semantics_io.txt\")\n    let status i64 = sys_status(\"rustc\", [\"--version\"])\n    content == \"alpha beta\" and exists and status == 0\n";
         assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn validates_region_declarations() {
+        let source = "fn main -> i64\n    region pool: size=4096, align=16, kind=static\n    region scratch: size=1024, kind=dynamic, mutable=true\n    0\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_region_with_bad_size() {
+        let diagnostics = validate_source("fn main -> i64\n    region pool: size=0\n    0\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0340")
+        );
+    }
+
+    #[test]
+    fn rejects_region_with_non_power_of_two_alignment() {
+        let diagnostics =
+            validate_source("fn main -> i64\n    region pool: size=1024, align=15\n    0\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0340")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_region() {
+        let diagnostics = validate_source(
+            "fn main -> i64\n    region pool: size=16\n    region pool: size=32\n    0\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0341")
+        );
     }
 
     #[test]

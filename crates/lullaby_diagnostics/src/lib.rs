@@ -211,6 +211,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Check the previous line, indentation level, and required function/control-flow body.",
     },
     DiagnosticEntry {
+        code: "N0210",
+        phase: DiagnosticPhase::Parser,
+        explanation: "A region declaration is malformed.",
+        root_cause: "The `region NAME: size=N[, align=N][, kind=...][, mutable=...]` form has a missing colon, `=`, field value, or an unknown field.",
+        suggested_fix: "Write `region NAME: size=N` with optional `align`, `kind`, and `mutable` fields separated by commas.",
+    },
+    DiagnosticEntry {
         code: "N0207",
         phase: DiagnosticPhase::Parser,
         explanation: "The parser could not build a valid expression from this line.",
@@ -314,6 +321,20 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         explanation: "A reference builtin received a value whose type is not the expected reference or pointer kind.",
         root_cause: "An `rc`/`ref`/raw-pointer builtin was called with a value of a different type.",
         suggested_fix: "Pass an `rc<T>` to rc builtins, a `ref<T>` to `ref_get`, or a raw pointer to `ptr_read`/`ptr_write`.",
+    },
+    DiagnosticEntry {
+        code: "N0340",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A region declaration has an invalid size, alignment, or kind.",
+        root_cause: "The region size is not positive, the alignment is not a positive power of two, or the kind is not `static`/`dynamic`.",
+        suggested_fix: "Use a positive size, a power-of-two alignment, and a `static` or `dynamic` kind.",
+    },
+    DiagnosticEntry {
+        code: "N0341",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "Two regions in the same function share a name.",
+        root_cause: "A region name was declared more than once.",
+        suggested_fix: "Give each region a unique name.",
     },
     DiagnosticEntry {
         code: "N0501",

@@ -334,6 +334,9 @@ impl<'a> Runtime<'a> {
             // `unsafe` is a transparent gate: its body runs in the enclosing
             // scope, matching IR lowering, which inlines the body.
             Stmt::Unsafe { body, .. } => self.eval_block(body, env),
+            // A region declaration is compile-time metadata; it has no runtime
+            // effect in the current analysis-only region model.
+            Stmt::Region(_) => Ok(Control::Value(Value::Void)),
         };
         result.map_err(|error| self.annotate_error(error, span))
     }
@@ -742,6 +745,7 @@ fn statement_span(statement: &Stmt) -> Span {
         | Stmt::For { span, .. }
         | Stmt::Loop { span, .. }
         | Stmt::Unsafe { span, .. } => *span,
+        Stmt::Region(decl) => decl.span,
         Stmt::Return(Some(expr)) | Stmt::Expr(expr) => expr.span,
         Stmt::Return(None) => Span::new(1, 1),
     }

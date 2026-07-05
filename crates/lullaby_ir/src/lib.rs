@@ -526,6 +526,9 @@ fn classify_memory_call(
                 value_type: value.ty.clone(),
             }
         }
+        "region_create" => IrMemoryOperationKind::RegionCreate {
+            region_type: region_type_of(args.first()),
+        },
         _ => return None,
     };
 
@@ -538,6 +541,14 @@ fn classify_memory_call(
         kind,
         safety,
     })
+}
+
+/// Build a region type name from a `region_create` marker's leading name arg.
+fn region_type_of(name_arg: Option<&IrExpr>) -> TypeRef {
+    match name_arg.map(|arg| &arg.kind) {
+        Some(IrExprKind::String(name)) => TypeRef::new(format!("region<{name}>")),
+        _ => TypeRef::new("region"),
+    }
 }
 
 fn memory_safety_for_kind(kind: &IrMemoryOperationKind) -> Option<IrMemorySafety> {
@@ -970,6 +981,12 @@ fn classify_bytecode_memory_call(
                 value_type: value.ty.clone(),
             }
         }
+        "region_create" => IrMemoryOperationKind::RegionCreate {
+            region_type: match args.first().map(|arg| &arg.kind) {
+                Some(BytecodeExprKind::String(name)) => TypeRef::new(format!("region<{name}>")),
+                _ => TypeRef::new("region"),
+            },
+        },
         _ => return None,
     };
     let safety = memory_safety_for_kind(&kind)?;
@@ -2723,6 +2740,9 @@ impl<'a> IrRuntime<'a> {
             "rc_get" | "ref_get" | "ptr_read" => self.builtin_ref_get(name, args),
             "rc_borrow" => self.builtin_rc_borrow(args),
             "ptr_write" => self.builtin_store(args),
+            // A region-creation marker has no runtime effect in the current
+            // analysis-only region model.
+            "region_create" => Ok(Value::Void),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("N0401", format!("unknown function `{name}`"))
@@ -3532,6 +3552,37 @@ impl<'a> Lowerer<'a> {
                 let body = self.lower_block(body, &mut loop_scope)?;
                 Ok(IrStmt::Loop { body, span: *span })
             }
+            // A region declaration lowers to a `region_create` marker call so
+            // its metadata flows through memory analysis as a RegionCreate op.
+            Stmt::Region(decl) => {
+                let mut args = vec![
+                    IrExpr {
+                        kind: IrExprKind::String(decl.name.clone()),
+                        ty: TypeRef::new("string"),
+                        span: decl.span,
+                    },
+                    IrExpr {
+                        kind: IrExprKind::Integer(decl.size),
+                        ty: TypeRef::new("i64"),
+                        span: decl.span,
+                    },
+                ];
+                if let Some(align) = decl.align {
+                    args.push(IrExpr {
+                        kind: IrExprKind::Integer(align),
+                        ty: TypeRef::new("i64"),
+                        span: decl.span,
+                    });
+                }
+                Ok(IrStmt::Expr(IrExpr {
+                    kind: IrExprKind::Call {
+                        name: "region_create".to_string(),
+                        args,
+                    },
+                    ty: TypeRef::new("void"),
+                    span: decl.span,
+                }))
+            }
             // `unsafe` blocks are flattened in `lower_block`; reaching here means
             // a lone unsafe statement, which we lower transparently by inlining.
             Stmt::Unsafe { body, span } => {
@@ -3681,7 +3732,7 @@ impl<'a> Lowerer<'a> {
                     })?
             }
             "store" | "dealloc" | "write_file" | "append_file" | "print" | "println" | "warn"
-            | "flush" | "rc_release" | "ptr_write" => TypeRef::new("void"),
+            | "flush" | "rc_release" | "ptr_write" | "region_create" => TypeRef::new("void"),
             "read_file" | "sys_output" => TypeRef::new("string"),
             "file_exists" => TypeRef::new("bool"),
             "sys_status" => TypeRef::new("i64"),
@@ -3912,6 +3963,20 @@ mod tests {
             IrCleanupRole::ReleasesResource
         );
         assert!(operations[4].safety.mutates_memory);
+    }
+
+    #[test]
+    fn memory_analysis_reports_region_creation() {
+        let module = lower_source("fn main -> i64\n    region pool: size=4096, align=16\n    0\n");
+        let operations = analyze_memory_operations(&module);
+        let region = operations
+            .iter()
+            .find(|op| matches!(op.kind, IrMemoryOperationKind::RegionCreate { .. }))
+            .expect("region create op");
+        let IrMemoryOperationKind::RegionCreate { region_type } = &region.kind else {
+            unreachable!()
+        };
+        assert_eq!(region_type.name, "region<pool>");
     }
 
     #[test]

@@ -57,6 +57,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0205` | parser | Expected structural token. | Missing newline, indent, or dedent. | Check indentation and required block bodies. |
 | `N0206` | parser | Expected `=` in a let binding. | A `let` statement lacks an initializer separator. | Use `let name Type = expression` or `let name = expression`. |
 | `N0207` | parser | Invalid expression. | Unsupported or malformed expression syntax. | Use supported expression forms and matching delimiters. |
+| `N0210` | parser | Malformed region declaration. | The `region NAME: size=N[, ...]` form has a missing colon, `=`, field value, or unknown field. | Write `region NAME: size=N` with optional `align`, `kind`, and `mutable` fields. |
 | `N0208` | parser | Expected assignment operator. | Assignment statement has malformed operator. | Use `=`, `+=`, `-=`, `*=`, or `/=`. |
 | `N0209` | parser | Expected `from` in for loop. | Range loop header is malformed. | Use `for name from start to end`. |
 | `N0210` | parser | Expected `to` in for loop. | Range loop header is missing its end marker. | Add `to end`. |
@@ -93,6 +94,8 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0329` | semantic | Executable entry point is missing or has parameters. | Source passed to `compile`, `build`, or source `run` lacks a zero-argument `main`. | Add `fn main -> Type` with no parameters and call helpers from there. |
 | `N0330` | semantic | Raw pointer operation used outside `unsafe`. | `ptr_read`/`ptr_write` were called outside an `unsafe` block. | Wrap the operation in `unsafe`, or use safe `rc<T>`/`ref<T>` references. |
 | `N0331` | semantic | Reference builtin received the wrong type. | An `rc`/`ref`/raw-pointer builtin was called with a value of a different kind. | Pass an `rc<T>` to rc builtins, a `ref<T>` to `ref_get`, or a raw pointer to `ptr_read`/`ptr_write`. |
+| `N0340` | semantic | Invalid region size, alignment, or kind. | Size is not positive, alignment is not a power of two, or kind is not `static`/`dynamic`. | Use a positive size, power-of-two alignment, and a `static` or `dynamic` kind. |
+| `N0341` | semantic | Duplicate region name. | A region name was declared more than once in the same function. | Give each region a unique name. |
 | `N0501` | ir | IR lowering failed. | A checked program did not match the current IR lowering contract. | Treat this as a compiler bug and retry with `--backend ast` as a workaround. |
 | `N0502` | optimizer | Optimizer mode is incompatible with the selected backend. | `--optimize` was requested with the default AST backend. | Add `--backend ir` or `--backend bytecode`, or use `--optimize none`. |
 | `N0601` | bytecode | Bytecode artifact failed to load. | The `.lbc` artifact is malformed, has an unsupported format/version/metadata target or payload, names an unsupported or missing entry point, contains duplicate functions or parameters, has a mismatched function table, or contains an invalid instruction contract such as `break`/`continue` outside a loop. | Recompile the source with the current `lullaby compile` or `lullaby build` command. |

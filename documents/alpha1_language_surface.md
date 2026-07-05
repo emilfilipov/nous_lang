@@ -56,6 +56,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Reference types: `rc<T>` is a reference-counted shared owner, `ref<T>` is a non-null borrowed reference, and `ptr<T>` (legacy spelling `ptr_T`) is a raw pointer.
 - Reference builtins: `rc_new(value)` creates an `rc<T>`; `rc_clone(rc<T>)` shares ownership; `rc_release(rc<T>)` drops one owner and frees at zero; `rc_get(rc<T>)`/`ref_get(ref<T>)` read the referent; `rc_borrow(rc<T>)` yields a `ref<T>`.
 - `unsafe` block: an indented block introduced by `unsafe` in which raw-pointer operations are permitted. `ptr_read(ptr<T>)` and `ptr_write(ptr<T>, value)` require an `unsafe` context (`N0330` otherwise); `unsafe` is a transparent scope, so bindings inside it remain visible afterward.
+- Region declarations: `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]` declares a named memory region. Size must be positive, alignment (if present) must be a power of two, and kind must be `static` or `dynamic` (`N0340`); region names must be unique within a function (`N0341`). Regions are compile-time metadata in Alpha 1 (surfaced as `RegionCreate` in memory analysis) with no runtime allocation yet.
 
 ## CLI And Artifacts
 

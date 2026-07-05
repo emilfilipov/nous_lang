@@ -120,6 +120,18 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+    Region(RegionDecl),
+}
+
+/// A memory-region declaration: `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionDecl {
+    pub name: String,
+    pub size: i64,
+    pub align: Option<i64>,
+    pub kind: String,
+    pub mutable: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,6 +363,10 @@ impl<'a> Parser<'a> {
             return self.parse_unsafe();
         }
 
+        if self.eat_keyword(Keyword::Region).is_some() {
+            return self.parse_region();
+        }
+
         if self.next_is_assignment() {
             return self.parse_assignment();
         }
@@ -463,7 +479,7 @@ impl<'a> Parser<'a> {
         }
         let start = self.parse_expr_until_keywords(span, &[Keyword::To])?;
         if self.eat_keyword(Keyword::To).is_none() {
-            self.error("N0210", "expected `to` in for loop", self.peek().span);
+            self.error("N0206", "expected `to` in for loop", self.peek().span);
             return None;
         }
         let end = self.parse_expr_until_keywords(span, &[Keyword::By])?;
@@ -502,6 +518,94 @@ impl<'a> Parser<'a> {
         let body = self.parse_block(&[BlockEnd::Dedent]);
         self.expect(TokenKindRef::Dedent, "expected unsafe body dedent")?;
         Some(Stmt::Unsafe { body, span })
+    }
+
+    /// Parse `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]`.
+    fn parse_region(&mut self) -> Option<Stmt> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected region name")?;
+        if !self.eat_symbol(":") {
+            self.error("N0210", "expected `:` after region name", self.peek().span);
+            return None;
+        }
+
+        let mut size: Option<i64> = None;
+        let mut align: Option<i64> = None;
+        let mut kind = String::from("static");
+        let mut mutable = false;
+
+        loop {
+            let field = self.expect_identifier("expected region field name")?;
+            if !self.eat_symbol("=") {
+                self.error("N0210", "expected `=` in region field", self.peek().span);
+                return None;
+            }
+            match field.as_str() {
+                "size" => size = Some(self.expect_number("expected region size")?),
+                "align" => align = Some(self.expect_number("expected region alignment")?),
+                "kind" => kind = self.expect_identifier("expected region kind")?,
+                "mutable" => mutable = self.expect_bool_word("expected true or false")?,
+                other => {
+                    self.error("N0210", "unknown region field", self.previous().span);
+                    let _ = other;
+                    return None;
+                }
+            }
+            if !self.eat_symbol(",") {
+                break;
+            }
+        }
+
+        self.expect_newline("expected newline after region declaration");
+        let Some(size) = size else {
+            self.error("N0210", "region declaration requires `size`", span);
+            return None;
+        };
+        Some(Stmt::Region(RegionDecl {
+            name,
+            size,
+            align,
+            kind,
+            mutable,
+            span,
+        }))
+    }
+
+    fn expect_number(&mut self, message: &'static str) -> Option<i64> {
+        match &self.peek().kind {
+            TokenKind::Number(value) => {
+                let parsed = value.parse::<i64>().ok();
+                self.advance();
+                match parsed {
+                    Some(number) => Some(number),
+                    None => {
+                        self.error("N0210", message, self.previous().span);
+                        None
+                    }
+                }
+            }
+            _ => {
+                self.error("N0210", message, self.peek().span);
+                None
+            }
+        }
+    }
+
+    fn expect_bool_word(&mut self, message: &'static str) -> Option<bool> {
+        match &self.peek().kind {
+            TokenKind::Keyword(Keyword::True) => {
+                self.advance();
+                Some(true)
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.advance();
+                Some(false)
+            }
+            _ => {
+                self.error("N0210", message, self.peek().span);
+                None
+            }
+        }
     }
 
     fn parse_expr_line(&mut self, fallback_span: Span) -> Option<Expr> {
@@ -1046,6 +1150,21 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         assert_eq!(program.functions[0].body.len(), 3);
         assert!(matches!(program.functions[0].body[0], Stmt::Expr(_)));
+    }
+
+    #[test]
+    fn parses_region_declaration() {
+        let source = "fn main -> i64\n    region pool: size=4096, align=16, kind=static, mutable=true\n    0\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Region(decl) = &program.functions[0].body[0] else {
+            panic!("expected region declaration");
+        };
+        assert_eq!(decl.name, "pool");
+        assert_eq!(decl.size, 4096);
+        assert_eq!(decl.align, Some(16));
+        assert_eq!(decl.kind, "static");
+        assert!(decl.mutable);
     }
 
     #[test]
