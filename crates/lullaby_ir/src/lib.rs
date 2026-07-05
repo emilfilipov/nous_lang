@@ -3966,6 +3966,37 @@ mod tests {
     }
 
     #[test]
+    fn memory_analysis_covers_region_copy_and_cleanup_end_to_end() {
+        // A single program exercising region creation, reference copy
+        // (rc_clone), and compiler-visible cleanup (rc_release) produces all
+        // three memory-operation kinds from parseable source, lowered end to end.
+        let module = lower_source(
+            "fn main -> i64\n    region pool: size=64, align=8\n    let h rc<i64> = rc_new(7)\n    let s rc<i64> = rc_clone(h)\n    rc_release(s)\n    rc_release(h)\n    0\n",
+        );
+        let operations = analyze_memory_operations(&module);
+        use IrMemoryOperationKind::*;
+        assert!(
+            operations
+                .iter()
+                .any(|op| matches!(op.kind, RegionCreate { .. }))
+        );
+        assert!(operations.iter().any(|op| matches!(op.kind, Copy { .. })));
+        assert!(
+            operations
+                .iter()
+                .any(|op| matches!(op.kind, Cleanup { .. }))
+        );
+        // Every reported operation carries safety metadata for optimizer/codegen.
+        assert!(operations.iter().all(|op| matches!(
+            op.safety.cleanup_role,
+            IrCleanupRole::CreatesResource
+                | IrCleanupRole::UsesResource
+                | IrCleanupRole::ReleasesResource
+                | IrCleanupRole::CheckedAccess
+        )));
+    }
+
+    #[test]
     fn memory_analysis_reports_region_creation() {
         let module = lower_source("fn main -> i64\n    region pool: size=4096, align=16\n    0\n");
         let operations = analyze_memory_operations(&module);

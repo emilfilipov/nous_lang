@@ -16,10 +16,15 @@ Current increment:
 - Version 5 `.lbc` artifacts preserve bytecode-level `memory_operations` with stable sequence numbers, artifact decoding validates those operations against module instructions, and `lullaby inspect` reports memory operation counts/details.
 - Backend snapshot tests under `crates/lullaby_ir/tests/memory_snapshots.rs` pin the current Alpha 1 bytecode memory metadata for heap-slot operations and bounds-checked array indexing.
 
+Delivered since:
+
+- `region NAME: size=N[, ...]` declarations lower to `region_create` and classify as `RegionCreate` memory operations with region-name metadata.
+- `rc_clone` lowers to a `Copy` memory operation and `rc_release` to a `Cleanup` memory operation, activating the previously reserved copy/cleanup safety metadata end to end (see `memory_analysis_covers_region_copy_and_cleanup_end_to_end`).
+- `frame_layout` produces deterministic per-scope cleanup plans that describe compiler-inserted cleanup ordering.
+
 Remaining work:
 
-- Add first-class IR forms or lowering metadata that emits `region_create`, `region_resize`, copy operations, and compiler-inserted cleanup once those features become parseable and lowerable.
-- Extend backend memory snapshots when planned region/copy/cleanup operations become parseable and lowerable.
+- Emit `region_resize` once dynamic-region growth has a source form (the kind and its safety metadata are already reserved).
 - Use this metadata as a prerequisite for native backend lowering and alias analysis.
 
 ## 2. Static Offline Documentation Generator
