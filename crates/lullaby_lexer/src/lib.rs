@@ -78,6 +78,7 @@ pub enum Keyword {
     Coroutine,
     Unsafe,
     Region,
+    Alias,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,6 +394,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "coroutine" => Keyword::Coroutine,
         "unsafe" => Keyword::Unsafe,
         "region" => Keyword::Region,
+        "alias" => Keyword::Alias,
         _ => return None,
     })
 }

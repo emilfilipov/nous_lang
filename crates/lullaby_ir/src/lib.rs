@@ -4182,7 +4182,7 @@ mod tests {
     #[test]
     fn copy_propagation_rewrites_straight_line_aliases() {
         let module = lower_source(
-            "fn main -> i64\n    let base i64 = 40\n    let alias i64 = base\n    let second i64 = alias\n    second + 2\n",
+            "fn main -> i64\n    let base i64 = 40\n    let copy i64 = base\n    let second i64 = copy\n    second + 2\n",
         );
         let (optimized, report) = optimize(&module, &OptimizationConfig::copy_propagation());
 
@@ -4208,7 +4208,7 @@ mod tests {
 
     #[test]
     fn copy_propagation_invalidates_aliases_after_source_assignment() {
-        let source = "fn main -> i64\n    let source i64 = 1\n    let alias i64 = source\n    source = 2\n    alias\n";
+        let source = "fn main -> i64\n    let source i64 = 1\n    let copy i64 = source\n    source = 2\n    copy\n";
         let module = lower_source(source);
         let (optimized, report) = optimize(&module, &OptimizationConfig::copy_propagation());
 
@@ -4221,7 +4221,7 @@ mod tests {
         let IrStmt::Expr(expr) = &optimized.functions[0].body[3] else {
             panic!("expected final expression");
         };
-        assert_eq!(expr.kind, IrExprKind::Variable("alias".to_string()));
+        assert_eq!(expr.kind, IrExprKind::Variable("copy".to_string()));
     }
 
     #[test]

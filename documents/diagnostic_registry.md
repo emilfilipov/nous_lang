@@ -62,6 +62,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0209` | parser | Expected `from` in for loop. | Range loop header is malformed. | Use `for name from start to end`. |
 | `N0210` | parser | Expected `to` in for loop. | Range loop header is missing its end marker. | Add `to end`. |
 | `N0211` | parser | Planned syntax is not supported in Alpha 1. | Source uses future constructs such as modules, imports, structs, pattern matching, or try/catch. | Remove the planned construct or rewrite with the current Alpha 1 surface. |
+| `N0212` | parser | Malformed type alias declaration. | An `alias NAME = TYPE` declaration lacks `=` or a target type. | Write `alias NAME = TYPE`, e.g. `alias Count = i64`. |
 | `N0300` | semantic | Duplicate function. | Two functions share a name. | Rename or remove one function. |
 | `N0301` | semantic | Non-void function has no final value of declared type. | Control reaches the end without the expected value. | Add a final expression or return the declared type. |
 | `N0302` | semantic | Duplicate parameter. | Function has repeated parameter names. | Rename one parameter. |
@@ -98,6 +99,8 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0341` | semantic | Duplicate region name. | A region name was declared more than once in the same function. | Give each region a unique name. |
 | `N0350` | semantic | Use-after-free / double-free. | A binding is used or freed again after a straight-line `dealloc`/`rc_release`. | Remove the later use, or reallocate/rebind first. |
 | `N0351` | semantic | Borrowed `ref<T>` escapes its owner. | A function declares a `ref<T>` return type. | Return an owning `rc<T>` or a value instead. |
+| `N0360` | semantic | Duplicate type alias. | Two `alias` declarations share a name. | Give each type alias a unique name. |
+| `N0361` | semantic | Cyclic type alias. | An alias chain refers back to itself. | Break the cycle so each alias resolves to a concrete type. |
 | `N0501` | ir | IR lowering failed. | A checked program did not match the current IR lowering contract. | Treat this as a compiler bug and retry with `--backend ast` as a workaround. |
 | `N0502` | optimizer | Optimizer mode is incompatible with the selected backend. | `--optimize` was requested with the default AST backend. | Add `--backend ir` or `--backend bytecode`, or use `--optimize none`. |
 | `N0601` | bytecode | Bytecode artifact failed to load. | The `.lbc` artifact is malformed, has an unsupported format/version/metadata target or payload, names an unsupported or missing entry point, contains duplicate functions or parameters, has a mismatched function table, or contains an invalid instruction contract such as `break`/`continue` outside a loop. | Recompile the source with the current `lullaby compile` or `lullaby build` command. |

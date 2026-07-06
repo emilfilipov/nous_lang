@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Program {
     pub functions: Vec<Function>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<AliasDecl>,
+}
+
+/// A type alias declaration: `alias NAME = TYPE`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasDecl {
+    pub name: String,
+    pub target: TypeRef,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,12 +239,17 @@ impl<'a> Parser<'a> {
 
     fn parse_program(&mut self) -> Program {
         let mut functions = Vec::new();
+        let mut aliases = Vec::new();
         self.skip_newlines();
 
         while !self.at(TokenKindRef::Eof) {
             if self.eat_keyword(Keyword::Fn).is_some() {
                 if let Some(function) = self.parse_function() {
                     functions.push(function);
+                }
+            } else if self.eat_keyword(Keyword::Alias).is_some() {
+                if let Some(alias) = self.parse_alias() {
+                    aliases.push(alias);
                 }
             } else if self.reject_planned_syntax().is_some() {
                 self.skip_planned_syntax();
@@ -250,7 +265,24 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
         }
 
-        Program { functions }
+        Program { functions, aliases }
+    }
+
+    /// Parse `alias NAME = TYPE`.
+    fn parse_alias(&mut self) -> Option<AliasDecl> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected alias name")?;
+        if !self.eat_symbol("=") {
+            self.error(
+                "N0212",
+                "expected `=` in alias declaration",
+                self.peek().span,
+            );
+            return None;
+        }
+        let target = self.expect_type("expected alias target type")?;
+        self.expect_newline("expected newline after alias declaration");
+        Some(AliasDecl { name, target, span })
     }
 
     fn parse_function(&mut self) -> Option<Function> {
@@ -1150,6 +1182,17 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         assert_eq!(program.functions[0].body.len(), 3);
         assert!(matches!(program.functions[0].body[0], Stmt::Expr(_)));
+    }
+
+    #[test]
+    fn parses_type_alias_declaration() {
+        let source = "alias Count = i64\nalias Numbers = array<i64>\n\nfn main -> Count\n    0\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert_eq!(program.aliases.len(), 2);
+        assert_eq!(program.aliases[0].name, "Count");
+        assert_eq!(program.aliases[0].target.name, "i64");
+        assert_eq!(program.aliases[1].target.name, "array<i64>");
     }
 
     #[test]

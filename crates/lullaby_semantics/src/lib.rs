@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use lullaby_diagnostics::Span;
 use lullaby_parser::{
-    AssignOp, BinaryOp, Expr, ExprKind, Function, Program, RegionDecl, Stmt, TypeRef, UnaryOp,
+    AssignOp, BinaryOp, Expr, ExprKind, Function, IfBranch, Param, Program, RegionDecl, Stmt,
+    TypeRef, UnaryOp,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,18 +59,203 @@ pub struct ExpressionType {
 }
 
 pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnostic>> {
-    let mut checker = Checker::new(program);
+    // Resolve type aliases to their canonical types before any checking, so the
+    // rest of the pipeline (and IR/runtime) never sees an alias. Aliases carry
+    // no runtime representation, so runtime layout is unchanged.
+    let (resolved, alias_diagnostics) = resolve_program_aliases(program);
+
+    let mut checker = Checker::new(&resolved);
+    checker.diagnostics = alias_diagnostics;
     checker.validate();
-    if checker.diagnostics.is_empty() {
-        Ok(CheckedProgram {
-            program: program.clone(),
-            info: SemanticInfo {
-                signatures: checker.signatures,
-                expression_types: checker.expression_types,
-            },
+    if !checker.diagnostics.is_empty() {
+        return Err(std::mem::take(&mut checker.diagnostics));
+    }
+
+    let signatures = std::mem::take(&mut checker.signatures);
+    let expression_types = std::mem::take(&mut checker.expression_types);
+    drop(checker);
+    Ok(CheckedProgram {
+        program: resolved,
+        info: SemanticInfo {
+            signatures,
+            expression_types,
+        },
+    })
+}
+
+/// Resolve all type aliases in a program to canonical types, returning the
+/// rewritten program plus any alias-definition diagnostics (duplicate `N0360`,
+/// cyclic `N0361`).
+fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnostic>) {
+    let mut diagnostics = Vec::new();
+    let mut map: HashMap<String, TypeRef> = HashMap::new();
+    for alias in &program.aliases {
+        if map.contains_key(&alias.name) {
+            diagnostics.push(SemanticDiagnostic::at(
+                "N0360",
+                format!("duplicate type alias `{}`", alias.name),
+                None,
+                alias.span,
+            ));
+            continue;
+        }
+        map.insert(alias.name.clone(), alias.target.clone());
+    }
+
+    // Detect cyclic alias chains (e.g. `alias A = B` / `alias B = A`).
+    for alias in &program.aliases {
+        if chain_is_cyclic(&alias.name, &map) {
+            diagnostics.push(SemanticDiagnostic::at(
+                "N0361",
+                format!("type alias `{}` is defined in terms of itself", alias.name),
+                None,
+                alias.span,
+            ));
+        }
+    }
+
+    let functions = program
+        .functions
+        .iter()
+        .map(|function| Function {
+            name: function.name.clone(),
+            params: function
+                .params
+                .iter()
+                .map(|param| Param {
+                    name: param.name.clone(),
+                    ty: resolve_alias_type(&param.ty, &map),
+                })
+                .collect(),
+            return_type: resolve_alias_type(&function.return_type, &map),
+            body: function
+                .body
+                .iter()
+                .map(|stmt| rewrite_stmt_types(stmt, &map))
+                .collect(),
+            span: function.span,
         })
-    } else {
-        Err(checker.diagnostics)
+        .collect();
+
+    (
+        Program {
+            functions,
+            aliases: program.aliases.clone(),
+        },
+        diagnostics,
+    )
+}
+
+/// True if following the alias chain from `name` revisits `name` (a cycle).
+fn chain_is_cyclic(name: &str, map: &HashMap<String, TypeRef>) -> bool {
+    let mut seen = HashSet::new();
+    let mut current = name.to_string();
+    while let Some(target) = map.get(&current) {
+        if !map.contains_key(&target.name) {
+            return false;
+        }
+        current = target.name.clone();
+        if current == name {
+            return true;
+        }
+        if !seen.insert(current.clone()) {
+            return false;
+        }
+    }
+    false
+}
+
+/// Expand alias names inside a type, including generic arguments, to canonical
+/// form. Bounded by a depth guard so cyclic aliases cannot loop forever.
+fn resolve_alias_type(ty: &TypeRef, map: &HashMap<String, TypeRef>) -> TypeRef {
+    resolve_alias_type_depth(ty, map, 0)
+}
+
+fn resolve_alias_type_depth(ty: &TypeRef, map: &HashMap<String, TypeRef>, depth: usize) -> TypeRef {
+    if depth > 32 {
+        return ty.clone();
+    }
+    for ctor in ["array", "ptr", "ref", "rc"] {
+        if let Some(inner) = ty.generic_arg(ctor) {
+            let resolved = resolve_alias_type_depth(&inner, map, depth + 1);
+            return TypeRef::new(format!("{ctor}<{}>", resolved.name));
+        }
+    }
+    if let Some(target) = map.get(&ty.name) {
+        return resolve_alias_type_depth(target, map, depth + 1);
+    }
+    ty.clone()
+}
+
+/// Rewrite alias types in a statement's type annotations, recursing into blocks.
+fn rewrite_stmt_types(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
+    match stmt {
+        Stmt::Let {
+            name,
+            ty,
+            value,
+            span,
+        } => Stmt::Let {
+            name: name.clone(),
+            ty: ty.as_ref().map(|ty| resolve_alias_type(ty, map)),
+            value: value.clone(),
+            span: *span,
+        },
+        Stmt::If {
+            branches,
+            else_body,
+            span,
+        } => Stmt::If {
+            branches: branches
+                .iter()
+                .map(|branch| IfBranch {
+                    condition: branch.condition.clone(),
+                    body: branch
+                        .body
+                        .iter()
+                        .map(|stmt| rewrite_stmt_types(stmt, map))
+                        .collect(),
+                })
+                .collect(),
+            else_body: else_body
+                .iter()
+                .map(|stmt| rewrite_stmt_types(stmt, map))
+                .collect(),
+            span: *span,
+        },
+        Stmt::While {
+            condition,
+            body,
+            span,
+        } => Stmt::While {
+            condition: condition.clone(),
+            body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
+            span: *span,
+        },
+        Stmt::For {
+            name,
+            start,
+            end,
+            step,
+            body,
+            span,
+        } => Stmt::For {
+            name: name.clone(),
+            start: start.clone(),
+            end: end.clone(),
+            step: step.clone(),
+            body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
+            span: *span,
+        },
+        Stmt::Loop { body, span } => Stmt::Loop {
+            body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
+            span: *span,
+        },
+        Stmt::Unsafe { body, span } => Stmt::Unsafe {
+            body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
+            span: *span,
+        },
+        other => other.clone(),
     }
 }
 
@@ -1419,6 +1605,42 @@ mod tests {
     fn validates_io_and_system_builtins() {
         let source = "fn main -> bool\n    write_file(\"target/lullaby_semantics_io.txt\", \"alpha\")\n    append_file(\"target/lullaby_semantics_io.txt\", \" beta\")\n    let content string = read_file(\"target/lullaby_semantics_io.txt\")\n    let exists bool = file_exists(\"target/lullaby_semantics_io.txt\")\n    let status i64 = sys_status(\"rustc\", [\"--version\"])\n    content == \"alpha beta\" and exists and status == 0\n";
         assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn resolves_type_aliases_structurally() {
+        // `Count` is an alias for `i64`, so alias and target are interchangeable.
+        let source = "alias Count = i64\n\nfn main -> Count\n    let a Count = 41\n    let b i64 = a\n    b + 1\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn resolves_alias_inside_generic_argument() {
+        let source = "alias Count = i64\n\nfn main -> i64\n    let values array<Count> = [1, 2]\n    values[0]\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_type_alias() {
+        let diagnostics =
+            validate_source("alias A = i64\nalias A = bool\n\nfn main -> i64\n    0\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0360")
+        );
+    }
+
+    #[test]
+    fn rejects_cyclic_type_alias() {
+        let diagnostics = validate_source("alias A = B\nalias B = A\n\nfn main -> i64\n    0\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0361")
+        );
     }
 
     #[test]

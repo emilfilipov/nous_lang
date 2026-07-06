@@ -232,6 +232,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Remove the planned construct or rewrite the program using the current Alpha 1 function, local binding, control-flow, and builtin surface.",
     },
     DiagnosticEntry {
+        code: "N0212",
+        phase: DiagnosticPhase::Parser,
+        explanation: "A type alias declaration is malformed.",
+        root_cause: "An `alias NAME = TYPE` declaration is missing its `=` or target type.",
+        suggested_fix: "Write `alias NAME = TYPE`, for example `alias Count = i64`.",
+    },
+    DiagnosticEntry {
         code: "N0301",
         phase: DiagnosticPhase::Semantic,
         explanation: "A non-void function must produce a final value of its declared return type.",
@@ -349,6 +356,20 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         explanation: "A borrowed `ref<T>` cannot escape the scope of the owner it points into.",
         root_cause: "A function declared a `ref<T>` return type, which would let a borrow outlive its owner.",
         suggested_fix: "Return an owning `rc<T>` (or a value) instead of a borrowed `ref<T>`.",
+    },
+    DiagnosticEntry {
+        code: "N0360",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A type alias name is declared more than once.",
+        root_cause: "Two `alias` declarations share the same name.",
+        suggested_fix: "Give each type alias a unique name.",
+    },
+    DiagnosticEntry {
+        code: "N0361",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A type alias is defined in terms of itself.",
+        root_cause: "An alias chain forms a cycle, so it has no canonical underlying type.",
+        suggested_fix: "Break the cycle so each alias resolves to a concrete type.",
     },
     DiagnosticEntry {
         code: "N0501",

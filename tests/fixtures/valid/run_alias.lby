@@ -1,0 +1,7 @@
+alias Count = i64
+alias Numbers = array<i64>
+
+fn main -> Count
+    let values Numbers = [40, 2]
+    let total Count = values[0] + values[1]
+    total
