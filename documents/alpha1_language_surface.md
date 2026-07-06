@@ -24,7 +24,8 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 
 ## Types
 
-- Implemented scalar types: `i64`, `bool`, `string`, and `void`.
+- Implemented scalar types: `i64`, `f64`, `bool`, `string`, and `void`.
+- Float literals contain a decimal point (e.g. `3.14`, `2.0`) and have type `f64`. `i64` and `f64` do not mix implicitly; combining them is a type error.
 - Implemented array spelling: `array<T>`.
 - Array literals must be non-empty and homogeneous, such as `[1, 2, 3]`.
 - Array indexing is bounds-checked at runtime and requires an `i64` index.
@@ -34,9 +35,9 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 ## Expressions
 
 - Implemented expressions include literals, variables, function calls with parentheses, grouped expressions, array literals, array indexing, arithmetic, equality, ordering, and logical operators.
-- Arithmetic currently supports integer `+`, `-`, `*`, and `/`.
+- Arithmetic `+`, `-`, `*`, and `/` operate on two `i64`s or two `f64`s (operands must match); `+` also concatenates two `string`s. Integer division by zero is a runtime error; `f64` division follows IEEE 754 (division by zero yields infinity/NaN).
 - Equality requires matching operand types.
-- Ordering comparisons `<`, `<=`, `>`, and `>=` require `i64` operands.
+- Ordering comparisons `<`, `<=`, `>`, and `>=` require two `i64`s or two `f64`s.
 - Logical operators are `and`, `or`, and `not`; `and` and `or` short-circuit.
 
 ## Control Flow

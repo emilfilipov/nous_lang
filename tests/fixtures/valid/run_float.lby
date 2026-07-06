@@ -1,0 +1,8 @@
+fn area radius f64 -> f64
+    let pi f64 = 3.14
+    pi * radius * radius
+
+fn main -> f64
+    let base f64 = 2.0
+    let scaled f64 = base * 1.5 + 0.5
+    area(scaled)

@@ -634,7 +634,7 @@ fn format_reports(reports: &[DiagnosticReport], mode: OutputMode, source: Option
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct CompiledSource {
     path: PathBuf,
     source: String,

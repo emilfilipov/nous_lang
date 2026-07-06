@@ -20,12 +20,12 @@ pub const BYTECODE_ARTIFACT_VERSION: u32 = 5;
 const BYTECODE_ARTIFACT_PAYLOAD: &str = "instruction-bytecode";
 const BYTECODE_ARTIFACT_TARGET: &str = "alpha1";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrModule {
     pub functions: Vec<IrFunction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrFunction {
     pub name: String,
     pub params: Vec<IrParam>,
@@ -40,7 +40,7 @@ pub struct IrParam {
     pub ty: TypeRef,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IrStmt {
     Let {
         name: String,
@@ -82,22 +82,23 @@ pub enum IrStmt {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrIfBranch {
     pub condition: IrExpr,
     pub body: Vec<IrStmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrExpr {
     pub kind: IrExprKind,
     pub ty: TypeRef,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IrExprKind {
     Integer(i64),
+    Float(f64),
     Bool(bool),
     String(String),
     Array(Vec<IrExpr>),
@@ -447,6 +448,7 @@ fn collect_memory_operations_from_expr(
             }
         }
         IrExprKind::Integer(_)
+        | IrExprKind::Float(_)
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
         | IrExprKind::Variable(_) => {}
@@ -619,12 +621,12 @@ fn memory_safety_for_kind(kind: &IrMemoryOperationKind) -> Option<IrMemorySafety
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeModule {
     pub functions: Vec<BytecodeFunction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeFunction {
     pub name: String,
     pub params: Vec<IrParam>,
@@ -633,7 +635,7 @@ pub struct BytecodeFunction {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BytecodeInstruction {
     Let {
         name: String,
@@ -675,22 +677,23 @@ pub enum BytecodeInstruction {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeIfBranch {
     pub condition: BytecodeExpr,
     pub body: Vec<BytecodeInstruction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeExpr {
     pub kind: BytecodeExprKind,
     pub ty: TypeRef,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BytecodeExprKind {
     Integer(i64),
+    Float(f64),
     Bool(bool),
     String(String),
     Array(Vec<BytecodeExpr>),
@@ -714,7 +717,7 @@ pub enum BytecodeExprKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeArtifact {
     pub format: String,
     pub version: u32,
@@ -905,6 +908,7 @@ fn collect_bytecode_memory_operations_from_expr(
             }
         }
         BytecodeExprKind::Integer(_)
+        | BytecodeExprKind::Float(_)
         | BytecodeExprKind::Bool(_)
         | BytecodeExprKind::String(_)
         | BytecodeExprKind::Variable(_) => {}
@@ -1282,6 +1286,7 @@ fn lower_bytecode_instruction(statement: &IrStmt) -> BytecodeInstruction {
 fn lower_bytecode_expr(expr: &IrExpr) -> BytecodeExpr {
     let kind = match &expr.kind {
         IrExprKind::Integer(value) => BytecodeExprKind::Integer(*value),
+        IrExprKind::Float(value) => BytecodeExprKind::Float(*value),
         IrExprKind::Bool(value) => BytecodeExprKind::Bool(*value),
         IrExprKind::String(value) => BytecodeExprKind::String(value.clone()),
         IrExprKind::Array(values) => {
@@ -1408,6 +1413,7 @@ fn bytecode_instruction_to_ir(instruction: &BytecodeInstruction) -> IrStmt {
 fn bytecode_expr_to_ir(expr: &BytecodeExpr) -> IrExpr {
     let kind = match &expr.kind {
         BytecodeExprKind::Integer(value) => IrExprKind::Integer(*value),
+        BytecodeExprKind::Float(value) => IrExprKind::Float(*value),
         BytecodeExprKind::Bool(value) => IrExprKind::Bool(*value),
         BytecodeExprKind::String(value) => IrExprKind::String(value.clone()),
         BytecodeExprKind::Array(values) => {
@@ -1603,6 +1609,7 @@ impl ConstantFolder {
                 span: expr.span,
             },
             IrExprKind::Integer(_)
+            | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
             | IrExprKind::Variable(_) => expr.clone(),
@@ -1627,13 +1634,29 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
         (IrExprKind::String(left), BinaryOp::Add, IrExprKind::String(right)) => {
             Some(IrExprKind::String(format!("{left}{right}")))
         }
+        (IrExprKind::Float(left), BinaryOp::Add, IrExprKind::Float(right)) => {
+            Some(IrExprKind::Float(left + right))
+        }
+        (IrExprKind::Float(left), BinaryOp::Subtract, IrExprKind::Float(right)) => {
+            Some(IrExprKind::Float(left - right))
+        }
+        (IrExprKind::Float(left), BinaryOp::Multiply, IrExprKind::Float(right)) => {
+            Some(IrExprKind::Float(left * right))
+        }
+        (IrExprKind::Float(left), BinaryOp::Divide, IrExprKind::Float(right)) => {
+            Some(IrExprKind::Float(left / right))
+        }
         (IrExprKind::Integer(left), BinaryOp::Subtract, IrExprKind::Integer(right)) => {
             Some(IrExprKind::Integer(left - right))
         }
         (IrExprKind::Integer(left), BinaryOp::Multiply, IrExprKind::Integer(right)) => {
             Some(IrExprKind::Integer(left * right))
         }
-        (IrExprKind::Integer(_), BinaryOp::Divide, IrExprKind::Integer(0)) => None,
+        (
+            IrExprKind::Integer(_) | IrExprKind::Float(_),
+            BinaryOp::Divide,
+            IrExprKind::Integer(0),
+        ) => None,
         (IrExprKind::Integer(left), BinaryOp::Divide, IrExprKind::Integer(right)) => {
             Some(IrExprKind::Integer(left / right))
         }
@@ -1920,6 +1943,7 @@ impl CommonSubexpressionEliminator {
                 span: expr.span,
             },
             IrExprKind::Integer(_)
+            | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
             | IrExprKind::Variable(_) => expr.clone(),
@@ -1934,6 +1958,10 @@ fn invalidate_available_exprs(name: &str, available: &mut HashMap<String, Availa
 fn pure_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
     let (key, dependencies) = match &expr.kind {
         IrExprKind::Integer(value) => (format!("i64:{value}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Float(value) => (
+            format!("f64:{}:{}", value.to_bits(), expr.ty.name),
+            HashSet::new(),
+        ),
         IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::Variable(name) => {
@@ -2285,6 +2313,10 @@ fn collect_mutated_names(statements: &[IrStmt], names: &mut HashSet<String>) {
 fn loop_invariant_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
     let (key, dependencies) = match &expr.kind {
         IrExprKind::Integer(value) => (format!("i64:{value}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Float(value) => (
+            format!("f64:{}:{}", value.to_bits(), expr.ty.name),
+            HashSet::new(),
+        ),
         IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::Variable(name) => {
@@ -2544,7 +2576,10 @@ impl CopyPropagator {
                 ty: expr.ty.clone(),
                 span: expr.span,
             },
-            IrExprKind::Integer(_) | IrExprKind::Bool(_) | IrExprKind::String(_) => expr.clone(),
+            IrExprKind::Integer(_)
+            | IrExprKind::Float(_)
+            | IrExprKind::Bool(_)
+            | IrExprKind::String(_) => expr.clone(),
         }
     }
 }
@@ -2582,6 +2617,7 @@ fn expr_requires_optimizer_barrier(expr: &IrExpr) -> bool {
             expr_requires_optimizer_barrier(left) || expr_requires_optimizer_barrier(right)
         }
         IrExprKind::Integer(_)
+        | IrExprKind::Float(_)
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
         | IrExprKind::Variable(_) => false,
@@ -2940,6 +2976,7 @@ impl<'a> IrRuntime<'a> {
     fn eval_expr(&mut self, expr: &IrExpr, env: &Env) -> Result<Value, RuntimeError> {
         let result = match &expr.kind {
             IrExprKind::Integer(value) => Ok(Value::I64(*value)),
+            IrExprKind::Float(value) => Ok(Value::F64(*value)),
             IrExprKind::Bool(value) => Ok(Value::Bool(*value)),
             IrExprKind::String(value) => Ok(Value::String(value.clone())),
             IrExprKind::Array(values) => values
@@ -3013,6 +3050,24 @@ impl<'a> IrRuntime<'a> {
     }
 
     fn eval_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, RuntimeError> {
+        if let (Value::F64(l), Value::F64(r)) = (&left, &right) {
+            let (l, r) = (*l, *r);
+            return Ok(match op {
+                BinaryOp::Add => Value::F64(l + r),
+                BinaryOp::Subtract => Value::F64(l - r),
+                BinaryOp::Multiply => Value::F64(l * r),
+                BinaryOp::Divide => Value::F64(l / r),
+                BinaryOp::Equal => Value::Bool(l == r),
+                BinaryOp::NotEqual => Value::Bool(l != r),
+                BinaryOp::Less => Value::Bool(l < r),
+                BinaryOp::LessEqual => Value::Bool(l <= r),
+                BinaryOp::Greater => Value::Bool(l > r),
+                BinaryOp::GreaterEqual => Value::Bool(l >= r),
+                BinaryOp::And | BinaryOp::Or => {
+                    unreachable!("logical ops short-circuit in eval_expr")
+                }
+            });
+        }
         match op {
             BinaryOp::Add if matches!((&left, &right), (Value::String(_), Value::String(_))) => {
                 Ok(Value::String(left.as_string()? + &right.as_string()?))
@@ -3234,7 +3289,7 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("to_string", 1, args.len()))?;
         match value {
-            Value::I64(_) | Value::Bool(_) | Value::String(_) => {
+            Value::I64(_) | Value::F64(_) | Value::Bool(_) | Value::String(_) => {
                 Ok(Value::String(value.to_string()))
             }
             other => Err(RuntimeError::new(
@@ -3641,6 +3696,7 @@ impl<'a> Lowerer<'a> {
     ) -> Result<IrExpr, IrLoweringError> {
         let (kind, ty) = match &expr.kind {
             ExprKind::Integer(value) => (IrExprKind::Integer(*value), TypeRef::new("i64")),
+            ExprKind::Float(value) => (IrExprKind::Float(*value), TypeRef::new("f64")),
             ExprKind::Bool(value) => (IrExprKind::Bool(*value), TypeRef::new("bool")),
             ExprKind::String(value) => (IrExprKind::String(value.clone()), TypeRef::new("string")),
             ExprKind::Array(values) => {

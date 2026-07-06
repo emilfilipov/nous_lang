@@ -39,7 +39,7 @@ impl SemanticDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CheckedProgram {
     pub program: Program,
     pub info: SemanticInfo,
@@ -863,13 +863,15 @@ impl<'a> Checker<'a> {
                     self.check_freed_uses(arg, freed, function);
                 }
             }
-            ExprKind::Integer(_) | ExprKind::Bool(_) | ExprKind::String(_) => {}
+            ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) => {
+            }
         }
     }
 
     fn check_expr(&mut self, expr: &Expr, scope: &Scope, function: &Function) -> Option<TypeRef> {
         let inferred = match &expr.kind {
             ExprKind::Integer(_) => Some(TypeRef::new("i64")),
+            ExprKind::Float(_) => Some(TypeRef::new("f64")),
             ExprKind::Bool(_) => Some(TypeRef::new("bool")),
             ExprKind::String(_) => Some(TypeRef::new("string")),
             ExprKind::Array(values) => self.check_array_literal(values, scope, function),
@@ -931,14 +933,12 @@ impl<'a> Checker<'a> {
             ExprKind::Binary { left, op, right } => {
                 let left_type = self.check_expr(left, scope, function);
                 let right_type = self.check_expr(right, scope, function);
+                let same_numeric = same_numeric_type(&left_type, &right_type);
                 match op {
                     BinaryOp::Add => {
-                        let i64_type = TypeRef::new("i64");
                         let string_type = TypeRef::new("string");
-                        if left_type.as_ref() == Some(&i64_type)
-                            && right_type.as_ref() == Some(&i64_type)
-                        {
-                            Some(i64_type)
+                        if let Some(numeric) = same_numeric.clone() {
+                            Some(numeric)
                         } else if left_type.as_ref() == Some(&string_type)
                             && right_type.as_ref() == Some(&string_type)
                         {
@@ -947,7 +947,7 @@ impl<'a> Checker<'a> {
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "N0307",
-                                "operands of `+` must both be i64 or both be string",
+                                "operands of `+` must both be i64, both be f64, or both be string",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -955,14 +955,12 @@ impl<'a> Checker<'a> {
                         }
                     }
                     BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
-                        if left_type.as_ref() == Some(&TypeRef::new("i64"))
-                            && right_type.as_ref() == Some(&TypeRef::new("i64"))
-                        {
-                            Some(TypeRef::new("i64"))
+                        if let Some(numeric) = same_numeric.clone() {
+                            Some(numeric)
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "N0307",
-                                "arithmetic operands must both be i64",
+                                "arithmetic operands must both be i64 or both be f64",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -986,14 +984,12 @@ impl<'a> Checker<'a> {
                     | BinaryOp::LessEqual
                     | BinaryOp::Greater
                     | BinaryOp::GreaterEqual => {
-                        if left_type.as_ref() == Some(&TypeRef::new("i64"))
-                            && right_type.as_ref() == Some(&TypeRef::new("i64"))
-                        {
+                        if same_numeric.is_some() {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "N0327",
-                                "ordering comparison operands must both be i64",
+                                "ordering comparison operands must both be i64 or both be f64",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -1175,13 +1171,13 @@ impl<'a> Checker<'a> {
             "to_string" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let arg_type = self.check_expr(&args[0], scope, function)?;
-                if matches!(arg_type.name.as_str(), "i64" | "bool" | "string") {
+                if matches!(arg_type.name.as_str(), "i64" | "f64" | "bool" | "string") {
                     Some(TypeRef::new("string"))
                 } else {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "N0313",
                         format!(
-                            "to_string expects an i64, bool, or string value but got `{}`",
+                            "to_string expects an i64, f64, bool, or string value but got `{}`",
                             arg_type.name
                         ),
                         Some(function.name.clone()),
@@ -1428,6 +1424,14 @@ pub struct Signature {
 #[derive(Debug, Clone, Default)]
 struct Scope {
     locals: HashMap<String, TypeRef>,
+}
+
+/// If both operand types are the same numeric type (`i64` or `f64`), return it.
+fn same_numeric_type(left: &Option<TypeRef>, right: &Option<TypeRef>) -> Option<TypeRef> {
+    match (left, right) {
+        (Some(l), Some(r)) if l == r && matches!(l.name.as_str(), "i64" | "f64") => Some(l.clone()),
+        _ => None,
+    }
 }
 
 /// If `expr` is a resource-freeing call (`dealloc(x)` or `rc_release(x)`) whose
@@ -1861,6 +1865,23 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0331")
+        );
+    }
+
+    #[test]
+    fn validates_f64_arithmetic() {
+        let source = "fn main -> f64\n    let x f64 = 1.5\n    x * 2.0 - 0.5\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_mixing_i64_and_f64() {
+        let diagnostics = validate_source("fn main -> f64\n    let x f64 = 1.5\n    x + 2\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0307")
         );
     }
 

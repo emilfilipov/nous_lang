@@ -448,6 +448,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         root_cause: "Execution reached a `throw` whose error propagated past every `try` block.",
         suggested_fix: "Wrap the throwing code in `try` / `catch NAME`, or avoid the condition that throws.",
     },
+    DiagnosticEntry {
+        code: "N0421",
+        phase: DiagnosticPhase::Runtime,
+        explanation: "A runtime value was expected to be an f64 but was another kind.",
+        root_cause: "An f64 operation received a non-float value.",
+        suggested_fix: "Ensure the operand is an f64; the type checker normally prevents this.",
+    },
 ];
 
 pub fn render_concise(report: &DiagnosticReport) -> String {

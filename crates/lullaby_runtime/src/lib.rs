@@ -6,9 +6,11 @@ use std::process::Command;
 use lullaby_diagnostics::{Span, TraceFrame};
 use lullaby_parser::{AssignOp, BinaryOp, Expr, ExprKind, Function, Program, Stmt, UnaryOp};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `Eq` is intentionally omitted: `Value::F64` holds an `f64`, which is not `Eq`.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     I64(i64),
+    F64(f64),
     Bool(bool),
     String(String),
     Array(Vec<Value>),
@@ -20,6 +22,7 @@ impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::I64(value) => write!(formatter, "{value}"),
+            Self::F64(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::String(value) => write!(formatter, "{value}"),
             Self::Array(values) => {
@@ -376,6 +379,7 @@ impl<'a> Runtime<'a> {
     fn eval_expr(&mut self, expr: &Expr, env: &Env) -> Result<Value, RuntimeError> {
         let result = match &expr.kind {
             ExprKind::Integer(value) => Ok(Value::I64(*value)),
+            ExprKind::Float(value) => Ok(Value::F64(*value)),
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::String(value) => Ok(Value::String(value.clone())),
             ExprKind::Array(values) => values
@@ -449,6 +453,26 @@ impl<'a> Runtime<'a> {
     }
 
     fn eval_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, RuntimeError> {
+        // Float arithmetic/comparison when both operands are f64 (IEEE 754
+        // semantics: division by zero yields infinity/NaN, not an error).
+        if let (Value::F64(l), Value::F64(r)) = (&left, &right) {
+            let (l, r) = (*l, *r);
+            return Ok(match op {
+                BinaryOp::Add => Value::F64(l + r),
+                BinaryOp::Subtract => Value::F64(l - r),
+                BinaryOp::Multiply => Value::F64(l * r),
+                BinaryOp::Divide => Value::F64(l / r),
+                BinaryOp::Equal => Value::Bool(l == r),
+                BinaryOp::NotEqual => Value::Bool(l != r),
+                BinaryOp::Less => Value::Bool(l < r),
+                BinaryOp::LessEqual => Value::Bool(l <= r),
+                BinaryOp::Greater => Value::Bool(l > r),
+                BinaryOp::GreaterEqual => Value::Bool(l >= r),
+                BinaryOp::And | BinaryOp::Or => {
+                    unreachable!("logical ops short-circuit in eval_expr")
+                }
+            });
+        }
         match op {
             // `+` concatenates when both operands are strings; otherwise it adds i64s.
             BinaryOp::Add if matches!((&left, &right), (Value::String(_), Value::String(_))) => {
@@ -671,7 +695,7 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("to_string", 1, args.len()))?;
         match value {
-            Value::I64(_) | Value::Bool(_) | Value::String(_) => {
+            Value::I64(_) | Value::F64(_) | Value::Bool(_) | Value::String(_) => {
                 Ok(Value::String(value.to_string()))
             }
             other => Err(RuntimeError::new(
@@ -850,6 +874,13 @@ impl Value {
         match self {
             Self::I64(value) => Ok(*value),
             _ => Err(RuntimeError::new("N0407", "expected i64 value")),
+        }
+    }
+
+    pub fn as_f64(&self) -> Result<f64, RuntimeError> {
+        match self {
+            Self::F64(value) => Ok(*value),
+            _ => Err(RuntimeError::new("N0421", "expected f64 value")),
         }
     }
 
@@ -1084,6 +1115,21 @@ mod tests {
         assert_eq!(
             run_source(source).expect("run"),
             Value::String("from risky".to_string())
+        );
+    }
+
+    #[test]
+    fn evaluates_f64_arithmetic() {
+        let source = "fn main -> f64\n    let x f64 = 3.5\n    x + 1.5\n";
+        assert_eq!(run_source(source).expect("run"), Value::F64(5.0));
+    }
+
+    #[test]
+    fn compares_and_stringifies_f64() {
+        let source = "fn main -> string\n    let x f64 = 2.5\n    to_string(x < 3.0) + \" \" + to_string(x * 2.0)\n";
+        assert_eq!(
+            run_source(source).expect("run"),
+            Value::String("true 5".to_string())
         );
     }
 

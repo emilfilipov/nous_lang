@@ -1,7 +1,7 @@
 use lullaby_lexer::{Diagnostic, Keyword, Span, Token, TokenKind};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
     pub functions: Vec<Function>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -16,7 +16,7 @@ pub struct AliasDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
     pub params: Vec<Param>,
@@ -86,7 +86,7 @@ impl TypeRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
     Let {
         name: String,
@@ -163,21 +163,25 @@ pub enum AssignOp {
     Divide,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IfBranch {
     pub condition: Expr,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` is intentionally omitted: `ExprKind::Float` holds an `f64`, which is not
+// `Eq`. Types that transitively contain an expression therefore also derive
+// `PartialEq` only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExprKind {
     Integer(i64),
+    Float(f64),
     Bool(bool),
     String(String),
     Array(Vec<Expr>),
@@ -1056,11 +1060,20 @@ impl<'a> ExprParser<'a> {
         self.cursor += 1;
         match token.kind {
             TokenKind::Number(value) => {
-                let parsed = value
-                    .parse::<i64>()
-                    .map_err(|_| format!("invalid integer literal `{value}`"))?;
+                // A `.` in the literal marks a floating-point (`f64`) literal.
+                let kind = if value.contains('.') {
+                    let parsed = value
+                        .parse::<f64>()
+                        .map_err(|_| format!("invalid float literal `{value}`"))?;
+                    ExprKind::Float(parsed)
+                } else {
+                    let parsed = value
+                        .parse::<i64>()
+                        .map_err(|_| format!("invalid integer literal `{value}`"))?;
+                    ExprKind::Integer(parsed)
+                };
                 Ok(Expr {
-                    kind: ExprKind::Integer(parsed),
+                    kind,
                     span: token.span,
                 })
             }
@@ -1247,6 +1260,17 @@ mod tests {
         };
         assert_eq!(catch_name, "e");
         assert!(matches!(body[0], Stmt::Throw { .. }));
+    }
+
+    #[test]
+    fn parses_float_literal() {
+        let source = "fn main -> f64\n    2.5\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Expr(expr) = &program.functions[0].body[0] else {
+            panic!("expected expression statement");
+        };
+        assert!(matches!(expr.kind, ExprKind::Float(value) if (value - 2.5).abs() < 1e-9));
     }
 
     #[test]
