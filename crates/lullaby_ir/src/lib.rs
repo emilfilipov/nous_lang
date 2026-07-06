@@ -6,7 +6,7 @@ use lullaby_diagnostics::{Span, TraceFrame};
 use lullaby_parser::{
     AssignOp, BinaryOp, Expr, ExprKind, Function, Program, Stmt, TypeRef, UnaryOp,
 };
-use lullaby_runtime::{RuntimeError, Value};
+use lullaby_runtime::{RuntimeError, Value, apply_compound, get_field_path, set_field_path};
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +59,8 @@ pub enum IrStmt {
     },
     Assign {
         name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
         op: AssignOp,
         value: IrExpr,
         span: Span,
@@ -682,6 +684,8 @@ pub enum BytecodeInstruction {
     },
     Assign {
         name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
         op: AssignOp,
         value: BytecodeExpr,
         span: Span,
@@ -1297,11 +1301,13 @@ fn lower_bytecode_instruction(statement: &IrStmt) -> BytecodeInstruction {
         },
         IrStmt::Assign {
             name,
+            path,
             op,
             value,
             span,
         } => BytecodeInstruction::Assign {
             name: name.clone(),
+            path: path.clone(),
             op: *op,
             value: lower_bytecode_expr(value),
             span: *span,
@@ -1443,11 +1449,13 @@ fn bytecode_instruction_to_ir(instruction: &BytecodeInstruction) -> IrStmt {
         },
         BytecodeInstruction::Assign {
             name,
+            path,
             op,
             value,
             span,
         } => IrStmt::Assign {
             name: name.clone(),
+            path: path.clone(),
             op: *op,
             value: bytecode_expr_to_ir(value),
             span: *span,
@@ -1606,11 +1614,13 @@ impl ConstantFolder {
             },
             IrStmt::Assign {
                 name,
+                path,
                 op,
                 value,
                 span,
             } => IrStmt::Assign {
                 name: name.clone(),
+                path: path.clone(),
                 op: *op,
                 value: self.fold_expr(value),
                 span: *span,
@@ -1936,6 +1946,7 @@ impl CommonSubexpressionEliminator {
             }
             IrStmt::Assign {
                 name,
+                path,
                 op,
                 value,
                 span,
@@ -1944,9 +1955,11 @@ impl CommonSubexpressionEliminator {
                 if expr_requires_optimizer_barrier(&value) {
                     available.clear();
                 }
+                // Mutating a field of `name` invalidates expressions over `name`.
                 invalidate_available_exprs(name, available);
                 IrStmt::Assign {
                     name: name.clone(),
+                    path: path.clone(),
                     op: *op,
                     value,
                     span: *span,
@@ -2615,6 +2628,7 @@ impl CopyPropagator {
             }
             IrStmt::Assign {
                 name,
+                path,
                 op,
                 value,
                 span,
@@ -2626,6 +2640,7 @@ impl CopyPropagator {
                 invalidate_alias(name, aliases);
                 IrStmt::Assign {
                     name: name.clone(),
+                    path: path.clone(),
                     op: *op,
                     value,
                     span: *span,
@@ -3121,23 +3136,28 @@ impl<'a> IrRuntime<'a> {
                 Ok(Control::Value(Value::Void))
             }
             IrStmt::Assign {
-                name, op, value, ..
+                name,
+                path,
+                op,
+                value,
+                ..
             } => {
-                let value = self.eval_expr(value, env)?;
-                let value = match op {
-                    AssignOp::Replace => value,
-                    AssignOp::Add => Value::I64(env.get(name)?.as_i64()? + value.as_i64()?),
-                    AssignOp::Subtract => Value::I64(env.get(name)?.as_i64()? - value.as_i64()?),
-                    AssignOp::Multiply => Value::I64(env.get(name)?.as_i64()? * value.as_i64()?),
-                    AssignOp::Divide => {
-                        let divisor = value.as_i64()?;
-                        if divisor == 0 {
-                            return Err(RuntimeError::new("L0404", "division by zero"));
-                        }
-                        Value::I64(env.get(name)?.as_i64()? / divisor)
-                    }
-                };
-                env.assign(name, value)?;
+                let rhs = self.eval_expr(value, env)?;
+                if path.is_empty() {
+                    let new = match op {
+                        AssignOp::Replace => rhs,
+                        _ => apply_compound(env.get(name)?, op, rhs)?,
+                    };
+                    env.assign(name, new)?;
+                } else {
+                    let mut root = env.get(name)?;
+                    let new = match op {
+                        AssignOp::Replace => rhs,
+                        _ => apply_compound(get_field_path(&root, path)?, op, rhs)?,
+                    };
+                    set_field_path(&mut root, path, new)?;
+                    env.assign(name, root)?;
+                }
                 Ok(Control::Value(Value::Void))
             }
             IrStmt::Return(expr) => {
@@ -3870,11 +3890,13 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Assign {
                 name,
+                path,
                 op,
                 value,
                 span,
             } => Ok(IrStmt::Assign {
                 name: name.clone(),
+                path: path.clone(),
                 op: *op,
                 value: self.lower_expr(value, scope)?,
                 span: *span,

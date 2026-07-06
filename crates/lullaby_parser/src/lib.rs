@@ -112,6 +112,10 @@ pub enum Stmt {
     },
     Assign {
         name: String,
+        /// Field path for struct field mutation, e.g. `p.x = e` has path `["x"]`
+        /// and `a.b.c = e` has `["b", "c"]`. Empty for a plain variable assignment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
         op: AssignOp,
         value: Expr,
         span: Span,
@@ -508,11 +512,17 @@ impl<'a> Parser<'a> {
     fn parse_assignment(&mut self) -> Option<Stmt> {
         let span = self.peek().span;
         let name = self.expect_identifier("expected assignment target")?;
+        // Optional field path: `p.x`, `a.b.c`, ...
+        let mut path = Vec::new();
+        while self.eat_symbol(".") {
+            path.push(self.expect_identifier("expected field name after `.`")?);
+        }
         let op = self.expect_assignment_op()?;
         let value = self.parse_expr_line(span)?;
         self.expect_newline("expected newline after assignment");
         Some(Stmt::Assign {
             name,
+            path,
             op,
             value,
             span,
@@ -858,12 +868,30 @@ impl<'a> Parser<'a> {
     }
 
     fn next_is_assignment(&self) -> bool {
-        matches!(self.peek().kind, TokenKind::Identifier(_))
-            && matches!(
-                self.tokens.get(self.cursor + 1).map(|token| &token.kind),
-                Some(TokenKind::Symbol(symbol))
-                    if matches!(symbol.as_str(), "=" | "+=" | "-=" | "*=" | "/=")
-            )
+        // An assignment target is an identifier optionally followed by a `.field`
+        // chain (struct field mutation), then an assignment operator.
+        if !matches!(self.peek().kind, TokenKind::Identifier(_)) {
+            return false;
+        }
+        let mut index = self.cursor + 1;
+        while let Some(TokenKind::Symbol(symbol)) = self.tokens.get(index).map(|token| &token.kind)
+        {
+            if symbol != "." {
+                break;
+            }
+            if !matches!(
+                self.tokens.get(index + 1).map(|token| &token.kind),
+                Some(TokenKind::Identifier(_))
+            ) {
+                return false;
+            }
+            index += 2;
+        }
+        matches!(
+            self.tokens.get(index).map(|token| &token.kind),
+            Some(TokenKind::Symbol(symbol))
+                if matches!(symbol.as_str(), "=" | "+=" | "-=" | "*=" | "/=")
+        )
     }
 
     fn expect_assignment_op(&mut self) -> Option<AssignOp> {
@@ -1452,6 +1480,18 @@ mod tests {
         // Struct declarations are top-level only.
         let tokens = lex("fn main -> i64\n    struct Point\n        x i64\n    1\n").expect("lex");
         assert!(parse(&tokens).is_err());
+    }
+
+    #[test]
+    fn parses_struct_field_assignment() {
+        let source = "struct Point\n    x i64\n\nfn main -> i64\n    let p Point = Point(1)\n    p.x = 5\n    p.x\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Assign { name, path, .. } = &program.functions[0].body[1] else {
+            panic!("expected field assignment");
+        };
+        assert_eq!(name, "p");
+        assert_eq!(path, &vec!["x".to_string()]);
     }
 
     #[test]

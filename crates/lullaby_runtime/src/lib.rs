@@ -268,23 +268,28 @@ impl<'a> Runtime<'a> {
                 Ok(Control::Value(Value::Void))
             }
             Stmt::Assign {
-                name, op, value, ..
+                name,
+                path,
+                op,
+                value,
+                ..
             } => {
-                let value = self.eval_expr(value, env)?;
-                let value = match op {
-                    AssignOp::Replace => value,
-                    AssignOp::Add => Value::I64(env.get(name)?.as_i64()? + value.as_i64()?),
-                    AssignOp::Subtract => Value::I64(env.get(name)?.as_i64()? - value.as_i64()?),
-                    AssignOp::Multiply => Value::I64(env.get(name)?.as_i64()? * value.as_i64()?),
-                    AssignOp::Divide => {
-                        let divisor = value.as_i64()?;
-                        if divisor == 0 {
-                            return Err(RuntimeError::new("L0404", "division by zero"));
-                        }
-                        Value::I64(env.get(name)?.as_i64()? / divisor)
-                    }
-                };
-                env.assign(name, value)?;
+                let rhs = self.eval_expr(value, env)?;
+                if path.is_empty() {
+                    let new = match op {
+                        AssignOp::Replace => rhs,
+                        _ => apply_compound(env.get(name)?, op, rhs)?,
+                    };
+                    env.assign(name, new)?;
+                } else {
+                    let mut root = env.get(name)?;
+                    let new = match op {
+                        AssignOp::Replace => rhs,
+                        _ => apply_compound(get_field_path(&root, path)?, op, rhs)?,
+                    };
+                    set_field_path(&mut root, path, new)?;
+                    env.assign(name, root)?;
+                }
                 Ok(Control::Value(Value::Void))
             }
             Stmt::Return(expr) => {
@@ -849,6 +854,78 @@ enum Control {
     Value(Value),
 }
 
+/// Apply a compound assignment operator (`+=` etc.) to `current` and `rhs`,
+/// supporting i64 and f64.
+pub fn apply_compound(current: Value, op: &AssignOp, rhs: Value) -> Result<Value, RuntimeError> {
+    if let (Value::F64(a), Value::F64(b)) = (&current, &rhs) {
+        let (a, b) = (*a, *b);
+        return Ok(Value::F64(match op {
+            AssignOp::Add => a + b,
+            AssignOp::Subtract => a - b,
+            AssignOp::Multiply => a * b,
+            AssignOp::Divide => a / b,
+            AssignOp::Replace => b,
+        }));
+    }
+    let a = current.as_i64()?;
+    let b = rhs.as_i64()?;
+    Ok(Value::I64(match op {
+        AssignOp::Add => a + b,
+        AssignOp::Subtract => a - b,
+        AssignOp::Multiply => a * b,
+        AssignOp::Divide => {
+            if b == 0 {
+                return Err(RuntimeError::new("L0404", "division by zero"));
+            }
+            a / b
+        }
+        AssignOp::Replace => b,
+    }))
+}
+
+/// Read the value at a struct field path (for compound assignment).
+pub fn get_field_path(value: &Value, path: &[String]) -> Result<Value, RuntimeError> {
+    let mut current = value;
+    for field in path {
+        let Value::Struct { fields, .. } = current else {
+            return Err(RuntimeError::new(
+                "L0371",
+                format!("cannot access field `{field}` on non-struct value"),
+            ));
+        };
+        current = fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| value)
+            .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`")))?;
+    }
+    Ok(current.clone())
+}
+
+/// Set the value at a struct field path in place.
+pub fn set_field_path(root: &mut Value, path: &[String], new: Value) -> Result<(), RuntimeError> {
+    let mut current = root;
+    for (index, field) in path.iter().enumerate() {
+        let Value::Struct { fields, .. } = current else {
+            return Err(RuntimeError::new(
+                "L0371",
+                format!("cannot access field `{field}` on non-struct value"),
+            ));
+        };
+        let slot = fields
+            .iter_mut()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| value)
+            .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`")))?;
+        if index + 1 == path.len() {
+            *slot = new;
+            return Ok(());
+        }
+        current = slot;
+    }
+    Ok(())
+}
+
 fn statement_span(statement: &Stmt) -> Span {
     match statement {
         Stmt::Let { span, .. }
@@ -1178,6 +1255,12 @@ mod tests {
             run_source(source).expect("run"),
             Value::String("from risky".to_string())
         );
+    }
+
+    #[test]
+    fn mutates_struct_fields() {
+        let source = "struct Point\n    x i64\n    y i64\n\nfn main -> i64\n    let p Point = Point(1, 2)\n    p.x = 10\n    p.y += 5\n    p.x + p.y\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(17));
     }
 
     #[test]

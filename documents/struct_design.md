@@ -67,9 +67,13 @@ Implemented first (this ticket's build subtasks):
 - Full type checking with clear diagnostics, running on the AST, IR, and
   bytecode backends at parity.
 
+Implemented since:
+- Field **mutation** (`p.x = 5`, `p.y += 1`, nested `a.b.c = e`) across all
+  backends. The assignment target is a variable plus an optional field path;
+  the root variable is what optimizers track, so a field write correctly
+  invalidates expressions over that variable.
+
 Deferred (follow-up tickets, kept out to stay minimal):
-- Field **mutation** (`p.x = 5`) — starts read-only; construct a new value to
-  change fields. Assignment-to-field is a natural later addition.
 - Named-field construction (`Point(x: 1, y: 2)`) — positional only at first.
 - Methods / associated functions, generics over structs, and struct update
   syntax.

@@ -688,18 +688,21 @@ mod tests {
                     },
                     BytecodeInstruction::Assign {
                         name: "value".to_string(),
+                        path: Vec::new(),
                         op: AssignOp::Add,
                         value: bytecode_expr(BytecodeExprKind::Integer(2), "i64"),
                         span,
                     },
                     BytecodeInstruction::Assign {
                         name: "value".to_string(),
+                        path: Vec::new(),
                         op: AssignOp::Multiply,
                         value: bytecode_expr(BytecodeExprKind::Integer(2), "i64"),
                         span,
                     },
                     BytecodeInstruction::Assign {
                         name: "value".to_string(),
+                        path: Vec::new(),
                         op: AssignOp::Subtract,
                         value: bytecode_expr(BytecodeExprKind::Integer(42), "i64"),
                         span,

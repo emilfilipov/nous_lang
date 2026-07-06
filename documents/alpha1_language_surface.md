@@ -27,7 +27,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Implemented scalar types: `i64`, `f64`, `bool`, `string`, and `void`.
 - Float literals contain a decimal point (e.g. `3.14`, `2.0`) and have type `f64`. `i64` and `f64` do not mix implicitly; combining them is a type error.
 - Implemented array spelling: `array<T>`.
-- Structs: `struct NAME` followed by indented `field type` lines declares a nominal record type (top level only). Construct positionally with call spelling — `Point(3, 4)` — and read fields with `.` — `p.x`. Invalid declarations report `L0370`, bad field access `L0371`, and construction mismatches `L0372`. Structs work across the AST, IR, and bytecode backends. Field mutation and named-field construction are deferred (see `struct_design.md`).
+- Structs: `struct NAME` followed by indented `field type` lines declares a nominal record type (top level only). Construct positionally with call spelling — `Point(3, 4)` — read fields with `.` — `p.x` — and mutate fields with assignment — `p.x = 5`, `p.y += 1`, including nested `a.b.c = e`. Invalid declarations report `L0370`, bad field access `L0371`, and construction mismatches `L0372`; a field assignment with a wrong-type value reports `L0314`. Structs work across the AST, IR, and bytecode backends. Named-field construction is deferred (see `struct_design.md`).
 - Array literals must be non-empty and homogeneous, such as `[1, 2, 3]`.
 - Array indexing is bounds-checked at runtime and requires an `i64` index.
 - Interim pointer type names use concrete spellings such as `ptr_i64`.
@@ -84,7 +84,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 
 ## Diagnostics
 
-- Alpha diagnostics use stable `N####` codes documented in [diagnostic_registry.md](diagnostic_registry.md).
+- Alpha diagnostics use stable `L####` codes documented in [diagnostic_registry.md](diagnostic_registry.md).
 - Concise diagnostics are the default.
 - `--verbose` adds source excerpts, caret markers, root-cause text, suggested fixes, related notes, and runtime traceback frames when available.
 - `--format json` emits deterministic machine-readable diagnostics for tools, CI, editors, and LLM agents.

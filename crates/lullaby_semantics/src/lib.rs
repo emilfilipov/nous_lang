@@ -515,49 +515,56 @@ impl<'a> Checker<'a> {
             }
             Stmt::Assign {
                 name,
+                path,
                 op,
                 value,
                 span,
             } => {
-                let expected = scope.locals.get(name).cloned();
+                let root = scope.locals.get(name).cloned();
                 let value_type = self.check_expr(value, scope, function);
-                match expected {
-                    Some(expected) => {
-                        if *op == AssignOp::Replace {
-                            if value_type.as_ref() != Some(&expected) {
-                                self.diagnostics.push(SemanticDiagnostic::at(
-                                    "L0314",
-                                    format!(
-                                        "assignment to `{name}` expects `{}` but got `{}`",
-                                        expected.name,
-                                        value_type
-                                            .as_ref()
-                                            .map(|ty| ty.name.as_str())
-                                            .unwrap_or("<unknown>")
-                                    ),
-                                    Some(function.name.clone()),
-                                    value.span,
-                                ));
-                            }
-                        } else if expected != TypeRef::new("i64")
-                            || value_type.as_ref() != Some(&TypeRef::new("i64"))
-                        {
-                            self.diagnostics.push(SemanticDiagnostic::at(
-                                "L0315",
-                                format!("compound assignment to `{name}` requires i64 operands"),
-                                Some(function.name.clone()),
-                                value.span,
-                            ));
-                        }
-                    }
-                    None => {
+                let Some(root) = root else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0316",
+                        format!("assignment target `{name}` is not declared"),
+                        Some(function.name.clone()),
+                        *span,
+                    ));
+                    return None;
+                };
+                // Walk any `.field` path to the mutated field's type.
+                let expected = self.resolve_field_path(&root, path, *span, function)?;
+                let target = if path.is_empty() {
+                    format!("`{name}`")
+                } else {
+                    format!("`{name}.{}`", path.join("."))
+                };
+                if *op == AssignOp::Replace {
+                    if value_type.as_ref() != Some(&expected) {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "L0316",
-                            format!("assignment target `{name}` is not declared"),
+                            "L0314",
+                            format!(
+                                "assignment to {target} expects `{}` but got `{}`",
+                                expected.name,
+                                value_type
+                                    .as_ref()
+                                    .map(|ty| ty.name.as_str())
+                                    .unwrap_or("<unknown>")
+                            ),
                             Some(function.name.clone()),
-                            *span,
+                            value.span,
                         ));
                     }
+                } else if !matches!(expected.name.as_str(), "i64" | "f64")
+                    || value_type.as_ref() != Some(&expected)
+                {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0315",
+                        format!(
+                            "compound assignment to {target} requires matching i64 or f64 operands"
+                        ),
+                        Some(function.name.clone()),
+                        value.span,
+                    ));
                 }
                 None
             }
@@ -1391,6 +1398,45 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Walk a struct field path from `root`, returning the type of the final
+    /// field. Empty path returns `root`. Emits L0371 on a bad step.
+    fn resolve_field_path(
+        &mut self,
+        root: &TypeRef,
+        path: &[String],
+        span: Span,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let mut current = root.clone();
+        for field in path {
+            let Some(fields) = self.structs.get(&current.name) else {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0371",
+                    format!(
+                        "cannot access field `{field}` on non-struct type `{}`",
+                        current.name
+                    ),
+                    Some(function.name.clone()),
+                    span,
+                ));
+                return None;
+            };
+            match fields.iter().find(|f| &f.name == field) {
+                Some(matched) => current = matched.ty.clone(),
+                None => {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0371",
+                        format!("struct `{}` has no field `{field}`", current.name),
+                        Some(function.name.clone()),
+                        span,
+                    ));
+                    return None;
+                }
+            }
+        }
+        Some(current)
+    }
+
     fn check_struct_construction(
         &mut self,
         name: &str,
@@ -2008,6 +2054,38 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0331")
+        );
+    }
+
+    #[test]
+    fn validates_struct_field_mutation() {
+        let source = "struct Point\n    x i64\n    y i64\n\nfn main -> i64\n    let p Point = Point(1, 2)\n    p.x = 9\n    p.y += 1\n    p.x + p.y\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_field_mutation_type_mismatch() {
+        let diagnostics = validate_source(
+            "struct Point\n    x i64\n\nfn main -> i64\n    let p Point = Point(1)\n    p.x = true\n    p.x\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0314")
+        );
+    }
+
+    #[test]
+    fn rejects_mutation_of_unknown_field() {
+        let diagnostics = validate_source(
+            "struct Point\n    x i64\n\nfn main -> i64\n    let p Point = Point(1)\n    p.z = 5\n    p.x\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0371")
         );
     }
 
