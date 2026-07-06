@@ -3583,6 +3583,16 @@ impl<'a> Lowerer<'a> {
                     span: decl.span,
                 }))
             }
+            // Structured error handling currently executes on the AST backend
+            // only; the optimizing IR/bytecode backends do not lower it yet.
+            Stmt::Throw { span, .. } => Err(IrLoweringError::new(
+                "`throw` is only supported on the AST backend".to_string(),
+                Some(*span),
+            )),
+            Stmt::Try { span, .. } => Err(IrLoweringError::new(
+                "`try`/`catch` is only supported on the AST backend".to_string(),
+                Some(*span),
+            )),
             // `unsafe` blocks are flattened in `lower_block`; reaching here means
             // a lone unsafe statement, which we lower transparently by inlining.
             Stmt::Unsafe { body, span } => {

@@ -131,6 +131,16 @@ pub enum Stmt {
         span: Span,
     },
     Region(RegionDecl),
+    Throw {
+        value: Expr,
+        span: Span,
+    },
+    Try {
+        body: Vec<Stmt>,
+        catch_name: String,
+        catch_body: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 /// A memory-region declaration: `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]`.
@@ -399,6 +409,17 @@ impl<'a> Parser<'a> {
             return self.parse_region();
         }
 
+        if self.eat_keyword(Keyword::Throw).is_some() {
+            let span = self.previous().span;
+            let value = self.parse_expr_line(span)?;
+            self.expect_newline("expected newline after throw statement");
+            return Some(Stmt::Throw { value, span });
+        }
+
+        if self.eat_keyword(Keyword::Try).is_some() {
+            return self.parse_try();
+        }
+
         if self.next_is_assignment() {
             return self.parse_assignment();
         }
@@ -550,6 +571,36 @@ impl<'a> Parser<'a> {
         let body = self.parse_block(&[BlockEnd::Dedent]);
         self.expect(TokenKindRef::Dedent, "expected unsafe body dedent")?;
         Some(Stmt::Unsafe { body, span })
+    }
+
+    /// Parse a `try` / `catch NAME` block.
+    fn parse_try(&mut self) -> Option<Stmt> {
+        let span = self.previous().span;
+        self.expect_newline("expected newline after try");
+        self.expect(TokenKindRef::Indent, "expected indented try body")?;
+        let body = self.parse_block(&[BlockEnd::Dedent]);
+        self.expect(TokenKindRef::Dedent, "expected try body dedent")?;
+
+        if self.eat_keyword(Keyword::Catch).is_none() {
+            self.error(
+                "N0213",
+                "expected `catch` after try block",
+                self.peek().span,
+            );
+            return None;
+        }
+        let catch_name = self.expect_identifier("expected catch binding name")?;
+        self.expect_newline("expected newline after catch binding");
+        self.expect(TokenKindRef::Indent, "expected indented catch body")?;
+        let catch_body = self.parse_block(&[BlockEnd::Dedent]);
+        self.expect(TokenKindRef::Dedent, "expected catch body dedent")?;
+
+        Some(Stmt::Try {
+            body,
+            catch_name,
+            catch_body,
+            span,
+        })
     }
 
     /// Parse `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]`.
@@ -899,9 +950,7 @@ fn planned_syntax_name(kind: &TokenKind) -> Option<&'static str> {
         Keyword::Class => "class",
         Keyword::Match => "match",
         Keyword::Switch => "switch",
-        Keyword::Try => "try",
         Keyword::Catch => "catch",
-        Keyword::Throw => "throw",
         Keyword::Async => "async",
         Keyword::Await => "await",
         Keyword::Coroutine => "coroutine",
@@ -1182,6 +1231,22 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         assert_eq!(program.functions[0].body.len(), 3);
         assert!(matches!(program.functions[0].body[0], Stmt::Expr(_)));
+    }
+
+    #[test]
+    fn parses_try_catch_and_throw() {
+        let source =
+            "fn main -> void\n    try\n        throw \"boom\"\n    catch e\n        warn(e)\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Try {
+            catch_name, body, ..
+        } = &program.functions[0].body[0]
+        else {
+            panic!("expected try/catch");
+        };
+        assert_eq!(catch_name, "e");
+        assert!(matches!(body[0], Stmt::Throw { .. }));
     }
 
     #[test]

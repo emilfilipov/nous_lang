@@ -337,6 +337,26 @@ impl<'a> Runtime<'a> {
             // A region declaration is compile-time metadata; it has no runtime
             // effect in the current analysis-only region model.
             Stmt::Region(_) => Ok(Control::Value(Value::Void)),
+            Stmt::Throw { value, .. } => {
+                let message = self.eval_expr(value, env)?.as_string()?;
+                Err(RuntimeError::new("N0420", message))
+            }
+            Stmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                ..
+            } => match self.eval_scoped_block(body, env) {
+                // Only user-thrown errors are recoverable; system errors propagate.
+                Err(error) if error.code == "N0420" => {
+                    env.push_scope();
+                    env.define(catch_name.clone(), Value::String(error.message.clone()));
+                    let result = self.eval_block(catch_body, env);
+                    env.pop_scope();
+                    result
+                }
+                other => other,
+            },
         };
         result.map_err(|error| self.annotate_error(error, span))
     }
@@ -744,7 +764,9 @@ fn statement_span(statement: &Stmt) -> Span {
         | Stmt::While { span, .. }
         | Stmt::For { span, .. }
         | Stmt::Loop { span, .. }
-        | Stmt::Unsafe { span, .. } => *span,
+        | Stmt::Unsafe { span, .. }
+        | Stmt::Throw { span, .. }
+        | Stmt::Try { span, .. } => *span,
         Stmt::Region(decl) => decl.span,
         Stmt::Return(Some(expr)) | Stmt::Expr(expr) => expr.span,
         Stmt::Return(None) => Span::new(1, 1),
@@ -1020,6 +1042,29 @@ mod tests {
     fn runs_unsafe_raw_pointer_read() {
         let source = "fn main -> i64\n    let p ptr_i64 = alloc(42)\n    let v i64 = 0\n    unsafe\n        v = ptr_read(p)\n    dealloc(p)\n    v\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
+    fn catches_thrown_error_and_recovers() {
+        let source = "fn main -> i64\n    let result i64 = 0\n    try\n        throw \"boom\"\n    catch message\n        result = 7\n    result\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(7));
+    }
+
+    #[test]
+    fn propagates_uncaught_throw() {
+        let source = "fn main -> i64\n    throw \"unhandled\"\n";
+        let error = run_source(source).expect_err("runtime error");
+        assert_eq!(error.code, "N0420");
+        assert_eq!(error.message, "unhandled");
+    }
+
+    #[test]
+    fn catch_binds_thrown_message_across_call_boundary() {
+        let source = "fn risky -> i64\n    throw \"from risky\"\n\nfn main -> string\n    let captured string = \"\"\n    try\n        let value i64 = risky()\n    catch message\n        captured = message\n    captured\n";
+        assert_eq!(
+            run_source(source).expect("run"),
+            Value::String("from risky".to_string())
+        );
     }
 
     #[test]

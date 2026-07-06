@@ -239,6 +239,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Write `alias NAME = TYPE`, for example `alias Count = i64`.",
     },
     DiagnosticEntry {
+        code: "N0213",
+        phase: DiagnosticPhase::Parser,
+        explanation: "A `try` block is missing its `catch` handler.",
+        root_cause: "A `try` block must be followed by a `catch NAME` handler block.",
+        suggested_fix: "Add a `catch NAME` block after the `try` body.",
+    },
+    DiagnosticEntry {
         code: "N0301",
         phase: DiagnosticPhase::Semantic,
         explanation: "A non-void function must produce a final value of its declared return type.",
@@ -433,6 +440,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         explanation: "The runtime could not write to or flush a standard stream.",
         root_cause: "Writing to stdout/stderr failed, usually because the stream was closed or the pipe was broken.",
         suggested_fix: "Ensure the output stream stays open, or redirect it to a writable destination.",
+    },
+    DiagnosticEntry {
+        code: "N0420",
+        phase: DiagnosticPhase::Runtime,
+        explanation: "A value was thrown with `throw` and not caught by an enclosing `try`/`catch`.",
+        root_cause: "Execution reached a `throw` whose error propagated past every `try` block.",
+        suggested_fix: "Wrap the throwing code in `try` / `catch NAME`, or avoid the condition that throws.",
     },
 ];
 

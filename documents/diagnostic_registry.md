@@ -63,6 +63,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0210` | parser | Expected `to` in for loop. | Range loop header is missing its end marker. | Add `to end`. |
 | `N0211` | parser | Planned syntax is not supported in Alpha 1. | Source uses future constructs such as modules, imports, structs, pattern matching, or try/catch. | Remove the planned construct or rewrite with the current Alpha 1 surface. |
 | `N0212` | parser | Malformed type alias declaration. | An `alias NAME = TYPE` declaration lacks `=` or a target type. | Write `alias NAME = TYPE`, e.g. `alias Count = i64`. |
+| `N0213` | parser | `try` block missing its `catch`. | A `try` block was not followed by a `catch NAME` handler. | Add a `catch NAME` block after the `try` body. |
 | `N0300` | semantic | Duplicate function. | Two functions share a name. | Rename or remove one function. |
 | `N0301` | semantic | Non-void function has no final value of declared type. | Control reaches the end without the expected value. | Add a final expression or return the declared type. |
 | `N0302` | semantic | Duplicate parameter. | Function has repeated parameter names. | Rename one parameter. |
@@ -124,3 +125,4 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `N0417` | runtime | Expected string. | Runtime value kind was wrong. | Pass a string value. |
 | `N0418` | runtime | Expected `array<string>`. | Runtime value kind was wrong. | Pass an array of strings. |
 | `N0419` | resource | Standard stream write or flush failed. | stdout/stderr was closed or the pipe was broken. | Keep the output stream open or redirect it to a writable destination. |
+| `N0420` | runtime | Uncaught thrown error. | A `throw` propagated past every enclosing `try`/`catch`. | Wrap the throwing code in `try` / `catch NAME`, or avoid the throwing condition. |

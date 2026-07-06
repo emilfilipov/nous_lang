@@ -440,7 +440,6 @@ fn rejects_planned_unsupported_syntax_with_dedicated_diagnostic() {
         "unsupported_import.lullaby",
         "unsupported_module.lullaby",
         "unsupported_struct.lullaby",
-        "unsupported_try.lullaby",
         "unsupported_catch.lullaby",
     ] {
         let fixture = workspace_root()

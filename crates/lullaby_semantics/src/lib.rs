@@ -255,6 +255,20 @@ fn rewrite_stmt_types(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
             body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
             span: *span,
         },
+        Stmt::Try {
+            body,
+            catch_name,
+            catch_body,
+            span,
+        } => Stmt::Try {
+            body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
+            catch_name: catch_name.clone(),
+            catch_body: catch_body
+                .iter()
+                .map(|s| rewrite_stmt_types(s, map))
+                .collect(),
+            span: *span,
+        },
         other => other.clone(),
     }
 }
@@ -394,7 +408,7 @@ impl<'a> Checker<'a> {
             last_type = self.check_statement(statement, scope, function);
             if matches!(
                 statement,
-                Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_)
+                Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Throw { .. }
             ) {
                 break;
             }
@@ -650,6 +664,27 @@ impl<'a> Checker<'a> {
                 self.check_region(decl, function);
                 None
             }
+            Stmt::Throw { value, .. } => {
+                self.expect_arg_type("throw", 1, value, "string", scope, function);
+                // `throw` diverges, so it is compatible with any return type.
+                Some(function.return_type.clone())
+            }
+            Stmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                ..
+            } => {
+                let mut try_scope = scope.clone();
+                self.check_block(body, &mut try_scope, function);
+                let mut catch_scope = scope.clone();
+                // The caught error is exposed to the handler as a string message.
+                catch_scope
+                    .locals
+                    .insert(catch_name.clone(), TypeRef::new("string"));
+                self.check_block(catch_body, &mut catch_scope, function);
+                None
+            }
         }
     }
 
@@ -781,6 +816,15 @@ impl<'a> Checker<'a> {
                 }
                 Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
                     self.walk_lifetimes(body, &mut freed.clone(), function);
+                }
+                Stmt::Throw { value, .. } => {
+                    self.check_freed_uses(value, freed, function);
+                }
+                Stmt::Try {
+                    body, catch_body, ..
+                } => {
+                    self.walk_lifetimes(body, &mut freed.clone(), function);
+                    self.walk_lifetimes(catch_body, &mut freed.clone(), function);
                 }
                 Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Region(_) => {}
             }
@@ -1683,6 +1727,22 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "N0351")
+        );
+    }
+
+    #[test]
+    fn validates_try_catch_and_throw() {
+        let source = "fn main -> void\n    try\n        throw \"oops\"\n    catch message\n        warn(message)\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_throwing_non_string() {
+        let diagnostics = validate_source("fn main -> void\n    throw 42\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "N0313")
         );
     }
 

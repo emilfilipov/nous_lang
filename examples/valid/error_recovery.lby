@@ -1,0 +1,11 @@
+fn risky value i64 -> i64
+    if value < 0
+        throw "negative input is not allowed"
+    value * 2
+
+fn main -> void
+    try
+        let doubled i64 = risky(0 - 1)
+        println("no error")
+    catch message
+        warn(message)
