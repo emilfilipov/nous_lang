@@ -3096,6 +3096,14 @@ impl<'a> IrRuntime<'a> {
             "replace" => Self::builtin_replace(args),
             "upper" => Self::builtin_upper(args),
             "lower" => Self::builtin_lower(args),
+            "abs" => Self::builtin_abs(args),
+            "min" => Self::builtin_min(args),
+            "max" => Self::builtin_max(args),
+            "pow" => Self::builtin_pow(args),
+            "sqrt" => Self::builtin_sqrt(args),
+            "floor" => Self::builtin_floor(args),
+            "ceil" => Self::builtin_ceil(args),
+            "round" => Self::builtin_round(args),
             "rc_new" => self.builtin_rc_new(args),
             "rc_clone" => self.builtin_rc_clone(args),
             "rc_release" => self.builtin_rc_release(args),
@@ -3805,6 +3813,122 @@ impl<'a> IrRuntime<'a> {
         Ok(Value::String(text.to_lowercase()))
     }
 
+    fn builtin_abs(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("abs", 1, args.len()))?;
+        match value {
+            Value::I64(n) => Ok(Value::I64(n.abs())),
+            Value::F64(n) => Ok(Value::F64(n.abs())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("abs expects an i64 or f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_min(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [left, right]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("min", 2, args.len()))?;
+        match (left, right) {
+            (Value::I64(a), Value::I64(b)) => Ok(Value::I64(a.min(b))),
+            (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a.min(b))),
+            (a, b) => Err(RuntimeError::new(
+                "L0417",
+                format!("min expects two matching i64 or f64 values but got `{a}` and `{b}`"),
+            )),
+        }
+    }
+
+    fn builtin_max(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [left, right]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("max", 2, args.len()))?;
+        match (left, right) {
+            (Value::I64(a), Value::I64(b)) => Ok(Value::I64(a.max(b))),
+            (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a.max(b))),
+            (a, b) => Err(RuntimeError::new(
+                "L0417",
+                format!("max expects two matching i64 or f64 values but got `{a}` and `{b}`"),
+            )),
+        }
+    }
+
+    fn builtin_pow(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [base, exp]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("pow", 2, args.len()))?;
+        match (base, exp) {
+            (Value::I64(b), Value::I64(e)) => {
+                if e < 0 {
+                    return Err(RuntimeError::new(
+                        "L0417",
+                        format!("pow expects a non-negative integer exponent but got `{e}`"),
+                    ));
+                }
+                Ok(Value::I64(b.pow(e as u32)))
+            }
+            (Value::F64(b), Value::F64(e)) => Ok(Value::F64(b.powf(e))),
+            (b, e) => Err(RuntimeError::new(
+                "L0417",
+                format!("pow expects two matching i64 or f64 values but got `{b}` and `{e}`"),
+            )),
+        }
+    }
+
+    fn builtin_sqrt(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("sqrt", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.sqrt())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("sqrt expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_floor(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("floor", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.floor())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("floor expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_ceil(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("ceil", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.ceil())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("ceil expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_round(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("round", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.round())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("round expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
     fn builtin_rc_new(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [value]: [Value; 1] = args
             .try_into()
@@ -4466,6 +4590,13 @@ impl<'a> Lowerer<'a> {
             "file_exists" | "contains" => TypeRef::new("bool"),
             "sys_status" | "len" | "find" => TypeRef::new("i64"),
             "split" => TypeRef::new("array<string>"),
+            "sqrt" | "floor" | "ceil" | "round" => TypeRef::new("f64"),
+            "abs" | "min" | "max" | "pow" => {
+                let value = args.first().ok_or_else(|| {
+                    IrLoweringError::new(format!("{name} call missing argument"), Some(span))
+                })?;
+                TypeRef::new(value.ty.name.clone())
+            }
             "rc_new" => {
                 let value = args.first().ok_or_else(|| {
                     IrLoweringError::new("rc_new call missing value argument", Some(span))

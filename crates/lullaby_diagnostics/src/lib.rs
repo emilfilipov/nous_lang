@@ -414,6 +414,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Pass the argument type the builtin expects: strings for text, i64 for char indices, array<string> for join.",
     },
     DiagnosticEntry {
+        code: "L0374",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "Math builtins are type-directed over `i64` and `f64` operands.",
+        root_cause: "A math builtin (`abs`, `min`, `max`, `pow`, `sqrt`, `floor`, `ceil`, `round`) received an argument of the wrong type or mismatched operand types.",
+        suggested_fix: "Pass matching numeric operands: `abs`/`min`/`max`/`pow` accept two `i64` or two `f64`; `sqrt`/`floor`/`ceil`/`round` require an `f64`.",
+    },
+    DiagnosticEntry {
         code: "L0501",
         phase: DiagnosticPhase::Ir,
         explanation: "The checked source program could not be lowered into typed IR.",

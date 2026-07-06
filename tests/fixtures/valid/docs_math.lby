@@ -1,0 +1,9 @@
+fn main -> i64
+    let magnitude i64 = abs(0 - 7)
+    let smaller i64 = min(magnitude, 4)
+    let raised i64 = pow(smaller, 3)
+    let root f64 = sqrt(64.0)
+    if root == 8.0
+        raised
+    else
+        0

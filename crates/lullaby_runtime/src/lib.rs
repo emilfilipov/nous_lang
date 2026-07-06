@@ -238,6 +238,14 @@ impl<'a> Runtime<'a> {
             "replace" => Self::builtin_replace(args),
             "upper" => Self::builtin_upper(args),
             "lower" => Self::builtin_lower(args),
+            "abs" => Self::builtin_abs(args),
+            "min" => Self::builtin_min(args),
+            "max" => Self::builtin_max(args),
+            "pow" => Self::builtin_pow(args),
+            "sqrt" => Self::builtin_sqrt(args),
+            "floor" => Self::builtin_floor(args),
+            "ceil" => Self::builtin_ceil(args),
+            "round" => Self::builtin_round(args),
             "rc_new" => self.builtin_rc_new(args),
             "rc_clone" => self.builtin_rc_clone(args),
             "rc_release" => self.builtin_rc_release(args),
@@ -979,6 +987,122 @@ impl<'a> Runtime<'a> {
         Ok(Value::String(text.to_lowercase()))
     }
 
+    fn builtin_abs(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("abs", 1, args.len()))?;
+        match value {
+            Value::I64(n) => Ok(Value::I64(n.abs())),
+            Value::F64(n) => Ok(Value::F64(n.abs())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("abs expects an i64 or f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_min(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [left, right]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("min", 2, args.len()))?;
+        match (left, right) {
+            (Value::I64(a), Value::I64(b)) => Ok(Value::I64(a.min(b))),
+            (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a.min(b))),
+            (a, b) => Err(RuntimeError::new(
+                "L0417",
+                format!("min expects two matching i64 or f64 values but got `{a}` and `{b}`"),
+            )),
+        }
+    }
+
+    fn builtin_max(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [left, right]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("max", 2, args.len()))?;
+        match (left, right) {
+            (Value::I64(a), Value::I64(b)) => Ok(Value::I64(a.max(b))),
+            (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a.max(b))),
+            (a, b) => Err(RuntimeError::new(
+                "L0417",
+                format!("max expects two matching i64 or f64 values but got `{a}` and `{b}`"),
+            )),
+        }
+    }
+
+    fn builtin_pow(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [base, exp]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("pow", 2, args.len()))?;
+        match (base, exp) {
+            (Value::I64(b), Value::I64(e)) => {
+                if e < 0 {
+                    return Err(RuntimeError::new(
+                        "L0417",
+                        format!("pow expects a non-negative integer exponent but got `{e}`"),
+                    ));
+                }
+                Ok(Value::I64(b.pow(e as u32)))
+            }
+            (Value::F64(b), Value::F64(e)) => Ok(Value::F64(b.powf(e))),
+            (b, e) => Err(RuntimeError::new(
+                "L0417",
+                format!("pow expects two matching i64 or f64 values but got `{b}` and `{e}`"),
+            )),
+        }
+    }
+
+    fn builtin_sqrt(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("sqrt", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.sqrt())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("sqrt expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_floor(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("floor", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.floor())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("floor expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_ceil(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("ceil", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.ceil())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("ceil expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    fn builtin_round(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("round", 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(n.round())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("round expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
     fn builtin_rc_new(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [value]: [Value; 1] = args
             .try_into()
@@ -1390,6 +1514,25 @@ mod tests {
     #[test]
     fn split_empty_separator_is_runtime_error() {
         let source = "fn main -> i64\n    len(split(\"hi\", \"\"))\n";
+        let error = run_source(source).expect_err("runtime error");
+        assert_eq!(error.code, "L0417");
+    }
+
+    #[test]
+    fn runs_integer_math_builtins() {
+        let source = "fn main -> i64\n    let a i64 = abs(0 - 5)\n    let b i64 = min(3, 7)\n    let c i64 = max(3, 7)\n    let d i64 = pow(2, 10)\n    a + b + c + d\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(1039));
+    }
+
+    #[test]
+    fn runs_float_math_builtins() {
+        let source = "fn check f f64 want f64 -> i64\n    if f == want\n        1\n    else\n        0\n\nfn main -> i64\n    check(sqrt(16.0), 4.0) + check(floor(2.7), 2.0) + check(ceil(2.1), 3.0) + check(round(2.5), 3.0)\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(4));
+    }
+
+    #[test]
+    fn rejects_negative_integer_pow_at_runtime() {
+        let source = "fn main -> i64\n    pow(2, 0 - 1)\n";
         let error = run_source(source).expect_err("runtime error");
         assert_eq!(error.code, "L0417");
     }

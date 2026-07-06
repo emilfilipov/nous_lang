@@ -254,6 +254,7 @@
       <a href="#arrays">Arrays</a>
       <a href="#control-flow">Control Flow</a>
       <a href="#boolean-logic">Boolean Logic</a>
+      <a href="#math-builtins">Math Builtins</a>
       <a href="#memory-builtins">Memory Builtins</a>
       <a href="#io-system">I/O And System</a>
       <a href="#string-builtins">String Builtins</a>
@@ -445,6 +446,21 @@ fn main -> i64
         <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_ready_logic.lby</code>.</p>
       </section>
 
+      <section id="math-builtins">
+        <h2>Math Builtins</h2>
+        <p>The alpha includes a small, type-directed math library over <code>i64</code> and <code>f64</code>. <code>abs(x)</code> returns the magnitude (<code>i64-&gt;i64</code> or <code>f64-&gt;f64</code>). <code>min(a, b)</code> and <code>max(a, b)</code> take two matching numeric operands and return the smaller or larger. <code>pow(base, exp)</code> raises to a power; the integer form requires <code>exp &gt;= 0</code> (a negative integer exponent is runtime <code>L0417</code>). <code>sqrt</code>, <code>floor</code>, <code>ceil</code>, and <code>round</code> take one <code>f64</code> and return <code>f64</code>. A wrong or mismatched operand type reports <code>L0374</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/docs_math.lby" data-mode="run"><code>fn main -> i64
+    let magnitude i64 = abs(0 - 7)
+    let smaller i64 = min(magnitude, 4)
+    let raised i64 = pow(smaller, 3)
+    let root f64 = sqrt(64.0)
+    if root == 8.0
+        raised
+    else
+        0</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_math.lby</code>.</p>
+      </section>
+
       <section id="memory-builtins">
         <h2>Memory Builtins</h2>
         <p>The alpha runtime includes heap-slot builtins. These are an interim executable model while the full region/ARC memory design is still being implemented.</p>
@@ -616,6 +632,7 @@ Suggested fix:
             <tr><td><code>L0329</code></td><td>Executable source passed to <code>compile</code>, <code>build</code>, or source <code>run</code> is missing zero-argument <code>main</code>.</td></tr>
             <tr><td><code>L0373</code></td><td><code>len</code> argument is not a string or array.</td></tr>
             <tr><td><code>L0375</code></td><td>String-library builtin argument has the wrong type.</td></tr>
+            <tr><td><code>L0374</code></td><td>Math builtin received a wrong or mismatched operand type.</td></tr>
             <tr><td><code>L0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
             <tr><td><code>L0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
             <tr><td><code>L0601 [bytecode]</code></td><td>Compiled <code>.lbc</code> artifact is malformed, unsupported, fails metadata/function table/memory operation compatibility checks, or violates the instruction contract.</td></tr>

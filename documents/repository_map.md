@@ -106,6 +106,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p lullaby_cli -- check examples/invalid/type_mismatch.lby`: inspect a user-facing invalid example diagnostic.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through source validation, lexing, parsing, semantic validation, runtime execution, and stdout output.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_inferred_let.lby`: run initializer-inferred local bindings through source validation, semantic inference, runtime execution, and stdout output.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_math.lby`: run the math standard-library builtins (`abs`, `min`, `max`, `pow`, `sqrt`, `floor`, `ceil`, `round`) across the AST, IR, and bytecode backends.
 - `cargo run -p lullaby_cli -- run --backend ir tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through typed IR lowering and the IR interpreter.
 - `cargo run -p lullaby_cli -- run --backend bytecode tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through typed IR lowering, instruction-bytecode lowering, and the bytecode VM entry point.
 - `cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold tests/fixtures/valid/run_logic.lby`: run a valid fixture through typed IR lowering, the opt-in constant-folding pass, and the IR interpreter.

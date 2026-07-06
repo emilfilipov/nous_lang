@@ -1381,6 +1381,77 @@ impl<'a> Checker<'a> {
                 self.expect_string_builtin_arg(name, 1, &args[0], "string", scope, function)?;
                 Some(TypeRef::new("string"))
             }
+            "abs" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let arg_type = self.check_expr(&args[0], scope, function)?;
+                if matches!(arg_type.name.as_str(), "i64" | "f64") {
+                    Some(TypeRef::new(arg_type.name))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!(
+                            "abs expects an i64 or f64 value but got `{}`",
+                            arg_type.name
+                        ),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
+            "min" | "max" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                let left = self.check_expr(&args[0], scope, function)?;
+                let right = self.check_expr(&args[1], scope, function)?;
+                if left == right && matches!(left.name.as_str(), "i64" | "f64") {
+                    Some(TypeRef::new(left.name))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!(
+                            "{name} expects two matching i64 or f64 values but got `{}` and `{}`",
+                            left.name, right.name
+                        ),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
+            "pow" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                let base = self.check_expr(&args[0], scope, function)?;
+                let exp = self.check_expr(&args[1], scope, function)?;
+                if base == exp && matches!(base.name.as_str(), "i64" | "f64") {
+                    Some(TypeRef::new(base.name))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!(
+                            "pow expects two matching i64 or f64 values but got `{}` and `{}`",
+                            base.name, exp.name
+                        ),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
+            "sqrt" | "floor" | "ceil" | "round" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let arg_type = self.check_expr(&args[0], scope, function)?;
+                if arg_type.name == "f64" {
+                    Some(TypeRef::new("f64"))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!("{name} expects an f64 value but got `{}`", arg_type.name),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
             "rc_new" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let value_type = self.check_expr(&args[0], scope, function)?;
@@ -2404,6 +2475,33 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0373")
+        );
+    }
+
+    #[test]
+    fn validates_math_builtins() {
+        let source = "fn main -> i64\n    let a i64 = abs(0 - 5)\n    let b i64 = min(a, max(2, 9))\n    let c i64 = pow(2, 3)\n    let d f64 = sqrt(floor(ceil(round(2.5))))\n    if d > 0.0\n        b + c\n    else\n        0\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_math_builtin_on_wrong_type() {
+        let diagnostics = validate_source("fn main -> i64\n    sqrt(4)\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0374")
+        );
+    }
+
+    #[test]
+    fn rejects_min_with_mismatched_operands() {
+        let diagnostics =
+            validate_source("fn main -> i64\n    min(1, 2.0)\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0374")
         );
     }
 

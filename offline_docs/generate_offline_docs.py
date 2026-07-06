@@ -29,6 +29,7 @@ EXAMPLE_FIXTURES = [
     ("Quick Start", REPO_ROOT / "tests" / "fixtures" / "valid" / "docs_quick_start.lby", "run"),
     ("Calculator", REPO_ROOT / "examples" / "valid" / "calculator.lby", "run"),
     ("Arrays And Control Flow", REPO_ROOT / "examples" / "valid" / "arrays_control_flow.lby", "run"),
+    ("Math Builtins", REPO_ROOT / "tests" / "fixtures" / "valid" / "docs_math.lby", "run"),
 ]
 
 
