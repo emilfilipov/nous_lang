@@ -38,7 +38,7 @@ Add focused coverage at the first layer that owns the behavior, then add an end-
 - Semantic rules: add valid and invalid semantic tests, using stable diagnostic codes from [diagnostic_registry.md](diagnostic_registry.md).
 - Runtime or backend behavior: add fixtures under `tests/fixtures/valid/` or `tests/fixtures/invalid/` and cover AST, IR, and bytecode paths when the feature reaches all backends.
 - CLI behavior: add `crates/lullaby_cli/tests/` coverage when command output, diagnostics, artifact generation, or backend selection is affected.
-- Offline docs examples: use `tests/fixtures/valid/docs_*.lullaby` or another checked-in fixture and make the HTML snippet match the file exactly.
+- Offline docs examples: use `tests/fixtures/valid/docs_*.lby` or another checked-in fixture and make the HTML snippet match the file exactly.
 
 Prefer small fixtures that prove one behavior. If a fixture is intentionally invalid, name it after the diagnostic or failure mode.
 

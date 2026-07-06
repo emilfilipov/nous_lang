@@ -6,7 +6,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 
 ## Source And Blocks
 
-- Source files use the `.lby` extension (`.lullaby` is accepted as a legacy alias).
+- Source files use the `.lby` extension. It is the only accepted source extension; the original `.lullaby` extension has been retired.
 - Scope is indentation-only.
 - Curly braces are rejected as block delimiters.
 - Semicolons are rejected as statement terminators.
@@ -66,11 +66,11 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Development commands are available through `cargo run -p lullaby_cli -- ...`.
 - The release package exposes `bin\lullaby.exe`.
 - Supported commands:
-  - `lullaby check [--verbose|--format json] <file.lullaby>`
-  - `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`
-  - `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`
+  - `lullaby check [--verbose|--format json] <file.lby>`
+  - `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`
+  - `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`
   - `lullaby inspect [--verbose|--format json] <file.lbc>`
-  - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lullaby>`
+  - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>`
   - `lullaby run [--verbose|--format json] <file.lbc>`
   - `lullaby docs`
   - `lullaby examples`
@@ -89,7 +89,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 ## Packaging
 
 - `scripts/package_windows_portable.ps1` builds the Windows Alpha 1 portable package and zip archive under `dist/`.
-- The package contains `bin\lullaby.exe`, `docs\index.html`, valid `.lullaby` examples, invalid diagnostic examples, optional PATH setup/cleanup helpers, README/VERSION metadata, a zip checksum, and a repository license file if one exists.
+- The package contains `bin\lullaby.exe`, `docs\index.html`, valid `.lby` examples, invalid diagnostic examples, optional PATH setup/cleanup helpers, README/VERSION metadata, a zip checksum, and a repository license file if one exists.
 - `scripts/verify_release.ps1` is the Alpha 1 release gate for the packaged toolchain.
 - `scripts/publish_github_release.ps1` verifies the package, tags the current commit, and creates a GitHub prerelease with the portable zip plus checksum asset.
 

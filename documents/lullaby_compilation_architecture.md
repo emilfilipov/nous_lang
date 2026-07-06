@@ -16,14 +16,14 @@ Lullaby implements a novel multi-phase compilation pipeline specifically optimiz
 
 The current Rust workspace implements a frontend and in-process execution pipeline:
 
-1. `lullaby_lexer` validates `.lullaby` paths, emits tokens, emits indentation/dedent structure, and rejects forbidden block delimiters.
+1. `lullaby_lexer` validates `.lby` paths, emits tokens, emits indentation/dedent structure, and rejects forbidden block delimiters.
 2. `lullaby_parser` builds an AST for functions, typed parameters, `let`, assignment, returns, break/continue, if/elif/else, while/loop/range-for blocks, calls, literals, array literals/indexing, variables, arithmetic, comparisons, and boolean logic.
 3. `lullaby_semantics` validates static types, explicit and inferred local bindings, assignments, function calls, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical operands, homogeneous non-empty arrays, array indexes, interim pointer-style memory builtins, text file I/O builtins, and safe system command builtins. Successful validation returns `CheckedProgram` metadata with function signatures and inferred expression types.
 4. `lullaby_ir` lowers a `CheckedProgram` into typed semantic IR for the current alpha subset, including typed functions, parameters, statements, control flow, calls, builtins, and expressions. It also exposes memory-operation analysis for current heap-slot operations and array bounds checks so optimizers, bytecode work, and later native backends can share one side-effect and safety model.
 5. `lullaby_runtime` executes the validated AST directly, including `main`, calls, scoped locals, assignment, branch result values, while/loop/range-for control flow, array literals/indexing with runtime bounds checks, arithmetic/comparisons, short-circuit boolean logic, heap-slot memory operations including `alloc`/`load`/`store`/`dealloc`, text file I/O, and safe system command builtins.
 6. `lullaby_ir` provides a deterministic optimization pass framework. Implemented passes are constant folding for pure literal arithmetic, comparisons, boolean logic, string equality, and unary `not`, conservative block-local common subexpression elimination for repeated pure bindings, conservative loop-invariant motion for safe loop-body bindings, conservative block-local copy propagation for simple variable aliases, plus dead-code elimination for statements after unconditional `return`, `break`, or `continue` in the same block. Constant folding and loop-invariant motion deliberately leave potentially failing divide-by-zero expressions in place so runtime diagnostics and zero-iteration loop behavior are preserved. Optimizer barriers are conservative around calls and bounds-checked indexing.
 7. `lullaby_ir` can also execute the lowered typed IR, lower it into an explicit instruction-bytecode module, and encode/decode a versioned `.lbc` bytecode artifact for the current alpha subset.
-8. `lullaby_cli` exposes the current pipeline as `lullaby check <file.lullaby>`, `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lullaby>`, `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lullaby>`, `lullaby inspect <file.lbc>`, `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] <file.lullaby|file.lbc>`, `lullaby docs`, and `lullaby examples`. Optimization is opt-in and applies only to IR/bytecode source runs and compiled bytecode artifacts.
+8. `lullaby_cli` exposes the current pipeline as `lullaby check <file.lby>`, `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lby>`, `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lby>`, `lullaby inspect <file.lbc>`, `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] <file.lby|file.lbc>`, `lullaby docs`, and `lullaby examples`. Optimization is opt-in and applies only to IR/bytecode source runs and compiled bytecode artifacts.
 
 Additional optimization passes, native code generation, linking, and binary output remain planned architecture stages.
 
@@ -162,7 +162,7 @@ The current compiler artifact is a JSON `.lbc` file with a format marker, artifa
 - `memory_operations`: analyzed allocation, load, store, deallocation, and bounds-check metadata used for backend and native-codegen preparation, including a stable artifact-order sequence for cleanup/lowering order
 - `module`: bytecode functions containing dedicated `instructions` rather than raw IR statements
 
-`lullaby compile file.lullaby -o file.lbc` writes this artifact. `lullaby build file.lullaby -o file.lbc` is the same artifact-generation path under a build-oriented command name. `lullaby inspect file.lbc` prints artifact metadata, function signatures, and memory operation counts, while verbose/JSON inspect output includes each memory operation's sequence number. `lullaby run file.lbc` executes it through the bytecode VM entry point. Unsupported artifact format, version, target, payload, entry values, duplicate functions, function-table/module mismatches, or memory-operation/module mismatches produce `N0601 [bytecode error]`.
+`lullaby compile file.lby -o file.lbc` writes this artifact. `lullaby build file.lby -o file.lbc` is the same artifact-generation path under a build-oriented command name. `lullaby inspect file.lbc` prints artifact metadata, function signatures, and memory operation counts, while verbose/JSON inspect output includes each memory operation's sequence number. `lullaby run file.lbc` executes it through the bytecode VM entry point. Unsupported artifact format, version, target, payload, entry values, duplicate functions, function-table/module mismatches, or memory-operation/module mismatches produce `N0601 [bytecode error]`.
 
 #### Optimization Passes
 1. **Algebraic Simplification**
@@ -272,7 +272,7 @@ func main(): void
   output_results()
 
 // Compilation command
-lullaby compile main.lullaby -o main.bin --optimize full --arch x86_64
+lullaby compile main.lby -o main.bin --optimize full --arch x86_64
 
 // Compilation output
 [INFO] Tokenizing source (52 tokens)...

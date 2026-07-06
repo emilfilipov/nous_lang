@@ -15,11 +15,11 @@ struct SnapshotCase {
 
 const CASES: &[SnapshotCase] = &[
     SnapshotCase {
-        source: "tests/fixtures/valid/run_store.lullaby",
+        source: "tests/fixtures/valid/run_store.lby",
         snapshot: "tests/snapshots/run_store.memory.json",
     },
     SnapshotCase {
-        source: "tests/fixtures/valid/run_array.lullaby",
+        source: "tests/fixtures/valid/run_array.lby",
         snapshot: "tests/snapshots/run_array.memory.json",
     },
 ];

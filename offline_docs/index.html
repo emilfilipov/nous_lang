@@ -269,7 +269,7 @@
         <p>Lullaby is implemented in Rust. The current alpha focuses on a clear, testable compiler frontend plus AST, IR, and initial bytecode execution paths before native code generation.</p>
         <p>The Alpha 1 language surface is frozen in <code>documents/alpha1_language_surface.md</code>. Broader Markdown design docs are planned material unless the feature appears in that file or on this page.</p>
         <div class="status-grid">
-          <div class="status-item"><strong>Extension</strong><code>.lullaby</code> is the canonical source file extension.</div>
+          <div class="status-item"><strong>Extension</strong><code>.lby</code> is the canonical source file extension.</div>
           <div class="status-item"><strong>Blocks</strong>Indentation defines scope. Curly braces are rejected.</div>
           <div class="status-item"><strong>Statements</strong>Semicolons are not statement terminators.</div>
           <div class="status-item"><strong>Runtime</strong><code>lullaby run</code> executes the supported subset with AST, IR, or bytecode backends.</div>
@@ -278,32 +278,32 @@
 
       <section id="quick-start">
         <h2>Quick Start</h2>
-        <p>Create a file named <code>hello.lullaby</code>:</p>
-        <pre data-fixture="tests/fixtures/valid/docs_quick_start.lullaby" data-mode="run"><code>fn main -> i64
+        <p>Create a file named <code>hello.lby</code>:</p>
+        <pre data-fixture="tests/fixtures/valid/docs_quick_start.lby" data-mode="run"><code>fn main -> i64
     42</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_quick_start.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_quick_start.lby</code>.</p>
         <p>Check it:</p>
-        <pre><code>cargo run -p lullaby_cli -- check hello.lullaby</code></pre>
+        <pre><code>cargo run -p lullaby_cli -- check hello.lby</code></pre>
         <p>Run it:</p>
-        <pre><code>cargo run -p lullaby_cli -- run hello.lullaby</code></pre>
+        <pre><code>cargo run -p lullaby_cli -- run hello.lby</code></pre>
         <p>Run it through the typed IR backend:</p>
-        <pre><code>cargo run -p lullaby_cli -- run --backend ir hello.lullaby</code></pre>
+        <pre><code>cargo run -p lullaby_cli -- run --backend ir hello.lby</code></pre>
         <p>Run it through the typed IR backend with the opt-in constant-folding optimizer:</p>
-        <pre><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold hello.lullaby</code></pre>
+        <pre><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold hello.lby</code></pre>
         <p>Run it through the current alpha optimizer pipeline:</p>
-        <pre><code>cargo run -p lullaby_cli -- run --backend ir --optimize alpha hello.lullaby</code></pre>
+        <pre><code>cargo run -p lullaby_cli -- run --backend ir --optimize alpha hello.lby</code></pre>
         <p>Compile it to a bytecode artifact with metadata, a function table, and memory operation metadata; inspect the artifact, then run it:</p>
-        <pre><code>cargo run -p lullaby_cli -- compile --optimize alpha -o hello.lbc hello.lullaby
-cargo run -p lullaby_cli -- build --optimize alpha -o hello-build.lbc hello.lullaby
+        <pre><code>cargo run -p lullaby_cli -- compile --optimize alpha -o hello.lbc hello.lby
+cargo run -p lullaby_cli -- build --optimize alpha -o hello-build.lbc hello.lby
 cargo run -p lullaby_cli -- inspect hello.lbc
 cargo run -p lullaby_cli -- run hello.lbc</code></pre>
-        <p>During development, the CLI is available through Cargo. The Alpha 1 portable package builds a direct <code>bin\lullaby.exe</code> command, bundles <code>docs\index.html</code>, includes <code>install.cmd</code> and <code>uninstall.cmd</code> for optional user PATH setup, ships user-facing examples such as <code>examples\valid\calculator.lullaby</code>, emits <code>lullaby-alpha1-windows-x64.zip.sha256</code>, and supports <code>lullaby docs</code> and <code>lullaby examples</code> to locate local resources. The cross-platform package driver also prepares <code>install.sh</code> and <code>uninstall.sh</code> for Linux/macOS portable archives after those targets are validated.</p>
+        <p>During development, the CLI is available through Cargo. The Alpha 1 portable package builds a direct <code>bin\lullaby.exe</code> command, bundles <code>docs\index.html</code>, includes <code>install.cmd</code> and <code>uninstall.cmd</code> for optional user PATH setup, ships user-facing examples such as <code>examples\valid\calculator.lby</code>, emits <code>lullaby-alpha1-windows-x64.zip.sha256</code>, and supports <code>lullaby docs</code> and <code>lullaby examples</code> to locate local resources. The cross-platform package driver also prepares <code>install.sh</code> and <code>uninstall.sh</code> for Linux/macOS portable archives after those targets are validated.</p>
       </section>
 
       <section id="source-files">
         <h2>Source Files</h2>
         <ul>
-          <li>Use the <code>.lullaby</code> extension.</li>
+          <li>Use the <code>.lby</code> extension.</li>
           <li>Use spaces for indentation. A deeper indent opens a block; dedenting closes it.</li>
           <li>Do not use <code>{</code> or <code>}</code> as block delimiters.</li>
           <li>Do not end statements with semicolons.</li>
@@ -314,62 +314,62 @@ cargo run -p lullaby_cli -- run hello.lbc</code></pre>
       <section id="functions">
         <h2>Functions</h2>
         <p>Functions start with <code>fn</code>, followed by the name, typed parameters, an optional return arrow, and an indented body.</p>
-        <pre data-fixture="tests/fixtures/valid/add.lullaby" data-mode="check"><code>fn add x i64 y i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/add.lby" data-mode="check"><code>fn add x i64 y i64 -> i64
     x + y</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/add.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/add.lby</code>.</p>
         <h3>Last-expression return</h3>
         <p>When a function body reaches its final expression normally, that expression is the return value.</p>
-        <pre data-fixture="tests/fixtures/valid/docs_choose.lullaby" data-mode="check"><code>fn choose flag bool -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_choose.lby" data-mode="check"><code>fn choose flag bool -> i64
     if flag
         10
     else
         20</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_choose.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_choose.lby</code>.</p>
         <h3>Explicit return</h3>
-        <pre data-fixture="tests/fixtures/valid/docs_early_return.lullaby" data-mode="check"><code>fn early value i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_early_return.lby" data-mode="check"><code>fn early value i64 -> i64
     if value &gt; 10
         return value
     10</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_early_return.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_early_return.lby</code>.</p>
         <h3>Void functions</h3>
         <p>A function that returns nothing declares <code>-> void</code>. It may use an empty <code>return</code>, or simply finish with no value-producing final expression.</p>
-        <pre data-fixture="tests/fixtures/valid/docs_release_void.lullaby" data-mode="check"><code>fn release ptr ptr_i64 -> void
+        <pre data-fixture="tests/fixtures/valid/docs_release_void.lby" data-mode="check"><code>fn release ptr ptr_i64 -> void
     dealloc(ptr)
     return</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_release_void.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_release_void.lby</code>.</p>
       </section>
 
       <section id="variables-assignment">
         <h2>Variables And Assignment</h2>
         <p>Use <code>let</code> to bind a local name with an explicit type and initializer, or omit the type when the initializer has a concrete inferred local type.</p>
-        <pre data-fixture="tests/fixtures/valid/docs_let_binding.lullaby" data-mode="run"><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_let_binding.lby" data-mode="run"><code>fn main -> i64
     let value i64 = 40
     value + 2</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_let_binding.lullaby</code>.</p>
-        <pre data-fixture="tests/fixtures/valid/run_inferred_let.lullaby" data-mode="run"><code>fn add x i64 y i64 -> i64
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_let_binding.lby</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/run_inferred_let.lby" data-mode="run"><code>fn add x i64 y i64 -> i64
     x + y
 
 fn main -> i64
     let value = add(40, 2)
     let values = [value, 1]
     values[0]</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_inferred_let.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_inferred_let.lby</code>.</p>
         <p>Existing locals can be updated with regular assignment or numeric compound assignment.</p>
-        <pre data-fixture="tests/fixtures/valid/docs_count_assignment.lullaby" data-mode="check"><code>fn count -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_count_assignment.lby" data-mode="check"><code>fn count -> i64
     let total i64 = 0
     total += 1
     total *= 42
     total</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_count_assignment.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_count_assignment.lby</code>.</p>
       </section>
 
       <section id="arrays">
         <h2>Arrays</h2>
         <p>The alpha supports homogeneous arrays with <code>array&lt;T&gt;</code> type spelling, non-empty array literals, and bounds-checked indexing.</p>
-        <pre data-fixture="tests/fixtures/valid/run_array.lullaby" data-mode="run"><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_array.lby" data-mode="run"><code>fn main -> i64
     let values array&lt;i64&gt; = [2, 4, 6]
     values[2]</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_array.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_array.lby</code>.</p>
         <ul>
           <li>Array literal values must all have the same static type.</li>
           <li>Empty array literals are not accepted yet because empty-array inference is not implemented.</li>
@@ -381,39 +381,39 @@ fn main -> i64
       <section id="control-flow">
         <h2>Control Flow</h2>
         <h3>If, elif, else</h3>
-        <pre data-fixture="tests/fixtures/valid/docs_classify.lullaby" data-mode="check"><code>fn classify value i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_classify.lby" data-mode="check"><code>fn classify value i64 -> i64
     if value &lt; 0
         -1
     elif value == 0
         0
     else
         1</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_classify.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_classify.lby</code>.</p>
         <h3>While loops</h3>
-        <pre data-fixture="tests/fixtures/valid/docs_sum_to.lullaby" data-mode="check"><code>fn sum_to limit i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_sum_to.lby" data-mode="check"><code>fn sum_to limit i64 -> i64
     let total i64 = 0
     let index i64 = 0
     while index &lt; limit
         total += index
         index += 1
     total</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sum_to.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sum_to.lby</code>.</p>
         <h3>Range for loops</h3>
         <p><code>for</code> loops iterate over inclusive <code>i64</code> ranges. The default step is <code>1</code>; <code>by</code> supplies an explicit step, and runtime execution rejects step <code>0</code>.</p>
-        <pre data-fixture="tests/fixtures/valid/run_for.lullaby" data-mode="run"><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_for.lby" data-mode="run"><code>fn main -> i64
     let total i64 = 0
     for i from 1 to 3
         total += i
     total</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_for.lullaby</code>.</p>
-        <pre data-fixture="tests/fixtures/valid/run_for_step.lullaby" data-mode="run"><code>fn main -> i64
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_for.lby</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/run_for_step.lby" data-mode="run"><code>fn main -> i64
     let total i64 = 0
     for i from 5 to 1 by -2
         total += i
     total</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_for_step.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_for_step.lby</code>.</p>
         <h3>Loop, break, continue</h3>
-        <pre data-fixture="tests/fixtures/valid/docs_first_even_after.lullaby" data-mode="check"><code>fn first_even_after start i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/docs_first_even_after.lby" data-mode="check"><code>fn first_even_after start i64 -> i64
     let value i64 = start
     loop
         value += 1
@@ -422,19 +422,19 @@ fn main -> i64
         if value == 4
             break
     value</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_first_even_after.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_first_even_after.lby</code>.</p>
       </section>
 
       <section id="boolean-logic">
         <h2>Boolean Logic</h2>
         <p>The alpha supports boolean logic with <code>and</code>, <code>or</code>, and unary <code>not</code>. Logical operands must be <code>bool</code>, and <code>and</code>/<code>or</code> short-circuit during runtime execution.</p>
-        <pre data-fixture="tests/fixtures/valid/run_logic.lullaby" data-mode="run"><code>fn main -> bool
+        <pre data-fixture="tests/fixtures/valid/run_logic.lby" data-mode="run"><code>fn main -> bool
     not false and true or false</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_logic.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_logic.lby</code>.</p>
         <p>Logical expressions can be used anywhere a <code>bool</code> is required, including branch and loop conditions.</p>
-        <pre data-fixture="tests/fixtures/valid/docs_ready_logic.lullaby" data-mode="check"><code>fn ready value i64 enabled bool -> bool
+        <pre data-fixture="tests/fixtures/valid/docs_ready_logic.lby" data-mode="check"><code>fn ready value i64 enabled bool -> bool
     enabled and value &gt; 0</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_ready_logic.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_ready_logic.lby</code>.</p>
       </section>
 
       <section id="memory-builtins">
@@ -451,13 +451,13 @@ fn main -> i64
             <tr><td><code>dealloc(ptr)</code></td><td>Clears the heap slot. Invalid or double deallocation is a runtime error.</td></tr>
           </tbody>
         </table>
-        <pre data-fixture="tests/fixtures/valid/run_store.lullaby" data-mode="run"><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_store.lby" data-mode="run"><code>fn main -> i64
     let ptr ptr_i64 = alloc(0)
     store(ptr, 41)
     let value i64 = load(ptr)
     dealloc(ptr)
     value + 1</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_store.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_store.lby</code>.</p>
       </section>
 
       <section id="io-system">
@@ -476,14 +476,14 @@ fn main -> i64
             <tr><td><code>sys_output(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns stdout.</td></tr>
           </tbody>
         </table>
-        <pre data-fixture="tests/fixtures/valid/run_file_io.lullaby" data-mode="run"><code>fn main -> string
+        <pre data-fixture="tests/fixtures/valid/run_file_io.lby" data-mode="run"><code>fn main -> string
     write_file("target/lullaby_fixture_io.txt", "alpha")
     append_file("target/lullaby_fixture_io.txt", " beta")
     read_file("target/lullaby_fixture_io.txt")</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_file_io.lullaby</code>.</p>
-        <pre data-fixture="tests/fixtures/valid/docs_sys_status.lullaby" data-mode="check"><code>fn main -> i64
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_file_io.lby</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/docs_sys_status.lby" data-mode="check"><code>fn main -> i64
     sys_status("rustc", ["--version"])</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sys_status.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sys_status.lby</code>.</p>
       </section>
 
       <section id="cli">
@@ -493,22 +493,22 @@ fn main -> i64
             <tr><th>Command</th><th>Purpose</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>cargo run -p lullaby_cli -- check path/to/file.lullaby</code></td><td>Validate extension, lex, parse, and run semantic checks. This can check helper/library-style functions without <code>main</code>.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- compile --optimize alpha -o path/to/file.lbc path/to/file.lullaby</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current alpha optimizer pipeline, and write a versioned <code>.lbc</code> instruction-bytecode artifact with metadata, a function table, ordered memory operation metadata, and dedicated function instructions.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- build --optimize alpha -o path/to/file.lbc path/to/file.lullaby</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- check path/to/file.lby</code></td><td>Validate extension, lex, parse, and run semantic checks. This can check helper/library-style functions without <code>main</code>.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- compile --optimize alpha -o path/to/file.lbc path/to/file.lby</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current alpha optimizer pipeline, and write a versioned <code>.lbc</code> instruction-bytecode artifact with metadata, a function table, ordered memory operation metadata, and dedicated function instructions.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- build --optimize alpha -o path/to/file.lbc path/to/file.lby</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- inspect path/to/file.lbc</code></td><td>Print artifact format, version, entry point, metadata target/payload, function count, and memory operation count without executing the program.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- inspect --format json path/to/file.lbc</code></td><td>Print bytecode artifact metadata, function signatures, and ordered <code>memory_operations</code> with sequence numbers as deterministic JSON for tools.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lullaby</code></td><td>Validate and execute zero-argument <code>main</code> in the default AST runtime.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lby</code></td><td>Validate and execute zero-argument <code>main</code> in the default AST runtime.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lbc</code></td><td>Load and execute a compiled bytecode artifact.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run --backend ir path/to/file.lullaby</code></td><td>Validate, lower to typed IR, and execute with the IR interpreter.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode path/to/file.lullaby</code></td><td>Validate, lower through typed IR into the instruction-bytecode backend, and execute it.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold path/to/file.lullaby</code></td><td>Run the IR backend with only the opt-in constant-folding optimizer.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode --optimize dead-code path/to/file.lullaby</code></td><td>Run the bytecode backend with only block-local dead-code elimination.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize alpha path/to/file.lullaby</code></td><td>Run the current alpha optimizer pipeline. Use <code>--optimize none</code> to keep optimization disabled.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run --backend ir path/to/file.lby</code></td><td>Validate, lower to typed IR, and execute with the IR interpreter.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode path/to/file.lby</code></td><td>Validate, lower through typed IR into the instruction-bytecode backend, and execute it.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold path/to/file.lby</code></td><td>Run the IR backend with only the opt-in constant-folding optimizer.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode --optimize dead-code path/to/file.lby</code></td><td>Run the bytecode backend with only block-local dead-code elimination.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize alpha path/to/file.lby</code></td><td>Run the current alpha optimizer pipeline. Use <code>--optimize none</code> to keep optimization disabled.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- docs</code></td><td>Print the local offline documentation entry path. In the portable package, use <code>bin\lullaby.exe docs</code> or <code>lullaby docs</code> after adding <code>bin</code> to <code>PATH</code>.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- examples</code></td><td>Print the local valid example directory. In the portable package, use <code>bin\lullaby.exe examples</code> or <code>lullaby examples</code> after adding <code>bin</code> to <code>PATH</code>.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- check --verbose path/to/file.lullaby</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- check --format json path/to/file.lullaby</code></td><td>Print deterministic JSON diagnostics for tools, CI, editors, and LLM agents. <code>--diagnostic-format json</code> is also accepted.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- check --verbose path/to/file.lby</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- check --format json path/to/file.lby</code></td><td>Print deterministic JSON diagnostics for tools, CI, editors, and LLM agents. <code>--diagnostic-format json</code> is also accepted.</td></tr>
             <tr><td><code>powershell -ExecutionPolicy Bypass -File scripts\package_windows_portable.ps1</code></td><td>Build the Alpha 1 Windows portable package with <code>bin\lullaby.exe</code>, <code>docs\index.html</code>, <code>RELEASE_NOTES.md</code>, valid and invalid examples, <code>install.cmd</code>, <code>uninstall.cmd</code>, package metadata, any repository license file, a zip archive, and a SHA-256 checksum file.</td></tr>
             <tr><td><code>powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1</code></td><td>Run the full release gate and smoke-test the packaged toolchain, including <code>lullaby inspect</code>, <code>lullaby examples</code>, invalid example diagnostics, checksum verification, and dry-run PATH helper scripts.</td></tr>
             <tr><td><code>powershell -ExecutionPolicy Bypass -File scripts\publish_github_release.ps1</code></td><td>Verify the package, tag the current commit, and create a GitHub prerelease with the zip and checksum assets.</td></tr>
@@ -519,15 +519,15 @@ fn main -> i64
       <section id="examples">
         <h2>Examples</h2>
         <h3>Arithmetic function call</h3>
-        <pre data-fixture="tests/fixtures/valid/run_arithmetic.lullaby" data-mode="run"><code>fn add x i64 y i64 -> i64
+        <pre data-fixture="tests/fixtures/valid/run_arithmetic.lby" data-mode="run"><code>fn add x i64 y i64 -> i64
     x + y
 
 fn main -> i64
     let value i64 = add(40, 2)
     value</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_arithmetic.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_arithmetic.lby</code>.</p>
         <h3>Void cleanup helper</h3>
-        <pre data-fixture="tests/fixtures/valid/docs_cleanup_helper.lullaby" data-mode="run"><code>fn cleanup ptr ptr_i64 -> void
+        <pre data-fixture="tests/fixtures/valid/docs_cleanup_helper.lby" data-mode="run"><code>fn cleanup ptr ptr_i64 -> void
     dealloc(ptr)
 
 fn main -> i64
@@ -536,24 +536,24 @@ fn main -> i64
     let value i64 = load(ptr)
     cleanup(ptr)
     value</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_cleanup_helper.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_cleanup_helper.lby</code>.</p>
         <h3>Array indexing</h3>
-        <pre data-fixture="tests/fixtures/valid/run_array.lullaby" data-mode="run"><code>fn main -> i64
+        <pre data-fixture="tests/fixtures/valid/run_array.lby" data-mode="run"><code>fn main -> i64
     let values array&lt;i64&gt; = [2, 4, 6]
     values[2]</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_array.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_array.lby</code>.</p>
         <h3>Text file I/O</h3>
-        <pre data-fixture="tests/fixtures/valid/run_file_io.lullaby" data-mode="run"><code>fn main -> string
+        <pre data-fixture="tests/fixtures/valid/run_file_io.lby" data-mode="run"><code>fn main -> string
     write_file("target/lullaby_fixture_io.txt", "alpha")
     append_file("target/lullaby_fixture_io.txt", " beta")
     read_file("target/lullaby_fixture_io.txt")</code></pre>
-        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_file_io.lullaby</code>.</p>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_file_io.lby</code>.</p>
       </section>
 
       <section id="diagnostics">
         <h2>Diagnostics</h2>
         <p>Diagnostics use stable short codes and are available in concise, verbose, and JSON output modes. The default concise mode is compact terminal feedback. The <code>--verbose</code> mode adds source excerpts, caret markers, root cause, suggested fix text, related notes, and runtime traceback frames when available. The <code>--format json</code> mode emits deterministic machine-readable diagnostics.</p>
-        <pre><code>N0102 [lexer error] at tests/fixtures/invalid/brace.lullaby:2:5: curly braces are not block delimiters in Lullaby
+        <pre><code>N0102 [lexer error] at tests/fixtures/invalid/brace.lby:2:5: curly braces are not block delimiters in Lullaby
 
 Source:
    2 |     {

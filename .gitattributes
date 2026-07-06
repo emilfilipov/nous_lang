@@ -3,4 +3,4 @@
 *.md text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf
-*.lullaby text eol=lf
+*.lby text eol=lf

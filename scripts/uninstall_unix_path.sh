@@ -53,7 +53,7 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 
 if [ -f "$profile_path" ]; then
-    temp_profile="${profile_path}.lullaby.tmp"
+    temp_profile="${profile_path}.lby.tmp"
     grep -Fxv "$source_line" "$profile_path" > "$temp_profile" || true
     mv "$temp_profile" "$profile_path"
     echo "Updated shell profile: $profile_path"

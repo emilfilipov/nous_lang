@@ -157,9 +157,9 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
     DiagnosticEntry {
         code: "N0001",
         phase: DiagnosticPhase::Source,
-        explanation: "Lullaby currently accepts only canonical .lullaby source files.",
-        root_cause: "The provided path does not use the required .lullaby extension.",
-        suggested_fix: "Rename the file to use the .lullaby extension or pass the intended .lullaby source file.",
+        explanation: "Lullaby currently accepts only canonical .lby source files.",
+        root_cause: "The provided path does not use the required .lby extension.",
+        suggested_fix: "Rename the file to use the .lby extension or pass the intended .lby source file.",
     },
     DiagnosticEntry {
         code: "N0002",
@@ -397,7 +397,7 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         phase: DiagnosticPhase::Bytecode,
         explanation: "The compiled bytecode artifact could not be loaded.",
         root_cause: "The .lbc file is malformed, has unsupported format/version/metadata, names an unsupported or missing entry point, contains duplicate functions, or has a mismatched function table.",
-        suggested_fix: "Recompile the original .lullaby source with the current lullaby compile command.",
+        suggested_fix: "Recompile the original .lby source with the current lullaby compile command.",
     },
     DiagnosticEntry {
         code: "N0404",

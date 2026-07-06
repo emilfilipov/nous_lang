@@ -117,7 +117,7 @@ def write_text(path: Path, contents: str) -> None:
 def package_readme(package_name: str, target_tag: str, commit: str, license_status: str) -> str:
     exe = "lullaby.exe" if "windows" in target_tag else "lullaby"
     prefix = ".\\bin\\" if "windows" in target_tag else "./bin/"
-    example = ".\\examples\\valid\\calculator.lullaby" if "windows" in target_tag else "./examples/valid/calculator.lullaby"
+    example = ".\\examples\\valid\\calculator.lby" if "windows" in target_tag else "./examples/valid/calculator.lby"
     artifact = ".\\examples\\valid\\calculator.lbc" if "windows" in target_tag else "./examples/valid/calculator.lbc"
 
     path_helpers = "install.cmd / install.ps1 and uninstall.cmd / uninstall.ps1"
@@ -146,7 +146,7 @@ Commit: {commit}
 Layout:
 - bin/{exe}: command-line tool
 - docs/index.html: generated offline documentation
-- examples/: executable and invalid diagnostic .lullaby examples
+- examples/: executable and invalid diagnostic .lby examples
 - RELEASE_NOTES.md: release notes, verification evidence, and known limitations
 - MANIFEST.json: package metadata
 - {path_helpers}: optional user PATH setup and cleanup
@@ -289,8 +289,8 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
 def verify_package(package_root: Path, archive_path: Path, checksum_path: Path, target_tag: str) -> None:
     executable = package_root / "bin" / binary_name(target_tag)
     docs = package_root / "docs" / "index.html"
-    example = package_root / "examples" / "valid" / "calculator.lullaby"
-    invalid_example = package_root / "examples" / "invalid" / "type_mismatch.lullaby"
+    example = package_root / "examples" / "valid" / "calculator.lby"
+    invalid_example = package_root / "examples" / "invalid" / "type_mismatch.lby"
     artifact = package_root / "examples" / "valid" / "calculator.lbc"
 
     for path in (

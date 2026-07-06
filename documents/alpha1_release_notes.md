@@ -14,7 +14,7 @@ Alpha 1 is the first installable Lullaby toolchain checkpoint. It is a minimal w
 
 - `bin\lullaby.exe`: release CLI binary.
 - `docs\index.html`: self-contained offline documentation.
-- `examples\`: executable `.lullaby` examples plus invalid diagnostic examples.
+- `examples\`: executable `.lby` examples plus invalid diagnostic examples.
 - `install.cmd` / `install.ps1`: optional user PATH setup helper.
 - `uninstall.cmd` / `uninstall.ps1`: optional user PATH cleanup helper.
 - `README.txt`: package quick start and optional PATH setup.
@@ -30,10 +30,10 @@ From the unpacked package directory:
 .\bin\lullaby.exe --version
 .\bin\lullaby.exe docs
 .\bin\lullaby.exe examples
-.\bin\lullaby.exe check .\examples\valid\calculator.lullaby
-.\bin\lullaby.exe run .\examples\valid\calculator.lullaby
-.\bin\lullaby.exe compile --optimize alpha -o .\examples\valid\calculator.lbc .\examples\valid\calculator.lullaby
-.\bin\lullaby.exe build --optimize alpha -o .\examples\valid\calculator-build.lbc .\examples\valid\calculator.lullaby
+.\bin\lullaby.exe check .\examples\valid\calculator.lby
+.\bin\lullaby.exe run .\examples\valid\calculator.lby
+.\bin\lullaby.exe compile --optimize alpha -o .\examples\valid\calculator.lbc .\examples\valid\calculator.lby
+.\bin\lullaby.exe build --optimize alpha -o .\examples\valid\calculator-build.lbc .\examples\valid\calculator.lby
 .\bin\lullaby.exe inspect .\examples\valid\calculator.lbc
 .\bin\lullaby.exe run .\examples\valid\calculator.lbc
 ```
@@ -56,7 +56,7 @@ if ($actual -ne $expected) { throw "checksum mismatch" }
 
 ## Supported Language Surface
 
-- `.lullaby` source files.
+- `.lby` source files.
 - Indentation-only blocks; curly braces and semicolon terminators are errors.
 - Functions with typed parameters and explicit return types.
 - Last-expression returns, explicit `return`, and `-> void`.
@@ -73,11 +73,11 @@ See [alpha1_language_surface.md](alpha1_language_surface.md) for the frozen feat
 
 ## CLI Surface
 
-- `lullaby check [--verbose|--format json] <file.lullaby>`
-- `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`
-- `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`
+- `lullaby check [--verbose|--format json] <file.lby>`
+- `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`
+- `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`
 - `lullaby inspect [--verbose|--format json] <file.lbc>`
-- `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lullaby>`
+- `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>`
 - `lullaby run [--verbose|--format json] <file.lbc>`
 - `lullaby docs`
 - `lullaby examples`

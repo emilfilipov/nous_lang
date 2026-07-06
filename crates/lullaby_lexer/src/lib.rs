@@ -3,9 +3,6 @@ use std::path::Path;
 pub use lullaby_diagnostics::Span;
 
 pub const CANONICAL_EXTENSION: &str = "lby";
-/// Source extensions still accepted for backward compatibility. `.lullaby` was
-/// the original alpha extension before the shorter canonical `.lby` was adopted.
-pub const LEGACY_EXTENSIONS: &[&str] = &["lullaby"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -95,7 +92,7 @@ impl Token {
 
 pub fn validate_source_path(path: &Path) -> Result<(), Diagnostic> {
     match path.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) if ext == CANONICAL_EXTENSION || LEGACY_EXTENSIONS.contains(&ext) => Ok(()),
+        Some(CANONICAL_EXTENSION) => Ok(()),
         Some(ext) => Err(Diagnostic::new(
             "N0001",
             format!("unsupported source extension '.{ext}', expected '.{CANONICAL_EXTENSION}'"),
@@ -453,10 +450,7 @@ mod tests {
         assert!(validate_source_path(Path::new("main.lby")).is_ok());
         assert!(validate_source_path(Path::new("main.txt")).is_err());
         assert!(validate_source_path(Path::new("main")).is_err());
-    }
-
-    #[test]
-    fn accepts_legacy_extension() {
-        assert!(validate_source_path(Path::new("main.lullaby")).is_ok());
+        // The retired `.lullaby` extension is no longer accepted.
+        assert!(validate_source_path(Path::new("main.lullaby")).is_err());
     }
 }

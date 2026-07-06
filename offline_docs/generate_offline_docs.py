@@ -26,9 +26,9 @@ SOURCE_DOCS = [
 ]
 
 EXAMPLE_FIXTURES = [
-    ("Quick Start", REPO_ROOT / "tests" / "fixtures" / "valid" / "docs_quick_start.lullaby", "run"),
-    ("Calculator", REPO_ROOT / "examples" / "valid" / "calculator.lullaby", "run"),
-    ("Arrays And Control Flow", REPO_ROOT / "examples" / "valid" / "arrays_control_flow.lullaby", "run"),
+    ("Quick Start", REPO_ROOT / "tests" / "fixtures" / "valid" / "docs_quick_start.lby", "run"),
+    ("Calculator", REPO_ROOT / "examples" / "valid" / "calculator.lby", "run"),
+    ("Arrays And Control Flow", REPO_ROOT / "examples" / "valid" / "arrays_control_flow.lby", "run"),
 ]
 
 
@@ -186,7 +186,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             <p>Lullaby is implemented in Rust. The current alpha focuses on a clear, testable compiler frontend plus AST, IR, and instruction-bytecode execution paths before native code generation.</p>
             <p>The Alpha 1 language surface is frozen in <code>documents/alpha1_language_surface.md</code>. Broader Markdown design docs are planned material unless the feature appears in that file or on this page.</p>
             <ul>
-              <li><code>.lullaby</code> is the canonical source file extension.</li>
+              <li><code>.lby</code> is the canonical source file extension.</li>
               <li>Indentation defines scope. Curly braces are rejected as block delimiters.</li>
               <li><code>lullaby check</code> validates helper and library-style files without <code>main</code>.</li>
               <li><code>lullaby run</code> executes the supported subset with AST, IR, or bytecode backends.</li>
@@ -202,9 +202,9 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
               <li>Run <code>bin/lullaby --version</code> or <code>bin\\lullaby.exe --version</code>.</li>
               <li>Open the local docs with <code>bin/lullaby docs</code> or <code>bin\\lullaby.exe docs</code>.</li>
               <li>Find packaged examples with <code>bin/lullaby examples</code>.</li>
-              <li>Check a source file with <code>bin/lullaby check examples/valid/calculator.lullaby</code>.</li>
-              <li>Run a source file with <code>bin/lullaby run examples/valid/calculator.lullaby</code>.</li>
-              <li>Compile a bytecode artifact with <code>bin/lullaby compile --optimize alpha -o examples/valid/calculator.lbc examples/valid/calculator.lullaby</code>.</li>
+              <li>Check a source file with <code>bin/lullaby check examples/valid/calculator.lby</code>.</li>
+              <li>Run a source file with <code>bin/lullaby run examples/valid/calculator.lby</code>.</li>
+              <li>Compile a bytecode artifact with <code>bin/lullaby compile --optimize alpha -o examples/valid/calculator.lbc examples/valid/calculator.lby</code>.</li>
               <li>Inspect and run the artifact with <code>bin/lullaby inspect examples/valid/calculator.lbc</code> and <code>bin/lullaby run examples/valid/calculator.lbc</code>.</li>
             </ol>
             """,
@@ -214,7 +214,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             "source-files",
             """
             <ul>
-              <li>Use the <code>.lullaby</code> extension.</li>
+              <li>Use the <code>.lby</code> extension.</li>
               <li>Use spaces for indentation. A deeper indent opens a block; dedenting closes it.</li>
               <li>Do not use <code>{</code> or <code>}</code> as block delimiters.</li>
               <li>Do not end statements with semicolons.</li>
@@ -302,18 +302,18 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             "cli",
             """
             <table>
-              <tr><td><code>cargo run -p lullaby_cli -- check path/to/file.lullaby</code><br><code>lullaby check [--verbose|--format json] file.lullaby</code></td><td>Validate extension, lex, parse, and run semantic checks. This can check helper/library-style functions without <code>main</code>.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- compile --optimize alpha -o path/to/file.lbc path/to/file.lullaby</code><br><code>lullaby compile [--optimize none|constant-fold|dead-code|alpha] -o file.lbc file.lullaby</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current alpha optimizer pipeline, and write a versioned <code>.lbc</code> instruction-bytecode artifact with metadata, a function table, ordered memory operation metadata, and dedicated function instructions.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- build --optimize alpha -o path/to/file.lbc path/to/file.lullaby</code><br><code>lullaby build</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- check path/to/file.lby</code><br><code>lullaby check [--verbose|--format json] file.lby</code></td><td>Validate extension, lex, parse, and run semantic checks. This can check helper/library-style functions without <code>main</code>.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- compile --optimize alpha -o path/to/file.lbc path/to/file.lby</code><br><code>lullaby compile [--optimize none|constant-fold|dead-code|alpha] -o file.lbc file.lby</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current alpha optimizer pipeline, and write a versioned <code>.lbc</code> instruction-bytecode artifact with metadata, a function table, ordered memory operation metadata, and dedicated function instructions.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- build --optimize alpha -o path/to/file.lbc path/to/file.lby</code><br><code>lullaby build</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- inspect path/to/file.lbc</code><br><code>lullaby inspect file.lbc</code></td><td>Print bytecode artifact metadata, function table details, memory operation counts, target, payload, entry point, and function count without executing the program; verbose/JSON modes include memory operation sequence numbers.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lullaby</code><br><code>lullaby run [--backend ast|ir|bytecode] file.lullaby</code></td><td>Execute source through the selected backend. Use <code>--backend ir</code> or <code>--backend bytecode</code> to select typed IR or bytecode execution.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lby</code><br><code>lullaby run [--backend ast|ir|bytecode] file.lby</code></td><td>Execute source through the selected backend. Use <code>--backend ir</code> or <code>--backend bytecode</code> to select typed IR or bytecode execution.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lbc</code><br><code>lullaby run file.lbc</code></td><td>Execute a compiled bytecode artifact.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold path/to/file.lullaby</code></td><td>Run the IR backend with only the opt-in constant folding optimizer.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode --optimize dead-code path/to/file.lullaby</code></td><td>Run the bytecode backend with block-local dead-code elimination. Other optimizer coverage includes common subexpression elimination, loop-invariant motion, copy propagation, <code>--optimize alpha</code>, and <code>--optimize none</code>.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold path/to/file.lby</code></td><td>Run the IR backend with only the opt-in constant folding optimizer.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode --optimize dead-code path/to/file.lby</code></td><td>Run the bytecode backend with block-local dead-code elimination. Other optimizer coverage includes common subexpression elimination, loop-invariant motion, copy propagation, <code>--optimize alpha</code>, and <code>--optimize none</code>.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- docs</code><br><code>lullaby docs</code></td><td>Print the local offline documentation path.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- examples</code><br><code>lullaby examples</code></td><td>Print the packaged valid examples directory.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- check --verbose path/to/file.lullaby</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- check --format json path/to/file.lullaby</code></td><td>Print deterministic JSON diagnostics for tools, CI, editors, and LLM agents. <code>--diagnostic-format json</code> is also accepted.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- check --verbose path/to/file.lby</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- check --format json path/to/file.lby</code></td><td>Print deterministic JSON diagnostics for tools, CI, editors, and LLM agents. <code>--diagnostic-format json</code> is also accepted.</td></tr>
               <tr><td><code>powershell -ExecutionPolicy Bypass -File scripts\\package_windows_portable.ps1</code></td><td>Build the Alpha 1 Windows portable package with generated docs.</td></tr>
               <tr><td><code>powershell -ExecutionPolicy Bypass -File scripts\\verify_release.ps1</code></td><td>Run the full release gate and smoke-test the packaged toolchain.</td></tr>
               <tr><td><code>powershell -ExecutionPolicy Bypass -File scripts\\publish_github_release.ps1</code></td><td>Verify the package, tag the current commit, and create a GitHub prerelease.</td></tr>
@@ -324,7 +324,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             "Examples",
             "examples",
             """
-            <p>Executable examples in this generated bundle are copied from repository fixtures and checked by the verifier. Packaged user examples include <code>examples\\valid\\calculator.lullaby</code> and invalid examples for inspecting diagnostics.</p>
+            <p>Executable examples in this generated bundle are copied from repository fixtures and checked by the verifier. Packaged user examples include <code>examples\\valid\\calculator.lby</code> and invalid examples for inspecting diagnostics.</p>
             """,
         ),
         (

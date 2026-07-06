@@ -9,7 +9,7 @@ Alpha 1 is the first installable Lullaby toolchain checkpoint. It is not the ful
 Alpha 1 is acceptable when the repository provides:
 
 - A Rust workspace with stable crates for lexing, parsing, semantic validation, diagnostics, runtime execution, CLI entry points, typed IR work, and initial bytecode execution.
-- Source validation for the canonical `.lullaby` extension.
+- Source validation for the canonical `.lby` extension.
 - Indentation-only block parsing with hard diagnostics for curly braces and semicolon terminators.
 - Function declarations with typed parameters, explicit return types, last-expression returns, explicit `return`, and `void` functions.
 - Local `let` bindings with explicit types or initializer-based inferred types.
@@ -38,7 +38,7 @@ Alpha 1 documentation is acceptable when:
 - `documents/repository_map.md` accurately maps source layout, docs, fixtures, commands, and verification responsibilities.
 - `offline_docs/index.html` is self-contained and opens directly from disk without a server, CDN, remote font, or internet dependency.
 - Offline documentation is bundled with the release package and discoverable from the installed or unpacked toolchain.
-- Offline documentation examples that claim to work are backed by `.lullaby` fixtures and verified by `offline_docs/verify_offline_docs.py`.
+- Offline documentation examples that claim to work are backed by `.lby` fixtures and verified by `offline_docs/verify_offline_docs.py`.
 - Planned syntax in design documents is clearly distinguishable from implemented syntax.
 
 ## Required Verification Gate
@@ -60,9 +60,9 @@ git diff --check -- .
 - report `lullaby --version`;
 - report the local offline documentation path through `lullaby docs`;
 - report the local examples path through `lullaby examples`;
-- check a valid `.lullaby` fixture;
-- run a valid `.lullaby` fixture;
-- compile and build a valid `.lullaby` fixture into `.lbc`;
+- check a valid `.lby` fixture;
+- run a valid `.lby` fixture;
+- compile and build a valid `.lby` fixture into `.lbc`;
 - inspect the compiled `.lbc` artifact;
 - run the compiled `.lbc` artifact;
 - run dry-run PATH setup/cleanup helpers;
@@ -76,7 +76,7 @@ The Alpha 1 release note should include:
 - The commit hash being released.
 - The exact verification commands and pass/fail outcome.
 - The packaged artifact name, checksum artifact, and install/unpack instructions.
-- A short list of supported `.lullaby` language features.
+- A short list of supported `.lby` language features.
 - The supported CLI commands, including `check`, `compile`, `build`, `inspect file.lbc`, `run`, `run file.lbc`, `docs`, and `examples`.
 - A short list of known limitations and non-goals.
 - Links or references to representative valid and invalid fixtures.

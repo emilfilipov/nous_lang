@@ -6,9 +6,9 @@ This registry defines the stable diagnostic codes currently emitted by the Lulla
 
 ## Output Modes
 
-- Concise default: `lullaby check file.lullaby`, `lullaby compile file.lullaby`, `lullaby build file.lullaby`, and `lullaby run file.lullaby` print one line per diagnostic.
-- Verbose: `lullaby check --verbose file.lullaby`, `lullaby compile --verbose file.lullaby`, `lullaby build --verbose file.lullaby`, and `lullaby run --verbose file.lullaby` print source excerpts, caret markers, root cause, suggested fix, notes, and runtime tracebacks when available.
-- JSON: `lullaby check --format json file.lullaby`, `lullaby compile --format json file.lullaby`, `lullaby build --format json file.lullaby`, and `lullaby run --format json file.lullaby` print deterministic JSON. `--diagnostic-format json` is accepted as an alias.
+- Concise default: `lullaby check file.lby`, `lullaby compile file.lby`, `lullaby build file.lby`, and `lullaby run file.lby` print one line per diagnostic.
+- Verbose: `lullaby check --verbose file.lby`, `lullaby compile --verbose file.lby`, `lullaby build --verbose file.lby`, and `lullaby run --verbose file.lby` print source excerpts, caret markers, root cause, suggested fix, notes, and runtime tracebacks when available.
+- JSON: `lullaby check --format json file.lby`, `lullaby compile --format json file.lby`, `lullaby build --format json file.lby`, and `lullaby run --format json file.lby` print deterministic JSON. `--diagnostic-format json` is accepted as an alias.
 
 JSON failures are written to stderr and keep a non-zero exit status. JSON successes are written to stdout as:
 
@@ -26,7 +26,7 @@ Each diagnostic object uses stable field names:
   "phase": "semantic",
   "severity": "error",
   "message": "argument 2 for `sys_status` must be `array<string>` but got `array<i64>`",
-  "source_path": "tests/fixtures/invalid/sys_args_type.lullaby",
+  "source_path": "tests/fixtures/invalid/sys_args_type.lby",
   "span": {"line": 2, "column": 24},
   "function": "bad",
   "explanation": "Function and builtin arguments are statically type checked.",
@@ -43,7 +43,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 
 | Code | Phase | Meaning | Likely cause | Suggested fix |
 | :--- | :--- | :--- | :--- | :--- |
-| `N0001` | source | Unsupported source extension. | File path does not end in `.lullaby`. | Rename the source file or pass a `.lullaby` file. |
+| `N0001` | source | Unsupported source extension. | File path does not end in `.lby`. | Rename the source file or pass a `.lby` file. |
 | `N0002` | resource | CLI could not read a source file. | Missing file or unreadable path. | Check path and permissions. |
 | `N0003` | resource | CLI could not write a compiled artifact. | Output path is unwritable or its directory is missing. | Choose a writable `-o` path or create the parent directory. |
 | `N0101` | lexer | Indentation does not match an active block. | A line dedented to a column not on the indent stack. | Align with an existing block level. |

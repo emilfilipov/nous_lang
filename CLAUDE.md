@@ -14,7 +14,7 @@ This repository defines and will implement Lullaby, a compiled systems programmi
 
 - Implementation language: Rust, unless the owner explicitly changes this decision.
 - Initial compiler target: a clear, testable frontend and semantic pipeline before native code generation.
-- Canonical source extension: `.lullaby` until the language specification is intentionally changed.
+- Canonical source extension: `.lby` until the language specification is intentionally changed.
 - Keep the syntax indentation-only. Curly braces are not block delimiters, and semicolons are not statement terminators.
 - Keep the implementation conservative: prefer a correct parser/type checker/runtime prototype over speculative backend complexity.
 - Maintain offline browser-based documentation from the start. The project must eventually ship a self-contained HTML documentation bundle that users can open locally without a server or internet access, and that bundle should be suitable for inclusion in the language toolchain installer.
@@ -70,7 +70,7 @@ Once Rust code exists:
 - Use `cargo clippy --all-targets --all-features -- -D warnings` for linting unless a narrower documented command replaces it.
 - Use `cargo test --all` for unit and integration tests.
 - Keep fixture-based tests for lexer/parser/type-checker/diagnostics deterministic.
-- Add integration tests for end-to-end `.lullaby` source through parse, semantic validation, runtime/backend execution, stdout/stderr capture, and exit code.
+- Add integration tests for end-to-end `.lby` source through parse, semantic validation, runtime/backend execution, stdout/stderr capture, and exit code.
 - Do not call work complete until relevant tests and documentation checks have run or the reason they could not run is documented.
 - Run `python offline_docs/verify_offline_docs.py` when the offline browser docs exist and user-facing language behavior, examples, CLI usage, diagnostics, installer docs, or the offline docs artifact changes.
 

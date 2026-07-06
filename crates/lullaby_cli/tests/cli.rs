@@ -23,7 +23,7 @@ fn stderr(output: &std::process::Output) -> String {
 
 #[test]
 fn checks_valid_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/add.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/add.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -35,7 +35,7 @@ fn checks_valid_fixture() {
 
 #[test]
 fn checks_valid_fixture_as_json() {
-    let fixture = workspace_root().join("tests/fixtures/valid/add.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/add.lby");
     let output = lullaby()
         .args([
             "check",
@@ -80,12 +80,7 @@ fn runs_user_facing_valid_examples() {
     let mut examples = std::fs::read_dir(&examples_dir)
         .expect("examples directory")
         .map(|entry| entry.expect("example entry").path())
-        .filter(|path| {
-            matches!(
-                path.extension().and_then(|ext| ext.to_str()),
-                Some("lby") | Some("lullaby")
-            )
-        })
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("lby"))
         .collect::<Vec<_>>();
     examples.sort();
     assert!(!examples.is_empty(), "expected user-facing examples");
@@ -103,7 +98,7 @@ fn runs_user_facing_valid_examples() {
 
 #[test]
 fn runs_standard_streams_across_backends() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_streams.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_streams.lby");
     for backend in ["ast", "ir", "bytecode"] {
         let output = lullaby()
             .args([
@@ -134,12 +129,7 @@ fn rejects_user_facing_invalid_examples() {
     let mut examples = std::fs::read_dir(&examples_dir)
         .expect("invalid examples directory")
         .map(|entry| entry.expect("example entry").path())
-        .filter(|path| {
-            matches!(
-                path.extension().and_then(|ext| ext.to_str()),
-                Some("lby") | Some("lullaby")
-            )
-        })
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("lby"))
         .collect::<Vec<_>>();
     examples.sort();
     assert!(
@@ -161,7 +151,7 @@ fn rejects_user_facing_invalid_examples() {
 
 #[test]
 fn runs_arithmetic_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -173,7 +163,7 @@ fn runs_arithmetic_fixture() {
 
 #[test]
 fn runs_arithmetic_fixture_with_ir_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -190,7 +180,7 @@ fn runs_arithmetic_fixture_with_ir_backend() {
 
 #[test]
 fn runs_arithmetic_fixture_with_bytecode_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -207,7 +197,7 @@ fn runs_arithmetic_fixture_with_bytecode_backend() {
 
 #[test]
 fn runs_inferred_let_fixture_on_all_backends() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_inferred_let.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_inferred_let.lby");
     for args in [
         vec!["run", fixture.to_str().expect("fixture path")],
         vec![
@@ -233,7 +223,7 @@ fn runs_inferred_let_fixture_on_all_backends() {
 #[test]
 fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");
     let artifact = root.join("target/run_arithmetic.lbc");
     let _ = std::fs::remove_file(&artifact);
 
@@ -272,7 +262,7 @@ fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
 #[test]
 fn builds_fixture_to_bytecode_artifact_and_runs_it() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");
     let artifact = root.join("target/build_arithmetic.lbc");
     let _ = std::fs::remove_file(&artifact);
 
@@ -315,7 +305,7 @@ fn builds_fixture_to_bytecode_artifact_and_runs_it() {
 #[test]
 fn inspects_bytecode_artifact() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/valid/run_store.lullaby");
+    let fixture = root.join("tests/fixtures/valid/run_store.lby");
     let artifact = root.join("target/inspect_memory.lbc");
     let _ = std::fs::remove_file(&artifact);
 
@@ -437,10 +427,10 @@ fn rejects_invalid_bytecode_artifact() {
 #[test]
 fn rejects_planned_unsupported_syntax_with_dedicated_diagnostic() {
     for fixture_name in [
-        "unsupported_import.lullaby",
-        "unsupported_module.lullaby",
-        "unsupported_struct.lullaby",
-        "unsupported_catch.lullaby",
+        "unsupported_import.lby",
+        "unsupported_module.lby",
+        "unsupported_struct.lby",
+        "unsupported_catch.lby",
     ] {
         let fixture = workspace_root()
             .join("tests/fixtures/invalid")
@@ -582,7 +572,7 @@ fn reports_invalid_bytecode_instruction_contract_as_json() {
 #[test]
 fn reports_compile_write_failure_as_json() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");
     let missing_dir = root.join("target/lullaby_missing_compile_dir");
     let artifact = missing_dir.join("run_arithmetic.lbc");
     let _ = std::fs::remove_dir_all(&missing_dir);
@@ -608,7 +598,7 @@ fn reports_compile_write_failure_as_json() {
 
 #[test]
 fn runs_logic_fixture_with_optimized_ir_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -627,7 +617,7 @@ fn runs_logic_fixture_with_optimized_ir_backend() {
 
 #[test]
 fn runs_logic_fixture_with_optimized_bytecode_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -646,7 +636,7 @@ fn runs_logic_fixture_with_optimized_bytecode_backend() {
 
 #[test]
 fn runs_arithmetic_fixture_with_alpha_optimized_ir_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -665,7 +655,7 @@ fn runs_arithmetic_fixture_with_alpha_optimized_ir_backend() {
 
 #[test]
 fn runs_arithmetic_fixture_with_alpha_optimized_bytecode_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -684,7 +674,7 @@ fn runs_arithmetic_fixture_with_alpha_optimized_bytecode_backend() {
 
 #[test]
 fn rejects_optimizer_for_ast_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -706,7 +696,7 @@ fn rejects_optimizer_for_ast_backend() {
 
 #[test]
 fn reports_optimizer_backend_mismatch_with_verbose_guidance() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -732,7 +722,7 @@ fn reports_optimizer_backend_mismatch_with_verbose_guidance() {
 
 #[test]
 fn reports_optimizer_backend_mismatch_as_json() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lby");
     let output = lullaby()
         .args([
             "run",
@@ -754,7 +744,7 @@ fn reports_optimizer_backend_mismatch_as_json() {
 
 #[test]
 fn runs_memory_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_memory.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_memory.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -766,7 +756,7 @@ fn runs_memory_fixture() {
 
 #[test]
 fn runs_memory_fixture_with_ir_backend() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_memory.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_memory.lby");
     let output = lullaby()
         .args([
             "run",
@@ -783,7 +773,7 @@ fn runs_memory_fixture_with_ir_backend() {
 
 #[test]
 fn runs_store_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_store.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_store.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -795,7 +785,7 @@ fn runs_store_fixture() {
 
 #[test]
 fn runs_while_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_while.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_while.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -807,7 +797,7 @@ fn runs_while_fixture() {
 
 #[test]
 fn runs_loop_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_loop.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_loop.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -819,7 +809,7 @@ fn runs_loop_fixture() {
 
 #[test]
 fn runs_logic_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_logic.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -831,7 +821,7 @@ fn runs_logic_fixture() {
 
 #[test]
 fn runs_for_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_for.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_for.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -843,7 +833,7 @@ fn runs_for_fixture() {
 
 #[test]
 fn runs_for_step_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_for_step.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_for_step.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -855,7 +845,7 @@ fn runs_for_step_fixture() {
 
 #[test]
 fn runs_array_fixture() {
-    let fixture = workspace_root().join("tests/fixtures/valid/run_array.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/run_array.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -868,7 +858,7 @@ fn runs_array_fixture() {
 #[test]
 fn runs_file_io_fixture() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/valid/run_file_io.lullaby");
+    let fixture = root.join("tests/fixtures/valid/run_file_io.lby");
     let output_path = root.join("target/lullaby_fixture_io.txt");
     let _ = std::fs::remove_file(&output_path);
 
@@ -889,7 +879,7 @@ fn runs_file_io_fixture() {
 
 #[test]
 fn rejects_forbidden_braces() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/brace.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/brace.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -906,7 +896,7 @@ fn rejects_forbidden_braces() {
 
 #[test]
 fn reports_forbidden_braces_with_verbose_context() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/brace.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/brace.lby");
     let output = lullaby()
         .args([
             "check",
@@ -927,7 +917,7 @@ fn reports_forbidden_braces_with_verbose_context() {
 
 #[test]
 fn reports_forbidden_braces_as_json() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/brace.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/brace.lby");
     let output = lullaby()
         .args([
             "check",
@@ -952,7 +942,7 @@ fn reports_forbidden_braces_as_json() {
 
 #[test]
 fn rejects_missing_indented_body() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/missing_indented_body.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/missing_indented_body.lby");
     let output = lullaby()
         .args([
             "check",
@@ -970,7 +960,7 @@ fn rejects_missing_indented_body() {
 
 #[test]
 fn rejects_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -984,7 +974,7 @@ fn rejects_type_mismatch() {
 
 #[test]
 fn reports_type_mismatch_as_ordered_json() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/type_mismatch.lby");
     let output = lullaby()
         .args([
             "check",
@@ -1006,7 +996,7 @@ fn reports_type_mismatch_as_ordered_json() {
 
 #[test]
 fn check_allows_library_style_source_without_main() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/missing_main.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/missing_main.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1019,7 +1009,7 @@ fn check_allows_library_style_source_without_main() {
 #[test]
 fn compile_requires_zero_argument_main_entrypoint() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/invalid/missing_main.lullaby");
+    let fixture = root.join("tests/fixtures/invalid/missing_main.lby");
     let artifact = root.join("target/missing_main.lbc");
     let _ = std::fs::remove_file(&artifact);
 
@@ -1042,7 +1032,7 @@ fn compile_requires_zero_argument_main_entrypoint() {
 
 #[test]
 fn run_rejects_main_with_parameters_as_json() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/main_with_parameter.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/main_with_parameter.lby");
     let output = lullaby()
         .args([
             "run",
@@ -1063,7 +1053,7 @@ fn run_rejects_main_with_parameters_as_json() {
 
 #[test]
 fn rejects_assignment_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/assignment_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/assignment_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1075,7 +1065,7 @@ fn rejects_assignment_type_mismatch() {
 
 #[test]
 fn rejects_break_outside_loop() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/break_outside_loop.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/break_outside_loop.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1087,7 +1077,7 @@ fn rejects_break_outside_loop() {
 
 #[test]
 fn rejects_logical_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/logical_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/logical_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1099,7 +1089,7 @@ fn rejects_logical_type_mismatch() {
 
 #[test]
 fn rejects_ordering_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/ordering_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/ordering_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1111,7 +1101,7 @@ fn rejects_ordering_type_mismatch() {
 
 #[test]
 fn rejects_for_range_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/for_range_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/for_range_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1123,7 +1113,7 @@ fn rejects_for_range_type_mismatch() {
 
 #[test]
 fn rejects_for_zero_step_at_runtime() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/for_zero_step.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/for_zero_step.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -1135,8 +1125,7 @@ fn rejects_for_zero_step_at_runtime() {
 
 #[test]
 fn rejects_array_literal_type_mismatch() {
-    let fixture =
-        workspace_root().join("tests/fixtures/invalid/array_literal_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_literal_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1148,7 +1137,7 @@ fn rejects_array_literal_type_mismatch() {
 
 #[test]
 fn rejects_array_index_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1160,7 +1149,7 @@ fn rejects_array_index_type_mismatch() {
 
 #[test]
 fn rejects_array_index_out_of_bounds_at_runtime() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -1172,7 +1161,7 @@ fn rejects_array_index_out_of_bounds_at_runtime() {
 
 #[test]
 fn reports_runtime_error_with_verbose_traceback() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.lby");
     let output = lullaby()
         .args(["run", "--verbose", fixture.to_str().expect("fixture path")])
         .output()
@@ -1188,7 +1177,7 @@ fn reports_runtime_error_with_verbose_traceback() {
 
 #[test]
 fn reports_runtime_error_as_json() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/array_index_out_of_bounds.lby");
     let output = lullaby()
         .args([
             "run",
@@ -1211,7 +1200,7 @@ fn reports_runtime_error_as_json() {
 
 #[test]
 fn rejects_store_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/store_type_mismatch.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/store_type_mismatch.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1235,7 +1224,7 @@ fn rejects_use_after_free_at_compile_time() {
 
 #[test]
 fn rejects_store_after_dealloc_at_runtime() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/store_after_dealloc.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/store_after_dealloc.lby");
     let output = lullaby()
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
@@ -1248,7 +1237,7 @@ fn rejects_store_after_dealloc_at_runtime() {
 #[test]
 fn rejects_missing_file_with_structured_resource_error() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/invalid/read_missing_file.lullaby");
+    let fixture = root.join("tests/fixtures/invalid/read_missing_file.lby");
     let _ = std::fs::remove_file(root.join("target/lullaby_missing_file.txt"));
 
     let output = lullaby()
@@ -1265,7 +1254,7 @@ fn rejects_missing_file_with_structured_resource_error() {
 #[test]
 fn reports_missing_file_resource_error_as_json() {
     let root = workspace_root();
-    let fixture = root.join("tests/fixtures/invalid/read_missing_file.lullaby");
+    let fixture = root.join("tests/fixtures/invalid/read_missing_file.lby");
     let _ = std::fs::remove_file(root.join("target/lullaby_missing_file.txt"));
 
     let output = lullaby()
@@ -1288,12 +1277,12 @@ fn reports_missing_file_resource_error_as_json() {
 
 #[test]
 fn rejects_extra_positionals() {
-    let fixture = workspace_root().join("tests/fixtures/valid/add.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/valid/add.lby");
     let output = lullaby()
         .args([
             "check",
             fixture.to_str().expect("fixture path"),
-            "extra.lullaby",
+            "extra.lby",
         ])
         .output()
         .expect("run cli");
@@ -1305,7 +1294,7 @@ fn rejects_extra_positionals() {
 
 #[test]
 fn rejects_file_builtin_argument_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/read_file_path_type.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/read_file_path_type.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1317,7 +1306,7 @@ fn rejects_file_builtin_argument_type_mismatch() {
 
 #[test]
 fn rejects_write_file_content_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/write_file_content_type.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/write_file_content_type.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()
@@ -1329,7 +1318,7 @@ fn rejects_write_file_content_type_mismatch() {
 
 #[test]
 fn rejects_system_builtin_argument_type_mismatch() {
-    let fixture = workspace_root().join("tests/fixtures/invalid/sys_args_type.lullaby");
+    let fixture = workspace_root().join("tests/fixtures/invalid/sys_args_type.lby");
     let output = lullaby()
         .args(["check", fixture.to_str().expect("fixture path")])
         .output()

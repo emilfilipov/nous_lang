@@ -42,9 +42,9 @@ Language-level `try`, `catch`, recovery blocks, and compact `!0xXX` error tokens
 The alpha now has three CLI diagnostic modes:
 
 ```text
-lullaby check file.lullaby
-lullaby check --verbose file.lullaby
-lullaby check --format json file.lullaby
+lullaby check file.lby
+lullaby check --verbose file.lby
+lullaby check --format json file.lby
 ```
 
 The same flags are available for `lullaby compile`, `lullaby build`, `lullaby inspect`, and `lullaby run`. `lullaby run` defaults to the AST runtime and accepts `--backend ir` and `--backend bytecode` for the current alpha subset. `lullaby compile` emits a versioned `.lbc` bytecode artifact with function-table and memory-operation metadata, `lullaby build` is the same artifact-generation path under a build-oriented command name, `lullaby inspect file.lbc` summarizes that artifact, and `lullaby run file.lbc` executes it. IR lowering failures use code `N0501` and phase `ir`; bytecode artifact failures use code `N0601` and phase `bytecode`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
@@ -54,7 +54,7 @@ The same flags are available for `lullaby compile`, `lullaby build`, `lullaby in
 Concise output is the default. It is intended for quick terminal feedback:
 
 ```text
-N0303 [semantic error] at tests/fixtures/invalid/type_mismatch.lullaby:2:22 in `main`: binding `value` declares `bool` but initializer has `i64`
+N0303 [semantic error] at tests/fixtures/invalid/type_mismatch.lby:2:22 in `main`: binding `value` declares `bool` but initializer has `i64`
 ```
 
 ### Verbose Output
@@ -62,7 +62,7 @@ N0303 [semantic error] at tests/fixtures/invalid/type_mismatch.lullaby:2:22 in `
 Verbose output is intended for humans and LLM agents that need enough context to repair the source:
 
 ```text
-N0102 [lexer error] at tests/fixtures/invalid/brace.lullaby:2:5: curly braces are not block delimiters in Lullaby
+N0102 [lexer error] at tests/fixtures/invalid/brace.lby:2:5: curly braces are not block delimiters in Lullaby
 
 Source:
    2 |     {
@@ -96,7 +96,7 @@ JSON mode is deterministic and intended for editors, CI systems, and LLM agents.
 Failure JSON uses the diagnostic registry fields:
 
 ```json
-{"status":"error","diagnostics":[{"code":"N0313","phase":"semantic","severity":"error","message":"argument 2 for `sys_status` must be `array<string>` but got `array<i64>`","source_path":"tests/fixtures/invalid/sys_args_type.lullaby","span":{"line":2,"column":24},"function":"bad","explanation":"Function and builtin arguments are statically type checked.","root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","notes":[],"traceback":[]}]}
+{"status":"error","diagnostics":[{"code":"N0313","phase":"semantic","severity":"error","message":"argument 2 for `sys_status` must be `array<string>` but got `array<i64>`","source_path":"tests/fixtures/invalid/sys_args_type.lby","span":{"line":2,"column":24},"function":"bad","explanation":"Function and builtin arguments are statically type checked.","root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","notes":[],"traceback":[]}]}
 ```
 
 See [diagnostic_registry.md](diagnostic_registry.md) for the full stable code registry and JSON field contract.

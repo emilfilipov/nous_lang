@@ -8,7 +8,7 @@ functions** (host-backed operations the runtime provides) for I/O. It is the
 design deliverable for the I/O module surface; the broader planned surface lives
 in [lullaby_input_output.md](lullaby_input_output.md).
 
-Examples below use the current `.lullaby` extension and the flat builtin surface
+Examples below use the current `.lby` extension and the flat builtin surface
 that is actually implemented. The eventual dotted `io.*` module spelling and the
 project rename (see the naming ticket) are tracked separately; when the rename
 lands, only the spelling of these names changes, not the boundary defined here.
@@ -20,7 +20,7 @@ lands, only the spelling of these names changes, not the boundary defined here.
   definition and cannot be shadowed by a user function. All current I/O names are
   intrinsics.
 - A **runtime stdlib function** is a normal Lullaby function (eventually shipped
-  as `.lullaby` source or a host shim) that may call one or more intrinsics. The
+  as `.lby` source or a host shim) that may call one or more intrinsics. The
   alpha ships no stdlib functions yet; every operation below is currently an
   intrinsic so the surface stays small and each op has one authoritative
   implementation.

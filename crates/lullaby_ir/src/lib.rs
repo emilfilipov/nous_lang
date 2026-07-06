@@ -4625,12 +4625,7 @@ mod tests {
         let mut fixtures = fs::read_dir(&fixture_dir)
             .expect("valid fixture directory")
             .map(|entry| entry.expect("fixture entry").path())
-            .filter(|path| {
-                matches!(
-                    path.extension().and_then(|ext| ext.to_str()),
-                    Some("lby") | Some("lullaby")
-                )
-            })
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("lby"))
             .collect::<Vec<_>>();
         fixtures.sort();
 
@@ -4664,9 +4659,9 @@ mod tests {
             covered.len() >= 10,
             "expected broad executable fixture coverage, got {covered:?}"
         );
-        assert!(covered.contains(&"run_file_io.lullaby".to_string()));
-        assert!(covered.contains(&"run_store.lullaby".to_string()));
-        assert!(covered.contains(&"run_for_step.lullaby".to_string()));
+        assert!(covered.contains(&"run_file_io.lby".to_string()));
+        assert!(covered.contains(&"run_store.lby".to_string()));
+        assert!(covered.contains(&"run_for_step.lby".to_string()));
     }
 
     #[test]

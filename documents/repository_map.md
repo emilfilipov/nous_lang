@@ -10,15 +10,15 @@ This file maps the repository layout and explains where to find core information
 - `.gitignore`: ignores local build outputs, caches, editor state, and generated artifacts once implementation begins.
 - `.gitattributes`: normalizes repository text files to LF line endings.
 - `crates/`: Rust implementation crates.
-- `examples/`: user-facing `.lullaby` examples packaged with the toolchain.
+- `examples/`: user-facing `.lby` examples packaged with the toolchain.
 - `scripts/`: release packaging and verification scripts.
-- `tests/`: shared `.lullaby` fixtures used by crate and CLI tests.
+- `tests/`: shared `.lby` fixtures used by crate and CLI tests.
 - `documents/`: core language documents and planning material.
 - `offline_docs/`: self-contained browser documentation bundle that can be opened directly from disk.
 
 ## Documents
 
-- `documents/core_language_rules.md`: canonical global rules for `.lullaby` source files, indentation-only scope, forbidden block delimiters, and no semicolon terminators.
+- `documents/core_language_rules.md`: canonical global rules for `.lby` source files, indentation-only scope, forbidden block delimiters, and no semicolon terminators.
 - `documents/alpha1_language_surface.md`: frozen installable Alpha 1 feature surface for source rules, declarations, types, expressions, control flow, builtins, CLI commands, artifacts, diagnostics, packaging, and planned non-goals.
 - `documents/formal_grammar.md`: formal EBNF-style draft for the implemented Alpha 1 parser grammar, including lexical/block rules, functions, statements, expressions, types, builtins-as-calls, planned syntax rejection, and the boundary between parsing and semantic validation.
 - `documents/language_specification.md`: top-level language specification and overview. Use this first for language behavior, philosophy, syntax reference, examples, and roadmap.
@@ -35,7 +35,7 @@ This file maps the repository layout and explains where to find core information
 - `documents/lullaby_memory_management.md`: memory model covering regions, stack allocation, heap allocation, lifetime tracking, GC hooks, safety checks, runtime memory APIs, and kernel memory examples.
 - `documents/native_backend_contract.md`: Alpha 1 native backend contract for target family, internal calling convention, stack-frame slots, value layouts, pointer/array lowering rules, cleanup sequencing, and native diagnostics.
 - `documents/linker_and_binary_output_plan.md`: linker/binary-output design plan for symbol resolution, relocation assumptions, output sections, PE/ELF/Mach-O support ordering, and machine/human-readable output verification, anchored on the current validated bytecode-output milestone.
-- `documents/stdlib_io_boundary.md`: boundary between compiler I/O intrinsics and runtime standard-library functions, with the current/planned I/O API surface, `.lullaby` examples, and per-operation error behavior.
+- `documents/stdlib_io_boundary.md`: boundary between compiler I/O intrinsics and runtime standard-library functions, with the current/planned I/O API surface, `.lby` examples, and per-operation error behavior.
 - `documents/concurrency_semantics.md`: intended semantics for threads, locks, tasks, and async/await, the alpha decision to reject them as clear diagnostics rather than partial behavior, and the sequencing to open the subset safely.
 - `documents/lullaby_control_structures.md`: control flow and operators, including the current alpha if/while/loop rules plus planned switches, try/catch, coroutines, arithmetic/logical/bitwise operators, collections, conversions, and utility operations.
 - `documents/lullaby_input_output.md`: I/O and concurrency model, including files, streams, memory-mapped files, threads, processes, async, multiplexing, IPC, sockets, and performance strategies.
@@ -56,8 +56,8 @@ This file maps the repository layout and explains where to find core information
 ## Examples
 
 - `examples/README.md`: user-facing instructions for valid and invalid example programs.
-- `examples/valid/`: executable `.lullaby` examples for calculator, arrays/control flow, file I/O, and Windows system command status.
-- `examples/invalid/`: intentionally invalid `.lullaby` examples for inspecting diagnostics.
+- `examples/valid/`: executable `.lby` examples for calculator, arrays/control flow, file I/O, and Windows system command status.
+- `examples/invalid/`: intentionally invalid `.lby` examples for inspecting diagnostics.
 
 ## Source Layout
 
@@ -71,7 +71,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `crates/lullaby_ir/`: typed semantic IR schema, lowering from `CheckedProgram`, Alpha 1 memory-operation analysis with sequence and safety metadata for allocation/load/store/deallocation, bounds-checked indexing, reference-counted `rc`/`ptr` operations, and region creation, deterministic stack-frame layout analysis (`frame_layout`) assigning parameters/locals/loop-variables stable word-aligned slots with per-scope reverse-order cleanup plans, reserved safety semantics for future region/copy/cleanup operations, serializable native backend contract data for Alpha 1 target/layout/calling/cleanup policy, first `x86_64-pc-windows-msvc` COFF object-emission prototype for literal-return, stack-backed `i64` local arithmetic, and straight-line `i64` assignment entry functions, deterministic optimization pass configuration with opt-in constant folding, conservative block-local CSE, conservative loop-invariant motion, conservative block-local copy propagation, block-local dead-code elimination, executable IR interpreter, inline and fixture-driven AST/IR/bytecode parity tests including optimized backend variants, explicit instruction-bytecode lowering, versioned `.lbc` artifact encoding/decoding with metadata/function-table/memory-operation/instruction-contract compatibility checks, checked-in backend memory metadata snapshots, and bytecode VM entry point for the current alpha subset.
 - `crates/lullaby_ir/tests/`: integration tests and checked-in snapshots for backend metadata. `tests/memory_snapshots.rs` compares bytecode memory-operation metadata for representative Alpha 1 fixtures against `tests/snapshots/*.memory.json`; `tests/native_contract_snapshots.rs` compares the Alpha 1 native backend contract against `tests/snapshots/alpha1_native_backend_contract.json`; `tests/native_object_snapshots.rs` compares literal-return, local-arithmetic, and assignment COFF object-emission output against `tests/snapshots/alpha1_return_42.coff.json`, `tests/snapshots/alpha1_locals_add.coff.json`, and `tests/snapshots/alpha1_assignments.coff.json`.
 - `crates/lullaby_runtime/`: in-process AST runtime for the current alpha subset, including `main`, function calls, scoped locals, assignment, branch results, while/loop/range-for execution, break/continue, array literals/indexing with runtime bounds checks, arithmetic/comparison/logical expressions with short-circuiting, `alloc`/`load`/`store`/`dealloc` heap-slot memory builtins, reference-counted `rc_new`/`rc_clone`/`rc_release`/`rc_get`/`rc_borrow`/`ref_get` builtins with a refcount table plus `unsafe`-gated raw `ptr_read`/`ptr_write`, text file I/O builtins, standard stream builtins (`print`/`println`/`warn`/`flush`), direct program-plus-argv system command builtins, `throw`/`try`/`catch` structured error recovery for user-thrown errors, and categorized runtime/resource errors.
-- `crates/lullaby_cli/`: `lullaby` command-line interface. Current commands: `check [--verbose|--format json] <file.lullaby>`, `compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`, `build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`, `inspect [--verbose|--format json] <file.lbc>`, `run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lullaby>`, `run [--verbose|--format json] <file.lbc>`, `docs`, `examples`, `help`, and `--version`. `check` allows helper/library-style validation without `main`; `compile`, `build`, and source `run` require zero-argument `main`; `inspect` reports artifact metadata, function signatures, memory operation metadata, and verbose/JSON memory operation sequence numbers. `build` is an alias for the artifact-generation path used by `compile`. The crate declares an explicit `lullaby` binary target for release packaging.
+- `crates/lullaby_cli/`: `lullaby` command-line interface. Current commands: `check [--verbose|--format json] <file.lby>`, `compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`, `build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`, `inspect [--verbose|--format json] <file.lbc>`, `run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>`, `run [--verbose|--format json] <file.lbc>`, `docs`, `examples`, `help`, and `--version`. `check` allows helper/library-style validation without `main`; `compile`, `build`, and source `run` require zero-argument `main`; `inspect` reports artifact metadata, function signatures, memory operation metadata, and verbose/JSON memory operation sequence numbers. `build` is an alias for the artifact-generation path used by `compile`. The crate declares an explicit `lullaby` binary target for release packaging.
 - `crates/lullaby_cli/tests/`: binary-level integration tests for the CLI pipeline, including valid checks, backend execution, bytecode artifact inspection/execution, malformed artifact and invalid instruction-contract diagnostics, lexical errors, and semantic errors.
 - `scripts/package_windows_portable.ps1`: builds the release CLI, creates `dist\lullaby-alpha1-windows-x64\`, copies `bin\lullaby.exe`, generates and verifies `docs\index.html`, bundles release notes, user-facing examples, and optional PATH install/uninstall helpers, copies a repository license file if one exists, writes package metadata/readme files, and creates a `.zip` archive plus `.sha256` checksum file.
 - `scripts/package_portable.py`: cross-platform portable package driver. It builds or reuses the release CLI, generates offline docs into the package, verifies generated docs, copies examples/release notes/license metadata and platform PATH helpers, writes `README.txt` and `MANIFEST.json`, creates a `.zip` or `.tar.gz` archive plus `.sha256`, and can run host-compatible package smoke tests with `--verify`.
@@ -81,7 +81,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `scripts/install_windows_path.ps1` and `scripts/uninstall_windows_path.ps1`: package-root PowerShell helpers copied as `install.ps1` and `uninstall.ps1` for optional user PATH setup/cleanup.
 - `scripts/install.cmd` and `scripts/uninstall.cmd`: cmd wrappers copied to the package root for users who prefer `cmd.exe`.
 - `scripts/install_unix_path.sh` and `scripts/uninstall_unix_path.sh`: package-root POSIX shell helpers copied as `install.sh` and `uninstall.sh` for optional user PATH setup/cleanup in Linux and macOS portable archives.
-- `tests/fixtures/valid/`: valid `.lullaby` smoke fixtures used by the frontend, CLI, and offline documentation example verification. Files prefixed with `docs_` back executable examples shown in `offline_docs/index.html`.
+- `tests/fixtures/valid/`: valid `.lby` smoke fixtures used by the frontend, CLI, and offline documentation example verification. Files prefixed with `docs_` back executable examples shown in `offline_docs/index.html`.
 - `tests/fixtures/invalid/`: invalid source fixtures for diagnostics and negative tests, including planned-but-unsupported syntax such as imports, modules, structs, try, and catch, plus executable entry-point failures such as missing `main` and parameterized `main`.
 
 ## Current Commands
@@ -90,57 +90,57 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo test --all`: unit tests for all crates.
 - `cargo clippy --all-targets --all-features -- -D warnings`: lint all crates and integration tests.
 - `cargo build --release -p lullaby_cli`: build the release `lullaby.exe` binary.
-- `cargo run -p lullaby_cli -- check tests/fixtures/valid/add.lullaby`: check a valid fixture through source validation, lexing, parsing, and semantic validation.
-- `cargo run -p lullaby_cli -- check --verbose tests/fixtures/invalid/brace.lullaby`: print verbose source excerpt, root-cause, and suggested-fix diagnostics.
-- `cargo run -p lullaby_cli -- check --format json tests/fixtures/invalid/type_mismatch.lullaby`: print deterministic JSON diagnostics. `--diagnostic-format json` is also accepted.
-- `cargo run -p lullaby_cli -- run --verbose tests/fixtures/invalid/array_index_out_of_bounds.lullaby`: print runtime diagnostics with source context and traceback frames.
-- `cargo run -p lullaby_cli -- compile --optimize alpha -o target/run_arithmetic.lbc tests/fixtures/valid/run_arithmetic.lullaby`: compile a valid source fixture into a versioned `.lbc` instruction-bytecode artifact with metadata, a function table, and dedicated function instructions.
-- `cargo run -p lullaby_cli -- build --optimize alpha -o target/run_arithmetic.lbc tests/fixtures/valid/run_arithmetic.lullaby`: build the same versioned `.lbc` instruction-bytecode artifact through the build-oriented alias.
+- `cargo run -p lullaby_cli -- check tests/fixtures/valid/add.lby`: check a valid fixture through source validation, lexing, parsing, and semantic validation.
+- `cargo run -p lullaby_cli -- check --verbose tests/fixtures/invalid/brace.lby`: print verbose source excerpt, root-cause, and suggested-fix diagnostics.
+- `cargo run -p lullaby_cli -- check --format json tests/fixtures/invalid/type_mismatch.lby`: print deterministic JSON diagnostics. `--diagnostic-format json` is also accepted.
+- `cargo run -p lullaby_cli -- run --verbose tests/fixtures/invalid/array_index_out_of_bounds.lby`: print runtime diagnostics with source context and traceback frames.
+- `cargo run -p lullaby_cli -- compile --optimize alpha -o target/run_arithmetic.lbc tests/fixtures/valid/run_arithmetic.lby`: compile a valid source fixture into a versioned `.lbc` instruction-bytecode artifact with metadata, a function table, and dedicated function instructions.
+- `cargo run -p lullaby_cli -- build --optimize alpha -o target/run_arithmetic.lbc tests/fixtures/valid/run_arithmetic.lby`: build the same versioned `.lbc` instruction-bytecode artifact through the build-oriented alias.
 - `cargo run -p lullaby_cli -- inspect target/run_arithmetic.lbc`: print `.lbc` artifact metadata, function signatures, and memory operation counts without executing it; verbose/JSON modes include memory operation sequence numbers.
 - `cargo run -p lullaby_cli -- run target/run_arithmetic.lbc`: execute a compiled `.lbc` bytecode artifact.
 - `cargo run -p lullaby_cli -- docs`: print the local offline documentation entry path.
 - `cargo run -p lullaby_cli -- examples`: print the local example fixture directory path.
-- `cargo run -p lullaby_cli -- run examples/valid/calculator.lullaby`: run a user-facing packaged example.
-- `cargo run -p lullaby_cli -- check examples/invalid/type_mismatch.lullaby`: inspect a user-facing invalid example diagnostic.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_arithmetic.lullaby`: run a valid fixture through source validation, lexing, parsing, semantic validation, runtime execution, and stdout output.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_inferred_let.lullaby`: run initializer-inferred local bindings through source validation, semantic inference, runtime execution, and stdout output.
-- `cargo run -p lullaby_cli -- run --backend ir tests/fixtures/valid/run_arithmetic.lullaby`: run a valid fixture through typed IR lowering and the IR interpreter.
-- `cargo run -p lullaby_cli -- run --backend bytecode tests/fixtures/valid/run_arithmetic.lullaby`: run a valid fixture through typed IR lowering, instruction-bytecode lowering, and the bytecode VM entry point.
-- `cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold tests/fixtures/valid/run_logic.lullaby`: run a valid fixture through typed IR lowering, the opt-in constant-folding pass, and the IR interpreter.
-- `cargo run -p lullaby_cli -- run --backend bytecode --optimize constant-fold tests/fixtures/valid/run_logic.lullaby`: run a valid fixture through typed IR lowering, the opt-in constant-folding pass, instruction-bytecode lowering, and the bytecode VM entry point.
-- `cargo run -p lullaby_cli -- run --backend ir --optimize dead-code tests/fixtures/valid/run_arithmetic.lullaby`: run a valid fixture through typed IR lowering, block-local dead-code elimination, and the IR interpreter.
-- `cargo run -p lullaby_cli -- run --backend bytecode --optimize alpha tests/fixtures/valid/run_arithmetic.lullaby`: run a valid fixture through typed IR lowering, the current alpha optimizer pipeline of constant folding, CSE, loop-invariant motion, copy propagation, and dead-code elimination, instruction-bytecode lowering, and the bytecode VM entry point.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_memory.lullaby`: run the current memory builtin fixture through `alloc`, `load`, and `dealloc`.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_store.lullaby`: run heap-slot mutation through `alloc`, `store`, `load`, and `dealloc`.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_while.lullaby`: run assignment plus while-loop execution.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_loop.lullaby`: run infinite-loop execution with break/continue.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_logic.lullaby`: run boolean logic with `and`, `or`, and `not`.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_for.lullaby`: run inclusive range-for execution.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_for_step.lullaby`: run stepped and descending range-for execution.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_array.lullaby`: run homogeneous array literals and bounds-checked indexing.
-- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_file_io.lullaby`: run text file write, append, and read builtins.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/brace.lullaby`: verify forbidden block delimiter diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/missing_indented_body.lullaby`: verify parser diagnostics for missing indentation.
-- `cargo test -p lullaby_parser --test ast_snapshots`: verify selected valid `.lullaby` fixtures still produce the checked-in parser AST golden snapshots.
-- `cargo test -p lullaby_ir --test memory_snapshots`: verify selected valid `.lullaby` fixtures still produce the checked-in bytecode memory metadata golden snapshots.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/type_mismatch.lullaby`: verify semantic type mismatch diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/assignment_type_mismatch.lullaby`: verify assignment type mismatch diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/break_outside_loop.lullaby`: verify loop-control placement diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/logical_type_mismatch.lullaby`: verify logical operand type diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/ordering_type_mismatch.lullaby`: verify non-numeric ordering comparison diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/for_range_type_mismatch.lullaby`: verify range-for bound type diagnostics.
-- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/for_zero_step.lullaby`: verify range-for zero-step runtime diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/array_literal_type_mismatch.lullaby`: verify homogeneous array literal diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/array_index_type_mismatch.lullaby`: verify array index type diagnostics.
-- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/array_index_out_of_bounds.lullaby`: verify runtime array bounds diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/store_type_mismatch.lullaby`: verify `store` value type diagnostics.
-- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/store_after_dealloc.lullaby`: verify invalid pointer diagnostics after deallocation.
-- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/read_missing_file.lullaby`: verify structured resource diagnostics for missing file reads.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/read_file_path_type.lullaby`: verify file builtin path type diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/write_file_content_type.lullaby`: verify file builtin content type diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/sys_args_type.lullaby`: verify system command builtin argv type diagnostics.
-- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/unsupported_import.lullaby`: verify `N0211` planned-syntax diagnostics.
-- `cargo run -p lullaby_cli -- compile -o target/missing_main.lbc tests/fixtures/invalid/missing_main.lullaby`: verify `N0329` executable entry-point diagnostics.
+- `cargo run -p lullaby_cli -- run examples/valid/calculator.lby`: run a user-facing packaged example.
+- `cargo run -p lullaby_cli -- check examples/invalid/type_mismatch.lby`: inspect a user-facing invalid example diagnostic.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through source validation, lexing, parsing, semantic validation, runtime execution, and stdout output.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_inferred_let.lby`: run initializer-inferred local bindings through source validation, semantic inference, runtime execution, and stdout output.
+- `cargo run -p lullaby_cli -- run --backend ir tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through typed IR lowering and the IR interpreter.
+- `cargo run -p lullaby_cli -- run --backend bytecode tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through typed IR lowering, instruction-bytecode lowering, and the bytecode VM entry point.
+- `cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold tests/fixtures/valid/run_logic.lby`: run a valid fixture through typed IR lowering, the opt-in constant-folding pass, and the IR interpreter.
+- `cargo run -p lullaby_cli -- run --backend bytecode --optimize constant-fold tests/fixtures/valid/run_logic.lby`: run a valid fixture through typed IR lowering, the opt-in constant-folding pass, instruction-bytecode lowering, and the bytecode VM entry point.
+- `cargo run -p lullaby_cli -- run --backend ir --optimize dead-code tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through typed IR lowering, block-local dead-code elimination, and the IR interpreter.
+- `cargo run -p lullaby_cli -- run --backend bytecode --optimize alpha tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through typed IR lowering, the current alpha optimizer pipeline of constant folding, CSE, loop-invariant motion, copy propagation, and dead-code elimination, instruction-bytecode lowering, and the bytecode VM entry point.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_memory.lby`: run the current memory builtin fixture through `alloc`, `load`, and `dealloc`.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_store.lby`: run heap-slot mutation through `alloc`, `store`, `load`, and `dealloc`.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_while.lby`: run assignment plus while-loop execution.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_loop.lby`: run infinite-loop execution with break/continue.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_logic.lby`: run boolean logic with `and`, `or`, and `not`.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_for.lby`: run inclusive range-for execution.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_for_step.lby`: run stepped and descending range-for execution.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_array.lby`: run homogeneous array literals and bounds-checked indexing.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_file_io.lby`: run text file write, append, and read builtins.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/brace.lby`: verify forbidden block delimiter diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/missing_indented_body.lby`: verify parser diagnostics for missing indentation.
+- `cargo test -p lullaby_parser --test ast_snapshots`: verify selected valid `.lby` fixtures still produce the checked-in parser AST golden snapshots.
+- `cargo test -p lullaby_ir --test memory_snapshots`: verify selected valid `.lby` fixtures still produce the checked-in bytecode memory metadata golden snapshots.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/type_mismatch.lby`: verify semantic type mismatch diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/assignment_type_mismatch.lby`: verify assignment type mismatch diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/break_outside_loop.lby`: verify loop-control placement diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/logical_type_mismatch.lby`: verify logical operand type diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/ordering_type_mismatch.lby`: verify non-numeric ordering comparison diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/for_range_type_mismatch.lby`: verify range-for bound type diagnostics.
+- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/for_zero_step.lby`: verify range-for zero-step runtime diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/array_literal_type_mismatch.lby`: verify homogeneous array literal diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/array_index_type_mismatch.lby`: verify array index type diagnostics.
+- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/array_index_out_of_bounds.lby`: verify runtime array bounds diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/store_type_mismatch.lby`: verify `store` value type diagnostics.
+- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/store_after_dealloc.lby`: verify invalid pointer diagnostics after deallocation.
+- `cargo run -p lullaby_cli -- run tests/fixtures/invalid/read_missing_file.lby`: verify structured resource diagnostics for missing file reads.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/read_file_path_type.lby`: verify file builtin path type diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/write_file_content_type.lby`: verify file builtin content type diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/sys_args_type.lby`: verify system command builtin argv type diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/unsupported_import.lby`: verify `N0211` planned-syntax diagnostics.
+- `cargo run -p lullaby_cli -- compile -o target/missing_main.lbc tests/fixtures/invalid/missing_main.lby`: verify `N0329` executable entry-point diagnostics.
 - `$env:LULLABY_UPDATE_PARSER_SNAPSHOTS='1'; cargo test -p lullaby_parser --test ast_snapshots; Remove-Item Env:LULLABY_UPDATE_PARSER_SNAPSHOTS`: intentionally refresh parser AST golden snapshots after reviewing expected AST-shape changes.
 - `$env:LULLABY_UPDATE_IR_MEMORY_SNAPSHOTS='1'; cargo test -p lullaby_ir --test memory_snapshots; Remove-Item Env:LULLABY_UPDATE_IR_MEMORY_SNAPSHOTS`: intentionally refresh bytecode memory metadata golden snapshots after reviewing expected backend metadata changes.
 - `cargo test -p lullaby_ir native_contract`: verify the Alpha 1 native backend contract for target selection, value layouts, cleanup sequencing, and serializable JSON stability.
@@ -150,7 +150,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo test -p lullaby_ir --test native_object_snapshots`: verify the checked-in literal-return, local-arithmetic, and assignment COFF object-emission snapshots.
 - `$env:LULLABY_UPDATE_NATIVE_OBJECT_SNAPSHOTS='1'; cargo test -p lullaby_ir --test native_object_snapshots; Remove-Item Env:LULLABY_UPDATE_NATIVE_OBJECT_SNAPSHOTS`: intentionally refresh the native object golden snapshot after reviewing expected object-emission changes.
 - Running a malformed `.lbc` artifact verifies `N0601 [bytecode error]` diagnostics for unsupported bytecode artifacts and invalid instruction contracts such as top-level `break`/`continue`.
-- `python offline_docs/verify_offline_docs.py`: verify the shipped self-contained offline browser documentation entry point, including metadata, fixture content, compile/run/inspect/examples command coverage, and `lullaby check`/`lullaby run` execution for documented `.lullaby` examples.
+- `python offline_docs/verify_offline_docs.py`: verify the shipped self-contained offline browser documentation entry point, including metadata, fixture content, compile/run/inspect/examples command coverage, and `lullaby check`/`lullaby run` execution for documented `.lby` examples.
 - `python offline_docs/generate_offline_docs.py`: generate the Markdown-sourced offline documentation bundle with package-ready quick start, CLI reference, package layout, diagnostics, limitations, shipped-doc parity sections, and fixture-backed examples to `target/offline_docs/index.html`.
 - `python offline_docs/verify_offline_docs.py target/offline_docs/index.html --profile generated`: verify the generated offline docs bundle, including source-section coverage, generated package-ready user sections, shipped-doc parity requirements, local-only links, and fixture-backed executable examples.
 - `powershell -ExecutionPolicy Bypass -File scripts/verify_markdown_refs.ps1`: verify file-like Markdown links, backticked `.md` references, and stale-source markers without misclassifying language syntax examples.

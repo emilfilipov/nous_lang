@@ -9,7 +9,7 @@ This document is the formal grammar draft for the current implemented Alpha 1 pa
 
 This grammar covers:
 
-- `.lullaby` source files.
+- `.lby` source files.
 - Top-level function declarations.
 - Indentation-only blocks.
 - `let` bindings, assignment, return, break, continue, expressions, branches, while loops, range-for loops, and infinite loops.

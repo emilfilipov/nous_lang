@@ -16,7 +16,7 @@ Lullaby is a next-generation compiled systems programming language designed with
 
 The current Rust toolchain implements a small executable subset while the wider systems-language design remains in progress. The frozen installable Alpha 1 surface is canonical in [alpha1_language_surface.md](alpha1_language_surface.md):
 
-- Source files use the `.lullaby` extension.
+- Source files use the `.lby` extension.
 - Blocks are indentation-only. Curly braces and semicolon terminators are compile errors.
 - Functions use `fn name param Type -> ReturnType` and return the last reachable expression unless an explicit `return` exits earlier.
 - Void functions use `-> void` and may use bare `return`.
@@ -35,8 +35,8 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Runtime resource failures use structured CLI formatting such as `N0414 [resource]: failed to read ...`.
 - The default execution backend is the AST runtime. `lullaby run` also supports `--backend ir` and `--backend bytecode` for the current alpha subset.
 - IR and bytecode execution can opt into the initial deterministic optimizer with `--optimize constant-fold`, `--optimize dead-code`, or `--optimize alpha`; the alpha pipeline currently includes constant folding, conservative CSE, conservative loop-invariant motion, conservative copy propagation, and dead-code elimination. The default is `--optimize none`.
-- `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lullaby>` emits a versioned `.lbc` instruction-bytecode artifact with metadata, a function table, and ordered memory operation metadata. `lullaby build` accepts the same artifact-generation options as an alias. `lullaby inspect <file.lbc>` summarizes that artifact, and `lullaby run <file.lbc>` executes it after compatibility checks.
-- CLI commands are `lullaby check [--verbose|--format json] <file.lullaby>`, `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`, `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lullaby>`, `lullaby inspect [--verbose|--format json] <file.lbc>`, `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lullaby|file.lbc>`, `lullaby docs`, and `lullaby examples`. During development, these are also available through `cargo run -p lullaby_cli -- ...`. `--diagnostic-format json` is accepted as a JSON diagnostics alias.
+- `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lby>` emits a versioned `.lbc` instruction-bytecode artifact with metadata, a function table, and ordered memory operation metadata. `lullaby build` accepts the same artifact-generation options as an alias. `lullaby inspect <file.lbc>` summarizes that artifact, and `lullaby run <file.lbc>` executes it after compatibility checks.
+- CLI commands are `lullaby check [--verbose|--format json] <file.lby>`, `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`, `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`, `lullaby inspect [--verbose|--format json] <file.lbc>`, `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby|file.lbc>`, `lullaby docs`, and `lullaby examples`. During development, these are also available through `cargo run -p lullaby_cli -- ...`. `--diagnostic-format json` is accepted as a JSON diagnostics alias.
 
 The current parser grammar is drafted in [formal_grammar.md](formal_grammar.md).
 

@@ -75,7 +75,7 @@ $LicenseStatus
 Layout:
 - bin\lullaby.exe: command-line tool
 - docs\index.html: offline documentation
-- examples\: executable and invalid diagnostic .lullaby examples
+- examples\: executable and invalid diagnostic .lby examples
 - RELEASE_NOTES.md: release notes, verification evidence, and known limitations
 - install.cmd / install.ps1: optional user PATH setup
 - uninstall.cmd / uninstall.ps1: optional user PATH cleanup
@@ -85,10 +85,10 @@ Quick start:
 2. Run: .\bin\lullaby.exe --version
 3. Run: .\bin\lullaby.exe docs
 4. Run: .\bin\lullaby.exe examples
-5. Run: .\bin\lullaby.exe check .\examples\valid\calculator.lullaby
-6. Run: .\bin\lullaby.exe run .\examples\valid\calculator.lullaby
-7. Run: .\bin\lullaby.exe compile --optimize alpha -o .\examples\valid\calculator.lbc .\examples\valid\calculator.lullaby
-8. Run: .\bin\lullaby.exe build --optimize alpha -o .\examples\valid\calculator-build.lbc .\examples\valid\calculator.lullaby
+5. Run: .\bin\lullaby.exe check .\examples\valid\calculator.lby
+6. Run: .\bin\lullaby.exe run .\examples\valid\calculator.lby
+7. Run: .\bin\lullaby.exe compile --optimize alpha -o .\examples\valid\calculator.lbc .\examples\valid\calculator.lby
+8. Run: .\bin\lullaby.exe build --optimize alpha -o .\examples\valid\calculator-build.lbc .\examples\valid\calculator.lby
 9. Run: .\bin\lullaby.exe inspect .\examples\valid\calculator.lbc
 10. Run: .\bin\lullaby.exe run .\examples\valid\calculator.lbc
 

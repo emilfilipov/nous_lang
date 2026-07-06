@@ -13,19 +13,19 @@ struct SnapshotCase {
 
 const CASES: &[SnapshotCase] = &[
     SnapshotCase {
-        source: "tests/fixtures/valid/run_arithmetic.lullaby",
+        source: "tests/fixtures/valid/run_arithmetic.lby",
         snapshot: "tests/snapshots/run_arithmetic.ast.json",
     },
     SnapshotCase {
-        source: "tests/fixtures/valid/run_array.lullaby",
+        source: "tests/fixtures/valid/run_array.lby",
         snapshot: "tests/snapshots/run_array.ast.json",
     },
     SnapshotCase {
-        source: "tests/fixtures/valid/run_for_step.lullaby",
+        source: "tests/fixtures/valid/run_for_step.lby",
         snapshot: "tests/snapshots/run_for_step.ast.json",
     },
     SnapshotCase {
-        source: "tests/fixtures/valid/docs_cleanup_helper.lullaby",
+        source: "tests/fixtures/valid/docs_cleanup_helper.lby",
         snapshot: "tests/snapshots/docs_cleanup_helper.ast.json",
     },
 ];
