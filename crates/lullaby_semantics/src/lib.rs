@@ -676,14 +676,20 @@ impl<'a> Checker<'a> {
                 ..
             } => {
                 let mut try_scope = scope.clone();
-                self.check_block(body, &mut try_scope, function);
+                let try_type = self.check_block(body, &mut try_scope, function);
                 let mut catch_scope = scope.clone();
                 // The caught error is exposed to the handler as a string message.
                 catch_scope
                     .locals
                     .insert(catch_name.clone(), TypeRef::new("string"));
-                self.check_block(catch_body, &mut catch_scope, function);
-                None
+                let catch_type = self.check_block(catch_body, &mut catch_scope, function);
+                // Like `if`/`else`, a `try`/`catch` yields a value only when both
+                // arms produce the same type; otherwise it is a void statement.
+                if try_type.as_ref() == catch_type.as_ref() {
+                    try_type
+                } else {
+                    None
+                }
             }
         }
     }
@@ -1777,6 +1783,13 @@ mod tests {
     #[test]
     fn validates_try_catch_and_throw() {
         let source = "fn main -> void\n    try\n        throw \"oops\"\n    catch message\n        warn(message)\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn try_catch_is_a_value_expression() {
+        // Both arms yield a string, so the try/catch can be the function's final value.
+        let source = "fn main -> string\n    try\n        throw \"x\"\n    catch message\n        \"caught: \" + message\n";
         assert!(validate_source(source).is_ok());
     }
 

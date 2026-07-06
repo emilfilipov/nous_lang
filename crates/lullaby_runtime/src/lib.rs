@@ -1096,6 +1096,17 @@ mod tests {
     }
 
     #[test]
+    fn try_catch_yields_a_value_from_either_arm() {
+        let caught = "fn main -> string\n    try\n        throw \"boom\"\n    catch message\n        \"caught: \" + message\n";
+        assert_eq!(
+            run_source(caught).expect("run"),
+            Value::String("caught: boom".to_string())
+        );
+        let ok = "fn main -> i64\n    try\n        42\n    catch message\n        0\n";
+        assert_eq!(run_source(ok).expect("run"), Value::I64(42));
+    }
+
+    #[test]
     fn catches_thrown_error_and_recovers() {
         let source = "fn main -> i64\n    let result i64 = 0\n    try\n        throw \"boom\"\n    catch message\n        result = 7\n    result\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(7));
