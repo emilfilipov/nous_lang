@@ -72,9 +72,14 @@ Implemented since:
   backends. The assignment target is a variable plus an optional field path;
   the root variable is what optimizers track, so a field write correctly
   invalidates expressions over that variable.
+- **Named-field construction** (`Point(x: 1, y: 2)`) alongside positional
+  construction. Fields may appear in any order; each declared field must be
+  provided exactly once. Named construction parses to a distinct
+  `StructLiteral` node and is reordered into declared field order during IR
+  lowering and AST evaluation, so it produces the identical value on all three
+  backends. Duplicate, missing, or unknown fields report `L0372`.
 
 Deferred (follow-up tickets, kept out to stay minimal):
-- Named-field construction (`Point(x: 1, y: 2)`) — positional only at first.
 - Methods / associated functions, generics over structs, and struct update
   syntax.
 

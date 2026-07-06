@@ -513,6 +513,33 @@ impl<'a> Runtime<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 self.call_function(name, values)
             }
+            ExprKind::StructLiteral { name, fields } => {
+                // Evaluate in source order, then reorder to the declared field
+                // order so the constructed value matches positional construction.
+                let mut evaluated = Vec::with_capacity(fields.len());
+                for (field_name, value) in fields {
+                    evaluated.push((field_name.clone(), self.eval_expr(value, env)?));
+                }
+                let order = self.structs.get(name.as_str()).ok_or_else(|| {
+                    RuntimeError::new("L0372", format!("`{name}` is not a struct type"))
+                })?;
+                let ordered = order
+                    .iter()
+                    .map(|declared| {
+                        evaluated
+                            .iter()
+                            .find(|(n, _)| n == declared)
+                            .map(|(_, v)| v.clone())
+                            .ok_or_else(|| {
+                                RuntimeError::new(
+                                    "L0372",
+                                    format!("missing field `{declared}` for `{name}`"),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.call_function(name, ordered)
+            }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
     }

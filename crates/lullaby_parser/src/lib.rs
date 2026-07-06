@@ -252,6 +252,13 @@ pub enum ExprKind {
         name: String,
         args: Vec<Expr>,
     },
+    /// Named-field struct construction, e.g. `Point(x: 3, y: 4)`. Fields are
+    /// stored in source order; semantics and lowering reorder them to the
+    /// struct's declared field order.
+    StructLiteral {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
     Field {
         target: Box<Expr>,
         field: String,
@@ -1249,6 +1256,29 @@ impl<'a> ExprParser<'a> {
             }),
             TokenKind::Identifier(name) => {
                 if self.eat_symbol("(") {
+                    // Named-field construction `Name(field: expr, ...)` is
+                    // detected by an `identifier :` prefix on the first argument.
+                    if self.peek_is_named_field() {
+                        let mut fields = Vec::new();
+                        loop {
+                            let field = self.expect_identifier_for_field()?;
+                            if !self.eat_symbol(":") {
+                                return Err("expected `:` after field name in named construction"
+                                    .to_string());
+                            }
+                            fields.push((field, self.parse_binary(0)?));
+                            if self.eat_symbol(")") {
+                                break;
+                            }
+                            if !self.eat_symbol(",") {
+                                return Err("expected `,` or `)` in named construction".to_string());
+                            }
+                        }
+                        return Ok(Expr {
+                            kind: ExprKind::StructLiteral { name, fields },
+                            span: token.span,
+                        });
+                    }
                     let mut args = Vec::new();
                     if !self.eat_symbol(")") {
                         loop {
@@ -1338,6 +1368,29 @@ impl<'a> ExprParser<'a> {
 
     fn peek(&self) -> Option<&'a Token> {
         self.tokens.get(self.cursor)
+    }
+
+    /// True when the cursor is at an `identifier :` pair, marking a named-field
+    /// construction argument rather than a positional expression.
+    fn peek_is_named_field(&self) -> bool {
+        matches!(
+            self.tokens.get(self.cursor).map(|token| &token.kind),
+            Some(TokenKind::Identifier(_))
+        ) && matches!(
+            self.tokens.get(self.cursor + 1).map(|token| &token.kind),
+            Some(TokenKind::Symbol(symbol)) if symbol == ":"
+        )
+    }
+
+    fn expect_identifier_for_field(&mut self) -> Result<String, String> {
+        match self.peek().map(|token| &token.kind) {
+            Some(TokenKind::Identifier(name)) => {
+                let name = name.clone();
+                self.cursor += 1;
+                Ok(name)
+            }
+            _ => Err("expected field name in named construction".to_string()),
+        }
     }
 }
 

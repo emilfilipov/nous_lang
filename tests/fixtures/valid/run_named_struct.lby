@@ -1,0 +1,9 @@
+struct Player
+    name string
+    score i64
+    alive bool
+
+fn main -> i64
+    let hero Player = Player(score: 100, alive: true, name: "Ada")
+    let bonus Player = Player(name: "Bo", score: hero.score + 20, alive: false)
+    hero.score + bonus.score

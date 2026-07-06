@@ -944,6 +944,11 @@ impl<'a> Checker<'a> {
                     self.check_freed_uses(arg, freed, function);
                 }
             }
+            ExprKind::StructLiteral { fields, .. } => {
+                for (_, value) in fields {
+                    self.check_freed_uses(value, freed, function);
+                }
+            }
             ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) => {
             }
         }
@@ -1100,6 +1105,9 @@ impl<'a> Checker<'a> {
                 } else {
                     self.check_call(name, args, expr.span, scope, function)
                 }
+            }
+            ExprKind::StructLiteral { name, fields } => {
+                self.check_struct_literal(name, fields, expr.span, scope, function)
             }
             ExprKind::Field { target, field } => {
                 let target_type = self.check_expr(target, scope, function)?;
@@ -1536,6 +1544,90 @@ impl<'a> Checker<'a> {
                     ),
                     Some(function.name.clone()),
                     arg.span,
+                ));
+            }
+        }
+        Some(TypeRef::new(name))
+    }
+
+    /// Validate named-field construction `Name(field: expr, ...)`: every
+    /// declared field must appear exactly once with a matching type, in any
+    /// order. Reuses the positional construction diagnostic code `L0372`.
+    fn check_struct_literal(
+        &mut self,
+        name: &str,
+        fields: &[(String, Expr)],
+        span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        if !self.structs.contains_key(name) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0372",
+                format!("`{name}` is not a struct type"),
+                Some(function.name.clone()),
+                span,
+            ));
+            // Still type-check the field expressions to surface nested errors.
+            for (_, expr) in fields {
+                self.check_expr(expr, scope, function);
+            }
+            return None;
+        }
+        let declared = self.structs.get(name).cloned()?;
+        // Type-check each provided field value against its declared type.
+        for (field_name, expr) in fields {
+            let value_type = self.check_expr(expr, scope, function);
+            match declared.iter().find(|f| &f.name == field_name) {
+                Some(field) => {
+                    if value_type.as_ref() != Some(&field.ty) {
+                        self.diagnostics.push(SemanticDiagnostic::at(
+                            "L0372",
+                            format!(
+                                "field `{field_name}` of struct `{name}` expects `{}` but got `{}`",
+                                field.ty.name,
+                                value_type
+                                    .as_ref()
+                                    .map(|ty| ty.name.as_str())
+                                    .unwrap_or("<unknown>")
+                            ),
+                            Some(function.name.clone()),
+                            expr.span,
+                        ));
+                    }
+                }
+                None => {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0372",
+                        format!("struct `{name}` has no field `{field_name}`"),
+                        Some(function.name.clone()),
+                        expr.span,
+                    ));
+                }
+            }
+        }
+        // Every declared field must be provided exactly once.
+        for field in &declared {
+            let count = fields.iter().filter(|(n, _)| n == &field.name).count();
+            if count == 0 {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0372",
+                    format!(
+                        "named construction of `{name}` is missing field `{}`",
+                        field.name
+                    ),
+                    Some(function.name.clone()),
+                    span,
+                ));
+            } else if count > 1 {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0372",
+                    format!(
+                        "field `{}` of struct `{name}` is set more than once",
+                        field.name
+                    ),
+                    Some(function.name.clone()),
+                    span,
                 ));
             }
         }
@@ -2250,6 +2342,38 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0307")
+        );
+    }
+
+    #[test]
+    fn validates_named_field_construction_in_any_order() {
+        let source = "struct Point\n    x i64\n    y i64\n\nfn main -> i64\n    let p Point = Point(y: 4, x: 3)\n    p.x\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_named_construction_missing_field() {
+        let diagnostics = validate_source(
+            "struct Point\n    x i64\n    y i64\n\nfn main -> i64\n    let p Point = Point(x: 3)\n    p.x\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0372")
+        );
+    }
+
+    #[test]
+    fn rejects_named_construction_unknown_field() {
+        let diagnostics = validate_source(
+            "struct Point\n    x i64\n    y i64\n\nfn main -> i64\n    let p Point = Point(x: 3, y: 4, z: 5)\n    p.x\n",
+        )
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0372")
         );
     }
 

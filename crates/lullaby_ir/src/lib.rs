@@ -4227,6 +4227,51 @@ impl<'a> Lowerer<'a> {
                     ty,
                 )
             }
+            ExprKind::StructLiteral { name, fields } => {
+                // Reorder named fields into declared order and emit the same
+                // positional construction the runtime already knows how to build.
+                let order = self
+                    .program
+                    .structs
+                    .iter()
+                    .find(|declaration| &declaration.name == name)
+                    .ok_or_else(|| {
+                        IrLoweringError::new(
+                            format!("`{name}` is not a struct type"),
+                            Some(expr.span),
+                        )
+                    })?
+                    .fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect::<Vec<_>>();
+                let mut lowered = Vec::with_capacity(fields.len());
+                for (field_name, value) in fields {
+                    lowered.push((field_name.clone(), self.lower_expr(value, scope)?));
+                }
+                let args = order
+                    .iter()
+                    .map(|declared| {
+                        lowered
+                            .iter()
+                            .find(|(n, _)| n == declared)
+                            .map(|(_, value)| value.clone())
+                            .ok_or_else(|| {
+                                IrLoweringError::new(
+                                    format!("missing field `{declared}` for `{name}`"),
+                                    Some(expr.span),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                (
+                    IrExprKind::Call {
+                        name: name.clone(),
+                        args,
+                    },
+                    TypeRef::new(name.clone()),
+                )
+            }
             ExprKind::Field { target, field } => {
                 let target = self.lower_expr(target, scope)?;
                 let ty = self

@@ -27,7 +27,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Implemented scalar types: `i64`, `f64`, `bool`, `string`, and `void`.
 - Float literals contain a decimal point (e.g. `3.14`, `2.0`) and have type `f64`. `i64` and `f64` do not mix implicitly; combining them is a type error.
 - Implemented array spelling: `array<T>`.
-- Structs: `struct NAME` followed by indented `field type` lines declares a nominal record type (top level only). Construct positionally with call spelling — `Point(3, 4)` — read fields with `.` — `p.x` — and mutate fields with assignment — `p.x = 5`, `p.y += 1`, including nested `a.b.c = e`. Invalid declarations report `L0370`, bad field access `L0371`, and construction mismatches `L0372`; a field assignment with a wrong-type value reports `L0314`. Structs work across the AST, IR, and bytecode backends. Named-field construction is deferred (see `struct_design.md`).
+- Structs: `struct NAME` followed by indented `field type` lines declares a nominal record type (top level only). Construct positionally with call spelling — `Point(3, 4)` — read fields with `.` — `p.x` — and mutate fields with assignment — `p.x = 5`, `p.y += 1`, including nested `a.b.c = e`. Invalid declarations report `L0370`, bad field access `L0371`, and construction mismatches `L0372`; a field assignment with a wrong-type value reports `L0314`. Structs work across the AST, IR, and bytecode backends. Fields can also be set by name in any order — `Point(y: 4, x: 3)` — where every declared field must be supplied exactly once; duplicate, missing, or unknown named fields report `L0372`.
 - Array literals must be non-empty and homogeneous, such as `[1, 2, 3]`.
 - Array indexing is bounds-checked at runtime and requires an `i64` index.
 - Array elements are mutable through assignment — `xs[i] = e`, `xs[i] += 1`, and mixed struct/array targets such as `cells[0].value = e`. The root variable is what optimizers track, and out-of-bounds writes report `L0413`.
@@ -103,7 +103,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 The following are not implemented Alpha 1 behavior:
 
 - Native code generation for the full language, linking, and machine-code binary output (a COFF object prototype exists for a small subset).
-- Modules, packages, imports, unions, traits, interfaces, classes, and pattern matching (structs are implemented; struct methods, field mutation, and named-field construction are deferred).
+- Modules, packages, imports, unions, traits, interfaces, classes, and pattern matching (structs are implemented, including field mutation and positional/named-field construction; struct methods are deferred).
 - User-defined generics beyond `array<T>` and the `ptr<T>`/`ref<T>`/`rc<T>` reference types and type aliases (struct/record and map generics remain planned).
 - GC hooks and runtime region allocation (region *declarations* are analyzed as compile-time metadata; reference counting via `rc<T>` and conservative lifetime analysis are implemented).
 - Binary I/O, memory mapping, async, sockets, IPC, and general syscall APIs (standard text streams and file/system builtins are implemented).
