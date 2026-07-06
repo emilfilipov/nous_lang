@@ -80,6 +80,16 @@ pub enum IrStmt {
         body: Vec<IrStmt>,
         span: Span,
     },
+    Throw {
+        value: IrExpr,
+        span: Span,
+    },
+    Try {
+        body: Vec<IrStmt>,
+        catch_name: String,
+        catch_body: Vec<IrStmt>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -393,6 +403,15 @@ fn collect_memory_operations_from_block(
             IrStmt::Loop { body, .. } => {
                 collect_memory_operations_from_block(function, body, operations);
             }
+            IrStmt::Throw { value, .. } => {
+                collect_memory_operations_from_expr(function, value, operations);
+            }
+            IrStmt::Try {
+                body, catch_body, ..
+            } => {
+                collect_memory_operations_from_block(function, body, operations);
+                collect_memory_operations_from_block(function, catch_body, operations);
+            }
             IrStmt::Return(None) | IrStmt::Break(_) | IrStmt::Continue(_) => {}
         }
     }
@@ -675,6 +694,16 @@ pub enum BytecodeInstruction {
         body: Vec<BytecodeInstruction>,
         span: Span,
     },
+    Throw {
+        value: BytecodeExpr,
+        span: Span,
+    },
+    Try {
+        body: Vec<BytecodeInstruction>,
+        catch_name: String,
+        catch_body: Vec<BytecodeInstruction>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -853,6 +882,15 @@ fn collect_bytecode_memory_operations_from_block(
             }
             BytecodeInstruction::Loop { body, .. } => {
                 collect_bytecode_memory_operations_from_block(function, body, operations);
+            }
+            BytecodeInstruction::Throw { value, .. } => {
+                collect_bytecode_memory_operations_from_expr(function, value, operations);
+            }
+            BytecodeInstruction::Try {
+                body, catch_body, ..
+            } => {
+                collect_bytecode_memory_operations_from_block(function, body, operations);
+                collect_bytecode_memory_operations_from_block(function, catch_body, operations);
             }
             BytecodeInstruction::Return(None)
             | BytecodeInstruction::Break(_)
@@ -1168,9 +1206,17 @@ fn validate_bytecode_instructions(
             | BytecodeInstruction::Loop { body, .. } => {
                 validate_bytecode_instructions(function_name, body, loop_depth + 1)?;
             }
+            BytecodeInstruction::Try {
+                body, catch_body, ..
+            } => {
+                // `try`/`catch` is not a loop: keep the same loop depth.
+                validate_bytecode_instructions(function_name, body, loop_depth)?;
+                validate_bytecode_instructions(function_name, catch_body, loop_depth)?;
+            }
             BytecodeInstruction::Let { .. }
             | BytecodeInstruction::Assign { .. }
             | BytecodeInstruction::Return(_)
+            | BytecodeInstruction::Throw { .. }
             | BytecodeInstruction::Expr(_) => {}
         }
     }
@@ -1278,6 +1324,21 @@ fn lower_bytecode_instruction(statement: &IrStmt) -> BytecodeInstruction {
         },
         IrStmt::Loop { body, span } => BytecodeInstruction::Loop {
             body: lower_bytecode_block(body),
+            span: *span,
+        },
+        IrStmt::Throw { value, span } => BytecodeInstruction::Throw {
+            value: lower_bytecode_expr(value),
+            span: *span,
+        },
+        IrStmt::Try {
+            body,
+            catch_name,
+            catch_body,
+            span,
+        } => BytecodeInstruction::Try {
+            body: lower_bytecode_block(body),
+            catch_name: catch_name.clone(),
+            catch_body: lower_bytecode_block(catch_body),
             span: *span,
         },
     }
@@ -1405,6 +1466,21 @@ fn bytecode_instruction_to_ir(instruction: &BytecodeInstruction) -> IrStmt {
         },
         BytecodeInstruction::Loop { body, span } => IrStmt::Loop {
             body: bytecode_block_to_ir(body),
+            span: *span,
+        },
+        BytecodeInstruction::Throw { value, span } => IrStmt::Throw {
+            value: bytecode_expr_to_ir(value),
+            span: *span,
+        },
+        BytecodeInstruction::Try {
+            body,
+            catch_name,
+            catch_body,
+            span,
+        } => IrStmt::Try {
+            body: bytecode_block_to_ir(body),
+            catch_name: catch_name.clone(),
+            catch_body: bytecode_block_to_ir(catch_body),
             span: *span,
         },
     }
@@ -1548,6 +1624,21 @@ impl ConstantFolder {
             },
             IrStmt::Loop { body, span } => IrStmt::Loop {
                 body: self.fold_block(body),
+                span: *span,
+            },
+            IrStmt::Throw { value, span } => IrStmt::Throw {
+                value: self.fold_expr(value),
+                span: *span,
+            },
+            IrStmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                span,
+            } => IrStmt::Try {
+                body: self.fold_block(body),
+                catch_name: catch_name.clone(),
+                catch_body: self.fold_block(catch_body),
                 span: *span,
             },
         }
@@ -1894,6 +1985,29 @@ impl CommonSubexpressionEliminator {
                 available.clear();
                 IrStmt::Loop { body, span: *span }
             }
+            IrStmt::Throw { value, span } => {
+                available.clear();
+                IrStmt::Throw {
+                    value: value.clone(),
+                    span: *span,
+                }
+            }
+            IrStmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                span,
+            } => {
+                let body = self.eliminate_block(body, &mut HashMap::new());
+                let catch_body = self.eliminate_block(catch_body, &mut HashMap::new());
+                available.clear();
+                IrStmt::Try {
+                    body,
+                    catch_name: catch_name.clone(),
+                    catch_body,
+                    span: *span,
+                }
+            }
         }
     }
 
@@ -2137,6 +2251,8 @@ impl LoopInvariantMover {
             | IrStmt::Return(_)
             | IrStmt::Break(_)
             | IrStmt::Continue(_)
+            | IrStmt::Throw { .. }
+            | IrStmt::Try { .. }
             | IrStmt::Expr(_) => vec![statement.clone()],
         }
     }
@@ -2265,6 +2381,16 @@ fn collect_declared_names(statements: &[IrStmt], names: &mut HashSet<String>) {
             IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
                 collect_declared_names(body, names);
             }
+            IrStmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                ..
+            } => {
+                names.insert(catch_name.clone());
+                collect_declared_names(body, names);
+                collect_declared_names(catch_body, names);
+            }
             IrStmt::For { name, body, .. } => {
                 names.insert(name.clone());
                 collect_declared_names(body, names);
@@ -2273,6 +2399,7 @@ fn collect_declared_names(statements: &[IrStmt], names: &mut HashSet<String>) {
             | IrStmt::Return(_)
             | IrStmt::Break(_)
             | IrStmt::Continue(_)
+            | IrStmt::Throw { .. }
             | IrStmt::Expr(_) => {}
         }
     }
@@ -2297,6 +2424,12 @@ fn collect_mutated_names(statements: &[IrStmt], names: &mut HashSet<String>) {
             IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
                 collect_mutated_names(body, names);
             }
+            IrStmt::Try {
+                body, catch_body, ..
+            } => {
+                collect_mutated_names(body, names);
+                collect_mutated_names(catch_body, names);
+            }
             IrStmt::For { name, body, .. } => {
                 names.insert(name.clone());
                 collect_mutated_names(body, names);
@@ -2305,6 +2438,7 @@ fn collect_mutated_names(statements: &[IrStmt], names: &mut HashSet<String>) {
             | IrStmt::Return(_)
             | IrStmt::Break(_)
             | IrStmt::Continue(_)
+            | IrStmt::Throw { .. }
             | IrStmt::Expr(_) => {}
         }
     }
@@ -2512,6 +2646,27 @@ impl CopyPropagator {
                 aliases.clear();
                 IrStmt::Loop { body, span: *span }
             }
+            IrStmt::Throw { value, span } => {
+                let value = self.propagate_expr(value, aliases);
+                aliases.clear();
+                IrStmt::Throw { value, span: *span }
+            }
+            IrStmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                span,
+            } => {
+                let body = self.propagate_block(body, &mut HashMap::new());
+                let catch_body = self.propagate_block(catch_body, &mut HashMap::new());
+                aliases.clear();
+                IrStmt::Try {
+                    body,
+                    catch_name: catch_name.clone(),
+                    catch_body,
+                    span: *span,
+                }
+            }
         }
     }
 
@@ -2711,6 +2866,21 @@ impl DeadCodeEliminator {
             },
             IrStmt::Loop { body, span } => IrStmt::Loop {
                 body: self.eliminate_block(body),
+                span: *span,
+            },
+            IrStmt::Throw { value, span } => IrStmt::Throw {
+                value: value.clone(),
+                span: *span,
+            },
+            IrStmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                span,
+            } => IrStmt::Try {
+                body: self.eliminate_block(body),
+                catch_name: catch_name.clone(),
+                catch_body: self.eliminate_block(catch_body),
                 span: *span,
             },
             IrStmt::Let { .. }
@@ -2958,6 +3128,25 @@ impl<'a> IrRuntime<'a> {
                 }
                 Ok(Control::Value(Value::Void))
             }
+            IrStmt::Throw { value, .. } => {
+                let message = self.eval_expr(value, env)?.as_string()?;
+                Err(RuntimeError::new("N0420", message))
+            }
+            IrStmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                ..
+            } => match self.eval_scoped_block(body, env) {
+                Err(error) if error.code == "N0420" => {
+                    env.push_scope();
+                    env.define(catch_name.clone(), Value::String(error.message.clone()));
+                    let result = self.eval_block(catch_body, env);
+                    env.pop_scope();
+                    result
+                }
+                other => other,
+            },
         };
         result.map_err(|error| self.annotate_error(error, span))
     }
@@ -3399,7 +3588,9 @@ fn statement_span(statement: &IrStmt) -> Span {
         | IrStmt::If { span, .. }
         | IrStmt::While { span, .. }
         | IrStmt::For { span, .. }
-        | IrStmt::Loop { span, .. } => *span,
+        | IrStmt::Loop { span, .. }
+        | IrStmt::Throw { span, .. }
+        | IrStmt::Try { span, .. } => *span,
         IrStmt::Return(Some(expr)) | IrStmt::Expr(expr) => expr.span,
         IrStmt::Return(None) => Span::new(1, 1),
     }
@@ -3660,16 +3851,28 @@ impl<'a> Lowerer<'a> {
                     span: decl.span,
                 }))
             }
-            // Structured error handling currently executes on the AST backend
-            // only; the optimizing IR/bytecode backends do not lower it yet.
-            Stmt::Throw { span, .. } => Err(IrLoweringError::new(
-                "`throw` is only supported on the AST backend".to_string(),
-                Some(*span),
-            )),
-            Stmt::Try { span, .. } => Err(IrLoweringError::new(
-                "`try`/`catch` is only supported on the AST backend".to_string(),
-                Some(*span),
-            )),
+            Stmt::Throw { value, span } => Ok(IrStmt::Throw {
+                value: self.lower_expr(value, scope)?,
+                span: *span,
+            }),
+            Stmt::Try {
+                body,
+                catch_name,
+                catch_body,
+                span,
+            } => {
+                let mut try_scope = scope.clone();
+                let body = self.lower_block(body, &mut try_scope)?;
+                let mut catch_scope = scope.clone();
+                catch_scope.insert(catch_name.clone(), TypeRef::new("string"));
+                let catch_body = self.lower_block(catch_body, &mut catch_scope)?;
+                Ok(IrStmt::Try {
+                    body,
+                    catch_name: catch_name.clone(),
+                    catch_body,
+                    span: *span,
+                })
+            }
             // `unsafe` blocks are flattened in `lower_block`; reaching here means
             // a lone unsafe statement, which we lower transparently by inlining.
             Stmt::Unsafe { body, span } => {
@@ -4693,6 +4896,15 @@ mod tests {
             assert_eq!(ir, ast);
             assert_eq!(bytecode, ast);
         }
+    }
+
+    #[test]
+    fn ir_and_bytecode_match_ast_for_error_handling() {
+        let source = "fn checked n i64 -> string\n    try\n        if n < 0\n            throw \"neg\"\n        \"ok:\" + to_string(n)\n    catch message\n        \"err:\" + message\n\nfn main -> string\n    checked(5) + \" \" + checked(0 - 1)\n";
+        let (ast, ir, bytecode) = run_all_backends(source);
+        assert_eq!(ast, Value::String("ok:5 err:neg".to_string()));
+        assert_eq!(ir, ast);
+        assert_eq!(bytecode, ast);
     }
 
     #[test]

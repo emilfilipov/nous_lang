@@ -1,0 +1,10 @@
+fn checked n i64 -> string
+    try
+        if n < 0
+            throw "negative"
+        "ok:" + to_string(n)
+    catch message
+        "err:" + message
+
+fn main -> string
+    checked(5) + " | " + checked(0 - 1)

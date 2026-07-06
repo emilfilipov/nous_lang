@@ -149,10 +149,26 @@ impl LayoutBuilder {
                     // The loop variable lives in the loop body scope.
                     self.walk_child_scope(body, depth + 1, Some((name, TypeRef::new("i64"))));
                 }
+                IrStmt::Try {
+                    body,
+                    catch_name,
+                    catch_body,
+                    ..
+                } => {
+                    // The try body is its own scope; the caught message binds a
+                    // string local in the catch body scope.
+                    self.walk_child_scope(body, depth + 1, None);
+                    self.walk_child_scope(
+                        catch_body,
+                        depth + 1,
+                        Some((catch_name, TypeRef::new("string"))),
+                    );
+                }
                 IrStmt::Assign { .. }
                 | IrStmt::Return(_)
                 | IrStmt::Break(_)
                 | IrStmt::Continue(_)
+                | IrStmt::Throw { .. }
                 | IrStmt::Expr(_) => {}
             }
         }

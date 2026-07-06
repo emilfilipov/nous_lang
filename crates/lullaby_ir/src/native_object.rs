@@ -223,6 +223,8 @@ impl<'a> NativeFunctionCodegen<'a> {
                 | BytecodeInstruction::If { .. }
                 | BytecodeInstruction::While { .. }
                 | BytecodeInstruction::For { .. }
+                | BytecodeInstruction::Throw { .. }
+                | BytecodeInstruction::Try { .. }
                 | BytecodeInstruction::Loop { .. } => {}
             }
         }
@@ -293,6 +295,8 @@ impl<'a> NativeFunctionCodegen<'a> {
                 | BytecodeInstruction::If { .. }
                 | BytecodeInstruction::While { .. }
                 | BytecodeInstruction::For { .. }
+                | BytecodeInstruction::Throw { .. }
+                | BytecodeInstruction::Try { .. }
                 | BytecodeInstruction::Loop { .. } => {
                     return self.unsupported(
                         "prototype emitter only supports let, assignment, and one return"
