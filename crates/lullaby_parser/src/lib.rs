@@ -8,6 +8,8 @@ pub struct Program {
     pub aliases: Vec<AliasDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub structs: Vec<StructDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enums: Vec<EnumDecl>,
 }
 
 /// A struct declaration: `struct NAME` followed by indented `field type` lines.
@@ -22,6 +24,23 @@ pub struct StructDecl {
 pub struct StructField {
     pub name: String,
     pub ty: TypeRef,
+}
+
+/// An enum (tagged-union) declaration: `enum NAME` followed by indented
+/// `Variant type...` lines. Each variant is a name plus zero or more positional,
+/// unnamed payload types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumVariant {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payload: Vec<TypeRef>,
 }
 
 /// A type alias declaration: `alias NAME = TYPE`.
@@ -315,6 +334,7 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         let mut aliases = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         self.skip_newlines();
 
         while !self.at(TokenKindRef::Eof) {
@@ -329,6 +349,10 @@ impl<'a> Parser<'a> {
             } else if self.eat_keyword(Keyword::Struct).is_some() {
                 if let Some(declaration) = self.parse_struct() {
                     structs.push(declaration);
+                }
+            } else if self.eat_keyword(Keyword::Enum).is_some() {
+                if let Some(declaration) = self.parse_enum() {
+                    enums.push(declaration);
                 }
             } else if self.reject_planned_syntax().is_some() {
                 self.skip_planned_syntax();
@@ -348,7 +372,36 @@ impl<'a> Parser<'a> {
             functions,
             aliases,
             structs,
+            enums,
         }
+    }
+
+    /// Parse `enum NAME` followed by an indented list of `Variant type...` lines.
+    /// Each variant is a name plus zero or more positional, unnamed payload types.
+    fn parse_enum(&mut self) -> Option<EnumDecl> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected enum name")?;
+        self.expect_newline("expected newline after enum name");
+        self.expect(TokenKindRef::Indent, "expected indented enum variants")?;
+        let mut variants = Vec::new();
+        while !self.at(TokenKindRef::Dedent) && !self.at(TokenKindRef::Eof) {
+            let variant_name = self.expect_identifier("expected variant name")?;
+            let mut payload = Vec::new();
+            while !self.at(TokenKindRef::Newline) && !self.at(TokenKindRef::Eof) {
+                payload.push(self.expect_type("expected variant payload type")?);
+            }
+            self.expect_newline("expected newline after enum variant");
+            variants.push(EnumVariant {
+                name: variant_name,
+                payload,
+            });
+        }
+        self.expect(TokenKindRef::Dedent, "expected enum body dedent")?;
+        Some(EnumDecl {
+            name,
+            variants,
+            span,
+        })
     }
 
     /// Parse `struct NAME` followed by an indented list of `field type` lines.
@@ -1619,6 +1672,21 @@ mod tests {
         };
         assert_eq!(name, "a");
         assert!(matches!(path.as_slice(), [Place::Index(_)]));
+    }
+
+    #[test]
+    fn parses_enum_declaration_with_unit_and_payload_variants() {
+        let source =
+            "enum Shape\n    Circle f64\n    Rect f64 f64\n    Empty\n\nfn main -> i64\n    0\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert_eq!(program.enums.len(), 1);
+        assert_eq!(program.enums[0].name, "Shape");
+        assert_eq!(program.enums[0].variants.len(), 3);
+        assert_eq!(program.enums[0].variants[0].name, "Circle");
+        assert_eq!(program.enums[0].variants[0].payload.len(), 1);
+        assert_eq!(program.enums[0].variants[1].payload.len(), 2);
+        assert!(program.enums[0].variants[2].payload.is_empty());
     }
 
     #[test]

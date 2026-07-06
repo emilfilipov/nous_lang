@@ -624,6 +624,7 @@ mod tests {
         let i64_type = TypeRef::new("i64");
         let module = BytecodeModule {
             structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),
@@ -675,6 +676,7 @@ mod tests {
         let i64_type = TypeRef::new("i64");
         let module = BytecodeModule {
             structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),
@@ -731,6 +733,7 @@ mod tests {
     fn literal_return_module(return_type: &str, kind: BytecodeExprKind) -> BytecodeModule {
         BytecodeModule {
             structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),

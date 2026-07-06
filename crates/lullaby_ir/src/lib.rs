@@ -28,6 +28,8 @@ pub struct IrModule {
     pub functions: Vec<IrFunction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub structs: Vec<IrStructDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enums: Vec<IrEnumDef>,
 }
 
 /// A struct type in the IR: name plus ordered `(field, type)` pairs.
@@ -35,6 +37,21 @@ pub struct IrModule {
 pub struct IrStructDef {
     pub name: String,
     pub fields: Vec<(String, TypeRef)>,
+}
+
+/// An enum type in the IR: name plus ordered variants, each a name plus an
+/// ordered list of positional payload types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IrEnumDef {
+    pub name: String,
+    pub variants: Vec<IrEnumVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IrEnumVariant {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payload: Vec<TypeRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -673,6 +690,8 @@ pub struct BytecodeModule {
     pub functions: Vec<BytecodeFunction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub structs: Vec<IrStructDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enums: Vec<IrEnumDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1284,12 +1303,14 @@ pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
             })
             .collect(),
         structs: module.structs.clone(),
+        enums: module.enums.clone(),
     }
 }
 
 pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError> {
     let ir = IrModule {
         structs: module.structs.clone(),
+        enums: module.enums.clone(),
         functions: module
             .functions
             .iter()
@@ -1605,6 +1626,7 @@ impl ConstantFolder {
     fn fold_module(&mut self, module: &IrModule) -> IrModule {
         IrModule {
             structs: module.structs.clone(),
+            enums: module.enums.clone(),
             functions: module
                 .functions
                 .iter()
@@ -1897,6 +1919,7 @@ impl CommonSubexpressionEliminator {
     fn eliminate_module(&mut self, module: &IrModule) -> IrModule {
         IrModule {
             structs: module.structs.clone(),
+            enums: module.enums.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2236,6 +2259,7 @@ impl LoopInvariantMover {
     fn move_module(&mut self, module: &IrModule) -> IrModule {
         IrModule {
             structs: module.structs.clone(),
+            enums: module.enums.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2597,6 +2621,7 @@ impl CopyPropagator {
     fn propagate_module(&mut self, module: &IrModule) -> IrModule {
         IrModule {
             structs: module.structs.clone(),
+            enums: module.enums.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2906,6 +2931,7 @@ impl DeadCodeEliminator {
     fn eliminate_module(&mut self, module: &IrModule) -> IrModule {
         IrModule {
             structs: module.structs.clone(),
+            enums: module.enums.clone(),
             functions: module
                 .functions
                 .iter()
@@ -3022,6 +3048,8 @@ fn is_unconditional_terminator(statement: &IrStmt) -> bool {
 struct IrRuntime<'a> {
     functions: HashMap<&'a str, &'a IrFunction>,
     structs: HashMap<&'a str, Vec<String>>,
+    /// Enum variant name -> owning enum name. Variant names are globally unique.
+    variants: HashMap<&'a str, &'a str>,
     heap: Vec<Option<Value>>,
     refcounts: HashMap<usize, usize>,
     call_stack: Vec<TraceFrame>,
@@ -3054,9 +3082,17 @@ impl<'a> IrRuntime<'a> {
             })
             .collect::<HashMap<_, _>>();
 
+        let mut variants = HashMap::new();
+        for declaration in &module.enums {
+            for variant in &declaration.variants {
+                variants.insert(variant.name.as_str(), declaration.name.as_str());
+            }
+        }
+
         Ok(Self {
             functions,
             structs,
+            variants,
             heap: Vec::new(),
             refcounts: HashMap::new(),
             call_stack: Vec::new(),
@@ -3064,6 +3100,13 @@ impl<'a> IrRuntime<'a> {
     }
 
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if let Some(enum_name) = self.variants.get(name) {
+            return Ok(Value::Enum {
+                enum_name: enum_name.to_string(),
+                variant: name.to_string(),
+                payload: args,
+            });
+        }
         if let Some(field_names) = self.structs.get(name) {
             return Ok(Value::Struct {
                 name: name.to_string(),
@@ -3354,7 +3397,22 @@ impl<'a> IrRuntime<'a> {
                 .map(|value| self.eval_expr(value, env))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array),
-            IrExprKind::Variable(name) => env.get(name),
+            IrExprKind::Variable(name) => match env.get(name) {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    // A bare name that is not a local but is a known enum variant
+                    // constructs a unit variant.
+                    if let Some(enum_name) = self.variants.get(name.as_str()) {
+                        Ok(Value::Enum {
+                            enum_name: enum_name.to_string(),
+                            variant: name.clone(),
+                            payload: Vec::new(),
+                        })
+                    } else {
+                        Err(error)
+                    }
+                }
+            },
             IrExprKind::Index { target, index } => {
                 let target = self.eval_expr(target, env)?;
                 let index = self.eval_expr(index, env)?.as_i64()?;
@@ -4122,7 +4180,27 @@ impl<'a> Lowerer<'a> {
                     .collect(),
             })
             .collect();
-        Ok(IrModule { functions, structs })
+        let enums = self
+            .program
+            .enums
+            .iter()
+            .map(|declaration| IrEnumDef {
+                name: declaration.name.clone(),
+                variants: declaration
+                    .variants
+                    .iter()
+                    .map(|variant| IrEnumVariant {
+                        name: variant.name.clone(),
+                        payload: variant.payload.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(IrModule {
+            functions,
+            structs,
+            enums,
+        })
     }
 
     /// The declared type of `field` on struct `struct_name`, if any.
@@ -4137,6 +4215,17 @@ impl<'a> Lowerer<'a> {
 
     fn is_struct(&self, name: &str) -> bool {
         self.program.structs.iter().any(|s| s.name == name)
+    }
+
+    /// If `name` is a known enum variant, the owning enum's name.
+    fn enum_of_variant(&self, name: &str) -> Option<String> {
+        self.program.enums.iter().find_map(|declaration| {
+            declaration
+                .variants
+                .iter()
+                .any(|variant| variant.name == name)
+                .then(|| declaration.name.clone())
+        })
     }
 
     fn lower_function(&self, function: &Function) -> Result<IrFunction, IrLoweringError> {
@@ -4410,10 +4499,25 @@ impl<'a> Lowerer<'a> {
                 )
             }
             ExprKind::Variable(name) => {
-                let ty = scope.get(name).cloned().ok_or_else(|| {
-                    IrLoweringError::new(format!("unknown variable `{name}`"), Some(expr.span))
-                })?;
-                (IrExprKind::Variable(name.clone()), ty)
+                if let Some(ty) = scope.get(name).cloned() {
+                    (IrExprKind::Variable(name.clone()), ty)
+                } else if let Some(enum_name) = self.enum_of_variant(name) {
+                    // A bare name that is not a local but is a known unit variant
+                    // is enum construction. Lower it to a variant `Call` (no args)
+                    // so the interpreter and VM build the enum value uniformly.
+                    (
+                        IrExprKind::Call {
+                            name: name.clone(),
+                            args: Vec::new(),
+                        },
+                        TypeRef::new(enum_name),
+                    )
+                } else {
+                    return Err(IrLoweringError::new(
+                        format!("unknown variable `{name}`"),
+                        Some(expr.span),
+                    ));
+                }
             }
             ExprKind::Index { target, index } => {
                 let target = self.lower_expr(target, scope)?;
@@ -4560,6 +4664,11 @@ impl<'a> Lowerer<'a> {
         args: &[IrExpr],
         span: Span,
     ) -> Result<TypeRef, IrLoweringError> {
+        // A call whose name is a known enum variant is enum construction; its
+        // type is the owning enum's nominal type.
+        if let Some(enum_name) = self.enum_of_variant(name) {
+            return Ok(TypeRef::new(enum_name));
+        }
         // A call whose name is a declared struct is a struct construction.
         if self.is_struct(name) {
             return Ok(TypeRef::new(name));
@@ -5376,6 +5485,7 @@ mod tests {
         let span = Span::new(1, 1);
         let module = BytecodeModule {
             structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: vec![IrParam {
@@ -5406,6 +5516,7 @@ mod tests {
         let span = Span::new(1, 1);
         let module = BytecodeModule {
             structs: Vec::new(),
+            enums: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),

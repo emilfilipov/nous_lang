@@ -1,0 +1,13 @@
+enum Shape
+    Circle f64
+    Rect f64 f64
+    Empty
+
+fn sides s Shape -> i64
+    4
+
+fn main -> i64
+    let c Shape = Circle(2.0)
+    let r Shape = Rect(3.0, 4.0)
+    let e Shape = Empty
+    sides(c) + sides(r) + sides(e)

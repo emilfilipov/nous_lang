@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use lullaby_diagnostics::Span;
 use lullaby_parser::{
-    AssignOp, BinaryOp, Expr, ExprKind, Function, IfBranch, Param, Place, Program, RegionDecl,
-    Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    AssignOp, BinaryOp, EnumDecl, EnumVariant, Expr, ExprKind, Function, IfBranch, Param, Place,
+    Program, RegionDecl, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,11 +154,33 @@ fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnosti
         })
         .collect();
 
+    let enums = program
+        .enums
+        .iter()
+        .map(|declaration| EnumDecl {
+            name: declaration.name.clone(),
+            variants: declaration
+                .variants
+                .iter()
+                .map(|variant| EnumVariant {
+                    name: variant.name.clone(),
+                    payload: variant
+                        .payload
+                        .iter()
+                        .map(|ty| resolve_alias_type(ty, &map))
+                        .collect(),
+                })
+                .collect(),
+            span: declaration.span,
+        })
+        .collect();
+
     (
         Program {
             functions,
             aliases: program.aliases.clone(),
             structs,
+            enums,
         },
         diagnostics,
     )
@@ -350,6 +372,11 @@ struct Checker<'a> {
     region_names: HashSet<String>,
     /// Declared struct types: name -> ordered fields.
     structs: HashMap<String, Vec<StructField>>,
+    /// Declared enum types: enum name -> ordered variants.
+    enums: HashMap<String, Vec<EnumVariant>>,
+    /// Variant name -> (owning enum name, payload types). Variant names are
+    /// globally unique across all enums, so this resolves construction directly.
+    variants: HashMap<String, (String, Vec<TypeRef>)>,
 }
 
 impl<'a> Checker<'a> {
@@ -363,11 +390,14 @@ impl<'a> Checker<'a> {
             unsafe_depth: 0,
             region_names: HashSet::new(),
             structs: HashMap::new(),
+            enums: HashMap::new(),
+            variants: HashMap::new(),
         }
     }
 
     fn validate(&mut self) {
         self.collect_structs();
+        self.collect_enums();
         self.collect_signatures();
         for function in &self.program.functions {
             self.validate_function(function);
@@ -401,6 +431,64 @@ impl<'a> Checker<'a> {
             }
             self.structs
                 .insert(declaration.name.clone(), declaration.fields.clone());
+        }
+    }
+
+    /// Collect enum declarations. Enforces unique enum names, unique variant
+    /// names within an enum, non-empty enums (`L0380`), and global uniqueness of
+    /// variant names across all enums (`L0382`).
+    fn collect_enums(&mut self) {
+        for declaration in &self.program.enums {
+            if self.enums.contains_key(&declaration.name) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0380",
+                    format!("duplicate enum `{}`", declaration.name),
+                    None,
+                    declaration.span,
+                ));
+                continue;
+            }
+            if declaration.variants.is_empty() {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0380",
+                    format!("enum `{}` declares no variants", declaration.name),
+                    None,
+                    declaration.span,
+                ));
+            }
+            let mut seen = HashSet::new();
+            for variant in &declaration.variants {
+                if !seen.insert(variant.name.clone()) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0380",
+                        format!(
+                            "duplicate variant `{}` in enum `{}`",
+                            variant.name, declaration.name
+                        ),
+                        None,
+                        declaration.span,
+                    ));
+                    continue;
+                }
+                if let Some((other, _)) = self.variants.get(&variant.name) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0382",
+                        format!(
+                            "variant `{}` is declared in both enum `{other}` and enum `{}`",
+                            variant.name, declaration.name
+                        ),
+                        None,
+                        declaration.span,
+                    ));
+                    continue;
+                }
+                self.variants.insert(
+                    variant.name.clone(),
+                    (declaration.name.clone(), variant.payload.clone()),
+                );
+            }
+            self.enums
+                .insert(declaration.name.clone(), declaration.variants.clone());
         }
     }
 
@@ -964,13 +1052,32 @@ impl<'a> Checker<'a> {
             ExprKind::Variable(name) => match scope.locals.get(name) {
                 Some(ty) => Some(ty.clone()),
                 None => {
-                    self.diagnostics.push(SemanticDiagnostic::at(
-                        "L0306",
-                        format!("unknown variable `{name}`"),
-                        Some(function.name.clone()),
-                        expr.span,
-                    ));
-                    None
+                    // A bare name that is not a local but is a known unit variant
+                    // constructs that variant.
+                    if let Some((enum_name, payload)) = self.variants.get(name).cloned() {
+                        if payload.is_empty() {
+                            Some(TypeRef::new(enum_name))
+                        } else {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0381",
+                                format!(
+                                    "variant `{name}` of enum `{enum_name}` expects {} payload value(s) but was used as a unit variant",
+                                    payload.len()
+                                ),
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                            None
+                        }
+                    } else {
+                        self.diagnostics.push(SemanticDiagnostic::at(
+                            "L0306",
+                            format!("unknown variable `{name}`"),
+                            Some(function.name.clone()),
+                            expr.span,
+                        ));
+                        None
+                    }
                 }
             },
             ExprKind::Index { target, index } => {
@@ -1100,7 +1207,9 @@ impl<'a> Checker<'a> {
                 }
             }
             ExprKind::Call { name, args } => {
-                if self.structs.contains_key(name) {
+                if self.variants.contains_key(name) {
+                    self.check_enum_construction(name, args, expr.span, scope, function)
+                } else if self.structs.contains_key(name) {
                     self.check_struct_construction(name, args, expr.span, scope, function)
                 } else {
                     self.check_call(name, args, expr.span, scope, function)
@@ -1674,6 +1783,56 @@ impl<'a> Checker<'a> {
             }
         }
         Some(TypeRef::new(name))
+    }
+
+    /// Validate enum construction `Variant(args...)`: the payload arity and each
+    /// per-payload type must match the variant's declaration. Returns the owning
+    /// enum's nominal type.
+    fn check_enum_construction(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let (enum_name, payload) = self.variants.get(name).cloned()?;
+        if args.len() != payload.len() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0381",
+                format!(
+                    "variant `{name}` of enum `{enum_name}` expects {} payload value(s) but got {}",
+                    payload.len(),
+                    args.len()
+                ),
+                Some(function.name.clone()),
+                span,
+            ));
+            // Still type-check the arguments to surface nested errors.
+            for arg in args {
+                self.check_expr(arg, scope, function);
+            }
+            return None;
+        }
+        for (expected, arg) in payload.iter().zip(args) {
+            let arg_type = self.check_expr(arg, scope, function);
+            if arg_type.as_ref() != Some(expected) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0381",
+                    format!(
+                        "payload of variant `{name}` expects `{}` but got `{}`",
+                        expected.name,
+                        arg_type
+                            .as_ref()
+                            .map(|ty| ty.name.as_str())
+                            .unwrap_or("<unknown>")
+                    ),
+                    Some(function.name.clone()),
+                    arg.span,
+                ));
+            }
+        }
+        Some(TypeRef::new(enum_name))
     }
 
     /// Validate named-field construction `Name(field: expr, ...)`: every
@@ -2684,5 +2843,61 @@ mod tests {
 
         assert_eq!(diagnostics[0].code, "L0329");
         assert_eq!(diagnostics[0].function.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn validates_enum_declaration_and_construction() {
+        let source = "enum Color\n    Red\n    Green\n    Blue\n\nenum Shape\n    Circle f64\n    Rect f64 f64\n    Empty\n\nfn main -> i64\n    let c Color = Green\n    let s Shape = Circle(2.0)\n    let r Shape = Rect(3.0, 4.0)\n    let e Shape = Empty\n    0\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn enum_construction_returns_owning_enum_type() {
+        let source = "enum Shape\n    Circle f64\n    Empty\n\nfn area s Shape -> i64\n    0\n\nfn main -> i64\n    area(Circle(1.0)) + area(Empty)\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_variant_within_enum() {
+        let source = "enum Color\n    Red\n    Red\n\nfn main -> i64\n    0\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0380")
+        );
+    }
+
+    #[test]
+    fn rejects_enum_construction_arity_mismatch() {
+        let source = "enum Shape\n    Circle f64\n    Empty\n\nfn main -> i64\n    let s Shape = Circle(1.0, 2.0)\n    0\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0381")
+        );
+    }
+
+    #[test]
+    fn rejects_enum_construction_payload_type_mismatch() {
+        let source = "enum Shape\n    Circle f64\n    Empty\n\nfn main -> i64\n    let s Shape = Circle(1)\n    0\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0381")
+        );
+    }
+
+    #[test]
+    fn rejects_cross_enum_variant_collision() {
+        let source = "enum A\n    Shared\n\nenum B\n    Shared\n\nfn main -> i64\n    0\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0382")
+        );
     }
 }

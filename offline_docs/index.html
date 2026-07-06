@@ -252,6 +252,7 @@
       <a href="#functions">Functions</a>
       <a href="#variables-assignment">Variables And Assignment</a>
       <a href="#arrays">Arrays</a>
+      <a href="#enums">Enums</a>
       <a href="#control-flow">Control Flow</a>
       <a href="#boolean-logic">Boolean Logic</a>
       <a href="#math-builtins">Math Builtins</a>
@@ -385,6 +386,31 @@ fn main -> i64
     xs[len(xs) - 1] += 4
     xs[0] + xs[2]</code></pre>
         <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_array_mutation.lby</code>.</p>
+      </section>
+
+      <section id="enums">
+        <h2>Enums</h2>
+        <p>An <code>enum NAME</code> declaration, followed by indented <code>Variant type...</code> lines, declares a nominal tagged-union type at the top level. Each variant is a name plus zero or more positional, unnamed payload types. Construction reuses existing spelling with no new syntax: a payload variant reads like a call (<code>Circle(2.0)</code>), and a unit variant reads like a bare name (<code>Empty</code>). Variant names are globally unique across all enums.</p>
+        <pre data-fixture="tests/fixtures/valid/docs_enum.lby" data-mode="run"><code>enum Shape
+    Circle f64
+    Rect f64 f64
+    Empty
+
+fn sides s Shape -> i64
+    4
+
+fn main -> i64
+    let c Shape = Circle(2.0)
+    let r Shape = Rect(3.0, 4.0)
+    let e Shape = Empty
+    sides(c) + sides(r) + sides(e)</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_enum.lby</code>.</p>
+        <ul>
+          <li>Invalid declarations (duplicate enum, duplicate variant, or empty enum) report <code>L0380</code>.</li>
+          <li>Construction arity or payload-type mismatches report <code>L0381</code>.</li>
+          <li>A variant name colliding across enums reports <code>L0382</code>.</li>
+          <li>Enums construct and pass identically across the AST, IR, and bytecode backends. <code>match</code>, enum methods, and generics over enums are still planned.</li>
+        </ul>
       </section>
 
       <section id="control-flow">
@@ -622,7 +648,7 @@ Suggested fix:
           <tbody>
             <tr><td><code>L0102</code></td><td>Curly braces are forbidden as block delimiters.</td></tr>
             <tr><td><code>L0103</code></td><td>Semicolons are forbidden as statement terminators.</td></tr>
-            <tr><td><code>L0211</code></td><td>Planned syntax such as imports, modules, structs, pattern matching, or try/catch is not supported in Alpha 1.</td></tr>
+            <tr><td><code>L0211</code></td><td>Planned syntax such as imports, modules, pattern matching (<code>match</code>), or unions is not supported in Alpha 1.</td></tr>
             <tr><td><code>L0208</code></td><td>Parser expected an assignment operator.</td></tr>
             <tr><td><code>L0301+</code></td><td>Semantic errors such as unknown names, type mismatch, invalid returns, or invalid loop control.</td></tr>
             <tr><td><code>L0324</code></td><td>Array literal values do not all have the same type.</td></tr>
@@ -633,6 +659,9 @@ Suggested fix:
             <tr><td><code>L0373</code></td><td><code>len</code> argument is not a string or array.</td></tr>
             <tr><td><code>L0375</code></td><td>String-library builtin argument has the wrong type.</td></tr>
             <tr><td><code>L0374</code></td><td>Math builtin received a wrong or mismatched operand type.</td></tr>
+            <tr><td><code>L0380</code></td><td>Invalid enum declaration: duplicate enum, duplicate variant, or empty enum.</td></tr>
+            <tr><td><code>L0381</code></td><td>Enum construction payload arity or type mismatch.</td></tr>
+            <tr><td><code>L0382</code></td><td>Variant name collides across enums.</td></tr>
             <tr><td><code>L0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
             <tr><td><code>L0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
             <tr><td><code>L0601 [bytecode]</code></td><td>Compiled <code>.lbc</code> artifact is malformed, unsupported, fails metadata/function table/memory operation compatibility checks, or violates the instruction contract.</td></tr>

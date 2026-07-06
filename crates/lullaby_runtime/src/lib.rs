@@ -19,6 +19,11 @@ pub enum Value {
         name: String,
         fields: Vec<(String, Value)>,
     },
+    Enum {
+        enum_name: String,
+        variant: String,
+        payload: Vec<Value>,
+    },
     Void,
 }
 
@@ -45,6 +50,20 @@ impl fmt::Display for Value {
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(formatter, "{name}({rendered})")
+            }
+            Self::Enum {
+                variant, payload, ..
+            } => {
+                if payload.is_empty() {
+                    write!(formatter, "{variant}")
+                } else {
+                    let rendered = payload
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    write!(formatter, "{variant}({rendered})")
+                }
             }
             Self::Void => write!(formatter, "void"),
         }
@@ -162,6 +181,9 @@ struct Runtime<'a> {
     /// Declared struct types: name -> ordered field names, used to build struct
     /// values from positional construction arguments.
     structs: HashMap<&'a str, Vec<String>>,
+    /// Enum variant name -> owning enum name. Variant names are globally unique,
+    /// so this resolves both unit and payload construction.
+    variants: HashMap<&'a str, &'a str>,
     heap: Vec<Option<Value>>,
     /// Ownership counts for reference-counted (`rc<T>`) heap slots, keyed by
     /// slot index. Slots not present here are raw pointers / plain allocations.
@@ -196,9 +218,17 @@ impl<'a> Runtime<'a> {
             })
             .collect::<HashMap<_, _>>();
 
+        let mut variants = HashMap::new();
+        for declaration in &program.enums {
+            for variant in &declaration.variants {
+                variants.insert(variant.name.as_str(), declaration.name.as_str());
+            }
+        }
+
         Ok(Self {
             functions,
             structs,
+            variants,
             heap: Vec::new(),
             refcounts: HashMap::new(),
             call_stack: Vec::new(),
@@ -206,6 +236,13 @@ impl<'a> Runtime<'a> {
     }
 
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if let Some(enum_name) = self.variants.get(name) {
+            return Ok(Value::Enum {
+                enum_name: enum_name.to_string(),
+                variant: name.to_string(),
+                payload: args,
+            });
+        }
         if let Some(field_names) = self.structs.get(name) {
             return Ok(Value::Struct {
                 name: name.to_string(),
@@ -509,7 +546,22 @@ impl<'a> Runtime<'a> {
                 .map(|value| self.eval_expr(value, env))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array),
-            ExprKind::Variable(name) => env.get(name),
+            ExprKind::Variable(name) => match env.get(name) {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    // A bare name that is not a local but is a known enum variant
+                    // constructs a unit variant.
+                    if let Some(enum_name) = self.variants.get(name.as_str()) {
+                        Ok(Value::Enum {
+                            enum_name: enum_name.to_string(),
+                            variant: name.clone(),
+                            payload: Vec::new(),
+                        })
+                    } else {
+                        Err(error)
+                    }
+                }
+            },
             ExprKind::Index { target, index } => {
                 let target = self.eval_expr(target, env)?;
                 let index = self.eval_expr(index, env)?.as_i64()?;
@@ -1785,5 +1837,31 @@ mod tests {
     fn runs_safe_system_output_builtin() {
         let source = "fn main -> bool\n    let output string = sys_output(\"rustc\", [\"--version\"])\n    output == \"\" == false\n";
         assert_eq!(run_source(source).expect("run"), Value::Bool(true));
+    }
+
+    #[test]
+    fn constructs_and_passes_enum_values() {
+        // Constructs unit and payload variants, stores them in locals and arrays,
+        // passes them through functions, and returns an i64 computed from plain
+        // locals (there is no `match` yet).
+        let source = "enum Color\n    Red\n    Green\n    Blue\n\nenum Shape\n    Circle f64\n    Rect f64 f64\n    Empty\n\nfn tag c Color -> i64\n    7\n\nfn main -> i64\n    let c Color = Green\n    let palette array<Color> = [Red, Green, Blue]\n    let circle Shape = Circle(2.0)\n    let hole Shape = Empty\n    let shapes array<Shape> = [circle, hole]\n    tag(c) + len(palette) + len(shapes)\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(12));
+    }
+
+    #[test]
+    fn enum_value_display_formats_unit_and_payload_variants() {
+        let unit = Value::Enum {
+            enum_name: "Shape".to_string(),
+            variant: "Empty".to_string(),
+            payload: Vec::new(),
+        };
+        assert_eq!(unit.to_string(), "Empty");
+
+        let payload = Value::Enum {
+            enum_name: "Shape".to_string(),
+            variant: "Circle".to_string(),
+            payload: vec![Value::F64(2.0)],
+        };
+        assert_eq!(payload.to_string(), "Circle(2)");
     }
 }

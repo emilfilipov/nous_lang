@@ -1,0 +1,28 @@
+enum Color
+    Red
+    Green
+    Blue
+
+enum Shape
+    Circle f64
+    Rect f64 f64
+    Empty
+
+fn tag c Color -> i64
+    let base i64 = 10
+    base + 1
+
+fn measure s Shape -> i64
+    let scale i64 = 3
+    scale * scale
+
+fn main -> i64
+    let c Color = Green
+    let palette array<Color> = [Red, Green, Blue]
+    let circle Shape = Circle(2.0)
+    let rect Shape = Rect(3.0, 4.0)
+    let hole Shape = Empty
+    let shapes array<Shape> = [circle, rect, hole]
+    let counts i64 = len(palette) + len(shapes)
+    let total i64 = tag(c) + measure(circle) + measure(rect) + measure(hole)
+    total + counts
