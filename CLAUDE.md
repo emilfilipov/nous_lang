@@ -50,6 +50,7 @@ This repository defines and will implement Lullaby, a compiled systems programmi
 - ClickUp updates are part of delivery, not optional bookkeeping. If the connector only exposes comments and not status updates, add progress comments to the affected tickets and say that status changes could not be made through the available tool surface.
 - GitHub: use for repository creation, pushing, issue/PR inspection, and remote verification when available. If using `gh`, verify authentication with `gh auth status` without printing tokens.
 - Sequential thinking: use for broad architecture plans when available.
+- Mem0 (memory MCP): use it every session. At the start of non-trivial work, search Mem0 for relevant project/user context (`search_memories`); when you learn a durable fact about the project, the language design, Emil's preferences, or a decision/rationale, store it (`add_memory`, scoped to user_id `emillfilipov@gmail.com`). Keep it current — update or supersede stale memories rather than duplicating. Treat recalled memories as background context, and verify any file/flag/code they name still exists before acting on it.
 - Memory/retrieval: use before broad, ambiguous, or workflow-sensitive changes.
 - Context7 or official docs: use for current library/framework/API documentation when implementation depends on external tools.
 - Playwright: use for browser-based validation only if a frontend or web tool is introduced.
