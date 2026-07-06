@@ -12,7 +12,7 @@ The executable Rust alpha implements a small, flat builtin surface. These names 
 
 | Builtin | Type | Behavior |
 | :--- | :--- | :--- |
-| `read_file(path)` | `string -> string` | Reads a UTF-8 text file into a `string`. Missing files, permission failures, and invalid paths are resource errors such as `N0414 [resource]: ...`. |
+| `read_file(path)` | `string -> string` | Reads a UTF-8 text file into a `string`. Missing files, permission failures, and invalid paths are resource errors such as `L0414 [resource]: ...`. |
 | `write_file(path, content)` | `string, string -> void` | Writes text to a file, replacing any existing file contents. |
 | `append_file(path, content)` | `string, string -> void` | Appends text to a file, creating the file if it does not exist. |
 | `file_exists(path)` | `string -> bool` | Returns whether the host can read metadata for the path. |

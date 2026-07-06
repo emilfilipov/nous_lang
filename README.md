@@ -72,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1
 - `lullaby help`
 - `lullaby --version`
 
-`lullaby check` can validate helper/library-style `.lby` files without `main`. `lullaby compile`, `lullaby build`, and source `lullaby run` require executable source with zero-argument `main`; invalid entry points report `N0329`. `lullaby build` is an artifact-generation alias for `lullaby compile`.
+`lullaby check` can validate helper/library-style `.lby` files without `main`. `lullaby compile`, `lullaby build`, and source `lullaby run` require executable source with zero-argument `main`; invalid entry points report `L0329`. `lullaby build` is an artifact-generation alias for `lullaby compile`.
 
 ## Documentation
 

@@ -28,7 +28,7 @@ Most language features flow through these layers:
 5. `crates/lullaby_ir/` for typed IR lowering, optimizer safety, bytecode artifact compatibility, and backend parity.
 6. `crates/lullaby_cli/` for user-facing commands, diagnostics, backend flags, and package behavior.
 
-Do not accept syntax in the parser unless the semantic layer can validate it deterministically. Planned syntax should report `N0211` until the feature is implemented through the required execution or tooling path.
+Do not accept syntax in the parser unless the semantic layer can validate it deterministically. Planned syntax should report `L0211` until the feature is implemented through the required execution or tooling path.
 
 ## Tests And Fixtures
 

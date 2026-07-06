@@ -295,7 +295,7 @@ impl<'a> Parser<'a> {
             } else {
                 let token = self.peek();
                 self.error(
-                    "N0201",
+                    "L0201",
                     "expected top-level function declaration",
                     token.span,
                 );
@@ -337,7 +337,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_identifier("expected alias name")?;
         if !self.eat_symbol("=") {
             self.error(
-                "N0212",
+                "L0212",
                 "expected `=` in alias declaration",
                 self.peek().span,
             );
@@ -367,7 +367,7 @@ impl<'a> Parser<'a> {
 
         if !self.eat(TokenKindRef::Arrow) {
             self.error(
-                "N0202",
+                "L0202",
                 "expected `->` before function return type",
                 self.peek().span,
             );
@@ -492,7 +492,7 @@ impl<'a> Parser<'a> {
             Some(self.expect_type("expected binding type or `=` for inferred binding")?)
         };
         if !self.eat_symbol("=") {
-            self.error("N0206", "expected `=` in let binding", self.peek().span);
+            self.error("L0206", "expected `=` in let binding", self.peek().span);
             return None;
         }
         let value = self.parse_expr_line(span)?;
@@ -580,12 +580,12 @@ impl<'a> Parser<'a> {
         let span = self.previous().span;
         let name = self.expect_identifier("expected loop variable after `for`")?;
         if self.eat_keyword(Keyword::From).is_none() {
-            self.error("N0209", "expected `from` in for loop", self.peek().span);
+            self.error("L0209", "expected `from` in for loop", self.peek().span);
             return None;
         }
         let start = self.parse_expr_until_keywords(span, &[Keyword::To])?;
         if self.eat_keyword(Keyword::To).is_none() {
-            self.error("N0206", "expected `to` in for loop", self.peek().span);
+            self.error("L0206", "expected `to` in for loop", self.peek().span);
             return None;
         }
         let end = self.parse_expr_until_keywords(span, &[Keyword::By])?;
@@ -636,7 +636,7 @@ impl<'a> Parser<'a> {
 
         if self.eat_keyword(Keyword::Catch).is_none() {
             self.error(
-                "N0213",
+                "L0213",
                 "expected `catch` after try block",
                 self.peek().span,
             );
@@ -661,7 +661,7 @@ impl<'a> Parser<'a> {
         let span = self.previous().span;
         let name = self.expect_identifier("expected region name")?;
         if !self.eat_symbol(":") {
-            self.error("N0210", "expected `:` after region name", self.peek().span);
+            self.error("L0210", "expected `:` after region name", self.peek().span);
             return None;
         }
 
@@ -673,7 +673,7 @@ impl<'a> Parser<'a> {
         loop {
             let field = self.expect_identifier("expected region field name")?;
             if !self.eat_symbol("=") {
-                self.error("N0210", "expected `=` in region field", self.peek().span);
+                self.error("L0210", "expected `=` in region field", self.peek().span);
                 return None;
             }
             match field.as_str() {
@@ -682,7 +682,7 @@ impl<'a> Parser<'a> {
                 "kind" => kind = self.expect_identifier("expected region kind")?,
                 "mutable" => mutable = self.expect_bool_word("expected true or false")?,
                 other => {
-                    self.error("N0210", "unknown region field", self.previous().span);
+                    self.error("L0210", "unknown region field", self.previous().span);
                     let _ = other;
                     return None;
                 }
@@ -694,7 +694,7 @@ impl<'a> Parser<'a> {
 
         self.expect_newline("expected newline after region declaration");
         let Some(size) = size else {
-            self.error("N0210", "region declaration requires `size`", span);
+            self.error("L0210", "region declaration requires `size`", span);
             return None;
         };
         Some(Stmt::Region(RegionDecl {
@@ -715,13 +715,13 @@ impl<'a> Parser<'a> {
                 match parsed {
                     Some(number) => Some(number),
                     None => {
-                        self.error("N0210", message, self.previous().span);
+                        self.error("L0210", message, self.previous().span);
                         None
                     }
                 }
             }
             _ => {
-                self.error("N0210", message, self.peek().span);
+                self.error("L0210", message, self.peek().span);
                 None
             }
         }
@@ -738,7 +738,7 @@ impl<'a> Parser<'a> {
                 Some(false)
             }
             _ => {
-                self.error("N0210", message, self.peek().span);
+                self.error("L0210", message, self.peek().span);
                 None
             }
         }
@@ -771,7 +771,7 @@ impl<'a> Parser<'a> {
         match expr_parser.parse() {
             Ok(expr) => Some(expr),
             Err(message) => {
-                self.error("N0207", message, fallback_span);
+                self.error("L0207", message, fallback_span);
                 None
             }
         }
@@ -786,7 +786,7 @@ impl<'a> Parser<'a> {
                     let inner = self.expect_type("expected generic type argument")?;
                     if !self.eat_symbol(">") {
                         self.error(
-                            "N0203",
+                            "L0203",
                             "expected `>` after generic type argument",
                             self.peek().span,
                         );
@@ -802,7 +802,7 @@ impl<'a> Parser<'a> {
                 Some(TypeRef::new("void"))
             }
             _ => {
-                self.error("N0203", message, self.peek().span);
+                self.error("L0203", message, self.peek().span);
                 None
             }
         }
@@ -816,7 +816,7 @@ impl<'a> Parser<'a> {
                 Some(name)
             }
             _ => {
-                self.error("N0204", message, self.peek().span);
+                self.error("L0204", message, self.peek().span);
                 None
             }
         }
@@ -830,7 +830,7 @@ impl<'a> Parser<'a> {
         if self.eat(kind) {
             Some(self.previous().clone())
         } else {
-            self.error("N0205", message, self.peek().span);
+            self.error("L0205", message, self.peek().span);
             None
         }
     }
@@ -868,7 +868,7 @@ impl<'a> Parser<'a> {
 
     fn expect_assignment_op(&mut self) -> Option<AssignOp> {
         let TokenKind::Symbol(symbol) = &self.peek().kind else {
-            self.error("N0208", "expected assignment operator", self.peek().span);
+            self.error("L0208", "expected assignment operator", self.peek().span);
             return None;
         };
         let op = match symbol.as_str() {
@@ -878,7 +878,7 @@ impl<'a> Parser<'a> {
             "*=" => AssignOp::Multiply,
             "/=" => AssignOp::Divide,
             _ => {
-                self.error("N0208", "expected assignment operator", self.peek().span);
+                self.error("L0208", "expected assignment operator", self.peek().span);
                 return None;
             }
         };
@@ -890,7 +890,7 @@ impl<'a> Parser<'a> {
         let feature = planned_syntax_name(&self.peek().kind)?;
         let token = self.peek().clone();
         self.error(
-            "N0211",
+            "L0211",
             format!(
                 "`{feature}` syntax is planned beyond Alpha 1 and is not supported by this compiler"
             ),
@@ -1436,14 +1436,14 @@ mod tests {
     fn requires_indented_function_body() {
         let tokens = lex("fn main -> void\nreturn\n").expect("lex");
         let diagnostics = parse(&tokens).expect_err("parse should fail");
-        assert_eq!(diagnostics[0].code, "N0205");
+        assert_eq!(diagnostics[0].code, "L0205");
     }
 
     #[test]
     fn rejects_planned_top_level_syntax() {
         let tokens = lex("import math\nfn main -> i64\n    1\n").expect("lex");
         let diagnostics = parse(&tokens).expect_err("parse should fail");
-        assert_eq!(diagnostics[0].code, "N0211");
+        assert_eq!(diagnostics[0].code, "L0211");
         assert!(diagnostics[0].message.contains("import"));
     }
 

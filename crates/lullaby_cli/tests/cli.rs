@@ -416,7 +416,7 @@ fn rejects_invalid_bytecode_artifact() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0601 [bytecode error]"), "{stderr}");
+    assert!(stderr.contains("L0601 [bytecode error]"), "{stderr}");
     assert!(
         stderr.contains("unsupported bytecode artifact format"),
         "{stderr}"
@@ -442,7 +442,7 @@ fn rejects_planned_unsupported_syntax_with_dedicated_diagnostic() {
         let stderr = stderr(&output);
         assert!(!output.status.success(), "{fixture_name}: {output:?}");
         assert!(
-            stderr.contains("N0211 [parser error]"),
+            stderr.contains("L0211 [parser error]"),
             "{fixture_name}: {stderr}"
         );
         assert!(
@@ -473,7 +473,7 @@ fn reports_invalid_bytecode_artifact_with_verbose_guidance() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0601 [bytecode error]"), "{stderr}");
+    assert!(stderr.contains("L0601 [bytecode error]"), "{stderr}");
     assert!(stderr.contains("Problem:"), "{stderr}");
     assert!(stderr.contains("Root cause:"), "{stderr}");
     assert!(stderr.contains("Suggested fix:"), "{stderr}");
@@ -502,7 +502,7 @@ fn reports_invalid_bytecode_artifact_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0601\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0601\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"bytecode\""), "{stderr}");
     assert!(stderr.contains("\"root_cause\":"), "{stderr}");
     let _ = std::fs::remove_file(artifact);
@@ -530,7 +530,7 @@ fn reports_missing_bytecode_instructions_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0601\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0601\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"bytecode\""), "{stderr}");
     assert!(stderr.contains("missing field"), "{stderr}");
     assert!(stderr.contains("instructions"), "{stderr}");
@@ -559,7 +559,7 @@ fn reports_invalid_bytecode_instruction_contract_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0601\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0601\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"bytecode\""), "{stderr}");
     assert!(
         stderr.contains("instruction `break` outside loop"),
@@ -590,7 +590,7 @@ fn reports_compile_write_failure_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0003\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0003\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"resource\""), "{stderr}");
     assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
 }
@@ -686,7 +686,7 @@ fn rejects_optimizer_for_ast_backend() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0502 [optimizer error]"), "{stderr}");
+    assert!(stderr.contains("L0502 [optimizer error]"), "{stderr}");
     assert!(
         stderr.contains("--backend ir or --backend bytecode"),
         "{stderr}"
@@ -709,7 +709,7 @@ fn reports_optimizer_backend_mismatch_with_verbose_guidance() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0502 [optimizer error]"), "{stderr}");
+    assert!(stderr.contains("L0502 [optimizer error]"), "{stderr}");
     assert!(stderr.contains("Problem:"), "{stderr}");
     assert!(stderr.contains("Root cause:"), "{stderr}");
     assert!(stderr.contains("Suggested fix:"), "{stderr}");
@@ -736,7 +736,7 @@ fn reports_optimizer_backend_mismatch_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0502\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0502\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"optimizer\""), "{stderr}");
     assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
 }
@@ -886,7 +886,7 @@ fn rejects_forbidden_braces() {
 
     assert!(!output.status.success(), "{output:?}");
     let stderr = stderr(&output);
-    assert!(stderr.contains("N0102 [lexer error]"), "{stderr}");
+    assert!(stderr.contains("L0102 [lexer error]"), "{stderr}");
     assert!(
         stderr.contains("curly braces are not block delimiters"),
         "{stderr}"
@@ -907,7 +907,7 @@ fn reports_forbidden_braces_with_verbose_context() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0102 [lexer error]"), "{stderr}");
+    assert!(stderr.contains("L0102 [lexer error]"), "{stderr}");
     assert!(stderr.contains("Source:"), "{stderr}");
     assert!(stderr.contains("Problem:"), "{stderr}");
     assert!(stderr.contains("Root cause:"), "{stderr}");
@@ -930,7 +930,7 @@ fn reports_forbidden_braces_as_json() {
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
     assert!(stderr.contains("\"status\":\"error\""), "{stderr}");
-    assert!(stderr.contains("\"code\":\"N0102\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0102\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"lexer\""), "{stderr}");
     assert!(
         stderr.contains("\"span\":{\"line\":2,\"column\":5}"),
@@ -953,7 +953,7 @@ fn rejects_missing_indented_body() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0205 [parser error]"), "{stderr}");
+    assert!(stderr.contains("L0205 [parser error]"), "{stderr}");
     assert!(stderr.contains("Root cause:"), "{stderr}");
 }
 
@@ -967,8 +967,8 @@ fn rejects_type_mismatch() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0303 [semantic error]"), "{stderr}");
-    assert!(stderr.contains("N0301 [semantic error]"), "{stderr}");
+    assert!(stderr.contains("L0303 [semantic error]"), "{stderr}");
+    assert!(stderr.contains("L0301 [semantic error]"), "{stderr}");
 }
 
 #[test]
@@ -986,8 +986,8 @@ fn reports_type_mismatch_as_ordered_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    let n0303 = stderr.find("\"code\":\"N0303\"").expect("N0303");
-    let n0301 = stderr.find("\"code\":\"N0301\"").expect("N0301");
+    let n0303 = stderr.find("\"code\":\"L0303\"").expect("L0303");
+    let n0301 = stderr.find("\"code\":\"L0301\"").expect("L0301");
     assert!(n0303 < n0301, "{stderr}");
     assert!(stderr.contains("\"function\":\"main\""), "{stderr}");
     assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
@@ -1024,7 +1024,7 @@ fn compile_requires_zero_argument_main_entrypoint() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0329 [semantic error]"), "{stderr}");
+    assert!(stderr.contains("L0329 [semantic error]"), "{stderr}");
     assert!(stderr.contains("zero-argument `main`"), "{stderr}");
     assert!(!artifact.exists(), "{artifact:?}");
 }
@@ -1044,7 +1044,7 @@ fn run_rejects_main_with_parameters_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0329\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0329\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"semantic\""), "{stderr}");
     assert!(stderr.contains("\"function\":\"main\""), "{stderr}");
     assert!(stderr.contains("\"suggested_fix\":"), "{stderr}");
@@ -1059,7 +1059,7 @@ fn rejects_assignment_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0314"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0314"));
 }
 
 #[test]
@@ -1071,7 +1071,7 @@ fn rejects_break_outside_loop() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0317"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0317"));
 }
 
 #[test]
@@ -1083,7 +1083,7 @@ fn rejects_logical_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0320"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0320"));
 }
 
 #[test]
@@ -1095,7 +1095,7 @@ fn rejects_ordering_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0327"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0327"));
 }
 
 #[test]
@@ -1107,7 +1107,7 @@ fn rejects_for_range_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0321"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0321"));
 }
 
 #[test]
@@ -1119,7 +1119,7 @@ fn rejects_for_zero_step_at_runtime() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0411"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0411"));
 }
 
 #[test]
@@ -1131,7 +1131,7 @@ fn rejects_array_literal_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0324"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0324"));
 }
 
 #[test]
@@ -1143,7 +1143,7 @@ fn rejects_array_index_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0326"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0326"));
 }
 
 #[test]
@@ -1155,7 +1155,7 @@ fn rejects_array_index_out_of_bounds_at_runtime() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0413"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0413"));
 }
 
 #[test]
@@ -1168,7 +1168,7 @@ fn reports_runtime_error_with_verbose_traceback() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0413 [runtime error]"), "{stderr}");
+    assert!(stderr.contains("L0413 [runtime error]"), "{stderr}");
     assert!(stderr.contains("Traceback:"), "{stderr}");
     assert!(stderr.contains("in `main`"), "{stderr}");
     assert!(stderr.contains("Suggested fix:"), "{stderr}");
@@ -1189,7 +1189,7 @@ fn reports_runtime_error_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0413\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0413\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"runtime\""), "{stderr}");
     assert!(
         stderr.contains("\"traceback\":[{\"function\":\"main\""),
@@ -1206,7 +1206,7 @@ fn rejects_store_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0328"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0328"));
 }
 
 #[test]
@@ -1218,7 +1218,7 @@ fn rejects_use_after_free_at_compile_time() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr(&output).contains("N0350"), "{}", stderr(&output));
+    assert!(stderr(&output).contains("L0350"), "{}", stderr(&output));
 }
 
 #[test]
@@ -1230,7 +1230,7 @@ fn rejects_store_after_dealloc_at_runtime() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0406"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0406"));
 }
 
 #[test]
@@ -1247,7 +1247,7 @@ fn rejects_missing_file_with_structured_resource_error() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("N0414 [resource error]"), "{stderr}");
+    assert!(stderr.contains("L0414 [resource error]"), "{stderr}");
 }
 
 #[test]
@@ -1269,7 +1269,7 @@ fn reports_missing_file_resource_error_as_json() {
 
     let stderr = stderr(&output);
     assert!(!output.status.success(), "{output:?}");
-    assert!(stderr.contains("\"code\":\"N0414\""), "{stderr}");
+    assert!(stderr.contains("\"code\":\"L0414\""), "{stderr}");
     assert!(stderr.contains("\"phase\":\"resource\""), "{stderr}");
     assert!(stderr.contains("\"root_cause\":"), "{stderr}");
 }
@@ -1300,7 +1300,7 @@ fn rejects_file_builtin_argument_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0313"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0313"));
 }
 
 #[test]
@@ -1312,7 +1312,7 @@ fn rejects_write_file_content_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0313"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0313"));
 }
 
 #[test]
@@ -1324,5 +1324,5 @@ fn rejects_system_builtin_argument_type_mismatch() {
         .expect("run cli");
 
     assert!(!output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("N0313"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0313"));
 }

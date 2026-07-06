@@ -354,9 +354,9 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
               <li><code>--verbose</code> includes source excerpts, root cause, suggested fix, and runtime traceback when available.</li>
               <li><code>--format json</code> and <code>--diagnostic-format json</code> produce deterministic machine-readable diagnostics.</li>
               <li>See <code>documents/diagnostic_registry.md</code> in this generated bundle for the registry source.</li>
-              <li>Current examples include <code>N0324</code>, <code>N0326</code>, <code>N0327</code>, <code>N0328</code>, <code>N0329</code>, <code>N0211</code>, <code>N0501</code>, <code>N0502</code>, <code>N0601</code>, <code>N0413</code>, <code>N0414 [resource]</code>, <code>N0415 [resource]</code>, and <code>N0416 [resource]</code>.</li>
+              <li>Current examples include <code>L0324</code>, <code>L0326</code>, <code>L0327</code>, <code>L0328</code>, <code>L0329</code>, <code>L0211</code>, <code>L0501</code>, <code>L0502</code>, <code>L0601</code>, <code>L0413</code>, <code>L0414 [resource]</code>, <code>L0415 [resource]</code>, and <code>L0416 [resource]</code>.</li>
             </ul>
-            <pre><code>{"status":"error","diagnostics":[{"code":"N0313","phase":"semantic","severity":"error","root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","traceback":[]}]}</code></pre>
+            <pre><code>{"status":"error","diagnostics":[{"code":"L0313","phase":"semantic","severity":"error","root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","traceback":[]}]}</code></pre>
             """,
         ),
         (
@@ -366,7 +366,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             <ul>
               <li>No native code generation yet. Execution currently supports AST, typed IR, an instruction-bytecode backend, and versioned <code>.lbc</code> bytecode artifacts. The optimizer currently exposes opt-in constant folding, conservative common subexpression elimination, conservative loop-invariant motion, conservative block-local copy propagation, block-local dead-code elimination, and the combined alpha pipeline.</li>
               <li>Version 5 <code>.lbc</code> artifacts preserve Alpha 1 memory operation metadata and sequence numbers in <code>memory_operations</code>; the full region memory model, ARC/reference counting, compiler-inserted cleanup, and lifetime analysis remain planned.</li>
-              <li>Modules, imports, structs, try/catch, packages, and advanced generics are planned syntax and are rejected with <code>N0211</code> until implemented.</li>
+              <li>Modules, imports, structs, try/catch, packages, and advanced generics are planned syntax and are rejected with <code>L0211</code> until implemented.</li>
               <li>Cross-platform portable package generation exists with platform PATH helpers, but release assets still need non-Windows host validation and active CI workflow runs.</li>
               <li>The Windows Alpha 1 package now generates offline docs during packaging; the checked-in hand-authored page remains as a maintained source-era reference until it is retired.</li>
             </ul>

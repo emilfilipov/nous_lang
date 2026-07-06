@@ -32,8 +32,8 @@ sharing analysis exist. Instead:
 | `await_all(tasks)` | Await a collection of tasks; return their values in order. | Stub — rejected |
 
 "Rejected" means the parser/semantic layer emits a diagnostic (reserved code
-`N0212` "concurrency primitive is not available in this release", in the same
-family as `N0211` planned-syntax rejection) with a source span and a note that
+`L0212` "concurrency primitive is not available in this release", in the same
+family as `L0211` planned-syntax rejection) with a source span and a note that
 the primitive is planned. This keeps the acceptance guarantee: **unsupported
 concurrency features produce clear diagnostics, never partial behavior.**
 

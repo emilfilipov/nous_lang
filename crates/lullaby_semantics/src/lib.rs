@@ -84,15 +84,15 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
 }
 
 /// Resolve all type aliases in a program to canonical types, returning the
-/// rewritten program plus any alias-definition diagnostics (duplicate `N0360`,
-/// cyclic `N0361`).
+/// rewritten program plus any alias-definition diagnostics (duplicate `L0360`,
+/// cyclic `L0361`).
 fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnostic>) {
     let mut diagnostics = Vec::new();
     let mut map: HashMap<String, TypeRef> = HashMap::new();
     for alias in &program.aliases {
         if map.contains_key(&alias.name) {
             diagnostics.push(SemanticDiagnostic::at(
-                "N0360",
+                "L0360",
                 format!("duplicate type alias `{}`", alias.name),
                 None,
                 alias.span,
@@ -106,7 +106,7 @@ fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnosti
     for alias in &program.aliases {
         if chain_is_cyclic(&alias.name, &map) {
             diagnostics.push(SemanticDiagnostic::at(
-                "N0361",
+                "L0361",
                 format!("type alias `{}` is defined in terms of itself", alias.name),
                 None,
                 alias.span,
@@ -304,7 +304,7 @@ pub fn validate_entrypoint(program: &Program) -> Result<(), Vec<SemanticDiagnost
         .find(|function| function.name == "main")
     else {
         return Err(vec![SemanticDiagnostic::new(
-            "N0329",
+            "L0329",
             "executable source must define a zero-argument `main` function",
             None,
         )]);
@@ -314,7 +314,7 @@ pub fn validate_entrypoint(program: &Program) -> Result<(), Vec<SemanticDiagnost
         Ok(())
     } else {
         Err(vec![SemanticDiagnostic::at(
-            "N0329",
+            "L0329",
             format!(
                 "executable `main` must take zero arguments but declares {}",
                 main.params.len()
@@ -363,7 +363,7 @@ impl<'a> Checker<'a> {
         for declaration in &self.program.structs {
             if self.structs.contains_key(&declaration.name) {
                 self.diagnostics.push(SemanticDiagnostic::at(
-                    "N0370",
+                    "L0370",
                     format!("duplicate struct `{}`", declaration.name),
                     None,
                     declaration.span,
@@ -374,7 +374,7 @@ impl<'a> Checker<'a> {
             for field in &declaration.fields {
                 if !seen.insert(field.name.clone()) {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0370",
+                        "L0370",
                         format!(
                             "duplicate field `{}` in struct `{}`",
                             field.name, declaration.name
@@ -393,7 +393,7 @@ impl<'a> Checker<'a> {
         for function in &self.program.functions {
             if self.signatures.contains_key(&function.name) {
                 self.diagnostics.push(SemanticDiagnostic::new(
-                    "N0300",
+                    "L0300",
                     format!("duplicate function `{}`", function.name),
                     Some(function.name.clone()),
                 ));
@@ -423,7 +423,7 @@ impl<'a> Checker<'a> {
                 .is_some()
             {
                 self.diagnostics.push(SemanticDiagnostic::new(
-                    "N0302",
+                    "L0302",
                     format!("duplicate parameter `{}`", param.name),
                     Some(function.name.clone()),
                 ));
@@ -438,7 +438,7 @@ impl<'a> Checker<'a> {
 
         if block_type.as_ref() != Some(&function.return_type) {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0301",
+                "L0301",
                 format!(
                     "function `{}` declares `{}` but has no final return value of that type",
                     function.name, function.return_type.name
@@ -483,7 +483,7 @@ impl<'a> Checker<'a> {
                     Some(declared) => {
                         if value_type.as_ref() != Some(declared) {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0303",
+                                "L0303",
                                 format!(
                                     "binding `{name}` declares `{}` but initializer has `{}`",
                                     declared.name,
@@ -504,7 +504,7 @@ impl<'a> Checker<'a> {
                 };
                 if ty.is_none() && binding_type.is_void() {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0303",
+                        "L0303",
                         format!("binding `{name}` cannot infer type from a void initializer"),
                         Some(function.name.clone()),
                         value.span,
@@ -526,7 +526,7 @@ impl<'a> Checker<'a> {
                         if *op == AssignOp::Replace {
                             if value_type.as_ref() != Some(&expected) {
                                 self.diagnostics.push(SemanticDiagnostic::at(
-                                    "N0314",
+                                    "L0314",
                                     format!(
                                         "assignment to `{name}` expects `{}` but got `{}`",
                                         expected.name,
@@ -543,7 +543,7 @@ impl<'a> Checker<'a> {
                             || value_type.as_ref() != Some(&TypeRef::new("i64"))
                         {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0315",
+                                "L0315",
                                 format!("compound assignment to `{name}` requires i64 operands"),
                                 Some(function.name.clone()),
                                 value.span,
@@ -552,7 +552,7 @@ impl<'a> Checker<'a> {
                     }
                     None => {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0316",
+                            "L0316",
                             format!("assignment target `{name}` is not declared"),
                             Some(function.name.clone()),
                             *span,
@@ -569,7 +569,7 @@ impl<'a> Checker<'a> {
                 if actual.as_ref() != Some(&function.return_type) {
                     let span = expr.as_ref().map(|expr| expr.span).unwrap_or(function.span);
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0304",
+                        "L0304",
                         format!(
                             "return type `{}` does not match function return `{}`",
                             actual
@@ -587,7 +587,7 @@ impl<'a> Checker<'a> {
             Stmt::Break(span) => {
                 if self.loop_depth == 0 {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0317",
+                        "L0317",
                         "`break` can only appear inside a loop",
                         Some(function.name.clone()),
                         *span,
@@ -598,7 +598,7 @@ impl<'a> Checker<'a> {
             Stmt::Continue(span) => {
                 if self.loop_depth == 0 {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0318",
+                        "L0318",
                         "`continue` can only appear inside a loop",
                         Some(function.name.clone()),
                         *span,
@@ -617,7 +617,7 @@ impl<'a> Checker<'a> {
                     let condition_type = self.check_expr(&branch.condition, scope, function);
                     if condition_type.as_ref() != Some(&TypeRef::new("bool")) {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0305",
+                            "L0305",
                             "if condition must be bool",
                             Some(function.name.clone()),
                             branch.condition.span,
@@ -646,7 +646,7 @@ impl<'a> Checker<'a> {
                 let condition_type = self.check_expr(condition, scope, function);
                 if condition_type.as_ref() != Some(&TypeRef::new("bool")) {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0305",
+                        "L0305",
                         "while condition must be bool",
                         Some(function.name.clone()),
                         condition.span,
@@ -670,7 +670,7 @@ impl<'a> Checker<'a> {
                     let expr_type = self.check_expr(expr, scope, function);
                     if expr_type.as_ref() != Some(&TypeRef::new("i64")) {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0321",
+                            "L0321",
                             format!("for loop {label} expression must be i64"),
                             Some(function.name.clone()),
                             expr.span,
@@ -681,7 +681,7 @@ impl<'a> Checker<'a> {
                     let step_type = self.check_expr(step, scope, function);
                     if step_type.as_ref() != Some(&TypeRef::new("i64")) {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0322",
+                            "L0322",
                             "for loop step expression must be i64",
                             Some(function.name.clone()),
                             step.span,
@@ -749,7 +749,7 @@ impl<'a> Checker<'a> {
     fn check_region(&mut self, decl: &RegionDecl, function: &Function) {
         if decl.size <= 0 {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0340",
+                "L0340",
                 format!("region `{}` size must be positive", decl.name),
                 Some(function.name.clone()),
                 decl.span,
@@ -759,7 +759,7 @@ impl<'a> Checker<'a> {
             && (align <= 0 || (align & (align - 1)) != 0)
         {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0340",
+                "L0340",
                 format!(
                     "region `{}` alignment must be a positive power of two",
                     decl.name
@@ -770,7 +770,7 @@ impl<'a> Checker<'a> {
         }
         if !matches!(decl.kind.as_str(), "static" | "dynamic") {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0340",
+                "L0340",
                 format!(
                     "region `{}` kind `{}` must be `static` or `dynamic`",
                     decl.name, decl.kind
@@ -781,7 +781,7 @@ impl<'a> Checker<'a> {
         }
         if !self.region_names.insert(decl.name.clone()) {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0341",
+                "L0341",
                 format!("duplicate region `{}`", decl.name),
                 Some(function.name.clone()),
                 decl.span,
@@ -792,15 +792,15 @@ impl<'a> Checker<'a> {
     /// Conservative compile-time lifetime analysis.
     ///
     /// - A borrowed `ref<T>` may not be returned from a function, because the
-    ///   borrow cannot outlive the owner it points into (`N0351`).
+    ///   borrow cannot outlive the owner it points into (`L0351`).
     /// - Straight-line use-after-free / double-free of a resource freed by
-    ///   `dealloc`/`rc_release` is reported (`N0350`). The per-block cleanup
+    ///   `dealloc`/`rc_release` is reported (`L0350`). The per-block cleanup
     ///   ordering itself is the deterministic plan produced by
     ///   `lullaby_ir::frame_layout`.
     fn check_lifetimes(&mut self, function: &Function) {
         if function.return_type.reference_target().is_some() {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0351",
+                "L0351",
                 format!(
                     "function `{}` returns borrowed `{}`, which cannot escape its owner's scope",
                     function.name, function.return_type.name
@@ -830,7 +830,7 @@ impl<'a> Checker<'a> {
                         // The freeing call may double-free an already-dead resource.
                         if freed.contains(target) {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0350",
+                                "L0350",
                                 format!("`{target}` is used after it was already freed"),
                                 Some(function.name.clone()),
                                 expr.span,
@@ -895,7 +895,7 @@ impl<'a> Checker<'a> {
             ExprKind::Variable(name) => {
                 if freed.contains(name) {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0350",
+                        "L0350",
                         format!("`{name}` is used after it was freed"),
                         Some(function.name.clone()),
                         expr.span,
@@ -938,7 +938,7 @@ impl<'a> Checker<'a> {
                 Some(ty) => Some(ty.clone()),
                 None => {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0306",
+                        "L0306",
                         format!("unknown variable `{name}`"),
                         Some(function.name.clone()),
                         expr.span,
@@ -951,7 +951,7 @@ impl<'a> Checker<'a> {
                 let index_type = self.check_expr(index, scope, function);
                 if index_type.as_ref() != Some(&TypeRef::new("i64")) {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0326",
+                        "L0326",
                         "array index expression must be i64",
                         Some(function.name.clone()),
                         index.span,
@@ -962,7 +962,7 @@ impl<'a> Checker<'a> {
                     Some(element_type) => Some(element_type),
                     None => {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0325",
+                            "L0325",
                             "index target must be an array",
                             Some(function.name.clone()),
                             target.span,
@@ -979,7 +979,7 @@ impl<'a> Checker<'a> {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0319",
+                                "L0319",
                                 "`not` operand must be bool",
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1005,7 +1005,7 @@ impl<'a> Checker<'a> {
                             Some(string_type)
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0307",
+                                "L0307",
                                 "operands of `+` must both be i64, both be f64, or both be string",
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1018,7 +1018,7 @@ impl<'a> Checker<'a> {
                             Some(numeric)
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0307",
+                                "L0307",
                                 "arithmetic operands must both be i64 or both be f64",
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1031,7 +1031,7 @@ impl<'a> Checker<'a> {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0308",
+                                "L0308",
                                 "comparison operands must have the same type",
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1047,7 +1047,7 @@ impl<'a> Checker<'a> {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0327",
+                                "L0327",
                                 "ordering comparison operands must both be i64 or both be f64",
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1062,7 +1062,7 @@ impl<'a> Checker<'a> {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0320",
+                                "L0320",
                                 "logical operands must both be bool",
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1086,7 +1086,7 @@ impl<'a> Checker<'a> {
                         Some(matched) => Some(matched.ty.clone()),
                         None => {
                             self.diagnostics.push(SemanticDiagnostic::at(
-                                "N0371",
+                                "L0371",
                                 format!("struct `{}` has no field `{field}`", target_type.name),
                                 Some(function.name.clone()),
                                 expr.span,
@@ -1096,7 +1096,7 @@ impl<'a> Checker<'a> {
                     },
                     None => {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0371",
+                            "L0371",
                             format!(
                                 "cannot access field `{field}` on non-struct type `{}`",
                                 target_type.name
@@ -1129,7 +1129,7 @@ impl<'a> Checker<'a> {
     ) -> Option<TypeRef> {
         let Some((first, rest)) = values.split_first() else {
             self.diagnostics.push(SemanticDiagnostic::new(
-                "N0323",
+                "L0323",
                 "array literals must contain at least one value in the current alpha",
                 Some(function.name.clone()),
             ));
@@ -1141,7 +1141,7 @@ impl<'a> Checker<'a> {
             let value_type = self.check_expr(value, scope, function);
             if value_type.as_ref() != Some(&element_type) {
                 self.diagnostics.push(SemanticDiagnostic::at(
-                    "N0324",
+                    "L0324",
                     "array literal values must all have the same type",
                     Some(function.name.clone()),
                     value.span,
@@ -1175,7 +1175,7 @@ impl<'a> Checker<'a> {
                     .map(TypeRef::new)
                     .or_else(|| {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0310",
+                            "L0310",
                             "load expects a pointer argument",
                             Some(function.name.clone()),
                             args[0].span,
@@ -1189,7 +1189,7 @@ impl<'a> Checker<'a> {
                 let value_type = self.check_expr(&args[1], scope, function)?;
                 let Some(expected) = ptr_type.name.strip_prefix("ptr_").map(TypeRef::new) else {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0310",
+                        "L0310",
                         "store expects a pointer as its first argument",
                         Some(function.name.clone()),
                         args[0].span,
@@ -1198,7 +1198,7 @@ impl<'a> Checker<'a> {
                 };
                 if value_type != expected {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0328",
+                        "L0328",
                         format!(
                             "store expects value `{}` for pointer `{}` but got `{}`",
                             expected.name, ptr_type.name, value_type.name
@@ -1217,7 +1217,7 @@ impl<'a> Checker<'a> {
                     Some(TypeRef::new("void"))
                 } else {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0311",
+                        "L0311",
                         "dealloc expects a pointer argument",
                         Some(function.name.clone()),
                         args[0].span,
@@ -1267,7 +1267,7 @@ impl<'a> Checker<'a> {
                     Some(TypeRef::new("string"))
                 } else {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0313",
+                        "L0313",
                         format!(
                             "to_string expects an i64, f64, bool, or string value but got `{}`",
                             arg_type.name
@@ -1328,7 +1328,7 @@ impl<'a> Checker<'a> {
                 self.require_unsafe("ptr_write", call_span, function)?;
                 if value_type != inner {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0331",
+                        "L0331",
                         format!(
                             "ptr_write expects value `{}` for pointer `{}` but got `{}`",
                             inner.name, ptr_type.name, value_type.name
@@ -1343,7 +1343,7 @@ impl<'a> Checker<'a> {
             _ => {
                 let Some(signature) = self.signatures.get(name).cloned() else {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0309",
+                        "L0309",
                         format!("unknown function `{name}`"),
                         Some(function.name.clone()),
                         call_span,
@@ -1353,7 +1353,7 @@ impl<'a> Checker<'a> {
 
                 if signature.params.len() != args.len() {
                     self.diagnostics.push(SemanticDiagnostic::at(
-                        "N0312",
+                        "L0312",
                         format!(
                             "function `{name}` expects {} arguments but got {}",
                             signature.params.len(),
@@ -1370,7 +1370,7 @@ impl<'a> Checker<'a> {
                     let actual = self.check_expr(arg, scope, function);
                     if actual.as_ref() != Some(expected) {
                         self.diagnostics.push(SemanticDiagnostic::at(
-                            "N0313",
+                            "L0313",
                             format!(
                                 "argument {} for `{name}` must be `{}` but got `{}`",
                                 index + 1,
@@ -1402,7 +1402,7 @@ impl<'a> Checker<'a> {
         let fields = self.structs.get(name).cloned()?;
         if args.len() != fields.len() {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0372",
+                "L0372",
                 format!(
                     "struct `{name}` expects {} fields but got {}",
                     fields.len(),
@@ -1417,7 +1417,7 @@ impl<'a> Checker<'a> {
             let arg_type = self.check_expr(arg, scope, function);
             if arg_type.as_ref() != Some(&field.ty) {
                 self.diagnostics.push(SemanticDiagnostic::at(
-                    "N0372",
+                    "L0372",
                     format!(
                         "field `{}` of struct `{name}` expects `{}` but got `{}`",
                         field.name,
@@ -1449,7 +1449,7 @@ impl<'a> Checker<'a> {
             Some(inner) => Some(inner),
             None => {
                 self.diagnostics.push(SemanticDiagnostic::at(
-                    "N0331",
+                    "L0331",
                     format!("{name} expects a `{ctor}<T>` value but got `{}`", ty.name),
                     Some(function.name.clone()),
                     span,
@@ -1471,7 +1471,7 @@ impl<'a> Checker<'a> {
             Some(inner) => Some(inner),
             None => {
                 self.diagnostics.push(SemanticDiagnostic::at(
-                    "N0331",
+                    "L0331",
                     format!("{name} expects a raw pointer value but got `{}`", ty.name),
                     Some(function.name.clone()),
                     span,
@@ -1487,7 +1487,7 @@ impl<'a> Checker<'a> {
             Some(())
         } else {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0330",
+                "L0330",
                 format!("raw pointer operation `{name}` requires an `unsafe` block"),
                 Some(function.name.clone()),
                 span,
@@ -1507,7 +1507,7 @@ impl<'a> Checker<'a> {
             Some(())
         } else {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0312",
+                "L0312",
                 format!(
                     "function `{name}` expects {expected} arguments but got {}",
                     args.len()
@@ -1534,7 +1534,7 @@ impl<'a> Checker<'a> {
             Some(())
         } else {
             self.diagnostics.push(SemanticDiagnostic::at(
-                "N0313",
+                "L0313",
                 format!(
                     "argument {index} for `{name}` must be `{}` but got `{}`",
                     expected.name,
@@ -1682,7 +1682,7 @@ mod tests {
     #[test]
     fn non_void_function_rejects_empty_return() {
         let diagnostics = validate_source("fn bad -> i64\n    return\n").expect_err("semantic");
-        assert_eq!(diagnostics[0].code, "N0304");
+        assert_eq!(diagnostics[0].code, "L0304");
     }
 
     #[test]
@@ -1692,7 +1692,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0303")
+                .any(|diagnostic| diagnostic.code == "L0303")
         );
     }
 
@@ -1705,7 +1705,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0314")
+                .any(|diagnostic| diagnostic.code == "L0314")
         );
     }
 
@@ -1717,7 +1717,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0314")
+                .any(|diagnostic| diagnostic.code == "L0314")
         );
     }
 
@@ -1728,7 +1728,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0316")
+                .any(|diagnostic| diagnostic.code == "L0316")
         );
     }
 
@@ -1738,7 +1738,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0317")
+                .any(|diagnostic| diagnostic.code == "L0317")
         );
     }
 
@@ -1749,7 +1749,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0320")
+                .any(|diagnostic| diagnostic.code == "L0320")
         );
     }
 
@@ -1761,7 +1761,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0321")
+                .any(|diagnostic| diagnostic.code == "L0321")
         );
     }
 
@@ -1773,7 +1773,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0322")
+                .any(|diagnostic| diagnostic.code == "L0322")
         );
     }
 
@@ -1784,7 +1784,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0324")
+                .any(|diagnostic| diagnostic.code == "L0324")
         );
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0326")
+                .any(|diagnostic| diagnostic.code == "L0326")
         );
     }
 
@@ -1808,7 +1808,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0327")
+                .any(|diagnostic| diagnostic.code == "L0327")
         );
     }
 
@@ -1821,7 +1821,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0328")
+                .any(|diagnostic| diagnostic.code == "L0328")
         );
     }
 
@@ -1852,7 +1852,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0360")
+                .any(|diagnostic| diagnostic.code == "L0360")
         );
     }
 
@@ -1863,7 +1863,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0361")
+                .any(|diagnostic| diagnostic.code == "L0361")
         );
     }
 
@@ -1876,7 +1876,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0350")
+                .any(|diagnostic| diagnostic.code == "L0350")
         );
     }
 
@@ -1889,7 +1889,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0350")
+                .any(|diagnostic| diagnostic.code == "L0350")
         );
     }
 
@@ -1906,7 +1906,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0351")
+                .any(|diagnostic| diagnostic.code == "L0351")
         );
     }
 
@@ -1929,7 +1929,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0313")
+                .any(|diagnostic| diagnostic.code == "L0313")
         );
     }
 
@@ -1946,7 +1946,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0340")
+                .any(|diagnostic| diagnostic.code == "L0340")
         );
     }
 
@@ -1958,7 +1958,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0340")
+                .any(|diagnostic| diagnostic.code == "L0340")
         );
     }
 
@@ -1971,7 +1971,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0341")
+                .any(|diagnostic| diagnostic.code == "L0341")
         );
     }
 
@@ -1989,7 +1989,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0330")
+                .any(|diagnostic| diagnostic.code == "L0330")
         );
     }
 
@@ -2007,7 +2007,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0331")
+                .any(|diagnostic| diagnostic.code == "L0331")
         );
     }
 
@@ -2026,7 +2026,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0371")
+                .any(|diagnostic| diagnostic.code == "L0371")
         );
     }
 
@@ -2039,7 +2039,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0372")
+                .any(|diagnostic| diagnostic.code == "L0372")
         );
     }
 
@@ -2052,7 +2052,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0372")
+                .any(|diagnostic| diagnostic.code == "L0372")
         );
     }
 
@@ -2069,7 +2069,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0307")
+                .any(|diagnostic| diagnostic.code == "L0307")
         );
     }
 
@@ -2087,7 +2087,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0307")
+                .any(|diagnostic| diagnostic.code == "L0307")
         );
     }
 
@@ -2104,7 +2104,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0313")
+                .any(|diagnostic| diagnostic.code == "L0313")
         );
     }
 
@@ -2115,7 +2115,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0312")
+                .any(|diagnostic| diagnostic.code == "L0312")
         );
     }
 
@@ -2126,7 +2126,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0313")
+                .any(|diagnostic| diagnostic.code == "L0313")
         );
     }
 
@@ -2137,7 +2137,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "N0313")
+                .any(|diagnostic| diagnostic.code == "L0313")
         );
     }
 
@@ -2147,7 +2147,7 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         let diagnostics = validate_executable(&program).expect_err("entrypoint");
 
-        assert_eq!(diagnostics[0].code, "N0329");
+        assert_eq!(diagnostics[0].code, "L0329");
     }
 
     #[test]
@@ -2156,7 +2156,7 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         let diagnostics = validate_executable(&program).expect_err("entrypoint");
 
-        assert_eq!(diagnostics[0].code, "N0329");
+        assert_eq!(diagnostics[0].code, "L0329");
         assert_eq!(diagnostics[0].function.as_deref(), Some("main"));
     }
 }

@@ -162,7 +162,7 @@ The current compiler artifact is a JSON `.lbc` file with a format marker, artifa
 - `memory_operations`: analyzed allocation, load, store, deallocation, and bounds-check metadata used for backend and native-codegen preparation, including a stable artifact-order sequence for cleanup/lowering order
 - `module`: bytecode functions containing dedicated `instructions` rather than raw IR statements
 
-`lullaby compile file.lby -o file.lbc` writes this artifact. `lullaby build file.lby -o file.lbc` is the same artifact-generation path under a build-oriented command name. `lullaby inspect file.lbc` prints artifact metadata, function signatures, and memory operation counts, while verbose/JSON inspect output includes each memory operation's sequence number. `lullaby run file.lbc` executes it through the bytecode VM entry point. Unsupported artifact format, version, target, payload, entry values, duplicate functions, function-table/module mismatches, or memory-operation/module mismatches produce `N0601 [bytecode error]`.
+`lullaby compile file.lby -o file.lbc` writes this artifact. `lullaby build file.lby -o file.lbc` is the same artifact-generation path under a build-oriented command name. `lullaby inspect file.lbc` prints artifact metadata, function signatures, and memory operation counts, while verbose/JSON inspect output includes each memory operation's sequence number. `lullaby run file.lbc` executes it through the bytecode VM entry point. Unsupported artifact format, version, target, payload, entry values, duplicate functions, function-table/module mismatches, or memory-operation/module mismatches produce `L0601 [bytecode error]`.
 
 #### Optimization Passes
 1. **Algebraic Simplification**

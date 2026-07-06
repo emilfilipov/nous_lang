@@ -33,14 +33,14 @@ in terms of existing intrinsics, it belongs in the **runtime stdlib**.
 
 | Operation | Signature | Kind | Status | Error behavior |
 | :-- | :-- | :-- | :-- | :-- |
-| `read_file(path)` | `string -> string` | intrinsic | implemented | `N0414` resource error if missing/unreadable |
-| `write_file(path, content)` | `string, string -> void` | intrinsic | implemented | `N0415` resource error if unwritable |
-| `append_file(path, content)` | `string, string -> void` | intrinsic | implemented | `N0415` resource error if unwritable |
+| `read_file(path)` | `string -> string` | intrinsic | implemented | `L0414` resource error if missing/unreadable |
+| `write_file(path, content)` | `string, string -> void` | intrinsic | implemented | `L0415` resource error if unwritable |
+| `append_file(path, content)` | `string, string -> void` | intrinsic | implemented | `L0415` resource error if unwritable |
 | `file_exists(path)` | `string -> bool` | intrinsic | implemented | never errors; returns `false` on stat failure |
-| `println(text)` / `print(text)` | `string -> void` | intrinsic | implemented | `N0419` if stdout write fails |
-| `warn(text)` | `string -> void` | intrinsic | implemented | `N0419` if stderr write fails |
-| `flush()` | `-> void` | intrinsic | implemented | `N0419` if stdout flush fails |
-| `read_line()` (stdin) | `-> string` | intrinsic | planned | `N0419`-class on read failure; empty string at EOF |
+| `println(text)` / `print(text)` | `string -> void` | intrinsic | implemented | `L0419` if stdout write fails |
+| `warn(text)` | `string -> void` | intrinsic | implemented | `L0419` if stderr write fails |
+| `flush()` | `-> void` | intrinsic | implemented | `L0419` if stdout flush fails |
+| `read_line()` (stdin) | `-> string` | intrinsic | planned | `L0419`-class on read failure; empty string at EOF |
 | `open(path, mode)` | `string, string -> file` | intrinsic | planned | opens a handle; resource error on failure |
 | `stat(path)` | `string -> filemeta` | intrinsic | planned | resource error if the path cannot be stat-ed |
 | `list_dir(path)` | `string -> array<string>` | intrinsic | planned | resource error if not a readable directory |
@@ -68,10 +68,10 @@ fn main -> void
 ## Error Model
 
 - **Programming errors** (wrong arity or argument type) are compile-time semantic
-  diagnostics (`N0312` arity, `N0313` argument type), so bad I/O calls never
+  diagnostics (`L0312` arity, `L0313` argument type), so bad I/O calls never
   reach the runtime.
 - **Host/resource failures** (missing file, unwritable path, broken pipe) are
-  categorized `resource` runtime diagnostics (`N0414`, `N0415`, `N0419`) carrying
+  categorized `resource` runtime diagnostics (`L0414`, `L0415`, `L0419`) carrying
   a source span and traceback.
 - **Predicates do not throw:** `file_exists` returns a `bool` rather than
   erroring, so callers branch instead of catching.

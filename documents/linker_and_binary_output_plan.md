@@ -18,7 +18,7 @@ contract before native linking is attempted:
 
 - Versioned `.lbc` artifacts (format/version/entry/target/payload) are encoded
   and decoded with compatibility checks; malformed or unsupported artifacts fail
-  with the `N0601` bytecode diagnostic.
+  with the `L0601` bytecode diagnostic.
 - `lullaby inspect` reports artifact metadata, the function table, and ordered
   memory-operation metadata in human-readable, `--verbose`, and `--format json`
   forms — the machine-readable and human-readable verification reports required
@@ -45,7 +45,7 @@ human-readable" against the current subset.
   against (1) other Lullaby object modules, then (2) the platform C runtime.
 - **Duplicate/missing symbols.** A duplicate `GLOBAL` definition or an
   unresolved `UNDEF` at final link is a hard error surfaced through the shared
-  `N####` diagnostic model (reserved: `N0610` duplicate symbol, `N0611`
+  `N####` diagnostic model (reserved: `L0610` duplicate symbol, `L0611`
   unresolved symbol), never a silent link.
 
 ## Relocation Assumptions

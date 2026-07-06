@@ -14,18 +14,18 @@ Current diagnostic ranges:
 
 | Range | Source | Example |
 | :--- | :--- | :--- |
-| `N0001-N0003` | Source path and host file loading/writing | Invalid extension, unreadable source file, or failed artifact write. |
-| `N0101-N0104` | Lexer | Forbidden curly braces or semicolon terminators. |
-| `N0201-N0211` | Parser | Missing function body indentation, malformed expression, or planned syntax rejected by the Alpha 1 parser. |
-| `N0300-N0329` | Semantic validation | Unknown name, type mismatch, invalid loop control, invalid builtin arguments, and invalid executable entry points. |
-| `N0400-N0418` | Runtime and host resources | Missing `main`, division by zero, invalid pointer, missing file, failed command invocation. |
-| `N0501` | IR lowering | Typed IR lowering failed after semantic validation. |
-| `N0601` | Bytecode artifact | Compiled `.lbc` artifact is malformed or unsupported. |
+| `L0001-L0003` | Source path and host file loading/writing | Invalid extension, unreadable source file, or failed artifact write. |
+| `L0101-L0104` | Lexer | Forbidden curly braces or semicolon terminators. |
+| `L0201-L0211` | Parser | Missing function body indentation, malformed expression, or planned syntax rejected by the Alpha 1 parser. |
+| `L0300-L0329` | Semantic validation | Unknown name, type mismatch, invalid loop control, invalid builtin arguments, and invalid executable entry points. |
+| `L0400-L0418` | Runtime and host resources | Missing `main`, division by zero, invalid pointer, missing file, failed command invocation. |
+| `L0501` | IR lowering | Typed IR lowering failed after semantic validation. |
+| `L0601` | Bytecode artifact | Compiled `.lbc` artifact is malformed or unsupported. |
 
 Runtime CLI output uses:
 
 ```text
-N0414 [resource]: failed to read `missing.txt`: ...
+L0414 [resource]: failed to read `missing.txt`: ...
 ```
 
 The implemented runtime categories are:
@@ -35,7 +35,7 @@ The implemented runtime categories are:
 - `ir`: typed IR lowering failures reported before an IR or bytecode backend starts executing.
 - `bytecode`: compiled `.lbc` artifact loading failures before bytecode execution starts.
 
-Language-level `try`, `catch`, recovery blocks, and compact `!0xXX` error tokens are planned and are not accepted by the current parser. Planned syntax keywords now produce `N0211 [parser error]` so users can distinguish future syntax from malformed Alpha 1 code.
+Language-level `try`, `catch`, recovery blocks, and compact `!0xXX` error tokens are planned and are not accepted by the current parser. Planned syntax keywords now produce `L0211 [parser error]` so users can distinguish future syntax from malformed Alpha 1 code.
 
 ## Epic 6 Diagnostics UX
 
@@ -47,14 +47,14 @@ lullaby check --verbose file.lby
 lullaby check --format json file.lby
 ```
 
-The same flags are available for `lullaby compile`, `lullaby build`, `lullaby inspect`, and `lullaby run`. `lullaby run` defaults to the AST runtime and accepts `--backend ir` and `--backend bytecode` for the current alpha subset. `lullaby compile` emits a versioned `.lbc` bytecode artifact with function-table and memory-operation metadata, `lullaby build` is the same artifact-generation path under a build-oriented command name, `lullaby inspect file.lbc` summarizes that artifact, and `lullaby run file.lbc` executes it. IR lowering failures use code `N0501` and phase `ir`; bytecode artifact failures use code `N0601` and phase `bytecode`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
+The same flags are available for `lullaby compile`, `lullaby build`, `lullaby inspect`, and `lullaby run`. `lullaby run` defaults to the AST runtime and accepts `--backend ir` and `--backend bytecode` for the current alpha subset. `lullaby compile` emits a versioned `.lbc` bytecode artifact with function-table and memory-operation metadata, `lullaby build` is the same artifact-generation path under a build-oriented command name, `lullaby inspect file.lbc` summarizes that artifact, and `lullaby run file.lbc` executes it. IR lowering failures use code `L0501` and phase `ir`; bytecode artifact failures use code `L0601` and phase `bytecode`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
 
 ### Concise Output
 
 Concise output is the default. It is intended for quick terminal feedback:
 
 ```text
-N0303 [semantic error] at tests/fixtures/invalid/type_mismatch.lby:2:22 in `main`: binding `value` declares `bool` but initializer has `i64`
+L0303 [semantic error] at tests/fixtures/invalid/type_mismatch.lby:2:22 in `main`: binding `value` declares `bool` but initializer has `i64`
 ```
 
 ### Verbose Output
@@ -62,7 +62,7 @@ N0303 [semantic error] at tests/fixtures/invalid/type_mismatch.lby:2:22 in `main
 Verbose output is intended for humans and LLM agents that need enough context to repair the source:
 
 ```text
-N0102 [lexer error] at tests/fixtures/invalid/brace.lby:2:5: curly braces are not block delimiters in Lullaby
+L0102 [lexer error] at tests/fixtures/invalid/brace.lby:2:5: curly braces are not block delimiters in Lullaby
 
 Source:
    2 |     {
@@ -96,7 +96,7 @@ JSON mode is deterministic and intended for editors, CI systems, and LLM agents.
 Failure JSON uses the diagnostic registry fields:
 
 ```json
-{"status":"error","diagnostics":[{"code":"N0313","phase":"semantic","severity":"error","message":"argument 2 for `sys_status` must be `array<string>` but got `array<i64>`","source_path":"tests/fixtures/invalid/sys_args_type.lby","span":{"line":2,"column":24},"function":"bad","explanation":"Function and builtin arguments are statically type checked.","root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","notes":[],"traceback":[]}]}
+{"status":"error","diagnostics":[{"code":"L0313","phase":"semantic","severity":"error","message":"argument 2 for `sys_status` must be `array<string>` but got `array<i64>`","source_path":"tests/fixtures/invalid/sys_args_type.lby","span":{"line":2,"column":24},"function":"bad","explanation":"Function and builtin arguments are statically type checked.","root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","notes":[],"traceback":[]}]}
 ```
 
 See [diagnostic_registry.md](diagnostic_registry.md) for the full stable code registry and JSON field contract.
@@ -165,9 +165,9 @@ The compiler performs extensive static analysis to detect errors before runtime:
 
 Current alpha:
 ```text
-N0102 at 1:9: curly braces are not block delimiters in Lullaby
-N0313 in `main`: argument 2 for `sys_status` must be `array<string>` but got `array<i64>`
-N0414 [resource]: failed to read `missing.txt`: ...
+L0102 at 1:9: curly braces are not block delimiters in Lullaby
+L0313 in `main`: argument 2 for `sys_status` must be `array<string>` but got `array<i64>`
+L0414 [resource]: failed to read `missing.txt`: ...
 ```
 
 Planned compact language-level representation:

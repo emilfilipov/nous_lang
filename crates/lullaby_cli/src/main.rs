@@ -153,7 +153,7 @@ fn compile_file(
     if let Err(error) = fs::write(&output, artifact) {
         return Err(format_reports(
             &[DiagnosticReport::new(
-                "N0003",
+                "L0003",
                 DiagnosticPhase::Resource,
                 format!("failed to write `{}`: {error}", output.display()),
             )
@@ -260,7 +260,7 @@ fn run_bytecode_artifact(path: PathBuf, mode: OutputMode) -> Result<(), String> 
     let contents = fs::read_to_string(&path).map_err(|error| {
         format_reports(
             &[DiagnosticReport::new(
-                "N0002",
+                "L0002",
                 DiagnosticPhase::Resource,
                 format!("failed to read `{}`: {error}", path.display()),
             )
@@ -292,7 +292,7 @@ fn inspect_bytecode_artifact(path: PathBuf, mode: OutputMode) -> Result<(), Stri
     let contents = fs::read_to_string(&path).map_err(|error| {
         format_reports(
             &[DiagnosticReport::new(
-                "N0002",
+                "L0002",
                 DiagnosticPhase::Resource,
                 format!("failed to read `{}`: {error}", path.display()),
             )
@@ -495,7 +495,7 @@ fn compile(path: &PathBuf, source_mode: SourceMode) -> Result<CompiledSource, Co
         Err(error) => {
             return Err(CompileFailure::without_source(vec![
                 DiagnosticReport::new(
-                    "N0002",
+                    "L0002",
                     DiagnosticPhase::Resource,
                     format!("failed to read `{}`: {error}", path.display()),
                 )
@@ -602,7 +602,7 @@ fn runtime_report(error: RuntimeError, path: &Path) -> DiagnosticReport {
 }
 
 fn ir_report(error: lullaby_ir::IrLoweringError, path: &Path) -> DiagnosticReport {
-    let mut report = DiagnosticReport::new("N0501", DiagnosticPhase::Ir, error.message)
+    let mut report = DiagnosticReport::new("L0501", DiagnosticPhase::Ir, error.message)
         .with_source_path(path.display().to_string());
     if let Some(span) = error.span {
         report = report.with_span(span);
@@ -611,7 +611,7 @@ fn ir_report(error: lullaby_ir::IrLoweringError, path: &Path) -> DiagnosticRepor
 }
 
 fn bytecode_report(error: BytecodeArtifactError, path: &Path) -> DiagnosticReport {
-    DiagnosticReport::new("N0601", DiagnosticPhase::Bytecode, error.message)
+    DiagnosticReport::new("L0601", DiagnosticPhase::Bytecode, error.message)
         .with_source_path(path.display().to_string())
 }
 
@@ -874,7 +874,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     if command == "run" && backend == Backend::Ast && optimization != OptimizationMode::None {
         return Err(format_reports(
             &[DiagnosticReport::new(
-                "N0502",
+                "L0502",
                 DiagnosticPhase::Optimizer,
                 "--optimize requires --backend ir or --backend bytecode",
             )

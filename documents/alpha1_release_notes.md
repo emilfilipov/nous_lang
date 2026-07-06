@@ -106,12 +106,12 @@ Alpha 1 emits stable `N####` diagnostics for source, lexer, parser, semantic, IR
 
 Notable codes:
 
-- `N0003`: compiled artifact write failure.
-- `N0211`: planned syntax such as imports, modules, structs, or try/catch is not supported in Alpha 1.
-- `N0329`: executable entry point is missing or has parameters.
-- `N0501`: IR lowering failure.
-- `N0502`: optimizer mode requires IR or bytecode backend.
-- `N0601`: malformed, unsupported, incompatible, or instruction-contract-invalid `.lbc` artifact.
+- `L0003`: compiled artifact write failure.
+- `L0211`: planned syntax such as imports, modules, structs, or try/catch is not supported in Alpha 1.
+- `L0329`: executable entry point is missing or has parameters.
+- `L0501`: IR lowering failure.
+- `L0502`: optimizer mode requires IR or bytecode backend.
+- `L0601`: malformed, unsupported, incompatible, or instruction-contract-invalid `.lbc` artifact.
 
 See [diagnostic_registry.md](diagnostic_registry.md) for the full registry.
 

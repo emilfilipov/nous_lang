@@ -2990,7 +2990,7 @@ impl<'a> IrRuntime<'a> {
             .collect::<HashMap<_, _>>();
 
         if !functions.contains_key("main") {
-            return Err(RuntimeError::new("N0400", "missing `main` function"));
+            return Err(RuntimeError::new("L0400", "missing `main` function"));
         }
 
         let structs = module
@@ -3051,12 +3051,12 @@ impl<'a> IrRuntime<'a> {
             "region_create" => Ok(Value::Void),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
-                    RuntimeError::new("N0401", format!("unknown function `{name}`"))
+                    RuntimeError::new("L0401", format!("unknown function `{name}`"))
                 })?;
 
                 if function.params.len() != args.len() {
                     return Err(RuntimeError::new(
-                        "N0402",
+                        "L0402",
                         format!(
                             "function `{name}` expects {} arguments but got {}",
                             function.params.len(),
@@ -3081,7 +3081,7 @@ impl<'a> IrRuntime<'a> {
                 match result.map_err(|error| error.with_traceback(traceback))? {
                     Control::Return(value) | Control::Value(value) => Ok(value),
                     Control::Break | Control::Continue => Err(RuntimeError::new(
-                        "N0410",
+                        "L0410",
                         "loop control escaped function body",
                     )),
                 }
@@ -3132,7 +3132,7 @@ impl<'a> IrRuntime<'a> {
                     AssignOp::Divide => {
                         let divisor = value.as_i64()?;
                         if divisor == 0 {
-                            return Err(RuntimeError::new("N0404", "division by zero"));
+                            return Err(RuntimeError::new("L0404", "division by zero"));
                         }
                         Value::I64(env.get(name)?.as_i64()? / divisor)
                     }
@@ -3191,7 +3191,7 @@ impl<'a> IrRuntime<'a> {
                     .unwrap_or(Ok(Value::I64(1)))?
                     .as_i64()?;
                 if step == 0 {
-                    return Err(RuntimeError::new("N0411", "for loop step cannot be zero"));
+                    return Err(RuntimeError::new("L0411", "for loop step cannot be zero"));
                 }
 
                 while if step > 0 {
@@ -3226,7 +3226,7 @@ impl<'a> IrRuntime<'a> {
             }
             IrStmt::Throw { value, .. } => {
                 let message = self.eval_expr(value, env)?.as_string()?;
-                Err(RuntimeError::new("N0420", message))
+                Err(RuntimeError::new("L0420", message))
             }
             IrStmt::Try {
                 body,
@@ -3234,7 +3234,7 @@ impl<'a> IrRuntime<'a> {
                 catch_body,
                 ..
             } => match self.eval_scoped_block(body, env) {
-                Err(error) if error.code == "N0420" => {
+                Err(error) if error.code == "L0420" => {
                     env.push_scope();
                     env.define(catch_name.clone(), Value::String(error.message.clone()));
                     let result = self.eval_block(catch_body, env);
@@ -3274,16 +3274,16 @@ impl<'a> IrRuntime<'a> {
                 let target = self.eval_expr(target, env)?;
                 let index = self.eval_expr(index, env)?.as_i64()?;
                 let Value::Array(values) = target else {
-                    return Err(RuntimeError::new("N0412", "index target is not an array"));
+                    return Err(RuntimeError::new("L0412", "index target is not an array"));
                 };
                 if index < 0 {
                     return Err(RuntimeError::new(
-                        "N0413",
+                        "L0413",
                         format!("array index `{index}` is out of bounds"),
                     ));
                 }
                 values.get(index as usize).cloned().ok_or_else(|| {
-                    RuntimeError::new("N0413", format!("array index `{index}` is out of bounds"))
+                    RuntimeError::new("L0413", format!("array index `{index}` is out of bounds"))
                 })
             }
             IrExprKind::Field { target, field } => match self.eval_expr(target, env)? {
@@ -3291,9 +3291,9 @@ impl<'a> IrRuntime<'a> {
                     .into_iter()
                     .find(|(name, _)| name == field)
                     .map(|(_, value)| value)
-                    .ok_or_else(|| RuntimeError::new("N0371", format!("no field `{field}`"))),
+                    .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`"))),
                 _ => Err(RuntimeError::new(
-                    "N0371",
+                    "L0371",
                     format!("cannot access field `{field}` on non-struct value"),
                 )),
             },
@@ -3374,7 +3374,7 @@ impl<'a> IrRuntime<'a> {
             BinaryOp::Divide => {
                 let divisor = right.as_i64()?;
                 if divisor == 0 {
-                    Err(RuntimeError::new("N0404", "division by zero"))
+                    Err(RuntimeError::new("L0404", "division by zero"))
                 } else {
                     Ok(Value::I64(left.as_i64()? / divisor))
                 }
@@ -3405,7 +3405,7 @@ impl<'a> IrRuntime<'a> {
         self.heap
             .get(slot)
             .and_then(|value| value.clone())
-            .ok_or_else(|| RuntimeError::new("N0406", format!("invalid pointer `{slot}`")))
+            .ok_or_else(|| RuntimeError::new("L0406", format!("invalid pointer `{slot}`")))
     }
 
     fn builtin_store(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -3415,13 +3415,13 @@ impl<'a> IrRuntime<'a> {
         let slot = ptr.as_ptr()?;
         let Some(target) = self.heap.get_mut(slot) else {
             return Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid pointer `{slot}`"),
             ));
         };
         if target.is_none() {
             return Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid pointer `{slot}`"),
             ));
         }
@@ -3436,13 +3436,13 @@ impl<'a> IrRuntime<'a> {
         let slot = ptr.as_ptr()?;
         let Some(value) = self.heap.get_mut(slot) else {
             return Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid pointer `{slot}`"),
             ));
         };
         if value.take().is_none() {
             return Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid pointer `{slot}`"),
             ));
         }
@@ -3457,7 +3457,7 @@ impl<'a> IrRuntime<'a> {
         fs::read_to_string(&path)
             .map(Value::String)
             .map_err(|error| {
-                RuntimeError::resource("N0414", format!("failed to read `{path}`: {error}"))
+                RuntimeError::resource("L0414", format!("failed to read `{path}`: {error}"))
             })
     }
 
@@ -3470,7 +3470,7 @@ impl<'a> IrRuntime<'a> {
         fs::write(&path, contents)
             .map(|()| Value::Void)
             .map_err(|error| {
-                RuntimeError::resource("N0415", format!("failed to write `{path}`: {error}"))
+                RuntimeError::resource("L0415", format!("failed to write `{path}`: {error}"))
             })
     }
 
@@ -3488,7 +3488,7 @@ impl<'a> IrRuntime<'a> {
             .and_then(|mut file| file.write_all(contents.as_bytes()))
             .map(|()| Value::Void)
             .map_err(|error| {
-                RuntimeError::resource("N0415", format!("failed to append `{path}`: {error}"))
+                RuntimeError::resource("L0415", format!("failed to append `{path}`: {error}"))
             })
     }
 
@@ -3509,7 +3509,7 @@ impl<'a> IrRuntime<'a> {
             .args(command_args)
             .output()
             .map_err(|error| {
-                RuntimeError::resource("N0416", format!("failed to run `{program}`: {error}"))
+                RuntimeError::resource("L0416", format!("failed to run `{program}`: {error}"))
             })?;
         Ok(Value::I64(output.status.code().unwrap_or(-1).into()))
     }
@@ -3524,7 +3524,7 @@ impl<'a> IrRuntime<'a> {
             .args(command_args)
             .output()
             .map_err(|error| {
-                RuntimeError::resource("N0416", format!("failed to run `{program}`: {error}"))
+                RuntimeError::resource("L0416", format!("failed to run `{program}`: {error}"))
             })?;
         Ok(Value::String(
             String::from_utf8_lossy(&output.stdout).to_string(),
@@ -3550,7 +3550,7 @@ impl<'a> IrRuntime<'a> {
             write!(handle, "{text}")
         };
         result.map_err(|error| {
-            RuntimeError::resource("N0419", format!("failed to write to stdout: {error}"))
+            RuntimeError::resource("L0419", format!("failed to write to stdout: {error}"))
         })?;
         Ok(Value::Void)
     }
@@ -3564,7 +3564,7 @@ impl<'a> IrRuntime<'a> {
         let stderr = std::io::stderr();
         let mut handle = stderr.lock();
         writeln!(handle, "{text}").map_err(|error| {
-            RuntimeError::resource("N0419", format!("failed to write to stderr: {error}"))
+            RuntimeError::resource("L0419", format!("failed to write to stderr: {error}"))
         })?;
         Ok(Value::Void)
     }
@@ -3575,7 +3575,7 @@ impl<'a> IrRuntime<'a> {
             return Err(Self::wrong_arity("flush", 0, args.len()));
         }
         std::io::stdout().flush().map_err(|error| {
-            RuntimeError::resource("N0419", format!("failed to flush stdout: {error}"))
+            RuntimeError::resource("L0419", format!("failed to flush stdout: {error}"))
         })?;
         Ok(Value::Void)
     }
@@ -3589,7 +3589,7 @@ impl<'a> IrRuntime<'a> {
                 Ok(Value::String(value.to_string()))
             }
             other => Err(RuntimeError::new(
-                "N0417",
+                "L0417",
                 format!("to_string cannot convert `{other}`"),
             )),
         }
@@ -3616,7 +3616,7 @@ impl<'a> IrRuntime<'a> {
                 Ok(Value::Ptr(slot))
             }
             None => Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid reference-counted handle `{slot}`"),
             )),
         }
@@ -3639,7 +3639,7 @@ impl<'a> IrRuntime<'a> {
                 Ok(Value::Void)
             }
             None => Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid reference-counted handle `{slot}`"),
             )),
         }
@@ -3654,7 +3654,7 @@ impl<'a> IrRuntime<'a> {
             Ok(Value::Ptr(slot))
         } else {
             Err(RuntimeError::new(
-                "N0406",
+                "L0406",
                 format!("invalid reference-counted handle `{slot}`"),
             ))
         }
@@ -3668,12 +3668,12 @@ impl<'a> IrRuntime<'a> {
         self.heap
             .get(slot)
             .and_then(|value| value.clone())
-            .ok_or_else(|| RuntimeError::new("N0406", format!("invalid pointer `{slot}`")))
+            .ok_or_else(|| RuntimeError::new("L0406", format!("invalid pointer `{slot}`")))
     }
 
     fn wrong_arity(name: &str, expected: usize, actual: usize) -> RuntimeError {
         RuntimeError::new(
-            "N0405",
+            "L0405",
             format!("function `{name}` expects {expected} arguments but got {actual}"),
         )
     }
@@ -3740,7 +3740,7 @@ impl Env {
             }
         }
         Err(RuntimeError::new(
-            "N0403",
+            "L0403",
             format!("unknown variable `{name}`"),
         ))
     }
@@ -3751,7 +3751,7 @@ impl Env {
             .rev()
             .find_map(|scope| scope.get(name))
             .cloned()
-            .ok_or_else(|| RuntimeError::new("N0403", format!("unknown variable `{name}`")))
+            .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
     }
 }
 
@@ -4579,7 +4579,7 @@ mod tests {
         assert_eq!(report.folded_expressions, 0);
         assert_eq!(
             run_main(&optimized).expect_err("division by zero").code,
-            "N0404"
+            "L0404"
         );
     }
 

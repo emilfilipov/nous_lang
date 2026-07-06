@@ -94,12 +94,12 @@ pub fn validate_source_path(path: &Path) -> Result<(), Diagnostic> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(CANONICAL_EXTENSION) => Ok(()),
         Some(ext) => Err(Diagnostic::new(
-            "N0001",
+            "L0001",
             format!("unsupported source extension '.{ext}', expected '.{CANONICAL_EXTENSION}'"),
             Span::new(1, 1),
         )),
         None => Err(Diagnostic::new(
-            "N0001",
+            "L0001",
             format!("source file has no extension, expected '.{CANONICAL_EXTENSION}'"),
             Span::new(1, 1),
         )),
@@ -195,7 +195,7 @@ impl<'a> Lexer<'a> {
                 .expect("indent stack is never empty")
         {
             self.diagnostics.push(Diagnostic::new(
-                "N0101",
+                "L0101",
                 "indentation does not match any active block",
                 Span::new(line, 1),
             ));
@@ -221,7 +221,7 @@ impl<'a> Lexer<'a> {
 
             if matches!(ch, '{' | '}') {
                 self.diagnostics.push(Diagnostic::new(
-                    "N0102",
+                    "L0102",
                     "curly braces are not block delimiters in Lullaby",
                     Span::new(line_number, column),
                 ));
@@ -231,7 +231,7 @@ impl<'a> Lexer<'a> {
 
             if ch == ';' {
                 self.diagnostics.push(Diagnostic::new(
-                    "N0103",
+                    "L0103",
                     "semicolons do not terminate Lullaby statements",
                     Span::new(line_number, column),
                 ));
@@ -328,7 +328,7 @@ impl<'a> Lexer<'a> {
         }
 
         self.diagnostics.push(Diagnostic::new(
-            "N0104",
+            "L0104",
             "unterminated string literal",
             Span::new(line_number, column),
         ));
@@ -411,8 +411,8 @@ mod tests {
     fn rejects_braces_and_semicolons() {
         let diagnostics = lex("fn main {;\n").expect_err("invalid source");
         assert_eq!(diagnostics.len(), 2);
-        assert_eq!(diagnostics[0].code, "N0102");
-        assert_eq!(diagnostics[1].code, "N0103");
+        assert_eq!(diagnostics[0].code, "L0102");
+        assert_eq!(diagnostics[1].code, "L0103");
     }
 
     #[test]

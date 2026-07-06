@@ -32,7 +32,7 @@ The current Rust toolchain implements a small executable subset while the wider 
 - Implemented memory builtins are `alloc(value)`, `load(ptr)`, `store(ptr, value)`, and `dealloc(ptr)`.
 - Implemented text file I/O builtins are `read_file(path)`, `write_file(path, content)`, `append_file(path, content)`, and `file_exists(path)`.
 - Implemented system command builtins are `sys_status(program, args)` and `sys_output(program, args)`, where `args` is `array<string>`. These execute a program with an argv array directly and do not invoke a shell.
-- Runtime resource failures use structured CLI formatting such as `N0414 [resource]: failed to read ...`.
+- Runtime resource failures use structured CLI formatting such as `L0414 [resource]: failed to read ...`.
 - The default execution backend is the AST runtime. `lullaby run` also supports `--backend ir` and `--backend bytecode` for the current alpha subset.
 - IR and bytecode execution can opt into the initial deterministic optimizer with `--optimize constant-fold`, `--optimize dead-code`, or `--optimize alpha`; the alpha pipeline currently includes constant folding, conservative CSE, conservative loop-invariant motion, conservative copy propagation, and dead-code elimination. The default is `--optimize none`.
 - `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lby>` emits a versioned `.lbc` instruction-bytecode artifact with metadata, a function table, and ordered memory operation metadata. `lullaby build` accepts the same artifact-generation options as an alias. `lullaby inspect <file.lbc>` summarizes that artifact, and `lullaby run <file.lbc>` executes it after compatibility checks.

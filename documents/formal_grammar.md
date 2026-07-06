@@ -22,7 +22,7 @@ This grammar does not cover:
 - Runtime behavior such as bounds checks, file I/O, memory slots, process execution, or bytecode execution.
 - Planned syntax such as imports, modules, structs, traits, pattern matching, try/catch, async, streams, regions, native-code output, or user-defined generics beyond `array<T>`.
 
-Planned syntax keywords are recognized by the lexer so the parser can reject them with `N0211` instead of accepting ambiguous partial syntax.
+Planned syntax keywords are recognized by the lexer so the parser can reject them with `L0211` instead of accepting ambiguous partial syntax.
 
 ## Notation
 
@@ -244,7 +244,7 @@ The lexer recognizes several planned keywords, including:
 module import package struct union trait interface class match switch try catch throw async await coroutine
 ```
 
-When these tokens appear where Alpha 1 grammar does not support them, the parser reports `N0211` planned-syntax diagnostics.
+When these tokens appear where Alpha 1 grammar does not support them, the parser reports `L0211` planned-syntax diagnostics.
 
 ## Grammar Versus Semantic Validation
 

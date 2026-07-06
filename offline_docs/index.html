@@ -553,7 +553,7 @@ fn main -> i64
       <section id="diagnostics">
         <h2>Diagnostics</h2>
         <p>Diagnostics use stable short codes and are available in concise, verbose, and JSON output modes. The default concise mode is compact terminal feedback. The <code>--verbose</code> mode adds source excerpts, caret markers, root cause, suggested fix text, related notes, and runtime traceback frames when available. The <code>--format json</code> mode emits deterministic machine-readable diagnostics.</p>
-        <pre><code>N0102 [lexer error] at tests/fixtures/invalid/brace.lby:2:5: curly braces are not block delimiters in Lullaby
+        <pre><code>L0102 [lexer error] at tests/fixtures/invalid/brace.lby:2:5: curly braces are not block delimiters in Lullaby
 
 Source:
    2 |     {
@@ -564,7 +564,7 @@ Root cause:
 
 Suggested fix:
   Remove the brace and express the block with indentation.</code></pre>
-        <pre><code>{"status":"error","diagnostics":[{"code":"N0313","phase":"semantic","severity":"error","span":{"line":2,"column":24},"root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","traceback":[]}]}</code></pre>
+        <pre><code>{"status":"error","diagnostics":[{"code":"L0313","phase":"semantic","severity":"error","span":{"line":2,"column":24},"root_cause":"The argument expression type does not match the parameter type.","suggested_fix":"Pass a value of the expected type or change the called function signature.","traceback":[]}]}</code></pre>
         <p>The diagnostic registry in <code>documents/diagnostic_registry.md</code> defines every stable <code>N####</code> code, phase, meaning, likely cause, and suggested fix.</p>
         <p>Current examples include:</p>
         <table>
@@ -572,23 +572,23 @@ Suggested fix:
             <tr><th>Code</th><th>Meaning</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>N0102</code></td><td>Curly braces are forbidden as block delimiters.</td></tr>
-            <tr><td><code>N0103</code></td><td>Semicolons are forbidden as statement terminators.</td></tr>
-            <tr><td><code>N0211</code></td><td>Planned syntax such as imports, modules, structs, pattern matching, or try/catch is not supported in Alpha 1.</td></tr>
-            <tr><td><code>N0208</code></td><td>Parser expected an assignment operator.</td></tr>
-            <tr><td><code>N0301+</code></td><td>Semantic errors such as unknown names, type mismatch, invalid returns, or invalid loop control.</td></tr>
-            <tr><td><code>N0324</code></td><td>Array literal values do not all have the same type.</td></tr>
-            <tr><td><code>N0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
-            <tr><td><code>N0327</code></td><td>Ordering comparison operands are not both <code>i64</code>.</td></tr>
-            <tr><td><code>N0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
-            <tr><td><code>N0329</code></td><td>Executable source passed to <code>compile</code>, <code>build</code>, or source <code>run</code> is missing zero-argument <code>main</code>.</td></tr>
-            <tr><td><code>N0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
-            <tr><td><code>N0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
-            <tr><td><code>N0601 [bytecode]</code></td><td>Compiled <code>.lbc</code> artifact is malformed, unsupported, fails metadata/function table/memory operation compatibility checks, or violates the instruction contract.</td></tr>
-            <tr><td><code>N0413</code></td><td>Runtime array index is out of bounds.</td></tr>
-            <tr><td><code>N0414 [resource]</code></td><td>Runtime failed to read a text file.</td></tr>
-            <tr><td><code>N0415 [resource]</code></td><td>Runtime failed to write or append a text file.</td></tr>
-            <tr><td><code>N0416 [resource]</code></td><td>Runtime failed to invoke a system command.</td></tr>
+            <tr><td><code>L0102</code></td><td>Curly braces are forbidden as block delimiters.</td></tr>
+            <tr><td><code>L0103</code></td><td>Semicolons are forbidden as statement terminators.</td></tr>
+            <tr><td><code>L0211</code></td><td>Planned syntax such as imports, modules, structs, pattern matching, or try/catch is not supported in Alpha 1.</td></tr>
+            <tr><td><code>L0208</code></td><td>Parser expected an assignment operator.</td></tr>
+            <tr><td><code>L0301+</code></td><td>Semantic errors such as unknown names, type mismatch, invalid returns, or invalid loop control.</td></tr>
+            <tr><td><code>L0324</code></td><td>Array literal values do not all have the same type.</td></tr>
+            <tr><td><code>L0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
+            <tr><td><code>L0327</code></td><td>Ordering comparison operands are not both <code>i64</code>.</td></tr>
+            <tr><td><code>L0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
+            <tr><td><code>L0329</code></td><td>Executable source passed to <code>compile</code>, <code>build</code>, or source <code>run</code> is missing zero-argument <code>main</code>.</td></tr>
+            <tr><td><code>L0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
+            <tr><td><code>L0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
+            <tr><td><code>L0601 [bytecode]</code></td><td>Compiled <code>.lbc</code> artifact is malformed, unsupported, fails metadata/function table/memory operation compatibility checks, or violates the instruction contract.</td></tr>
+            <tr><td><code>L0413</code></td><td>Runtime array index is out of bounds.</td></tr>
+            <tr><td><code>L0414 [resource]</code></td><td>Runtime failed to read a text file.</td></tr>
+            <tr><td><code>L0415 [resource]</code></td><td>Runtime failed to write or append a text file.</td></tr>
+            <tr><td><code>L0416 [resource]</code></td><td>Runtime failed to invoke a system command.</td></tr>
           </tbody>
         </table>
         <p>Runtime diagnostics can include a traceback through user-defined functions and failing builtins or expressions.</p>
@@ -605,7 +605,7 @@ Suggested fix:
           <li>The type system currently covers the alpha scalar, array, call, local binding, assignment, control-flow, and interim pointer subset.</li>
           <li>The current I/O surface is limited to text file builtins and direct program-plus-argv command calls; streams, binary I/O, memory mapping, async, sockets, and IPC are future work.</li>
           <li>Modules, generics beyond array element spelling, structs, packages, and a full installer are future work. The current Alpha 1 distribution path is a Windows portable archive with optional user PATH helper scripts; the cross-platform package driver also prepares Unix PATH helpers for future Linux/macOS archives.</li>
-          <li>Planned syntax keywords such as <code>import</code>, <code>module</code>, <code>struct</code>, <code>match</code>, and <code>try</code> are rejected with <code>N0211 [parser]</code> until their feature areas are implemented.</li>
+          <li>Planned syntax keywords such as <code>import</code>, <code>module</code>, <code>struct</code>, <code>match</code>, and <code>try</code> are rejected with <code>L0211 [parser]</code> until their feature areas are implemented.</li>
           <li>The checked-in documentation bundle is currently hand-authored HTML. The standard-library generator from canonical docs is available at <code>offline_docs/generate_offline_docs.py</code>, emits package-ready quick start, CLI reference, package layout, diagnostics, limitations, shipped-doc parity sections, and fixture-backed examples, and is now used by the Windows portable package path.</li>
         </ul>
       </section>
