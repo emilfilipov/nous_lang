@@ -1,0 +1,36 @@
+# 2D vector rotation with the trigonometric math builtins.
+#
+# Rotating a vector preserves its length; this program rotates a unit vector by
+# a quarter turn, checks the length is unchanged, and reads the new heading back
+# with atan2. It exercises structs, f64 math, and sin/cos/atan2/exp/ln.
+
+struct Vec2
+    x f64
+    y f64
+
+fn length v Vec2 -> f64
+    sqrt(v.x * v.x + v.y * v.y)
+
+# Rotate `v` counter-clockwise by `angle` radians.
+fn rotate v Vec2 angle f64 -> Vec2
+    let c f64 = cos(angle)
+    let s f64 = sin(angle)
+    Vec2(v.x * c - v.y * s, v.x * s + v.y * c)
+
+# The angle of a vector from the positive x-axis, in radians.
+fn heading v Vec2 -> f64
+    atan2(v.y, v.x)
+
+fn main -> void
+    # pi = atan2(0, -1); unary minus on a float is written as `0.0 - 1.0`.
+    let pi f64 = atan2(0.0, 0.0 - 1.0)
+    let start Vec2 = Vec2(1.0, 0.0)
+    let quarter Vec2 = rotate(start, pi / 2.0)
+
+    println("start length    = " + to_string(length(start)))
+    println("rotated length  = " + to_string(length(quarter)))
+    println("rotated x ~ 0   = " + to_string(round(quarter.x)))
+    println("rotated y ~ 1   = " + to_string(round(quarter.y)))
+    println("heading (rad)   = " + to_string(heading(quarter)))
+    println("e               = " + to_string(exp(1.0)))
+    println("ln(e) ~ 1       = " + to_string(round(ln(exp(1.0)))))

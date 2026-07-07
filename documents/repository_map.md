@@ -66,7 +66,7 @@ This file maps the repository layout and explains where to find core information
 ## Examples
 
 - `examples/README.md`: user-facing instructions for valid and invalid example programs.
-- `examples/valid/`: executable `.lby` examples for calculator, arrays/control flow, file I/O, and Windows system command status.
+- `examples/valid/`: executable `.lby` examples for calculator, arrays/control flow, file I/O, Windows system command status, and `rotation.lby` (2D vector rotation exercising structs and the trigonometric math builtins). Every top-level `.lby` here is auto-run by the CLI test `runs_user_facing_valid_examples`.
 - `examples/valid/http_server/`: a working HTTP/1.1 server written in pure Lullaby on the TCP socket builtins — `server.lby` (the bounded accept loop with the `tcp_read`/`tcp_write`/`tcp_shutdown`/`tcp_close` teardown, port and request count from `args()`), `http.lby` (the reusable `pub` "framework" module: request-line parsing, path routing, HTTP/1.1 response building, and a char-by-char `parse_i64`), and `examples/valid/http_server/README.md` (how to run and curl it). It lives in a subdirectory so the single-file example runner ignores it; the CLI round-trip test drives it as a real HTTP client.
 - `examples/invalid/`: intentionally invalid `.lby` examples for inspecting diagnostics.
 
@@ -115,6 +115,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p lullaby_cli -- docs`: print the local offline documentation entry path.
 - `cargo run -p lullaby_cli -- examples`: print the local example fixture directory path.
 - `cargo run -p lullaby_cli -- run examples/valid/calculator.lby`: run a user-facing packaged example.
+- `cargo run -p lullaby_cli -- run examples/valid/rotation.lby`: run the 2D vector-rotation example — a `Vec2` struct rotated a quarter turn with `cos`/`sin`, its heading read back with `atan2`, plus `exp`/`ln`/`sqrt`/`round` — producing identical output on all backends.
 - `cargo run -p lullaby_cli -- run examples/valid/game_math/main.lby`: run a multi-file example where `main.lby` imports a pure-Lullaby `vec2` game-math module — demonstrating the "framework module wraps basic functions" pattern with `import`/`pub`, struct methods, and chaining, identically on all backends.
 - `cargo run -p lullaby_cli -- run examples/valid/shapes/main.lby`: run a multi-file example where a `geometry` module exposes an `Area` trait, two `impl`s, and a bounded generic `scaled_area<T: Area>`, imported and used from `main.lby` — showing traits + generics + modules composing across a module boundary on all backends.
 - `cargo run -p lullaby_cli -- run examples/valid/http_server/server.lby 8080 5`: run the pure-Lullaby HTTP/1.1 server example — `server.lby` imports the reusable `http` module and serves five requests on port 8080 (request-line parsing, path routing, and response building as `pub` functions), then exits. The CLI round-trip test `http_server_round_trip_on_all_backends` drives it as a real HTTP client on all backends.
