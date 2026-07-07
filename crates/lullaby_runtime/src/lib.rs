@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::process::Command;
@@ -8,6 +8,26 @@ use lullaby_parser::{
     AssignOp, BinaryOp, Expr, ExprKind, Function, MatchArm, MatchPattern, Place, Program, Stmt,
     UnaryOp,
 };
+
+/// The runtime type name of a value, used for trait-method dispatch. Structs and
+/// enums carry their declared type name; scalars map to their primitive name.
+pub fn value_type_name(value: &Value) -> String {
+    match value {
+        Value::I64(_) => "i64".to_string(),
+        Value::F64(_) => "f64".to_string(),
+        Value::Bool(_) => "bool".to_string(),
+        Value::String(_) => "string".to_string(),
+        Value::Char(_) => "char".to_string(),
+        Value::Byte(_) => "byte".to_string(),
+        Value::Array(_) => "array".to_string(),
+        Value::Struct { name, .. } => name.clone(),
+        Value::Enum { enum_name, .. } => enum_name.clone(),
+        Value::Map(_) => "map".to_string(),
+        Value::Func(_) => "fn".to_string(),
+        Value::Ptr(_) => "ptr".to_string(),
+        Value::Void => "void".to_string(),
+    }
+}
 
 // `Eq` is intentionally omitted: `Value::F64` holds an `f64`, which is not `Eq`.
 #[derive(Debug, Clone, PartialEq)]
@@ -264,6 +284,12 @@ struct Runtime<'a> {
     /// slot index. Slots not present here are raw pointers / plain allocations.
     refcounts: HashMap<usize, usize>,
     call_stack: Vec<TraceFrame>,
+    /// Trait-method dispatch table: `(receiver type name, method name)` -> the
+    /// impl function. Built once from every `impl Trait for Type` block.
+    impl_methods: HashMap<(String, String), &'a Function>,
+    /// Names that are trait methods (declared in some `trait`). A call to one of
+    /// these dispatches on the receiver's runtime type via `impl_methods`.
+    trait_method_names: HashSet<String>,
 }
 
 impl<'a> Runtime<'a> {
@@ -275,7 +301,22 @@ impl<'a> Runtime<'a> {
             .collect::<HashMap<_, _>>();
 
         if !functions.contains_key("main") {
-            return Err(RuntimeError::new("L0400", "missing `main` function"));
+            return Err(RuntimeError::new("L0422", "missing `main` function"));
+        }
+
+        // Build the trait-method dispatch table from all impl blocks and record
+        // the set of trait method names so calls can be recognized.
+        let mut impl_methods = HashMap::new();
+        let mut trait_method_names = HashSet::new();
+        for decl in &program.traits {
+            for method in &decl.methods {
+                trait_method_names.insert(method.name.clone());
+            }
+        }
+        for decl in &program.impls {
+            for method in &decl.methods {
+                impl_methods.insert((decl.type_name.clone(), method.name.clone()), method);
+            }
         }
 
         let structs = program
@@ -313,10 +354,33 @@ impl<'a> Runtime<'a> {
             heap: Vec::new(),
             refcounts: HashMap::new(),
             call_stack: Vec::new(),
+            impl_methods,
+            trait_method_names,
         })
     }
 
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        // Trait-method dispatch: when `name` is a trait method, select the impl
+        // by the receiver `args[0]`'s runtime type and invoke it. Because
+        // generics are erased, a bounded-generic `v.show()` is the same lookup.
+        if self.trait_method_names.contains(name) {
+            let receiver_type = args.first().map(value_type_name).ok_or_else(|| {
+                RuntimeError::new(
+                    "L0401",
+                    format!("trait method `{name}` called without a receiver"),
+                )
+            })?;
+            let method = *self
+                .impl_methods
+                .get(&(receiver_type.clone(), name.to_string()))
+                .ok_or_else(|| {
+                    RuntimeError::new(
+                        "L0401",
+                        format!("type `{receiver_type}` does not implement trait method `{name}`"),
+                    )
+                })?;
+            return self.invoke_function(method, args);
+        }
         if let Some(enum_name) = self.variants.get(name) {
             return Ok(Value::Enum {
                 enum_name: enum_name.to_string(),
@@ -389,39 +453,49 @@ impl<'a> Runtime<'a> {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("L0401", format!("unknown function `{name}`"))
                 })?;
-
-                if function.params.len() != args.len() {
-                    return Err(RuntimeError::new(
-                        "L0402",
-                        format!(
-                            "function `{name}` expects {} arguments but got {}",
-                            function.params.len(),
-                            args.len()
-                        ),
-                    ));
-                }
-
-                let mut env = Env::default();
-                for (param, value) in function.params.iter().zip(args) {
-                    env.define(param.name.clone(), value);
-                }
-
-                self.call_stack.push(TraceFrame {
-                    function: function.name.clone(),
-                    span: Some(function.span),
-                });
-                let result = self.eval_block(&function.body, &mut env);
-                let traceback = self.call_stack.clone();
-                self.call_stack.pop();
-
-                match result.map_err(|error| error.with_traceback(traceback))? {
-                    Control::Return(value) | Control::Value(value) => Ok(value),
-                    Control::Break | Control::Continue => Err(RuntimeError::new(
-                        "L0410",
-                        "loop control escaped function body",
-                    )),
-                }
+                self.invoke_function(function, args)
             }
+        }
+    }
+
+    /// Execute a user function (or trait impl method) with the given argument
+    /// values, threading the traceback and translating loop-control escape.
+    fn invoke_function(
+        &mut self,
+        function: &'a Function,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        if function.params.len() != args.len() {
+            return Err(RuntimeError::new(
+                "L0402",
+                format!(
+                    "function `{}` expects {} arguments but got {}",
+                    function.name,
+                    function.params.len(),
+                    args.len()
+                ),
+            ));
+        }
+
+        let mut env = Env::default();
+        for (param, value) in function.params.iter().zip(args) {
+            env.define(param.name.clone(), value);
+        }
+
+        self.call_stack.push(TraceFrame {
+            function: function.name.clone(),
+            span: Some(function.span),
+        });
+        let result = self.eval_block(&function.body, &mut env);
+        let traceback = self.call_stack.clone();
+        self.call_stack.pop();
+
+        match result.map_err(|error| error.with_traceback(traceback))? {
+            Control::Return(value) | Control::Value(value) => Ok(value),
+            Control::Break | Control::Continue => Err(RuntimeError::new(
+                "L0410",
+                "loop control escaped function body",
+            )),
         }
     }
 
@@ -1889,6 +1963,38 @@ mod tests {
     fn runs_function_calls_and_arithmetic() {
         let source = "fn add x i64 y i64 -> i64\n    x + y\n\nfn main -> i64\n    let value i64 = add(40, 2)\n    value\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
+    fn dispatches_trait_method_by_receiver_type() {
+        // `p.show()` dispatches to Point's `Show` impl; the bounded generic
+        // `describe(p)` calls the same trait method on the concrete type.
+        let source = concat!(
+            "trait Show\n",
+            "    fn show self -> string\n\n",
+            "struct Point\n",
+            "    x i64\n",
+            "    y i64\n\n",
+            "enum Light\n",
+            "    Red\n",
+            "    Green\n\n",
+            "impl Show for Point\n",
+            "    fn show self -> string\n",
+            "        to_string(self.x)\n\n",
+            "impl Show for Light\n",
+            "    fn show self -> string\n",
+            "        match self\n",
+            "            Red -> \"r\"\n",
+            "            Green -> \"green\"\n\n",
+            "fn describe<T: Show> v T -> string\n",
+            "    v.show()\n\n",
+            "fn main -> i64\n",
+            "    let p Point = Point(3, 4)\n",
+            "    let g Light = Green\n",
+            // len("3")=1 + len("green")=5 + len(describe(p))=1 + len(describe(g))=5
+            "    len(p.show()) + len(g.show()) + len(describe(p)) + len(describe(g))\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(12));
     }
 
     #[test]

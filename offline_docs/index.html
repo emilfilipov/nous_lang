@@ -256,6 +256,7 @@
       <a href="#enums">Enums</a>
       <a href="#match">Pattern Matching</a>
       <a href="#option-result">option and result</a>
+      <a href="#traits">Traits</a>
       <a href="#control-flow">Control Flow</a>
       <a href="#boolean-logic">Boolean Logic</a>
       <a href="#math-builtins">Math Builtins</a>
@@ -610,6 +611,53 @@ fn main -&gt; i64
         </ul>
       </section>
 
+      <section id="traits">
+        <h2>Traits</h2>
+        <p>A <code>trait</code> names a set of methods a type can implement. A trait declaration lists method signatures <code>fn method self [param Type ...] -&gt; Ret</code> with no body; the receiver is <code>self</code>, and <code>Self</code> in a later parameter or return type means the implementing type. An <code>impl Trait for Type</code> block provides a body for every method the trait requires. A trait method is called with the usual UFCS spelling &mdash; <code>p.show()</code> desugars to <code>show(p)</code> and dispatches on the receiver's concrete runtime type. A generic function bounds a type parameter with <code>&lt;T: Trait&gt;</code> (or <code>&lt;T: A + B&gt;</code>): inside the function a value of type <code>T</code> may call the bound trait's methods, and at a call site the inferred concrete type must implement every bound. Dispatch uses one shared impl table consulted identically by the AST, IR, and bytecode backends.</p>
+        <pre data-fixture="tests/fixtures/valid/run_traits.lby" data-mode="run"><code># Traits: declaration, impls for a struct and an enum, receiver-type method
+# dispatch, and a bounded generic that calls a trait method.
+
+trait Show
+    fn show self -&gt; string
+
+struct Point
+    x i64
+    y i64
+
+enum Light
+    Red
+    Green
+
+impl Show for Point
+    fn show self -&gt; string
+        "(" + to_string(self.x) + ", " + to_string(self.y) + ")"
+
+impl Show for Light
+    fn show self -&gt; string
+        match self
+            Red -&gt; "red"
+            Green -&gt; "green"
+
+fn describe&lt;T: Show&gt; v T -&gt; string
+    "show=" + v.show()
+
+fn main -&gt; i64
+    let p Point = Point(3, 4)
+    let g Light = Green
+    # Direct trait-method calls dispatch by the receiver's concrete type.
+    let a i64 = len(p.show())
+    let b i64 = len(g.show())
+    # A bounded generic resolves `v.show()` on the concrete runtime type.
+    let c i64 = len(describe(p))
+    let d i64 = len(describe(g))
+    a + b + c + d</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_traits.lby</code>. Returns <code>32</code>.</p>
+        <ul>
+          <li>An <code>impl</code> that does not match its trait (missing, extra, or mismatched method, or a trait-method/free-function name clash) reports <code>L0398</code>; a duplicate <code>impl Trait for Type</code> reports <code>L0399</code>; a type used where a bound requires a trait it does not implement reports <code>L0400</code>.</li>
+          <li>Default method bodies, trait objects (<code>dyn</code>), associated types, and supertraits are still planned.</li>
+        </ul>
+      </section>
+
       <section id="control-flow">
         <h2>Control Flow</h2>
         <h3>If, elif, else</h3>
@@ -898,6 +946,9 @@ Suggested fix:
             <tr><td><code>L0395</code></td><td>Conflicting inference: two arguments forced a generic type parameter to two different concrete types.</td></tr>
             <tr><td><code>L0396</code></td><td>A generic type parameter appears only in the return type and cannot be inferred from the arguments.</td></tr>
             <tr><td><code>L0397 [loader]</code></td><td>An <code>import NAME</code> could not find <code>NAME.lby</code> in the entry file's directory.</td></tr>
+            <tr><td><code>L0398</code></td><td>An <code>impl Trait for Type</code> does not satisfy the trait (missing, extra, or mismatched method), or a trait-method name collides with a free function.</td></tr>
+            <tr><td><code>L0399</code></td><td>A duplicate <code>impl Trait for Type</code> was declared for the same type.</td></tr>
+            <tr><td><code>L0400</code></td><td>A type used where a trait bound is required (a bounded generic call or a direct trait-method call) does not implement that trait.</td></tr>
             <tr><td><code>L0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
             <tr><td><code>L0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
             <tr><td><code>L0601 [bytecode]</code></td><td>Compiled <code>.lbc</code> artifact is malformed, unsupported, fails metadata/function table/memory operation compatibility checks, or violates the instruction contract.</td></tr>

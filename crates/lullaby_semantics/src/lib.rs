@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use lullaby_diagnostics::Span;
 use lullaby_parser::{
     AssignOp, BinaryOp, EnumDecl, EnumVariant, Expr, ExprKind, Function, IfBranch, MatchArm,
-    MatchPattern, Param, Place, Program, RegionDecl, Stmt, StructDecl, StructField, TypeRef,
-    UnaryOp, function_type, generic_type,
+    MatchPattern, MethodSig, Param, Place, Program, RegionDecl, Stmt, StructDecl, StructField,
+    TypeRef, UnaryOp, function_type, generic_type,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +187,67 @@ fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnosti
             structs,
             enums,
             imports: program.imports.clone(),
+            // Trait/impl method types are resolved against aliases below via the
+            // same `resolve_alias_type` mapping so the checker never sees an alias.
+            traits: program
+                .traits
+                .iter()
+                .map(|decl| lullaby_parser::TraitDecl {
+                    name: decl.name.clone(),
+                    methods: decl
+                        .methods
+                        .iter()
+                        .map(|method| lullaby_parser::MethodSig {
+                            name: method.name.clone(),
+                            params: method
+                                .params
+                                .iter()
+                                .map(|param| Param {
+                                    name: param.name.clone(),
+                                    ty: resolve_alias_type(&param.ty, &map),
+                                })
+                                .collect(),
+                            return_type: resolve_alias_type(&method.return_type, &map),
+                            span: method.span,
+                        })
+                        .collect(),
+                    span: decl.span,
+                    is_public: decl.is_public,
+                })
+                .collect(),
+            impls: program
+                .impls
+                .iter()
+                .map(|decl| lullaby_parser::ImplDecl {
+                    trait_name: decl.trait_name.clone(),
+                    type_name: decl.type_name.clone(),
+                    methods: decl
+                        .methods
+                        .iter()
+                        .map(|function| Function {
+                            name: function.name.clone(),
+                            type_params: function.type_params.clone(),
+                            params: function
+                                .params
+                                .iter()
+                                .map(|param| Param {
+                                    name: param.name.clone(),
+                                    ty: resolve_alias_type(&param.ty, &map),
+                                })
+                                .collect(),
+                            return_type: resolve_alias_type(&function.return_type, &map),
+                            body: function
+                                .body
+                                .iter()
+                                .map(|stmt| rewrite_stmt_types(stmt, &map))
+                                .collect(),
+                            span: function.span,
+                            is_public: function.is_public,
+                        })
+                        .collect(),
+                    span: decl.span,
+                })
+                .collect(),
         },
         diagnostics,
     )
@@ -368,6 +429,25 @@ pub fn infer_generic_return(
         return Err(GenericInferenceError::Unresolved { param });
     }
     Ok(substitute_type(&signature.return_type, &subst))
+}
+
+/// Replace the `Self` type variable with the implementing type. Recurses into
+/// compound generic types (`option<Self>`, `list<Self>`, ...).
+fn substitute_self(ty: &TypeRef, self_ty: &TypeRef) -> TypeRef {
+    let mut subst: HashMap<String, TypeRef> = HashMap::new();
+    subst.insert("Self".to_string(), self_ty.clone());
+    substitute_type(ty, &subst)
+}
+
+/// Map a checked value type to the runtime/impl type name used for trait-method
+/// dispatch. Structs/enums use their declared name; scalars map to their
+/// primitive name. Generic/compound types are dispatched by their constructor
+/// name (e.g. `list`), which is sufficient for the first increment.
+fn dispatch_type_name(ty: &TypeRef) -> String {
+    if let Some((ctor, _)) = decompose_generic(ty) {
+        return ctor;
+    }
+    ty.name.clone()
 }
 
 /// Canonical `option<T>` type spelling.
@@ -606,6 +686,20 @@ struct Checker<'a> {
     /// Variant name -> (owning enum name, payload types). Variant names are
     /// globally unique across all enums, so this resolves construction directly.
     variants: HashMap<String, (String, Vec<TypeRef>)>,
+    /// Trait name -> its required method signatures. A method signature stores
+    /// the parameters after `self` and the return type; `Self` in a type means
+    /// the implementing type.
+    traits: HashMap<String, Vec<MethodSig>>,
+    /// Trait method name -> owning trait name. Trait method names are disjoint
+    /// from free-function names, so this resolves a call to a trait method.
+    trait_methods: HashMap<String, String>,
+    /// `(type_name, method_name)` -> the impl method's resolved signature
+    /// `(param types after self, return type)` with `Self` substituted to the
+    /// implementing type.
+    impl_methods: HashMap<(String, String), (Vec<TypeRef>, TypeRef)>,
+    /// Set of `(type_name, trait_name)` pairs that have an `impl`. Used for
+    /// bound checking (`L0400`) and duplicate detection (`L0399`).
+    impl_traits: HashSet<(String, String)>,
 }
 
 impl<'a> Checker<'a> {
@@ -621,15 +715,259 @@ impl<'a> Checker<'a> {
             structs: HashMap::new(),
             enums: HashMap::new(),
             variants: HashMap::new(),
+            traits: HashMap::new(),
+            trait_methods: HashMap::new(),
+            impl_methods: HashMap::new(),
+            impl_traits: HashSet::new(),
         }
     }
 
     fn validate(&mut self) {
         self.collect_structs();
         self.collect_enums();
+        self.collect_traits();
         self.collect_signatures();
+        self.collect_impls();
         for function in &self.program.functions {
             self.validate_function(function);
+        }
+        self.validate_impls();
+        // Validate each impl method body like an ordinary function. Its `self`
+        // parameter already carries the implementing type, so field access and
+        // trait-method calls on `self` resolve normally.
+        for decl in &self.program.impls {
+            for method in &decl.methods {
+                self.validate_function(method);
+            }
+        }
+    }
+
+    /// Collect trait declarations into the trait table and the trait-method
+    /// index. A trait method name must be globally unique and disjoint from free
+    /// function names; a clash is reported when signatures are collected.
+    fn collect_traits(&mut self) {
+        for decl in &self.program.traits {
+            if self.traits.contains_key(&decl.name) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0398",
+                    format!("duplicate trait `{}`", decl.name),
+                    None,
+                    decl.span,
+                ));
+                continue;
+            }
+            for method in &decl.methods {
+                if let Some(other) = self.trait_methods.get(&method.name) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0398",
+                        format!(
+                            "trait method `{}` is declared in both trait `{other}` and trait `{}`",
+                            method.name, decl.name
+                        ),
+                        None,
+                        decl.span,
+                    ));
+                    continue;
+                }
+                self.trait_methods
+                    .insert(method.name.clone(), decl.name.clone());
+            }
+            self.traits.insert(decl.name.clone(), decl.methods.clone());
+        }
+    }
+
+    /// Collect and validate `impl Trait for Type` blocks. Each impl must provide
+    /// exactly the trait's methods with matching signatures (with `Self` =
+    /// implementing type). Missing/extra/mismatched → `L0398`; duplicate impl of
+    /// the same trait for the same type → `L0399`.
+    fn collect_impls(&mut self) {
+        for decl in &self.program.impls {
+            let key = (decl.type_name.clone(), decl.trait_name.clone());
+            if self.impl_traits.contains(&key) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0399",
+                    format!(
+                        "duplicate `impl {} for {}`",
+                        decl.trait_name, decl.type_name
+                    ),
+                    None,
+                    decl.span,
+                ));
+                continue;
+            }
+            if !self.traits.contains_key(&decl.trait_name) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0398",
+                    format!("unknown trait `{}` in impl block", decl.trait_name),
+                    None,
+                    decl.span,
+                ));
+                continue;
+            }
+            self.impl_traits.insert(key);
+
+            // Index the impl's method signatures (Self-substituted) so trait-
+            // method calls can look them up by (type, method).
+            let self_ty = TypeRef::new(decl.type_name.clone());
+            for method in &decl.methods {
+                // The remaining parameter types after `self`.
+                let param_types: Vec<TypeRef> = method
+                    .params
+                    .iter()
+                    .skip(1)
+                    .map(|param| substitute_self(&param.ty, &self_ty))
+                    .collect();
+                let return_type = substitute_self(&method.return_type, &self_ty);
+                self.impl_methods.insert(
+                    (decl.type_name.clone(), method.name.clone()),
+                    (param_types, return_type),
+                );
+            }
+        }
+    }
+
+    /// After signatures/impl methods are indexed, verify each impl satisfies its
+    /// trait exactly: every required method present, no extras, and each matching
+    /// the declared signature with `Self` = implementing type (`L0398`).
+    fn validate_impls(&mut self) {
+        let mut diagnostics = Vec::new();
+        // Trait method names must not clash with free function names.
+        for method_name in self.trait_methods.keys() {
+            if self.signatures.contains_key(method_name) {
+                diagnostics.push(SemanticDiagnostic::new(
+                    "L0398",
+                    format!(
+                        "`{method_name}` is both a free function and a trait method; the two namespaces must be disjoint"
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        for decl in &self.program.impls {
+            let Some(trait_methods) = self.traits.get(&decl.trait_name) else {
+                continue; // already reported unknown trait
+            };
+            let self_ty = TypeRef::new(decl.type_name.clone());
+
+            // Every required method must be present with a matching signature.
+            for required in trait_methods {
+                let Some(provided) = decl
+                    .methods
+                    .iter()
+                    .find(|method| method.name == required.name)
+                else {
+                    diagnostics.push(SemanticDiagnostic::at(
+                        "L0398",
+                        format!(
+                            "`impl {} for {}` is missing method `{}` required by the trait",
+                            decl.trait_name, decl.type_name, required.name
+                        ),
+                        None,
+                        decl.span,
+                    ));
+                    continue;
+                };
+                Self::check_impl_method_signature(
+                    decl,
+                    required,
+                    provided,
+                    &self_ty,
+                    &mut diagnostics,
+                );
+            }
+
+            // No extra methods beyond what the trait requires.
+            for method in &decl.methods {
+                if !trait_methods.iter().any(|m| m.name == method.name) {
+                    diagnostics.push(SemanticDiagnostic::at(
+                        "L0398",
+                        format!(
+                            "`impl {} for {}` declares method `{}` which is not part of the trait",
+                            decl.trait_name, decl.type_name, method.name
+                        ),
+                        None,
+                        method.span,
+                    ));
+                }
+            }
+        }
+        self.diagnostics.extend(diagnostics);
+    }
+
+    /// Check that a provided impl method matches the trait's required signature
+    /// with `Self` substituted to the implementing type. The receiver `self` must
+    /// be the first parameter and have the implementing type.
+    fn check_impl_method_signature(
+        decl: &lullaby_parser::ImplDecl,
+        required: &MethodSig,
+        provided: &Function,
+        self_ty: &TypeRef,
+        diagnostics: &mut Vec<SemanticDiagnostic>,
+    ) {
+        if provided.params.is_empty() || provided.params[0].name != "self" {
+            diagnostics.push(SemanticDiagnostic::at(
+                "L0398",
+                format!(
+                    "method `{}` of `impl {} for {}` must take `self` as its first parameter",
+                    required.name, decl.trait_name, decl.type_name
+                ),
+                Some(provided.name.clone()),
+                provided.span,
+            ));
+            return;
+        }
+        let provided_rest = &provided.params[1..];
+        if provided_rest.len() != required.params.len() {
+            diagnostics.push(SemanticDiagnostic::at(
+                "L0398",
+                format!(
+                    "method `{}` of `impl {} for {}` takes {} parameter(s) after `self` but the trait requires {}",
+                    required.name,
+                    decl.trait_name,
+                    decl.type_name,
+                    provided_rest.len(),
+                    required.params.len()
+                ),
+                Some(provided.name.clone()),
+                provided.span,
+            ));
+            return;
+        }
+        for (provided_param, required_param) in provided_rest.iter().zip(required.params.iter()) {
+            let expected = substitute_self(&required_param.ty, self_ty);
+            if provided_param.ty != expected {
+                diagnostics.push(SemanticDiagnostic::at(
+                    "L0398",
+                    format!(
+                        "parameter `{}` of method `{}` in `impl {} for {}` must be `{}` but is `{}`",
+                        provided_param.name,
+                        required.name,
+                        decl.trait_name,
+                        decl.type_name,
+                        expected.name,
+                        provided_param.ty.name
+                    ),
+                    Some(provided.name.clone()),
+                    provided.span,
+                ));
+            }
+        }
+        let expected_return = substitute_self(&required.return_type, self_ty);
+        if provided.return_type != expected_return {
+            diagnostics.push(SemanticDiagnostic::at(
+                "L0398",
+                format!(
+                    "method `{}` of `impl {} for {}` must return `{}` but returns `{}`",
+                    required.name,
+                    decl.trait_name,
+                    decl.type_name,
+                    expected_return.name,
+                    provided.return_type.name
+                ),
+                Some(provided.name.clone()),
+                provided.span,
+            ));
         }
     }
 
@@ -769,7 +1107,16 @@ impl<'a> Checker<'a> {
                         .map(|param| param.ty.clone())
                         .collect(),
                     return_type: function.return_type.clone(),
-                    type_params: function.type_params.clone(),
+                    type_params: function
+                        .type_params
+                        .iter()
+                        .map(|tp| tp.name.clone())
+                        .collect(),
+                    type_param_bounds: function
+                        .type_params
+                        .iter()
+                        .map(|tp| tp.bounds.clone())
+                        .collect(),
                 },
             );
         }
@@ -1995,6 +2342,19 @@ impl<'a> Checker<'a> {
         scope: &Scope,
         function: &Function,
     ) -> Option<TypeRef> {
+        // A trait-method call (`recv.method(...)` desugared to `method(recv,...)`)
+        // takes priority over the free-function/builtin paths: trait-method and
+        // free-function namespaces are disjoint.
+        if let Some(trait_name) = self.trait_methods.get(name).cloned() {
+            return self.check_trait_method_call(
+                name,
+                &trait_name,
+                args,
+                call_span,
+                scope,
+                function,
+            );
+        }
         match name {
             "alloc" => {
                 self.expect_arg_count(name, args, 1, function)?;
@@ -2549,6 +2909,126 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Check a trait-method call `method(recv, extra_args...)`. The receiver's
+    /// type selects the impl:
+    ///
+    /// - When the receiver's type is a bounded generic type variable `T` whose
+    ///   bounds include this trait, the call resolves against the trait
+    ///   signature with `Self` = `T` (dispatch is deferred to run time).
+    /// - Otherwise the receiver must be a concrete type that implements the
+    ///   trait (`L0400` if not); the impl's resolved signature is used.
+    ///
+    /// The remaining arguments are checked against the method's parameter types.
+    fn check_trait_method_call(
+        &mut self,
+        method: &str,
+        trait_name: &str,
+        args: &[Expr],
+        call_span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        if args.is_empty() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0398",
+                format!("trait method `{method}` requires a receiver argument"),
+                Some(function.name.clone()),
+                call_span,
+            ));
+            return None;
+        }
+        let receiver_ty = self.check_expr(&args[0], scope, function)?;
+
+        // Resolve the method's `(param types after self, return type)` in terms
+        // of the receiver type, either via a bound on a generic type variable or
+        // via a concrete impl.
+        let (param_types, return_type) = if self.type_param_has_bound(
+            function,
+            &receiver_ty.name,
+            trait_name,
+        ) {
+            // Bounded generic receiver: resolve against the trait signature with
+            // `Self` = the type variable itself.
+            let sig = self
+                .traits
+                .get(trait_name)
+                .and_then(|methods| methods.iter().find(|m| m.name == method))
+                .expect("trait method exists");
+            let param_types = sig
+                .params
+                .iter()
+                .map(|param| substitute_self(&param.ty, &receiver_ty))
+                .collect::<Vec<_>>();
+            let return_type = substitute_self(&sig.return_type, &receiver_ty);
+            (param_types, return_type)
+        } else {
+            let dispatch = dispatch_type_name(&receiver_ty);
+            match self
+                .impl_methods
+                .get(&(dispatch.clone(), method.to_string()))
+                .cloned()
+            {
+                Some(resolved) => resolved,
+                None => {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0400",
+                        format!(
+                            "type `{}` does not implement trait `{trait_name}` (required to call `{method}`)",
+                            receiver_ty.name
+                        ),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    return None;
+                }
+            }
+        };
+
+        let extra = &args[1..];
+        if extra.len() != param_types.len() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0312",
+                format!(
+                    "trait method `{method}` expects {} argument(s) after the receiver but got {}",
+                    param_types.len(),
+                    extra.len()
+                ),
+                Some(function.name.clone()),
+                call_span,
+            ));
+            return None;
+        }
+        for (index, (arg, expected)) in extra.iter().zip(param_types.iter()).enumerate() {
+            let actual = self.check_expr(arg, scope, function);
+            if actual.as_ref() != Some(expected) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0313",
+                    format!(
+                        "argument {} for trait method `{method}` must be `{}` but got `{}`",
+                        index + 2,
+                        expected.name,
+                        actual
+                            .as_ref()
+                            .map(|ty| ty.name.as_str())
+                            .unwrap_or("<unknown>")
+                    ),
+                    Some(function.name.clone()),
+                    arg.span,
+                ));
+            }
+        }
+        Some(return_type)
+    }
+
+    /// True when `type_name` is a generic type parameter of `function` whose
+    /// declared bounds include `trait_name`.
+    fn type_param_has_bound(&self, function: &Function, type_name: &str, trait_name: &str) -> bool {
+        function
+            .type_params
+            .iter()
+            .any(|tp| tp.name == type_name && tp.bounds.iter().any(|b| b == trait_name))
+    }
+
     /// Check a call to a user-defined generic function. Each argument is checked
     /// for its own type, then unified against the (possibly type-variable
     /// containing) parameter type to build a substitution; the substitution is
@@ -2650,6 +3130,38 @@ impl<'a> Checker<'a> {
                 call_span,
             ));
             return None;
+        }
+
+        // Trait-bound check: each type parameter's inferred concrete type must
+        // implement every trait named in its bounds (`L0400`).
+        for (param_name, bounds) in signature
+            .type_params
+            .iter()
+            .zip(signature.type_param_bounds.iter())
+        {
+            if bounds.is_empty() {
+                continue;
+            }
+            let Some(concrete) = subst.get(param_name) else {
+                continue; // unresolved variables were already reported above
+            };
+            let dispatch = dispatch_type_name(concrete);
+            for bound in bounds {
+                if !self
+                    .impl_traits
+                    .contains(&(dispatch.clone(), bound.clone()))
+                {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0400",
+                        format!(
+                            "type `{}` inferred for type parameter `{param_name}` of `{name}` does not implement bound trait `{bound}`",
+                            concrete.name
+                        ),
+                        Some(function.name.clone()),
+                        call_span,
+                    ));
+                }
+            }
         }
 
         Some(substitute_type(&signature.return_type, &subst))
@@ -3299,6 +3811,11 @@ pub struct Signature {
     /// When non-empty, a call site infers each name from the argument types by
     /// unification and substitutes the result into `return_type`.
     pub type_params: Vec<String>,
+    /// Trait bounds per type parameter, in `type_params` order: each entry is the
+    /// list of trait names the type variable must satisfy (empty when unbounded).
+    /// A call site must check the inferred concrete type implements every bound
+    /// (`L0400`).
+    pub type_param_bounds: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4711,6 +5228,96 @@ mod tests {
             validate_source(source).is_ok(),
             "{:?}",
             validate_source(source).err()
+        );
+    }
+
+    #[test]
+    fn accepts_trait_impl_and_bounded_generic() {
+        let source = concat!(
+            "trait Show\n",
+            "    fn show self -> string\n\n",
+            "struct Point\n",
+            "    x i64\n",
+            "    y i64\n\n",
+            "impl Show for Point\n",
+            "    fn show self -> string\n",
+            "        to_string(self.x)\n\n",
+            "fn describe<T: Show> v T -> string\n",
+            "    v.show()\n\n",
+            "fn main -> i64\n",
+            "    let p Point = Point(3, 4)\n",
+            "    len(p.show()) + len(describe(p))\n",
+        );
+        assert!(
+            validate_source(source).is_ok(),
+            "{:?}",
+            validate_source(source).err()
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_impl_with_l0398() {
+        let source = concat!(
+            "trait Show\n",
+            "    fn show self -> string\n\n",
+            "struct Point\n",
+            "    x i64\n\n",
+            "impl Show for Point\n",
+            "    fn other self -> string\n",
+            "        to_string(self.x)\n\n",
+            "fn main -> i64\n",
+            "    0\n",
+        );
+        let diagnostics = validate_source(source).expect_err("incomplete impl");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0398"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_impl_with_l0399() {
+        let source = concat!(
+            "trait Show\n",
+            "    fn show self -> string\n\n",
+            "struct Point\n",
+            "    x i64\n\n",
+            "impl Show for Point\n",
+            "    fn show self -> string\n",
+            "        to_string(self.x)\n\n",
+            "impl Show for Point\n",
+            "    fn show self -> string\n",
+            "        to_string(self.x)\n\n",
+            "fn main -> i64\n",
+            "    0\n",
+        );
+        let diagnostics = validate_source(source).expect_err("duplicate impl");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0399"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_unbounded_type_at_bounded_call_with_l0400() {
+        // `describe` requires `T: Show`, but `i64` does not implement `Show`.
+        let source = concat!(
+            "trait Show\n",
+            "    fn show self -> string\n\n",
+            "struct Point\n",
+            "    x i64\n\n",
+            "impl Show for Point\n",
+            "    fn show self -> string\n",
+            "        to_string(self.x)\n\n",
+            "fn describe<T: Show> v T -> string\n",
+            "    v.show()\n\n",
+            "fn main -> i64\n",
+            "    len(describe(7))\n",
+        );
+        let diagnostics = validate_source(source).expect_err("unimplemented bound");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0400"),
+            "{diagnostics:?}"
         );
     }
 }

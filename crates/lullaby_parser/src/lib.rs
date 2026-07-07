@@ -18,6 +18,50 @@ pub struct Program {
     /// existing single-file artifacts and AST snapshots stay valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<String>,
+    /// Trait declarations (`trait NAME` + method signatures). Serde-defaulted so
+    /// existing single-file artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub traits: Vec<TraitDecl>,
+    /// Trait implementations (`impl Trait for Type` + method bodies).
+    /// Serde-defaulted so existing artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impls: Vec<ImplDecl>,
+}
+
+/// A trait declaration: `trait NAME` followed by indented method signatures.
+/// Each signature is `fn method self [param Type ...] -> Ret` with no body; the
+/// receiver is named `self` and `Self` may appear as a parameter/return type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraitDecl {
+    pub name: String,
+    pub methods: Vec<MethodSig>,
+    pub span: Span,
+    /// True when the declaration is exported with `pub`. Serde-defaulted to
+    /// `false` so existing single-file artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_public: bool,
+}
+
+/// A single trait method signature (no body). The first parameter is always the
+/// `self` receiver and is not stored in `params`; `params` holds the remaining
+/// parameters after `self`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodSig {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: TypeRef,
+    pub span: Span,
+}
+
+/// A trait implementation: `impl Trait for Type` followed by indented method
+/// bodies. Each method is an ordinary [`Function`] whose first parameter is
+/// `self` (its type is the implementing type).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImplDecl {
+    pub trait_name: String,
+    pub type_name: String,
+    pub methods: Vec<Function>,
+    pub span: Span,
 }
 
 /// A struct declaration: `struct NAME` followed by indented `field type` lines.
@@ -74,13 +118,14 @@ pub struct AliasDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
-    /// Declared type parameters `<T, U>` that follow the function name, in source
-    /// order. Empty for a non-generic function. Serde-defaulted to an empty list
-    /// so existing single-file artifacts and AST snapshots stay valid. A
-    /// type-parameter name is in scope as a type variable within this function's
-    /// signature and body only, where it is spelled as an ordinary `TypeRef`.
+    /// Declared type parameters `<T, U>` or bounded `<T: Trait>` that follow the
+    /// function name, in source order. Empty for a non-generic function.
+    /// Serde-defaulted to an empty list so existing single-file artifacts and AST
+    /// snapshots stay valid. A type-parameter name is in scope as a type variable
+    /// within this function's signature and body only, where it is spelled as an
+    /// ordinary `TypeRef`; its bounds name traits the type variable must satisfy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: TypeRef,
     pub body: Vec<Stmt>,
@@ -100,6 +145,60 @@ fn is_false(value: &bool) -> bool {
 pub struct Param {
     pub name: String,
     pub ty: TypeRef,
+}
+
+/// A generic type parameter `T` or a bounded one `T: Trait + Other`. The name is
+/// the type variable; `bounds` names the traits it must satisfy (empty when
+/// unbounded).
+///
+/// To keep existing AST snapshots and single-file artifacts valid, an unbounded
+/// type parameter serializes as the bare string `"T"` (the historical shape),
+/// and a bounded one as an object `{ "name": "T", "bounds": ["Trait"] }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+}
+
+impl TypeParam {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            bounds: Vec::new(),
+        }
+    }
+}
+
+impl Serialize for TypeParam {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.bounds.is_empty() {
+            serializer.serialize_str(&self.name)
+        } else {
+            use serde::ser::SerializeStruct;
+            let mut state = serializer.serialize_struct("TypeParam", 2)?;
+            state.serialize_field("name", &self.name)?;
+            state.serialize_field("bounds", &self.bounds)?;
+            state.end()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TypeParam {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Bare(String),
+            Bounded { name: String, bounds: Vec<String> },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Bare(name) => TypeParam {
+                name,
+                bounds: Vec::new(),
+            },
+            Repr::Bounded { name, bounds } => TypeParam { name, bounds },
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -548,6 +647,8 @@ impl<'a> Parser<'a> {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut imports = Vec::new();
+        let mut traits = Vec::new();
+        let mut impls = Vec::new();
         self.skip_newlines();
 
         // Leading `import NAME` lines: zero or more, before any declaration.
@@ -579,13 +680,21 @@ impl<'a> Parser<'a> {
                 if let Some(declaration) = self.parse_enum(is_public) {
                     enums.push(declaration);
                 }
+            } else if self.eat_keyword(Keyword::Trait).is_some() {
+                if let Some(declaration) = self.parse_trait(is_public) {
+                    traits.push(declaration);
+                }
+            } else if !is_public && self.eat_keyword(Keyword::Impl).is_some() {
+                if let Some(declaration) = self.parse_impl() {
+                    impls.push(declaration);
+                }
             } else if is_public {
                 // `pub` was consumed but is not followed by an exportable
                 // declaration.
                 let token = self.peek();
                 self.error(
                     "L0201",
-                    "`pub` must prefix a `fn`, `struct`, `enum`, or `alias` declaration",
+                    "`pub` must prefix a `fn`, `struct`, `enum`, `alias`, or `trait` declaration",
                     token.span,
                 );
                 self.advance();
@@ -609,7 +718,179 @@ impl<'a> Parser<'a> {
             structs,
             enums,
             imports,
+            traits,
+            impls,
         }
+    }
+
+    /// Parse `trait NAME` followed by an indented list of method signatures
+    /// `fn method self [param Type ...] -> Ret`. The receiver must be named
+    /// `self`; the method has no body.
+    fn parse_trait(&mut self, is_public: bool) -> Option<TraitDecl> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected trait name")?;
+        self.expect_newline("expected newline after trait name");
+        self.expect(TokenKindRef::Indent, "expected indented trait methods")?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKindRef::Dedent) && !self.at(TokenKindRef::Eof) {
+            if self.eat_keyword(Keyword::Fn).is_none() {
+                self.error(
+                    "L0216",
+                    "expected `fn` method signature in trait body",
+                    self.peek().span,
+                );
+                return None;
+            }
+            let method = self.parse_method_sig()?;
+            methods.push(method);
+            self.skip_newlines();
+        }
+        self.expect(TokenKindRef::Dedent, "expected trait body dedent")?;
+        Some(TraitDecl {
+            name,
+            methods,
+            span,
+            is_public,
+        })
+    }
+
+    /// Parse a single trait method signature `method self [param Type ...] -> Ret`
+    /// (the leading `fn` has been consumed). The first parameter must be `self`;
+    /// remaining parameters are returned in `params`.
+    fn parse_method_sig(&mut self) -> Option<MethodSig> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected trait method name")?;
+        let receiver = self.expect_identifier("expected `self` receiver in trait method")?;
+        if receiver != "self" {
+            self.error(
+                "L0216",
+                "the first parameter of a trait method must be `self`",
+                span,
+            );
+            return None;
+        }
+        let mut params = Vec::new();
+        while !self.at(TokenKindRef::Arrow)
+            && !self.at(TokenKindRef::Newline)
+            && !self.at(TokenKindRef::Eof)
+        {
+            let param_name = self.expect_identifier("expected parameter name")?;
+            let ty = self.expect_type("expected parameter type")?;
+            params.push(Param {
+                name: param_name,
+                ty,
+            });
+        }
+        if !self.eat(TokenKindRef::Arrow) {
+            self.error(
+                "L0216",
+                "expected `->` before trait method return type",
+                self.peek().span,
+            );
+            return None;
+        }
+        let return_type = self.expect_type("expected trait method return type")?;
+        self.expect_newline("expected newline after trait method signature");
+        Some(MethodSig {
+            name,
+            params,
+            return_type,
+            span,
+        })
+    }
+
+    /// Parse `impl Trait for Type` followed by an indented list of method bodies.
+    /// Each method is an ordinary `fn` whose first parameter is `self`.
+    fn parse_impl(&mut self) -> Option<ImplDecl> {
+        let span = self.previous().span;
+        let trait_name = self.expect_identifier("expected trait name after `impl`")?;
+        if self.eat_keyword(Keyword::For).is_none() {
+            self.error(
+                "L0216",
+                "expected `for` in `impl Trait for Type`",
+                self.peek().span,
+            );
+            return None;
+        }
+        let type_name = self.expect_identifier("expected implementing type name after `for`")?;
+        self.expect_newline("expected newline after impl header");
+        self.expect(TokenKindRef::Indent, "expected indented impl methods")?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKindRef::Dedent) && !self.at(TokenKindRef::Eof) {
+            if self.eat_keyword(Keyword::Fn).is_none() {
+                self.error(
+                    "L0216",
+                    "expected `fn` method body in impl block",
+                    self.peek().span,
+                );
+                return None;
+            }
+            let method = self.parse_impl_method(&type_name)?;
+            methods.push(method);
+            self.skip_newlines();
+        }
+        self.expect(TokenKindRef::Dedent, "expected impl body dedent")?;
+        Some(ImplDecl {
+            trait_name,
+            type_name,
+            methods,
+            span,
+        })
+    }
+
+    /// Parse an impl method `method self [param Type ...] -> Ret` + indented body
+    /// (the leading `fn` has been consumed). The `self` receiver is untyped in
+    /// source; its type is the implementing `type_name`, injected as the first
+    /// parameter so the rest of the pipeline sees an ordinary function.
+    fn parse_impl_method(&mut self, type_name: &str) -> Option<Function> {
+        let fn_span = self.previous().span;
+        let name = self.expect_identifier("expected method name after `fn`")?;
+        let receiver = self.expect_identifier("expected `self` receiver in impl method")?;
+        if receiver != "self" {
+            self.error(
+                "L0216",
+                "the first parameter of an impl method must be `self`",
+                fn_span,
+            );
+            return None;
+        }
+        let mut params = vec![Param {
+            name: "self".to_string(),
+            ty: TypeRef::new(type_name),
+        }];
+        while !self.at(TokenKindRef::Arrow)
+            && !self.at(TokenKindRef::Newline)
+            && !self.at(TokenKindRef::Eof)
+        {
+            let param_name = self.expect_identifier("expected parameter name")?;
+            let ty = self.expect_type("expected parameter type")?;
+            params.push(Param {
+                name: param_name,
+                ty,
+            });
+        }
+        if !self.eat(TokenKindRef::Arrow) {
+            self.error(
+                "L0202",
+                "expected `->` before impl method return type",
+                self.peek().span,
+            );
+            return None;
+        }
+        let return_type = self.expect_type("expected impl method return type after `->`")?;
+        self.expect_newline("expected newline after method signature");
+        self.expect(TokenKindRef::Indent, "expected indented method body")?;
+        let body = self.parse_block(&[BlockEnd::Dedent]);
+        self.expect(TokenKindRef::Dedent, "expected method body dedent")?;
+        Some(Function {
+            name,
+            type_params: Vec::new(),
+            params,
+            return_type,
+            body,
+            span: fn_span,
+            is_public: false,
+        })
     }
 
     /// Parse `enum NAME` followed by an indented list of `Variant type...` lines.
@@ -736,14 +1017,26 @@ impl<'a> Parser<'a> {
     /// name. Returns an empty list when no `<` follows. Each name must be a fresh
     /// identifier that is not a duplicate in the list and does not shadow a known
     /// primitive or built-in type; either violation is `L0394`.
-    fn parse_type_params(&mut self, fn_span: Span) -> Option<Vec<String>> {
+    fn parse_type_params(&mut self, fn_span: Span) -> Option<Vec<TypeParam>> {
         if !self.eat_symbol("<") {
             return Some(Vec::new());
         }
-        let mut names = Vec::new();
+        let mut params: Vec<TypeParam> = Vec::new();
         loop {
             let param_span = self.peek().span;
             let name = self.expect_identifier("expected type parameter name")?;
+            // Optional trait bounds `T: Trait` or `T: A + B`.
+            let mut bounds = Vec::new();
+            if self.eat_symbol(":") {
+                loop {
+                    bounds.push(
+                        self.expect_identifier("expected trait name in type-parameter bound")?,
+                    );
+                    if !self.eat_symbol("+") {
+                        break;
+                    }
+                }
+            }
             if is_builtin_type_name(&name) {
                 self.error(
                     "L0394",
@@ -752,14 +1045,14 @@ impl<'a> Parser<'a> {
                     ),
                     param_span,
                 );
-            } else if names.contains(&name) {
+            } else if params.iter().any(|p| p.name == name) {
                 self.error(
                     "L0394",
                     format!("duplicate type parameter `{name}` in the `<...>` list"),
                     param_span,
                 );
             } else {
-                names.push(name);
+                params.push(TypeParam { name, bounds });
             }
             if self.eat_symbol(">") {
                 break;
@@ -774,7 +1067,7 @@ impl<'a> Parser<'a> {
             }
         }
         let _ = fn_span;
-        Some(names)
+        Some(params)
     }
 
     fn parse_block(&mut self, ends: &[BlockEnd]) -> Vec<Stmt> {
@@ -1579,7 +1872,6 @@ fn planned_syntax_name(kind: &TokenKind) -> Option<&'static str> {
         Keyword::Module => "module",
         Keyword::Package => "package",
         Keyword::Union => "union",
-        Keyword::Trait => "trait",
         Keyword::Interface => "interface",
         Keyword::Class => "class",
         Keyword::Switch => "switch",
@@ -2192,11 +2484,45 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         assert_eq!(
             program.functions[0].type_params,
-            vec!["T".to_string(), "U".to_string()]
+            vec![TypeParam::new("T"), TypeParam::new("U")]
         );
         // A type-parameter name is spelled as an ordinary `TypeRef`.
         assert_eq!(program.functions[0].params[1].ty.name, "T");
         assert_eq!(program.functions[0].return_type.name, "T");
+    }
+
+    #[test]
+    fn parses_trait_impl_and_bounded_type_param() {
+        let source = concat!(
+            "trait Show\n",
+            "    fn show self -> string\n\n",
+            "struct Point\n",
+            "    x i64\n\n",
+            "impl Show for Point\n",
+            "    fn show self -> string\n",
+            "        to_string(self.x)\n\n",
+            "fn describe<T: Show> v T -> string\n",
+            "    v.show()\n",
+        );
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        assert_eq!(program.traits.len(), 1);
+        assert_eq!(program.traits[0].name, "Show");
+        assert_eq!(program.traits[0].methods[0].name, "show");
+        assert_eq!(program.impls.len(), 1);
+        assert_eq!(program.impls[0].trait_name, "Show");
+        assert_eq!(program.impls[0].type_name, "Point");
+        // The impl method injects an untyped `self` with the implementing type.
+        assert_eq!(program.impls[0].methods[0].params[0].name, "self");
+        assert_eq!(program.impls[0].methods[0].params[0].ty.name, "Point");
+        // The bounded type parameter records its trait bound.
+        let describe = program
+            .functions
+            .iter()
+            .find(|f| f.name == "describe")
+            .expect("describe");
+        assert_eq!(describe.type_params[0].name, "T");
+        assert_eq!(describe.type_params[0].bounds, vec!["Show".to_string()]);
     }
 
     #[test]

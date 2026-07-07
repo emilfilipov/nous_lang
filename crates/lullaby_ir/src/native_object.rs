@@ -627,6 +627,8 @@ mod tests {
         let module = BytecodeModule {
             structs: Vec::new(),
             enums: Vec::new(),
+            impls: Vec::new(),
+            trait_methods: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),
@@ -679,6 +681,8 @@ mod tests {
         let module = BytecodeModule {
             structs: Vec::new(),
             enums: Vec::new(),
+            impls: Vec::new(),
+            trait_methods: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),
@@ -736,6 +740,8 @@ mod tests {
         BytecodeModule {
             structs: Vec::new(),
             enums: Vec::new(),
+            impls: Vec::new(),
+            trait_methods: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),

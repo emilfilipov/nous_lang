@@ -548,11 +548,15 @@ fn merge(modules: &[Module]) -> Program {
     let mut aliases = Vec::new();
     let mut structs = Vec::new();
     let mut enums = Vec::new();
+    let mut traits = Vec::new();
+    let mut impls = Vec::new();
     for module in modules {
         functions.extend(module.program.functions.iter().cloned());
         aliases.extend(module.program.aliases.iter().cloned());
         structs.extend(module.program.structs.iter().cloned());
         enums.extend(module.program.enums.iter().cloned());
+        traits.extend(module.program.traits.iter().cloned());
+        impls.extend(module.program.impls.iter().cloned());
     }
     Program {
         functions,
@@ -560,5 +564,7 @@ fn merge(modules: &[Module]) -> Program {
         structs,
         enums,
         imports: Vec::new(),
+        traits,
+        impls,
     }
 }

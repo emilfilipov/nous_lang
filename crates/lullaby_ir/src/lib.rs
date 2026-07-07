@@ -10,6 +10,7 @@ use lullaby_parser::{
 use lullaby_runtime::{
     ResolvedPlace, RuntimeError, Value, apply_compound, char_find, expect_i64, expect_list,
     expect_map, expect_string, get_place, option_value, scalar_order_keys, set_place,
+    value_type_name,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,23 @@ pub struct IrModule {
     pub structs: Vec<IrStructDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enums: Vec<IrEnumDef>,
+    /// Trait implementations: each maps a `(type, method)` to a lowered function.
+    /// Serde-defaulted so existing artifacts and snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impls: Vec<IrImplMethod>,
+    /// Names declared as trait methods. A call to one dispatches on the
+    /// receiver's runtime type via `impls`. Serde-defaulted for compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trait_methods: Vec<String>,
+}
+
+/// One trait impl method in the IR: the implementing type name, the method name,
+/// and the lowered function body. Dispatch keys on `(type_name, method_name)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IrImplMethod {
+    pub type_name: String,
+    pub method_name: String,
+    pub function: IrFunction,
 }
 
 /// A struct type in the IR: name plus ordered `(field, type)` pairs.
@@ -726,6 +744,22 @@ pub struct BytecodeModule {
     pub structs: Vec<IrStructDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enums: Vec<IrEnumDef>,
+    /// Trait implementations, carried through to the bytecode VM. Each maps a
+    /// `(type, method)` to a lowered instruction-body function.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impls: Vec<BytecodeImplMethod>,
+    /// Names declared as trait methods, carried through for dispatch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trait_methods: Vec<String>,
+}
+
+/// One trait impl method in the bytecode module: the implementing type name, the
+/// method name, and the instruction-body function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BytecodeImplMethod {
+    pub type_name: String,
+    pub method_name: String,
+    pub function: BytecodeFunction,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1361,21 +1395,35 @@ fn validate_bytecode_instructions(
     Ok(())
 }
 
+fn ir_function_to_bytecode(function: &IrFunction) -> BytecodeFunction {
+    BytecodeFunction {
+        name: function.name.clone(),
+        params: function.params.clone(),
+        return_type: function.return_type.clone(),
+        instructions: lower_bytecode_block(&function.body),
+        span: function.span,
+    }
+}
+
 pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
     BytecodeModule {
         functions: module
             .functions
             .iter()
-            .map(|function| BytecodeFunction {
-                name: function.name.clone(),
-                params: function.params.clone(),
-                return_type: function.return_type.clone(),
-                instructions: lower_bytecode_block(&function.body),
-                span: function.span,
-            })
+            .map(ir_function_to_bytecode)
             .collect(),
         structs: module.structs.clone(),
         enums: module.enums.clone(),
+        impls: module
+            .impls
+            .iter()
+            .map(|impl_method| BytecodeImplMethod {
+                type_name: impl_method.type_name.clone(),
+                method_name: impl_method.method_name.clone(),
+                function: ir_function_to_bytecode(&impl_method.function),
+            })
+            .collect(),
+        trait_methods: module.trait_methods.clone(),
     }
 }
 
@@ -1388,6 +1436,16 @@ pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError>
             .iter()
             .map(bytecode_function_to_ir)
             .collect(),
+        impls: module
+            .impls
+            .iter()
+            .map(|impl_method| IrImplMethod {
+                type_name: impl_method.type_name.clone(),
+                method_name: impl_method.method_name.clone(),
+                function: bytecode_function_to_ir(&impl_method.function),
+            })
+            .collect(),
+        trait_methods: module.trait_methods.clone(),
     };
     run_main(&ir)
 }
@@ -1751,6 +1809,8 @@ impl ConstantFolder {
         IrModule {
             structs: module.structs.clone(),
             enums: module.enums.clone(),
+            impls: module.impls.clone(),
+            trait_methods: module.trait_methods.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2060,6 +2120,8 @@ impl CommonSubexpressionEliminator {
         IrModule {
             structs: module.structs.clone(),
             enums: module.enums.clone(),
+            impls: module.impls.clone(),
+            trait_methods: module.trait_methods.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2422,6 +2484,8 @@ impl LoopInvariantMover {
         IrModule {
             structs: module.structs.clone(),
             enums: module.enums.clone(),
+            impls: module.impls.clone(),
+            trait_methods: module.trait_methods.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2801,6 +2865,8 @@ impl CopyPropagator {
         IrModule {
             structs: module.structs.clone(),
             enums: module.enums.clone(),
+            impls: module.impls.clone(),
+            trait_methods: module.trait_methods.clone(),
             functions: module
                 .functions
                 .iter()
@@ -3133,6 +3199,8 @@ impl DeadCodeEliminator {
         IrModule {
             structs: module.structs.clone(),
             enums: module.enums.clone(),
+            impls: module.impls.clone(),
+            trait_methods: module.trait_methods.clone(),
             functions: module
                 .functions
                 .iter()
@@ -3269,6 +3337,11 @@ struct IrRuntime<'a> {
     heap: Vec<Option<Value>>,
     refcounts: HashMap<usize, usize>,
     call_stack: Vec<TraceFrame>,
+    /// Trait-method dispatch table: `(receiver type name, method name)` -> impl
+    /// function. Built once from every `impl` in the module.
+    impl_methods: HashMap<(String, String), &'a IrFunction>,
+    /// Names that are trait methods; a call to one dispatches via `impl_methods`.
+    trait_method_names: std::collections::HashSet<String>,
 }
 
 impl<'a> IrRuntime<'a> {
@@ -3280,7 +3353,7 @@ impl<'a> IrRuntime<'a> {
             .collect::<HashMap<_, _>>();
 
         if !functions.contains_key("main") {
-            return Err(RuntimeError::new("L0400", "missing `main` function"));
+            return Err(RuntimeError::new("L0422", "missing `main` function"));
         }
 
         let structs = module
@@ -3311,6 +3384,19 @@ impl<'a> IrRuntime<'a> {
             }
         }
 
+        // Build the trait-method dispatch table from all impls in the module.
+        let mut impl_methods = HashMap::new();
+        for impl_method in &module.impls {
+            impl_methods.insert(
+                (
+                    impl_method.type_name.clone(),
+                    impl_method.method_name.clone(),
+                ),
+                &impl_method.function,
+            );
+        }
+        let trait_method_names = module.trait_methods.iter().cloned().collect();
+
         Ok(Self {
             functions,
             structs,
@@ -3318,10 +3404,31 @@ impl<'a> IrRuntime<'a> {
             heap: Vec::new(),
             refcounts: HashMap::new(),
             call_stack: Vec::new(),
+            impl_methods,
+            trait_method_names,
         })
     }
 
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        // Trait-method dispatch: select the impl by the receiver's runtime type.
+        if self.trait_method_names.contains(name) {
+            let receiver_type = args.first().map(value_type_name).ok_or_else(|| {
+                RuntimeError::new(
+                    "L0401",
+                    format!("trait method `{name}` called without a receiver"),
+                )
+            })?;
+            let method = *self
+                .impl_methods
+                .get(&(receiver_type.clone(), name.to_string()))
+                .ok_or_else(|| {
+                    RuntimeError::new(
+                        "L0401",
+                        format!("type `{receiver_type}` does not implement trait method `{name}`"),
+                    )
+                })?;
+            return self.invoke_function(method, args);
+        }
         if let Some(enum_name) = self.variants.get(name) {
             return Ok(Value::Enum {
                 enum_name: enum_name.to_string(),
@@ -3397,39 +3504,49 @@ impl<'a> IrRuntime<'a> {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("L0401", format!("unknown function `{name}`"))
                 })?;
-
-                if function.params.len() != args.len() {
-                    return Err(RuntimeError::new(
-                        "L0402",
-                        format!(
-                            "function `{name}` expects {} arguments but got {}",
-                            function.params.len(),
-                            args.len()
-                        ),
-                    ));
-                }
-
-                let mut env = Env::default();
-                for (param, value) in function.params.iter().zip(args) {
-                    env.define(param.name.clone(), value);
-                }
-
-                self.call_stack.push(TraceFrame {
-                    function: function.name.clone(),
-                    span: Some(function.span),
-                });
-                let result = self.eval_block(&function.body, &mut env);
-                let traceback = self.call_stack.clone();
-                self.call_stack.pop();
-
-                match result.map_err(|error| error.with_traceback(traceback))? {
-                    Control::Return(value) | Control::Value(value) => Ok(value),
-                    Control::Break | Control::Continue => Err(RuntimeError::new(
-                        "L0410",
-                        "loop control escaped function body",
-                    )),
-                }
+                self.invoke_function(function, args)
             }
+        }
+    }
+
+    /// Execute a user function (or trait impl method) with the given argument
+    /// values, threading the traceback and translating loop-control escape.
+    fn invoke_function(
+        &mut self,
+        function: &'a IrFunction,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        if function.params.len() != args.len() {
+            return Err(RuntimeError::new(
+                "L0402",
+                format!(
+                    "function `{}` expects {} arguments but got {}",
+                    function.name,
+                    function.params.len(),
+                    args.len()
+                ),
+            ));
+        }
+
+        let mut env = Env::default();
+        for (param, value) in function.params.iter().zip(args) {
+            env.define(param.name.clone(), value);
+        }
+
+        self.call_stack.push(TraceFrame {
+            function: function.name.clone(),
+            span: Some(function.span),
+        });
+        let result = self.eval_block(&function.body, &mut env);
+        let traceback = self.call_stack.clone();
+        self.call_stack.pop();
+
+        match result.map_err(|error| error.with_traceback(traceback))? {
+            Control::Return(value) | Control::Value(value) => Ok(value),
+            Control::Break | Control::Continue => Err(RuntimeError::new(
+                "L0410",
+                "loop control escaped function body",
+            )),
         }
     }
 
@@ -4696,10 +4813,30 @@ impl<'a> Lowerer<'a> {
                     .collect(),
             })
             .collect();
+        // Lower every trait impl method to an IR function, keyed by
+        // `(type_name, method_name)` for runtime dispatch.
+        let mut impls = Vec::new();
+        for decl in &self.program.impls {
+            for method in &decl.methods {
+                impls.push(IrImplMethod {
+                    type_name: decl.type_name.clone(),
+                    method_name: method.name.clone(),
+                    function: self.lower_function(method)?,
+                });
+            }
+        }
+        let trait_methods = self
+            .program
+            .traits
+            .iter()
+            .flat_map(|decl| decl.methods.iter().map(|method| method.name.clone()))
+            .collect();
         Ok(IrModule {
             functions,
             structs,
             enums,
+            impls,
+            trait_methods,
         })
     }
 
@@ -4715,6 +4852,15 @@ impl<'a> Lowerer<'a> {
 
     fn is_struct(&self, name: &str) -> bool {
         self.program.structs.iter().any(|s| s.name == name)
+    }
+
+    /// If `name` is a trait method, its declared signature (from the trait).
+    fn trait_method_sig(&self, name: &str) -> Option<&'a lullaby_parser::MethodSig> {
+        self.program
+            .traits
+            .iter()
+            .flat_map(|decl| decl.methods.iter())
+            .find(|method| method.name == name)
     }
 
     /// If `name` is a known enum variant, the owning enum's name.
@@ -5443,6 +5589,18 @@ impl<'a> Lowerer<'a> {
         args: &[IrExpr],
         span: Span,
     ) -> Result<TypeRef, IrLoweringError> {
+        // A trait-method call: its result type is the trait method's return type
+        // with `Self` = the receiver's type. Generics are erased, so a bounded
+        // `v.show()` resolves the same way on the concrete or type-variable type.
+        if let Some(method_sig) = self.trait_method_sig(name) {
+            let receiver = args.first().ok_or_else(|| {
+                IrLoweringError::new(
+                    format!("trait method `{name}` call missing receiver"),
+                    Some(span),
+                )
+            })?;
+            return Ok(substitute_self_type(&method_sig.return_type, &receiver.ty));
+        }
         // A call whose name is a known enum variant is enum construction; its
         // type is the owning enum's nominal type.
         if let Some(enum_name) = self.enum_of_variant(name) {
@@ -5597,6 +5755,26 @@ fn reference_inner(args: &[IrExpr], ctor: &str, span: Span) -> Result<TypeRef, I
                 Some(span),
             )
         })
+}
+
+/// Replace `Self` in a type with the receiver's concrete type, recursing into
+/// compound generic types. Used to compute a trait method's IR result type.
+fn substitute_self_type(ty: &TypeRef, self_ty: &TypeRef) -> TypeRef {
+    if ty.name == "Self" {
+        return self_ty.clone();
+    }
+    for ctor in [
+        "array", "list", "option", "result", "map", "ptr", "ref", "rc",
+    ] {
+        if let Some(args) = ty.generic_args(ctor) {
+            let mapped: Vec<TypeRef> = args
+                .iter()
+                .map(|arg| substitute_self_type(arg, self_ty))
+                .collect();
+            return generic_type(ctor, &mapped);
+        }
+    }
+    ty.clone()
 }
 
 #[cfg(test)]
@@ -6331,6 +6509,8 @@ mod tests {
         let module = BytecodeModule {
             structs: Vec::new(),
             enums: Vec::new(),
+            impls: Vec::new(),
+            trait_methods: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: vec![IrParam {
@@ -6362,6 +6542,8 @@ mod tests {
         let module = BytecodeModule {
             structs: Vec::new(),
             enums: Vec::new(),
+            impls: Vec::new(),
+            trait_methods: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),

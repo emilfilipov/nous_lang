@@ -1,0 +1,37 @@
+# Traits: declaration, impls for a struct and an enum, receiver-type method
+# dispatch, and a bounded generic that calls a trait method.
+
+trait Show
+    fn show self -> string
+
+struct Point
+    x i64
+    y i64
+
+enum Light
+    Red
+    Green
+
+impl Show for Point
+    fn show self -> string
+        "(" + to_string(self.x) + ", " + to_string(self.y) + ")"
+
+impl Show for Light
+    fn show self -> string
+        match self
+            Red -> "red"
+            Green -> "green"
+
+fn describe<T: Show> v T -> string
+    "show=" + v.show()
+
+fn main -> i64
+    let p Point = Point(3, 4)
+    let g Light = Green
+    # Direct trait-method calls dispatch by the receiver's concrete type.
+    let a i64 = len(p.show())
+    let b i64 = len(g.show())
+    # A bounded generic resolves `v.show()` on the concrete runtime type.
+    let c i64 = len(describe(p))
+    let d i64 = len(describe(g))
+    a + b + c + d

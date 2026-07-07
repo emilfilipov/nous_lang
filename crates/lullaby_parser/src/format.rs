@@ -7,8 +7,9 @@
 //! formatter never reorders a file.
 
 use crate::{
-    AliasDecl, AssignOp, BinaryOp, EnumDecl, Expr, ExprKind, Function, IfBranch, MatchArm,
-    MatchPattern, Place, Program, RegionDecl, Stmt, StructDecl, UnaryOp,
+    AliasDecl, AssignOp, BinaryOp, EnumDecl, Expr, ExprKind, Function, IfBranch, ImplDecl,
+    MatchArm, MatchPattern, MethodSig, Place, Program, RegionDecl, Stmt, StructDecl, TraitDecl,
+    TypeParam, UnaryOp,
 };
 
 const INDENT: &str = "    ";
@@ -26,6 +27,12 @@ pub fn format_program(program: &Program) -> String {
     }
     for decl in &program.enums {
         items.push((decl.span.line, render_enum(decl)));
+    }
+    for decl in &program.traits {
+        items.push((decl.span.line, render_trait(decl)));
+    }
+    for decl in &program.impls {
+        items.push((decl.span.line, render_impl(decl)));
     }
     for function in &program.functions {
         items.push((function.span.line, render_function(function)));
@@ -69,11 +76,83 @@ fn render_enum(decl: &EnumDecl) -> String {
     out
 }
 
+/// Render a type-parameter list `<T, U: Show + Ord>` (no surrounding `<>` when
+/// the list is empty). Bounds join with ` + `.
+fn render_type_params(type_params: &[TypeParam]) -> String {
+    if type_params.is_empty() {
+        return String::new();
+    }
+    let rendered = type_params
+        .iter()
+        .map(|param| {
+            if param.bounds.is_empty() {
+                param.name.clone()
+            } else {
+                format!("{}: {}", param.name, param.bounds.join(" + "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{rendered}>")
+}
+
+fn render_trait(decl: &TraitDecl) -> String {
+    let mut out = String::new();
+    if decl.is_public {
+        out.push_str("pub ");
+    }
+    out.push_str(&format!("trait {}", decl.name));
+    for method in &decl.methods {
+        out.push('\n');
+        out.push_str(INDENT);
+        out.push_str(&render_method_sig(method));
+    }
+    out
+}
+
+fn render_method_sig(method: &MethodSig) -> String {
+    let mut header = format!("fn {} self", method.name);
+    for param in &method.params {
+        header.push_str(&format!(" {} {}", param.name, param.ty.name));
+    }
+    header.push_str(&format!(" -> {}", method.return_type.name));
+    header
+}
+
+fn render_impl(decl: &ImplDecl) -> String {
+    let mut out = format!("impl {} for {}", decl.trait_name, decl.type_name);
+    for method in &decl.methods {
+        // Render each method with its `self` receiver untyped (source spelling)
+        // and its body indented one level under the impl block.
+        let rendered = render_impl_method(method);
+        let indented = rendered
+            .lines()
+            .map(|line| format!("{INDENT}{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push('\n');
+        out.push_str(&indented);
+    }
+    out
+}
+
+/// Render an impl method as `fn name self [param Type ...] -> Ret` + body. The
+/// first parameter is the injected `self` receiver, which is rendered untyped to
+/// round-trip with the parser.
+fn render_impl_method(function: &Function) -> String {
+    let mut header = format!("fn {} self", function.name);
+    for param in function.params.iter().skip(1) {
+        header.push_str(&format!(" {} {}", param.name, param.ty.name));
+    }
+    header.push_str(&format!(" -> {}", function.return_type.name));
+    let mut out = header;
+    render_block(&function.body, 1, &mut out);
+    out
+}
+
 fn render_function(function: &Function) -> String {
     let mut header = format!("fn {}", function.name);
-    if !function.type_params.is_empty() {
-        header.push_str(&format!("<{}>", function.type_params.join(", ")));
-    }
+    header.push_str(&render_type_params(&function.type_params));
     for param in &function.params {
         header.push_str(&format!(" {} {}", param.name, param.ty.name));
     }
