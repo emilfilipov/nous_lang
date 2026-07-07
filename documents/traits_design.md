@@ -40,9 +40,9 @@ impl Show for Point
 
 - `impl Trait for Type` provides a body for every method the trait requires.
 - Missing or extra methods, or a signature that does not match the trait
-  (accounting for `Self` = `Type`), are errors (`L0397`).
+  (accounting for `Self` = `Type`), are errors (`L0398`).
 - A type may implement several traits; a trait may be implemented for many
-  types. Duplicate `impl Trait for Type` is an error (`L0398`).
+  types. Duplicate `impl Trait for Type` is an error (`L0399`).
 
 ## Calling trait methods
 
@@ -77,7 +77,7 @@ fn show_all<T: Show> xs list<T> -> string
   of type `T` may call the methods of its bound traits (`a.less(b)`), which the
   bare-`T` rules in the generics increment otherwise forbid.
 - At a **call site**, the inferred concrete type for `T` must implement every
-  bound trait, or it is an error (`L0399`). This is checked during the same
+  bound trait, or it is an error (`L0400`). This is checked during the same
   call-site unification generics already performs.
 
 ## Representation and backends
@@ -96,10 +96,10 @@ fn show_all<T: Show> xs list<T> -> string
 
 ## Diagnostics
 
-- `L0397` — an `impl` does not satisfy the trait (missing/extra/mismatched
+- `L0398` — an `impl` does not satisfy the trait (missing/extra/mismatched
   method).
-- `L0398` — duplicate `impl Trait for Type`.
-- `L0399` — a type used where a trait bound is required does not implement it.
+- `L0399` — duplicate `impl Trait for Type`.
+- `L0400` — a type used where a trait bound is required does not implement it.
 
 ## Scope and sequencing
 
