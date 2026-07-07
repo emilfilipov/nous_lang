@@ -616,6 +616,7 @@ fn collect_expr_references(expr: &Expr, out: &mut Vec<(String, Span)>) {
             }
         }
         ExprKind::Field { target, .. } => collect_expr_references(target, out),
+        ExprKind::Await { expr } => collect_expr_references(expr, out),
         ExprKind::Match { scrutinee, arms } => {
             collect_expr_references(scrutinee, out);
             for MatchArm { body, .. } in arms {

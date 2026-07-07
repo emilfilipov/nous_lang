@@ -140,9 +140,8 @@ construction.)
 
 ### Further deferred work
 
-Generic `Chan<T>`; `select` over multiple channels; thread-pools; and
-`async`/`await` with an executor (a separate, larger effort that reuses this
-channel layer). Because `spawn`'s argument shape is fixed to `(Chan, i64)` and
+Generic `Chan<T>`; `select` over multiple channels; and thread-pools.
+Because `spawn`'s argument shape is fixed to `(Chan, i64)` and
 first-class functions do not yet capture their environment, a worker cannot
 receive a `Mutex` (or a second channel) directly — passing shared mutable state
 into a worker waits on capturing closures or a more general `spawn`. The `Mutex`
@@ -151,6 +150,67 @@ level today (covered by a runtime test). A concurrent **server** additionally
 needs cross-thread socket sharing: socket handles are per-interpreter integer
 indexes into a runtime-local table, so a `Socket` cannot currently cross a
 `spawn` boundary — sharing sockets across threads is a separate follow-up.
+
+## Third increment (delivered): `async`/`await`
+
+`async`/`await` is delivered on all three backends, built directly on the task
+layer above rather than on a new reactor.
+
+```lby
+async fn square x i64 -> i64
+    x * x
+
+async fn cube x i64 -> i64
+    x * x * x
+
+fn main -> i64
+    let a Future<i64> = square(6)
+    let b Future<i64> = cube(3)
+    await a + await b        # 36 + 27 -> 63
+```
+
+### Semantics
+
+- **`async fn NAME ... -> T`** declares an asynchronous function. *Calling* it
+  does not run it to completion inline; it spawns the body on an OS thread and
+  immediately returns a **`Future<T>`** handle. Two `async` calls therefore run
+  concurrently.
+- **`await EXPR`**, where `EXPR` is a `Future<T>`, blocks the current thread
+  until that future completes and evaluates to its `T`. Awaiting the same future
+  more than once is not required; each `Future<T>` is awaited to obtain its
+  value.
+- Results are **deterministic** even though scheduling is not: `square(6)` and
+  `cube(3)` may finish in any order, but `await a + await b` is always `63`.
+  Tests assert on results, never on interleaving.
+
+### How it maps to the task layer
+
+A `Future<T>` is the value-producing sibling of the existing `Task`: calling an
+`async fn` spawns a detached thread (over the same `Arc<Program>`/`Arc<IrModule>`
+share used by `spawn`) that runs the function body and stores its `Value` result
+in a shared result cell; `await` joins that thread and reads the cell. `Value` is
+already `Send`, so arguments and results cross threads safely. The AST runtime,
+the IR interpreter, and the bytecode VM all lower `async fn`/`Future`/`await`
+this way, so `run_async.lby` returns `63` identically on every backend and
+optimized variant.
+
+### Typing and diagnostics
+
+Semantics types an `async fn ... -> T` as producing `Future<T>`; `await e`
+requires `e: Future<T>` and has type `T`. Awaiting a non-future (an ordinary
+value or a synchronous call), or an `await` whose future type cannot be
+resolved, is rejected with **L0344**. The native and WASM scalar backends do not
+support `Future`/`await` and skip such functions (they still run on the
+interpreters).
+
+### Deferred
+
+A true single-threaded cooperative executor (one OS thread multiplexing many
+suspended futures), `select`/`join_all` combinators, async channels,
+cancellation, and async I/O integration are deferred; the current model gives
+real parallelism and correct results by reusing the thread/task layer, and the
+`async`/`await` surface stays stable when a cooperative executor lands beneath
+it.
 
 ## Why these choices
 

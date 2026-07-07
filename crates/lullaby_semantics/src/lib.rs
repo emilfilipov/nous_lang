@@ -137,6 +137,7 @@ fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnosti
                 .collect(),
             span: function.span,
             is_public: function.is_public,
+            is_async: function.is_async,
         })
         .collect();
 
@@ -243,6 +244,7 @@ fn resolve_program_aliases(program: &Program) -> (Program, Vec<SemanticDiagnosti
                                 .collect(),
                             span: function.span,
                             is_public: function.is_public,
+                            is_async: function.is_async,
                         })
                         .collect(),
                     span: decl.span,
@@ -1117,6 +1119,7 @@ impl<'a> Checker<'a> {
                         .iter()
                         .map(|tp| tp.bounds.clone())
                         .collect(),
+                    is_async: function.is_async,
                 },
             );
         }
@@ -1661,6 +1664,7 @@ impl<'a> Checker<'a> {
                 self.check_freed_uses(index, freed, function);
             }
             ExprKind::Field { target, .. } => self.check_freed_uses(target, freed, function),
+            ExprKind::Await { expr } => self.check_freed_uses(expr, freed, function),
             ExprKind::Unary { expr, .. } => self.check_freed_uses(expr, freed, function),
             ExprKind::Binary { left, right, .. } => {
                 self.check_freed_uses(left, freed, function);
@@ -1948,6 +1952,26 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.check_match(scrutinee, arms, expr.span, scope, function)
+            }
+            ExprKind::Await { expr: inner } => {
+                // `await e` requires `e: Future<T>` and produces `T`. Awaiting a
+                // non-future (an ordinary value or synchronous call) is `L0344`.
+                let inner_type = self.check_expr(inner, scope, function)?;
+                match future_inner(&inner_type) {
+                    Some(result_type) => Some(result_type),
+                    None => {
+                        self.diagnostics.push(SemanticDiagnostic::at(
+                            "L0344",
+                            format!(
+                                "`await` expects a `Future<T>` but got `{}`; only the result of calling an `async fn` can be awaited",
+                                inner_type.name
+                            ),
+                            Some(function.name.clone()),
+                            expr.span,
+                        ));
+                        None
+                    }
+                }
             }
         };
 
@@ -3232,6 +3256,12 @@ impl<'a> Checker<'a> {
                             ));
                         }
                     }
+                    // Calling an `async fn` runs its body on a spawned thread and
+                    // yields a `Future<return_type>`; `await` later resolves the
+                    // `T`. A synchronous call yields the return type directly.
+                    if signature.is_async {
+                        return Some(future_type(&signature.return_type));
+                    }
                     return Some(signature.return_type);
                 }
 
@@ -4437,11 +4467,26 @@ pub struct Signature {
     /// A call site must check the inferred concrete type implements every bound
     /// (`L0400`).
     pub type_param_bounds: Vec<Vec<String>>,
+    /// True when the function is declared `async fn`. A call to it produces a
+    /// `Future<return_type>` rather than `return_type` directly, resolved by
+    /// `await`.
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Scope {
     locals: HashMap<String, TypeRef>,
+}
+
+/// The `Future<T>` type spelling for an inner type `T`, matching the canonical
+/// generic spelling used everywhere else (`Future<i64>`, `Future<option<i64>>`).
+fn future_type(inner: &TypeRef) -> TypeRef {
+    TypeRef::new(format!("Future<{}>", inner.name))
+}
+
+/// The awaited inner type of a `Future<T>` spelling, if `ty` is one.
+fn future_inner(ty: &TypeRef) -> Option<TypeRef> {
+    ty.generic_arg("Future")
 }
 
 /// If both operand types are the same numeric type (`i64` or `f64`), return it.

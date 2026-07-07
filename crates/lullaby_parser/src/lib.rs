@@ -134,6 +134,12 @@ pub struct Function {
     /// `false` so existing single-file artifacts and AST snapshots stay valid.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_public: bool,
+    /// True when the function is declared `async fn`. Calling an async function
+    /// runs its body on a spawned OS thread and yields a `Future<T>` handle that
+    /// `await` resolves to the `T`. Serde-defaulted to `false` so existing
+    /// single-file artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_async: bool,
 }
 
 /// serde `skip_serializing_if` predicate for the `is_public` visibility flag.
@@ -593,6 +599,12 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+    /// `await EXPR`: block until the awaited `Future<T>` completes and yield its
+    /// `T`. The operand is any expression that evaluates to a `Future<T>`
+    /// (typically a call to an `async fn`).
+    Await {
+        expr: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,10 +699,22 @@ impl<'a> Parser<'a> {
             // An optional `pub` modifier prefixes an exported top-level
             // declaration. It only applies to `fn`/`struct`/`enum`/`alias`.
             let is_public = self.eat_keyword(Keyword::Pub).is_some();
+            // An optional `async` modifier prefixes a `fn` declaration. `async`
+            // only applies to functions; `async fn` and `pub async fn` are both
+            // valid, but `async` before anything other than `fn` is an error.
+            let is_async = self.eat_keyword(Keyword::Async).is_some();
             if self.eat_keyword(Keyword::Fn).is_some() {
-                if let Some(function) = self.parse_function(is_public) {
+                if let Some(function) = self.parse_function(is_public, is_async) {
                     functions.push(function);
                 }
+            } else if is_async {
+                let token = self.peek();
+                self.error(
+                    "L0201",
+                    "`async` must prefix a `fn` declaration",
+                    token.span,
+                );
+                self.advance();
             } else if self.eat_keyword(Keyword::Alias).is_some() {
                 if let Some(alias) = self.parse_alias(is_public) {
                     aliases.push(alias);
@@ -913,6 +937,7 @@ impl<'a> Parser<'a> {
             body,
             span: fn_span,
             is_public: false,
+            is_async: false,
         })
     }
 
@@ -992,7 +1017,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_function(&mut self, is_public: bool) -> Option<Function> {
+    fn parse_function(&mut self, is_public: bool, is_async: bool) -> Option<Function> {
         let fn_span = self.previous().span;
         let name = self.expect_identifier("expected function name after `fn`")?;
         let type_params = self.parse_type_params(fn_span)?;
@@ -1033,6 +1058,7 @@ impl<'a> Parser<'a> {
             body,
             span: fn_span,
             is_public,
+            is_async,
         })
     }
 
@@ -1594,7 +1620,7 @@ impl<'a> Parser<'a> {
                 // spelling so string-based `TypeRef` equality holds everywhere.
                 let is_single = matches!(
                     name.as_str(),
-                    "array" | "ptr" | "ref" | "rc" | "option" | "list"
+                    "array" | "ptr" | "ref" | "rc" | "option" | "list" | "Future"
                 );
                 let is_multi = matches!(name.as_str(), "result" | "map");
                 if (is_single || is_multi) && self.eat_symbol("<") {
@@ -1899,8 +1925,6 @@ fn planned_syntax_name(kind: &TokenKind) -> Option<&'static str> {
         Keyword::Class => "class",
         Keyword::Switch => "switch",
         Keyword::Catch => "catch",
-        Keyword::Async => "async",
-        Keyword::Await => "await",
         Keyword::Coroutine => "coroutine",
         _ => return None,
     })
@@ -1950,6 +1974,19 @@ impl<'a> ExprParser<'a> {
     fn parse_unary(&mut self) -> Result<Expr, String> {
         let token = self.peek().ok_or("expected expression")?.clone();
         match token.kind {
+            // `await EXPR` is a prefix operator: it binds tighter than binary
+            // operators (like `not`), so `await f(x) + await g(y)` awaits each
+            // call, then adds. The operand is parsed as a unary expression.
+            TokenKind::Keyword(Keyword::Await) => {
+                self.cursor += 1;
+                let expr = self.parse_unary()?;
+                Ok(Expr {
+                    kind: ExprKind::Await {
+                        expr: Box::new(expr),
+                    },
+                    span: token.span,
+                })
+            }
             TokenKind::Keyword(Keyword::Not) => {
                 self.cursor += 1;
                 let expr = self.parse_unary()?;

@@ -1912,7 +1912,8 @@ fn lower_native_expr(
         | BytecodeExprKind::Float(_)
         | BytecodeExprKind::Char(_)
         | BytecodeExprKind::String(_)
-        | BytecodeExprKind::Array(_) => {
+        | BytecodeExprKind::Array(_)
+        | BytecodeExprKind::Await { .. } => {
             Err("expression is not in the native i64-scalar subset".to_string())
         }
     }
@@ -2329,6 +2330,7 @@ mod tests {
             enums: Vec::new(),
             impls: Vec::new(),
             trait_methods: Vec::new(),
+            async_functions: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),
@@ -2383,6 +2385,7 @@ mod tests {
             enums: Vec::new(),
             impls: Vec::new(),
             trait_methods: Vec::new(),
+            async_functions: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),
@@ -2442,6 +2445,7 @@ mod tests {
             enums: Vec::new(),
             impls: Vec::new(),
             trait_methods: Vec::new(),
+            async_functions: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),

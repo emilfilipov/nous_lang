@@ -151,7 +151,14 @@ fn render_impl_method(function: &Function) -> String {
 }
 
 fn render_function(function: &Function) -> String {
-    let mut header = format!("fn {}", function.name);
+    let mut header = String::new();
+    if function.is_public {
+        header.push_str("pub ");
+    }
+    if function.is_async {
+        header.push_str("async ");
+    }
+    header.push_str(&format!("fn {}", function.name));
     header.push_str(&render_type_params(&function.type_params));
     for param in &function.params {
         header.push_str(&format!(" {} {}", param.name, param.ty.name));
@@ -439,6 +446,9 @@ fn render_expr(expr: &Expr) -> String {
         // inline. Statement-position matches are handled multi-line elsewhere.
         ExprKind::Match { scrutinee, .. } => {
             format!("match {}", render_expr(scrutinee))
+        }
+        ExprKind::Await { expr } => {
+            format!("await {}", render_unary_operand(expr))
         }
     }
 }

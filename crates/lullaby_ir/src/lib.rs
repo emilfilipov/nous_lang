@@ -10,10 +10,10 @@ use lullaby_parser::{
     TypeRef, UnaryOp, function_type, generic_type,
 };
 use lullaby_runtime::{
-    ResolvedPlace, RuntimeError, SharedMutex, SocketResource, Task, Value, apply_compound,
-    char_find, expect_chan, expect_i64, expect_list, expect_map, expect_mutex, expect_string,
-    expect_task, get_place, http_exchange, join_task, net_err, new_chan, option_value,
-    result_value, scalar_order_keys, set_place, value_type_name,
+    Future, ResolvedPlace, RuntimeError, SharedMutex, SocketResource, Task, Value, apply_compound,
+    await_future, char_find, expect_chan, expect_future, expect_i64, expect_list, expect_map,
+    expect_mutex, expect_string, expect_task, get_place, http_exchange, join_task, net_err,
+    new_chan, option_value, result_value, scalar_order_keys, set_place, value_type_name,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,11 @@ pub struct IrModule {
     /// receiver's runtime type via `impls`. Serde-defaulted for compatibility.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trait_methods: Vec<String>,
+    /// Names of `async fn` functions. Calling one spawns an OS thread running its
+    /// body and yields a `Value::Future` that `await` resolves. Serde-defaulted
+    /// so existing artifacts and snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub async_functions: Vec<String>,
 }
 
 /// One trait impl method in the IR: the implementing type name, the method name,
@@ -224,6 +229,12 @@ pub enum IrExprKind {
     Field {
         target: Box<IrExpr>,
         field: String,
+    },
+    /// `await EXPR`: block until the awaited `Future<T>` completes and yield its
+    /// `T`. The operand has type `Future<T>` (typically a call to an `async fn`);
+    /// this node's `ty` is `T`.
+    Await {
+        expr: Box<IrExpr>,
     },
 }
 
@@ -577,6 +588,9 @@ fn collect_memory_operations_from_expr(
         IrExprKind::Unary { expr, .. } => {
             collect_memory_operations_from_expr(function, expr, operations);
         }
+        IrExprKind::Await { expr } => {
+            collect_memory_operations_from_expr(function, expr, operations);
+        }
         IrExprKind::Binary { left, right, .. } => {
             collect_memory_operations_from_expr(function, left, operations);
             collect_memory_operations_from_expr(function, right, operations);
@@ -781,6 +795,10 @@ pub struct BytecodeModule {
     /// Names declared as trait methods, carried through for dispatch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trait_methods: Vec<String>,
+    /// Names of `async fn` functions, carried through to the bytecode VM so an
+    /// `async fn` call spawns a thread. Serde-defaulted for compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub async_functions: Vec<String>,
 }
 
 /// One trait impl method in the bytecode module: the implementing type name, the
@@ -926,6 +944,11 @@ pub enum BytecodeExprKind {
     Field {
         target: Box<BytecodeExpr>,
         field: String,
+    },
+    /// `await EXPR`: block until the awaited `Future<T>` completes and yield its
+    /// `T`. Mirrors `IrExprKind::Await`.
+    Await {
+        expr: Box<BytecodeExpr>,
     },
 }
 
@@ -1122,6 +1145,9 @@ fn collect_bytecode_memory_operations_from_expr(
             }
         }
         BytecodeExprKind::Unary { expr, .. } => {
+            collect_bytecode_memory_operations_from_expr(function, expr, operations);
+        }
+        BytecodeExprKind::Await { expr } => {
             collect_bytecode_memory_operations_from_expr(function, expr, operations);
         }
         BytecodeExprKind::Binary { left, right, .. } => {
@@ -1454,6 +1480,7 @@ pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
             })
             .collect(),
         trait_methods: module.trait_methods.clone(),
+        async_functions: module.async_functions.clone(),
     }
 }
 
@@ -1486,6 +1513,7 @@ pub fn run_bytecode_main_with_args(
             })
             .collect(),
         trait_methods: module.trait_methods.clone(),
+        async_functions: module.async_functions.clone(),
     };
     run_main_with_args(&ir, args)
 }
@@ -1648,6 +1676,9 @@ fn lower_bytecode_expr(expr: &IrExpr) -> BytecodeExpr {
         IrExprKind::Call { name, args } => BytecodeExprKind::Call {
             name: name.clone(),
             args: args.iter().map(lower_bytecode_expr).collect(),
+        },
+        IrExprKind::Await { expr } => BytecodeExprKind::Await {
+            expr: Box::new(lower_bytecode_expr(expr)),
         },
     };
 
@@ -1830,6 +1861,9 @@ fn bytecode_expr_to_ir(expr: &BytecodeExpr) -> IrExpr {
             name: name.clone(),
             args: args.iter().map(bytecode_expr_to_ir).collect(),
         },
+        BytecodeExprKind::Await { expr } => IrExprKind::Await {
+            expr: Box::new(bytecode_expr_to_ir(expr)),
+        },
     };
 
     IrExpr {
@@ -1851,6 +1885,7 @@ impl ConstantFolder {
             enums: module.enums.clone(),
             impls: module.impls.clone(),
             trait_methods: module.trait_methods.clone(),
+            async_functions: module.async_functions.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2045,6 +2080,13 @@ impl ConstantFolder {
                 ty: expr.ty.clone(),
                 span: expr.span,
             },
+            IrExprKind::Await { expr: inner } => IrExpr {
+                kind: IrExprKind::Await {
+                    expr: Box::new(self.fold_expr(inner)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
             IrExprKind::Integer(_)
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
@@ -2162,6 +2204,7 @@ impl CommonSubexpressionEliminator {
             enums: module.enums.clone(),
             impls: module.impls.clone(),
             trait_methods: module.trait_methods.clone(),
+            async_functions: module.async_functions.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2438,6 +2481,13 @@ impl CommonSubexpressionEliminator {
                 ty: expr.ty.clone(),
                 span: expr.span,
             },
+            IrExprKind::Await { expr: inner } => IrExpr {
+                kind: IrExprKind::Await {
+                    expr: Box::new(self.rewrite_expr(inner)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
             IrExprKind::Integer(_)
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
@@ -2492,7 +2542,9 @@ fn pure_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
             let right = pure_expr_signature(right)?;
             combine_signatures(&format!("binary:{op:?}"), &expr.ty.name, vec![left, right])
         }
-        IrExprKind::Call { .. } => return None,
+        // Calls and `await`s are not pure: they may have side effects (an
+        // `await` spawns/joins a thread), so they are never CSE candidates.
+        IrExprKind::Call { .. } | IrExprKind::Await { .. } => return None,
     };
 
     Some(ExprSignature { key, dependencies })
@@ -2526,6 +2578,7 @@ impl LoopInvariantMover {
             enums: module.enums.clone(),
             impls: module.impls.clone(),
             trait_methods: module.trait_methods.clone(),
+            async_functions: module.async_functions.clone(),
             functions: module
                 .functions
                 .iter()
@@ -2882,7 +2935,8 @@ fn loop_invariant_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
         IrExprKind::Array(_)
         | IrExprKind::Index { .. }
         | IrExprKind::Field { .. }
-        | IrExprKind::Call { .. } => return None,
+        | IrExprKind::Call { .. }
+        | IrExprKind::Await { .. } => return None,
     };
 
     Some(ExprSignature { key, dependencies })
@@ -2923,6 +2977,7 @@ impl CopyPropagator {
             enums: module.enums.clone(),
             impls: module.impls.clone(),
             trait_methods: module.trait_methods.clone(),
+            async_functions: module.async_functions.clone(),
             functions: module
                 .functions
                 .iter()
@@ -3193,6 +3248,13 @@ impl CopyPropagator {
                 ty: expr.ty.clone(),
                 span: expr.span,
             },
+            IrExprKind::Await { expr: inner } => IrExpr {
+                kind: IrExprKind::Await {
+                    expr: Box::new(self.propagate_expr(inner, aliases)),
+                },
+                ty: expr.ty.clone(),
+                span: expr.span,
+            },
             IrExprKind::Integer(_)
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
@@ -3228,6 +3290,8 @@ fn invalidate_alias(name: &str, aliases: &mut HashMap<String, String>) {
 fn expr_requires_optimizer_barrier(expr: &IrExpr) -> bool {
     match &expr.kind {
         IrExprKind::Call { .. } => true,
+        // `await` spawns/joins a thread, so it is never removable dead code.
+        IrExprKind::Await { .. } => true,
         IrExprKind::Array(values) => values.iter().any(expr_requires_optimizer_barrier),
         IrExprKind::Index { .. } => true,
         // Field access is pure; only its target can require a barrier.
@@ -3257,6 +3321,7 @@ impl DeadCodeEliminator {
             enums: module.enums.clone(),
             impls: module.impls.clone(),
             trait_methods: module.trait_methods.clone(),
+            async_functions: module.async_functions.clone(),
             functions: module
                 .functions
                 .iter()
@@ -3410,6 +3475,9 @@ struct IrRuntime<'a> {
     impl_methods: HashMap<(String, String), &'a IrFunction>,
     /// Names that are trait methods; a call to one dispatches via `impl_methods`.
     trait_method_names: std::collections::HashSet<String>,
+    /// Names of `async fn` functions. Calling one spawns an OS thread running its
+    /// body and yields a `Value::Future` that `await` resolves.
+    async_functions: std::collections::HashSet<String>,
 }
 
 impl<'a> IrRuntime<'a> {
@@ -3468,6 +3536,7 @@ impl<'a> IrRuntime<'a> {
             );
         }
         let trait_method_names = module.trait_methods.iter().cloned().collect();
+        let async_functions = module.async_functions.iter().cloned().collect();
 
         Ok(Self {
             module,
@@ -3482,6 +3551,23 @@ impl<'a> IrRuntime<'a> {
             call_stack: Vec::new(),
             impl_methods,
             trait_method_names,
+            async_functions,
+        })
+    }
+
+    /// Spawn an `async fn` call on a new OS thread that owns a share of the
+    /// module (an `Arc<IrModule>` clone) and builds its own interpreter, then
+    /// return a `Value::Future` handle so `await` retrieves the produced value.
+    /// The already-evaluated argument values are `Send`; heaps are per-thread.
+    fn spawn_async(&self, name: &str, args: Vec<Value>) -> Value {
+        let arc = Arc::clone(&self.module_arc);
+        let func_name = name.to_string();
+        let handle = std::thread::spawn(move || {
+            let mut runtime = IrRuntime::new(&arc, Arc::clone(&arc))?;
+            runtime.call_function(&func_name, args)
+        });
+        Value::Future(Future {
+            handle: Arc::new(std::sync::Mutex::new(Some(handle))),
         })
     }
 
@@ -4002,11 +4088,22 @@ impl<'a> IrRuntime<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 // A call name that is a local holding a function value dispatches
                 // through that value: invoke the referenced top-level function.
-                if let Ok(Value::Func(target)) = env.get(name) {
-                    self.call_function(&target, values)
+                let target = match env.get(name) {
+                    Ok(Value::Func(target)) => target,
+                    _ => name.clone(),
+                };
+                // Calling an `async fn` spawns its body on a new OS thread and
+                // yields a `Future` handle; a synchronous call runs inline.
+                if self.async_functions.contains(target.as_str()) {
+                    Ok(self.spawn_async(&target, values))
                 } else {
-                    self.call_function(name, values)
+                    self.call_function(&target, values)
                 }
+            }
+            IrExprKind::Await { expr } => {
+                let value = self.eval_expr(expr, env)?;
+                let future = expect_future("await", value)?;
+                await_future(&future)
             }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
@@ -5686,12 +5783,22 @@ impl<'a> Lowerer<'a> {
             .iter()
             .flat_map(|decl| decl.methods.iter().map(|method| method.name.clone()))
             .collect();
+        // Record every `async fn` so the interpreter and VM spawn a thread on a
+        // call to one (and yield a `Future`).
+        let async_functions = self
+            .program
+            .functions
+            .iter()
+            .filter(|function| function.is_async)
+            .map(|function| function.name.clone())
+            .collect();
         Ok(IrModule {
             functions,
             structs,
             enums,
             impls,
             trait_methods,
+            async_functions,
         })
     }
 
@@ -6300,6 +6407,24 @@ impl<'a> Lowerer<'a> {
                     Some(expr.span),
                 ));
             }
+            ExprKind::Await { expr: inner } => {
+                // `await e` requires `e: Future<T>`; the awaited result type `T`
+                // is the future's inner argument. Semantics has already checked
+                // this, so a non-future operand here is a lowering bug.
+                let inner = self.lower_expr(inner, scope)?;
+                let ty = inner.ty.generic_arg("Future").ok_or_else(|| {
+                    IrLoweringError::new(
+                        format!("`await` operand has non-future type `{}`", inner.ty.name),
+                        Some(expr.span),
+                    )
+                })?;
+                (
+                    IrExprKind::Await {
+                        expr: Box::new(inner),
+                    },
+                    ty,
+                )
+            }
         };
 
         Ok(IrExpr {
@@ -6682,7 +6807,13 @@ impl<'a> Lowerer<'a> {
                     IrLoweringError::new(format!("unknown function `{name}`"), Some(span))
                 })?;
                 if signature.type_params.is_empty() {
-                    signature.return_type.clone()
+                    // Calling an `async fn` yields a `Future<return_type>`, matching
+                    // the semantic type; `await` later resolves the inner `T`.
+                    if signature.is_async {
+                        generic_type("Future", std::slice::from_ref(&signature.return_type))
+                    } else {
+                        signature.return_type.clone()
+                    }
                 } else {
                     // Generic function: re-run the same call-site inference as
                     // semantics against the lowered argument types so the IR
@@ -7494,6 +7625,7 @@ mod tests {
             enums: Vec::new(),
             impls: Vec::new(),
             trait_methods: Vec::new(),
+            async_functions: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: vec![IrParam {
@@ -7527,6 +7659,7 @@ mod tests {
             enums: Vec::new(),
             impls: Vec::new(),
             trait_methods: Vec::new(),
+            async_functions: Vec::new(),
             functions: vec![BytecodeFunction {
                 name: "main".to_string(),
                 params: Vec::new(),

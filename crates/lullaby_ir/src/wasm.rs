@@ -720,7 +720,8 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
         IrExprKind::String(_)
         | IrExprKind::Array(_)
         | IrExprKind::Index { .. }
-        | IrExprKind::Field { .. } => {
+        | IrExprKind::Field { .. }
+        | IrExprKind::Await { .. } => {
             Err("expression uses a non-scalar value (unsupported in WASM)".to_string())
         }
     }

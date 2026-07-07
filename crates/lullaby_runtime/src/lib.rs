@@ -32,6 +32,7 @@ pub fn value_type_name(value: &Value) -> String {
         Value::Socket(_) => "Socket".to_string(),
         Value::Chan(_) => "Chan".to_string(),
         Value::Task(_) => "Task".to_string(),
+        Value::Future(_) => "Future".to_string(),
         Value::Mutex(_) => "Mutex".to_string(),
         Value::Void => "void".to_string(),
     }
@@ -68,6 +69,29 @@ pub struct Task {
 
 impl PartialEq for Task {
     /// Task handles compare by identity of the shared join slot.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.handle, &other.handle)
+    }
+}
+
+/// The shared, take-once join slot behind a `Future`. Structurally identical to a
+/// `TaskHandle` (an `Arc<Mutex<Option<JoinHandle<...>>>>`), but the joined thread
+/// PRODUCES a `Value`: `await` takes the handle out and returns that value,
+/// whereas `task_join` discards it. Behind an `Arc<Mutex<Option<_>>>` so a
+/// future can be moved/cloned as a value and `await`ed exactly once (a second
+/// `await` on the same handle finds `None`).
+pub type FutureHandle = Arc<Mutex<Option<JoinHandle<Result<Value, RuntimeError>>>>>;
+
+/// A handle to an `async fn` call running on a spawned OS thread that will
+/// produce a `T`. `await`ing it blocks until the thread completes and yields its
+/// `T`. `Send` because a `JoinHandle` is `Send`; shared on clone.
+#[derive(Debug, Clone)]
+pub struct Future {
+    pub handle: FutureHandle,
+}
+
+impl PartialEq for Future {
+    /// Future handles compare by identity of the shared join slot.
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.handle, &other.handle)
     }
@@ -124,6 +148,9 @@ pub enum Value {
     Chan(Chan),
     /// A one-shot handle to a spawned detached thread; `join`ed once.
     Task(Task),
+    /// A handle to an `async fn` call running on a spawned OS thread; `await`ed
+    /// once to retrieve the produced value.
+    Future(Future),
     /// A shared mutex over one `i64`; shared on clone.
     Mutex(SharedMutex),
     Void,
@@ -181,6 +208,7 @@ impl fmt::Display for Value {
             Self::Socket(handle) => write!(formatter, "socket({handle})"),
             Self::Chan(_) => write!(formatter, "chan"),
             Self::Task(_) => write!(formatter, "task"),
+            Self::Future(_) => write!(formatter, "future"),
             Self::Mutex(_) => write!(formatter, "mutex"),
             Self::Void => write!(formatter, "void"),
         }
@@ -327,6 +355,19 @@ pub fn expect_task(name: &str, value: Value) -> Result<Task, RuntimeError> {
     }
 }
 
+/// Unwrap a runtime `Value` expected to be a future handle, reporting `L0417`
+/// otherwise. The semantic checker (`L0344`) normally prevents awaiting a
+/// non-future, so this is a defensive runtime guard.
+pub fn expect_future(name: &str, value: Value) -> Result<Future, RuntimeError> {
+    match value {
+        Value::Future(future) => Ok(future),
+        other => Err(RuntimeError::new(
+            "L0417",
+            format!("{name} expects a Future but got `{other}`"),
+        )),
+    }
+}
+
 /// Unwrap a runtime `Value` expected to be a mutex handle, reporting `L0417`
 /// otherwise.
 pub fn expect_mutex(name: &str, value: Value) -> Result<SharedMutex, RuntimeError> {
@@ -411,6 +452,29 @@ pub fn join_task(task: &Task) -> Result<Value, RuntimeError> {
         Some(handle) => match handle.join() {
             Ok(result) => result.map(|_| Value::Void),
             Err(_) => Err(RuntimeError::new("L0401", "spawned thread panicked")),
+        },
+    }
+}
+
+/// Await a future once: take the `JoinHandle` out of the shared slot, wait for
+/// the spawned thread, and return the `Value` it produced (unlike `join_task`,
+/// which discards the value). A worker error propagates; a panic is `L0401`. A
+/// second `await` on the same handle (the slot is already `None`) returns
+/// `void` — a defensive no-op, though semantics binds each future to one
+/// `await`. Shared by both interpreters so `await` has identical semantics.
+pub fn await_future(future: &Future) -> Result<Value, RuntimeError> {
+    let handle = {
+        let mut slot = future
+            .handle
+            .lock()
+            .map_err(|_| RuntimeError::new("L0401", "await on a poisoned future handle"))?;
+        slot.take()
+    };
+    match handle {
+        None => Ok(Value::Void),
+        Some(handle) => match handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(RuntimeError::new("L0401", "awaited thread panicked")),
         },
     }
 }
@@ -613,6 +677,9 @@ struct Runtime<'a> {
     /// Names that are trait methods (declared in some `trait`). A call to one of
     /// these dispatches on the receiver's runtime type via `impl_methods`.
     trait_method_names: HashSet<String>,
+    /// Names of `async fn` functions. Calling one spawns an OS thread running its
+    /// body and yields a `Value::Future` that `await` resolves.
+    async_functions: HashSet<&'a str>,
 }
 
 impl<'a> Runtime<'a> {
@@ -670,6 +737,13 @@ impl<'a> Runtime<'a> {
             }
         }
 
+        let async_functions = program
+            .functions
+            .iter()
+            .filter(|function| function.is_async)
+            .map(|function| function.name.as_str())
+            .collect::<HashSet<_>>();
+
         Ok(Self {
             program,
             program_arc,
@@ -683,6 +757,24 @@ impl<'a> Runtime<'a> {
             call_stack: Vec::new(),
             impl_methods,
             trait_method_names,
+            async_functions,
+        })
+    }
+
+    /// Spawn an `async fn` call on a new OS thread that owns a share of the
+    /// program (an `Arc<Program>` clone) and builds its own interpreter, then
+    /// return a `Value::Future` handle so `await` retrieves the produced value.
+    /// The argument values are already evaluated and are `Send`, so they cross
+    /// the thread boundary safely; heaps are per-thread.
+    fn spawn_async(&self, name: &str, args: Vec<Value>) -> Value {
+        let arc = Arc::clone(&self.program_arc);
+        let func_name = name.to_string();
+        let handle = std::thread::spawn(move || {
+            let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
+            runtime.call_function(&func_name, args)
+        });
+        Value::Future(Future {
+            handle: Arc::new(Mutex::new(Some(handle))),
         })
     }
 
@@ -1705,11 +1797,22 @@ impl<'a> Runtime<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 // A call name that is a local holding a function value dispatches
                 // through that value: invoke the referenced top-level function.
-                if let Ok(Value::Func(target)) = env.get(name) {
-                    self.call_function(&target, values)
+                let target = match env.get(name) {
+                    Ok(Value::Func(target)) => target,
+                    _ => name.clone(),
+                };
+                // Calling an `async fn` spawns its body on a new OS thread and
+                // yields a `Future` handle; a synchronous call runs inline.
+                if self.async_functions.contains(target.as_str()) {
+                    Ok(self.spawn_async(&target, values))
                 } else {
-                    self.call_function(name, values)
+                    self.call_function(&target, values)
                 }
+            }
+            ExprKind::Await { expr } => {
+                let value = self.eval_expr(expr, env)?;
+                let future = expect_future("await", value)?;
+                await_future(&future)
             }
             ExprKind::StructLiteral { name, fields } => {
                 // Evaluate in source order, then reorder to the declared field

@@ -411,6 +411,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Add a `lullaby.json` at the project root, fix its JSON, and make sure every `src` directory and every dependency path points to an existing project directory that contains its own `lullaby.json`.",
     },
     DiagnosticEntry {
+        code: "L0344",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "An `async`/`await` construct is used incorrectly.",
+        root_cause: "`await` was applied to a value that is not a `Future<T>` (for example an ordinary synchronous call or a plain value), or an `await` expression could not resolve the awaited future type.",
+        suggested_fix: "Await only the `Future<T>` returned by calling an `async fn`, and call `async fn`s (whose calls produce a `Future<T>`) to obtain something awaitable.",
+    },
+    DiagnosticEntry {
         code: "L0350",
         phase: DiagnosticPhase::Semantic,
         explanation: "A resource is used after it was freed (use-after-free or double-free).",
