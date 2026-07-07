@@ -1,0 +1,5 @@
+fn main -> i64
+    let a i64 = len("hello")
+    let b i64 = len("native")
+    let c i64 = len("")
+    return a + b + c

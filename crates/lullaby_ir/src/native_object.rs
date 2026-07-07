@@ -636,6 +636,37 @@ pub const NATIVE_ENTRY_SYMBOL: &str = "_lullaby_start";
 /// stub through a REL32 relocation; the linker binds it to the import thunk.
 const EXIT_PROCESS_SYMBOL: &str = "ExitProcess";
 
+/// The bump-allocator helper emitted in `.text`. Signature: the requested byte
+/// count is passed in `rcx`, the allocated heap pointer is returned in `rax`.
+/// See `emit_heap_alloc_helper` for the body.
+const HEAP_ALLOC_SYMBOL: &str = "__lullaby_alloc";
+
+/// The string-length helper emitted in `.text`. Signature: a pointer to a
+/// NUL-terminated byte string in `.rdata` is passed in `rcx`; the byte length of
+/// a fresh heap copy of that string is returned in `rax`. This exercises the
+/// full first heap step: it bump-allocates via `__lullaby_alloc`, copies the
+/// `.rdata` bytes into the heap, then scans the heap copy for the terminator.
+const HEAP_STRLEN_SYMBOL: &str = "__lullaby_strlen_copy";
+
+/// The bump-pointer cell symbol in `.bss` (an 8-byte pointer, zero-initialized).
+/// A zero value means "not yet initialized"; the allocator lazily seeds it to
+/// the base of the heap region on first use.
+const HEAP_NEXT_SYMBOL: &str = "__lullaby_heap_next";
+
+/// The heap region base symbol in `.bss` — a fixed reserved bump region.
+const HEAP_BASE_SYMBOL: &str = "__lullaby_heap_base";
+
+/// Size in bytes of the fixed reserved native heap region.
+const HEAP_REGION_SIZE: u32 = 64 * 1024;
+
+/// `.rdata` section characteristics: initialized, read-only data.
+/// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ`.
+const RDATA_CHARACTERISTICS: u32 = 0x4000_0040;
+
+/// `.bss` section characteristics: uninitialized data, read + write.
+/// `IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE`.
+const BSS_CHARACTERISTICS: u32 = 0xC000_0080;
+
 /// COFF relocation type for a 32-bit PC-relative reference to a symbol, used for
 /// `call rel32` and `jmp rel32` targeting another symbol (`IMAGE_REL_AMD64_REL32`).
 const IMAGE_REL_AMD64_REL32: u16 = 0x0004;
@@ -675,6 +706,9 @@ pub fn emit_alpha1_native_program(
             eligible_names.iter().map(String::as_str).collect();
         let mut lowered: Vec<LoweredNativeFunction> = Vec::new();
         let mut demoted: Option<NativeSkippedFunction> = None;
+        // String constants are interned fresh each attempt so a demotion that
+        // drops a function also drops any strings only it referenced.
+        let mut strings = StringPool::default();
 
         for name in &eligible_names {
             let function = module
@@ -682,7 +716,7 @@ pub fn emit_alpha1_native_program(
                 .iter()
                 .find(|f| &f.name == name)
                 .expect("eligible name exists");
-            match lower_native_function(function, &callable, &module.structs) {
+            match lower_native_function(function, &callable, &module.structs, &mut strings) {
                 Ok(l) => lowered.push(l),
                 Err(reason) => {
                     demoted = Some(NativeSkippedFunction {
@@ -716,7 +750,7 @@ pub fn emit_alpha1_native_program(
         }
 
         let compiled: Vec<String> = lowered.iter().map(|f| f.name.clone()).collect();
-        let bytes = write_native_program_object(&lowered);
+        let bytes = write_native_program_object(&lowered, &strings);
         return Ok(NativeProgram {
             target,
             bytes,
@@ -865,6 +899,36 @@ struct CodeRelocation {
     symbol: String,
 }
 
+/// Interns the string-literal constants a native program references. Each unique
+/// string is stored once in `.rdata`, NUL-terminated, and named `__str{index}`.
+/// Native code references a string constant's address through a REL32 relocation
+/// against that symbol (an `IMAGE_REL_AMD64_REL32` on a RIP-relative `lea`).
+#[derive(Default)]
+struct StringPool {
+    /// The unique string contents, in first-seen order. Index `i` owns symbol
+    /// `__str{i}`.
+    entries: Vec<String>,
+}
+
+impl StringPool {
+    /// Intern `text`, returning the `.rdata` symbol name that addresses its
+    /// first byte.
+    fn intern(&mut self, text: &str) -> String {
+        let index = match self.entries.iter().position(|existing| existing == text) {
+            Some(index) => index,
+            None => {
+                self.entries.push(text.to_string());
+                self.entries.len() - 1
+            }
+        };
+        format!("__str{index}")
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// A local's stack placement: its `NativeType` layout and the `[rbp - slot]`
 /// displacement of its first word. Additional words follow at `slot - 8`,
 /// `slot - 16`, ... (i.e. lower displacements — the frame grows downward but we
@@ -885,6 +949,9 @@ struct NativeCtx<'a> {
     callable: &'a std::collections::HashSet<&'a str>,
     /// Relocations accumulated while emitting this function.
     relocations: Vec<CodeRelocation>,
+    /// Program-wide interned string constants (`.rdata`), shared across all
+    /// functions being lowered.
+    strings: &'a mut StringPool,
 }
 
 impl<'a> NativeCtx<'a> {
@@ -896,6 +963,7 @@ impl<'a> NativeCtx<'a> {
         function: &'a BytecodeFunction,
         callable: &'a std::collections::HashSet<&'a str>,
         structs: &'a [IrStructDef],
+        strings: &'a mut StringPool,
     ) -> Result<Self, String> {
         let mut locals: HashMap<String, NativeLocal> = HashMap::new();
         let mut next_slot: i32 = 0;
@@ -929,6 +997,7 @@ impl<'a> NativeCtx<'a> {
             frame_size,
             callable,
             relocations: Vec::new(),
+            strings,
         })
     }
 
@@ -1117,8 +1186,9 @@ fn lower_native_function(
     function: &BytecodeFunction,
     callable: &std::collections::HashSet<&str>,
     structs: &[IrStructDef],
+    strings: &mut StringPool,
 ) -> Result<LoweredNativeFunction, String> {
-    let mut ctx = NativeCtx::plan(function, callable, structs)?;
+    let mut ctx = NativeCtx::plan(function, callable, structs, strings)?;
     let mut code = Vec::new();
 
     // Prologue: push rbp; mov rbp, rsp; sub rsp, frame_size.
@@ -1865,6 +1935,40 @@ fn lower_native_expr(
                 emit_mov_rax_imm(code, *len as i64);
                 return Ok(());
             }
+            // `len(string_literal)` is the first heap-backed native string op.
+            // The literal's bytes live in `.rdata`; `__lullaby_strlen_copy` bump-
+            // allocates a heap copy of them, scans the copy for its terminator,
+            // and returns the byte length in rax (== the interpreter's char count
+            // for the ASCII strings this subset accepts). This exercises the
+            // whole first heap step end to end: a `.rdata` constant, a REL32
+            // relocation to its address, the bump allocator, and per-byte reads
+            // of both `.rdata` and the heap.
+            if name == "len"
+                && args.len() == 1
+                && let BytecodeExprKind::String(text) = &args[0].kind
+            {
+                if !text.is_ascii() {
+                    return Err("native string len supports ASCII string literals only".to_string());
+                }
+                let symbol = ctx.strings.intern(text);
+                // lea rcx, [rip + __str] ; the 4-byte rel32 is a REL32 relocation.
+                code.extend_from_slice(&[0x48, 0x8D, 0x0D]);
+                let site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+                ctx.relocations.push(CodeRelocation {
+                    offset: site as u32,
+                    symbol,
+                });
+                // call __lullaby_strlen_copy (rel32 relocation).
+                code.push(0xE8);
+                let call_site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+                ctx.relocations.push(CodeRelocation {
+                    offset: call_site as u32,
+                    symbol: HEAP_STRLEN_SYMBOL.to_string(),
+                });
+                return Ok(());
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"
@@ -2084,10 +2188,27 @@ fn patch_rel32_to(code: &mut [u8], site: usize, target: usize) {
 // call to `main`, and the entry stub's call to `ExitProcess`. Long symbol names
 // (> 8 bytes) are stored in a string table, as COFF requires.
 
+/// Write the COFF object for a native program. Programs that reference no string
+/// constants keep the original single-`.text` layout byte-for-byte; programs
+/// that do use string constants get the extended layout with `.rdata` (the
+/// constants), `.bss` (the heap region + bump pointer), and the heap helper
+/// functions. Splitting keeps the string-free path — and its structural tests —
+/// unchanged.
+fn write_native_program_object(
+    functions: &[LoweredNativeFunction],
+    strings: &StringPool,
+) -> Vec<u8> {
+    if strings.is_empty() {
+        write_text_only_object(functions)
+    } else {
+        write_object_with_data(functions, strings)
+    }
+}
+
 /// Assemble the whole `.text` blob (entry stub + functions) and the section
 /// relocations, then write the COFF headers, section data, symbol table, and
 /// string table.
-fn write_native_program_object(functions: &[LoweredNativeFunction]) -> Vec<u8> {
+fn write_text_only_object(functions: &[LoweredNativeFunction]) -> Vec<u8> {
     // Lay out `.text`: entry stub first, then each function. Record each
     // function's start offset so relocations resolve.
     let mut text: Vec<u8> = Vec::new();
@@ -2275,6 +2396,432 @@ fn section_number_field(section_number: i16) -> u16 {
 }
 
 const COFF_RELOC_SIZE: u32 = 10;
+
+// ===========================================================================
+// First heap step: `.rdata` string constants + `.bss` bump heap + helpers
+// ===========================================================================
+//
+// When a program references string constants (`len("...")`), the object gains:
+//   * `.rdata` — the NUL-terminated string bytes, each named `__str{i}`;
+//   * `.bss`   — an 8-byte bump-pointer cell (`__lullaby_heap_next`) followed by
+//                a fixed reserved heap region (`__lullaby_heap_base`);
+//   * two helper functions in `.text` — `__lullaby_alloc` (a bump allocator) and
+//     `__lullaby_strlen_copy` (allocate a heap copy of a `.rdata` string and
+//     return its byte length by scanning the copy).
+//
+// This is the smallest end-to-end heap increment: a read-only constant, a REL32
+// relocation to its address, a real bump allocation into a writable region, and
+// per-byte reads of both `.rdata` and the heap — all observable through the i64
+// `len` result and hence the process exit code.
+
+/// A machine-code blob plus the symbols it references via REL32 relocations.
+struct HelperFunction {
+    name: String,
+    code: Vec<u8>,
+    relocations: Vec<CodeRelocation>,
+}
+
+/// Emit the bump allocator `__lullaby_alloc(size in rcx) -> ptr in rax`.
+///
+/// Reads the bump pointer from `.bss`; if it is still zero (first call) it seeds
+/// it to the base of the reserved heap region. Returns the current pointer and
+/// advances it past an 8-byte-rounded allocation.
+fn emit_heap_alloc_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // mov rax, [rip + __lullaby_heap_next]
+    code.extend_from_slice(&[0x48, 0x8B, 0x05]);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_NEXT_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // test rax, rax
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+    // jnz +7 (skip the lea that seeds the pointer)
+    code.extend_from_slice(&[0x75, 0x07]);
+    // lea rax, [rip + __lullaby_heap_base]  (7 bytes)
+    code.extend_from_slice(&[0x48, 0x8D, 0x05]);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_BASE_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rdx = rax (the pointer we will return)
+    code.extend_from_slice(&[0x48, 0x89, 0xC2]);
+    // rax = rax + rcx (advance past the requested size)
+    code.extend_from_slice(&[0x48, 0x01, 0xC8]);
+    // rax = (rax + 7) & ~7  (round the new next up to 8 bytes)
+    code.extend_from_slice(&[0x48, 0x83, 0xC0, 0x07]);
+    code.extend_from_slice(&[0x48, 0x83, 0xE0, 0xF8]);
+    // mov [rip + __lullaby_heap_next], rax
+    code.extend_from_slice(&[0x48, 0x89, 0x05]);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_NEXT_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rax = rdx (return the pre-advance pointer)
+    code.extend_from_slice(&[0x48, 0x89, 0xD0]);
+    // ret
+    code.push(0xC3);
+
+    HelperFunction {
+        name: HEAP_ALLOC_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// Emit `__lullaby_strlen_copy(src in rcx) -> len in rax`.
+///
+/// Measures the source (`.rdata`) length, bump-allocates `n + 1` bytes, copies
+/// the string (including its terminator) into the heap, then scans the heap copy
+/// for the terminator and returns that byte length. Uses the non-volatile
+/// `rsi`/`rdi`/`rbx`, saved and restored around the body; keeps `rsp` 16-aligned
+/// at the internal `call`.
+fn emit_heap_strlen_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: preserve callee-saved regs we use, reserve aligned shadow space.
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.push(0x53); // push rbx
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32 (keeps rsp%16==0 at the call)
+
+    // rsi = src
+    code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx
+
+    // Measure length into rbx (scan .rdata bytes for NUL).
+    code.extend_from_slice(&[0x48, 0x89, 0xF0]); // mov rax, rsi
+    code.extend_from_slice(&[0x48, 0x31, 0xDB]); // xor rbx, rbx
+    let measure = code.len();
+    code.extend_from_slice(&[0x8A, 0x08]); // mov cl, [rax]
+    code.extend_from_slice(&[0x84, 0xC9]); // test cl, cl
+    // jz measured  (short forward; body below is inc rax; inc rbx; jmp = 3+3+2 = 8)
+    code.extend_from_slice(&[0x74, 0x08]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    code.extend_from_slice(&[0x48, 0xFF, 0xC3]); // inc rbx
+    emit_short_jmp_back(&mut code, measure); // jmp measure
+
+    // measured: allocate rbx + 1 bytes.
+    code.extend_from_slice(&[0x48, 0x8D, 0x4B, 0x01]); // lea rcx, [rbx + 1]
+    code.push(0xE8); // call __lullaby_alloc
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_ALLOC_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // rdi = dest (heap pointer). Copy n+1 bytes rsi -> rdi.
+    code.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax
+    code.push(0x50); // push rax (save dest base for the post-copy scan)
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xFF, 0xC1]); // inc rcx (copy the terminator too)
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb
+    code.push(0x5A); // pop rdx (rdx = dest base)
+
+    // Scan the heap copy for NUL, counting into rax (this read proves the copy).
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+    let scan = code.len();
+    code.extend_from_slice(&[0x8A, 0x0C, 0x02]); // mov cl, [rdx + rax]
+    code.extend_from_slice(&[0x84, 0xC9]); // test cl, cl
+    // jz done  (body below is inc rax; jmp = 3 + 2 = 5)
+    code.extend_from_slice(&[0x74, 0x05]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    emit_short_jmp_back(&mut code, scan); // jmp scan
+
+    // done: epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 32
+    code.push(0x5B); // pop rbx
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: HEAP_STRLEN_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// Emit a short `jmp rel8` back to an earlier `target` offset within `code`.
+fn emit_short_jmp_back(code: &mut Vec<u8>, target: usize) {
+    code.push(0xEB);
+    let rel = target as i64 - (code.len() as i64 + 1);
+    debug_assert!((-128..=127).contains(&rel), "short jmp out of range: {rel}");
+    code.push(rel as i8 as u8);
+}
+
+/// Write the extended COFF object with `.text`, `.rdata`, and `.bss` sections.
+/// Used only when the program references string constants.
+fn write_object_with_data(functions: &[LoweredNativeFunction], strings: &StringPool) -> Vec<u8> {
+    // -- Build .text: entry stub, user functions, heap helpers ---------------
+    let mut text: Vec<u8> = Vec::new();
+    let mut relocations: Vec<TextRelocation> = Vec::new();
+
+    // Entry stub (identical to the text-only path).
+    text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 40
+    text.push(0xE8); // call main
+    relocations.push(TextRelocation {
+        offset: text.len() as u32,
+        symbol_index: 0,
+        symbol_name: "main".to_string(),
+    });
+    text.extend_from_slice(&[0, 0, 0, 0]);
+    text.extend_from_slice(&[0x89, 0xC1]); // mov ecx, eax
+    text.push(0xE8); // call ExitProcess
+    relocations.push(TextRelocation {
+        offset: text.len() as u32,
+        symbol_index: 0,
+        symbol_name: EXIT_PROCESS_SYMBOL.to_string(),
+    });
+    text.extend_from_slice(&[0, 0, 0, 0]);
+    text.push(0xCC);
+
+    let mut func_offsets: HashMap<String, u32> = HashMap::new();
+
+    // A closure-free helper to append a code blob with relocations, 16-aligned.
+    let append_code = |text: &mut Vec<u8>,
+                       relocations: &mut Vec<TextRelocation>,
+                       func_offsets: &mut HashMap<String, u32>,
+                       name: &str,
+                       code: &[u8],
+                       relocs: &[CodeRelocation]| {
+        while !text.len().is_multiple_of(16) {
+            text.push(0xCC);
+        }
+        let start = text.len() as u32;
+        func_offsets.insert(name.to_string(), start);
+        let body_base = text.len() as u32;
+        text.extend_from_slice(code);
+        for reloc in relocs {
+            relocations.push(TextRelocation {
+                offset: body_base + reloc.offset,
+                symbol_index: 0,
+                symbol_name: reloc.symbol.clone(),
+            });
+        }
+    };
+
+    for function in functions {
+        append_code(
+            &mut text,
+            &mut relocations,
+            &mut func_offsets,
+            &function.name,
+            &function.code,
+            &function.relocations,
+        );
+    }
+    let alloc = emit_heap_alloc_helper();
+    append_code(
+        &mut text,
+        &mut relocations,
+        &mut func_offsets,
+        &alloc.name,
+        &alloc.code,
+        &alloc.relocations,
+    );
+    let strlen = emit_heap_strlen_helper();
+    append_code(
+        &mut text,
+        &mut relocations,
+        &mut func_offsets,
+        &strlen.name,
+        &strlen.code,
+        &strlen.relocations,
+    );
+
+    // -- Build .rdata: NUL-terminated string constants -----------------------
+    let mut rdata: Vec<u8> = Vec::new();
+    let mut str_offsets: Vec<u32> = Vec::new();
+    for text_value in &strings.entries {
+        str_offsets.push(rdata.len() as u32);
+        rdata.extend_from_slice(text_value.as_bytes());
+        rdata.push(0);
+    }
+
+    // -- Symbol table --------------------------------------------------------
+    // Sections: 1 = .text, 2 = .rdata, 3 = .bss.
+    struct SymbolDef {
+        name: String,
+        section_number: i16,
+        value: u32,
+        is_function: bool,
+    }
+
+    let mut symbols: Vec<SymbolDef> = Vec::new();
+    symbols.push(SymbolDef {
+        name: NATIVE_ENTRY_SYMBOL.to_string(),
+        section_number: 1,
+        value: 0,
+        is_function: true,
+    });
+    for function in functions {
+        symbols.push(SymbolDef {
+            name: function.name.clone(),
+            section_number: 1,
+            value: *func_offsets.get(&function.name).expect("function offset"),
+            is_function: true,
+        });
+    }
+    for helper in [HEAP_ALLOC_SYMBOL, HEAP_STRLEN_SYMBOL] {
+        symbols.push(SymbolDef {
+            name: helper.to_string(),
+            section_number: 1,
+            value: *func_offsets.get(helper).expect("helper offset"),
+            is_function: true,
+        });
+    }
+    symbols.push(SymbolDef {
+        name: EXIT_PROCESS_SYMBOL.to_string(),
+        section_number: 0,
+        value: 0,
+        is_function: true,
+    });
+    for (index, offset) in str_offsets.iter().enumerate() {
+        symbols.push(SymbolDef {
+            name: format!("__str{index}"),
+            section_number: 2,
+            value: *offset,
+            is_function: false,
+        });
+    }
+    // .bss: the bump pointer cell at offset 0, the heap region at offset 8.
+    symbols.push(SymbolDef {
+        name: HEAP_NEXT_SYMBOL.to_string(),
+        section_number: 3,
+        value: 0,
+        is_function: false,
+    });
+    symbols.push(SymbolDef {
+        name: HEAP_BASE_SYMBOL.to_string(),
+        section_number: 3,
+        value: 8,
+        is_function: false,
+    });
+
+    let symbol_index_of = |name: &str| -> u32 {
+        symbols
+            .iter()
+            .position(|s| s.name == name)
+            .expect("symbol exists") as u32
+    };
+    for reloc in &mut relocations {
+        reloc.symbol_index = symbol_index_of(&reloc.symbol_name);
+    }
+
+    // -- Section layout ------------------------------------------------------
+    const NUM_SECTIONS: u32 = 3;
+    let bss_size = 8 + HEAP_REGION_SIZE;
+    let num_relocs = relocations.len() as u32;
+
+    let headers_end = COFF_HEADER_SIZE + NUM_SECTIONS * SECTION_HEADER_SIZE;
+    let text_raw = headers_end;
+    let rdata_raw = text_raw + text.len() as u32;
+    // `.bss` has no raw data. Relocations follow the raw section data.
+    let reloc_table_offset = rdata_raw + rdata.len() as u32;
+    let symbol_table_offset = reloc_table_offset + num_relocs * COFF_RELOC_SIZE;
+    let num_symbols = symbols.len() as u32;
+
+    // -- Emit ----------------------------------------------------------------
+    let mut bytes = Vec::new();
+
+    // COFF header.
+    push_u16(&mut bytes, AMD64_MACHINE);
+    push_u16(&mut bytes, NUM_SECTIONS as u16);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, symbol_table_offset);
+    push_u32(&mut bytes, num_symbols);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+
+    // .text section header.
+    push_fixed_name(&mut bytes, ".text", 8);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, text.len() as u32);
+    push_u32(&mut bytes, text_raw);
+    push_u32(
+        &mut bytes,
+        if num_relocs == 0 {
+            0
+        } else {
+            reloc_table_offset
+        },
+    );
+    push_u32(&mut bytes, 0);
+    push_u16(&mut bytes, num_relocs as u16);
+    push_u16(&mut bytes, 0);
+    push_u32(&mut bytes, TEXT_CHARACTERISTICS);
+
+    // .rdata section header.
+    push_fixed_name(&mut bytes, ".rdata", 8);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, rdata.len() as u32);
+    push_u32(&mut bytes, rdata_raw);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u32(&mut bytes, RDATA_CHARACTERISTICS);
+
+    // .bss section header. In a COFF *object*, an uninitialized-data section
+    // carries its size in SizeOfRawData with PointerToRawData = 0 (there is no
+    // raw data on disk); VirtualSize is 0. `IMAGE_SCN_CNT_UNINITIALIZED_DATA`
+    // tells the linker to reserve zeroed space.
+    push_fixed_name(&mut bytes, ".bss", 8);
+    push_u32(&mut bytes, 0); // VirtualSize (0 for object files)
+    push_u32(&mut bytes, 0); // VirtualAddress
+    push_u32(&mut bytes, bss_size); // SizeOfRawData (reserved zeroed bytes)
+    push_u32(&mut bytes, 0); // PointerToRawData (none for uninitialized data)
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u16(&mut bytes, 0);
+    push_u32(&mut bytes, BSS_CHARACTERISTICS);
+
+    // Section raw data: .text then .rdata (.bss has none).
+    bytes.extend_from_slice(&text);
+    bytes.extend_from_slice(&rdata);
+
+    // Relocations (all belong to .text).
+    for reloc in &relocations {
+        push_u32(&mut bytes, reloc.offset);
+        push_u32(&mut bytes, reloc.symbol_index);
+        push_u16(&mut bytes, IMAGE_REL_AMD64_REL32);
+    }
+
+    // Symbol table + string table.
+    let mut string_table: Vec<u8> = Vec::new();
+    string_table.extend_from_slice(&[0, 0, 0, 0]);
+    for symbol in &symbols {
+        if symbol.name.len() <= 8 {
+            push_fixed_name(&mut bytes, &symbol.name, 8);
+        } else {
+            let offset = string_table.len() as u32;
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, offset);
+            string_table.extend_from_slice(symbol.name.as_bytes());
+            string_table.push(0);
+        }
+        push_u32(&mut bytes, symbol.value);
+        push_u16(&mut bytes, section_number_field(symbol.section_number));
+        push_u16(&mut bytes, if symbol.is_function { 0x20 } else { 0x00 });
+        bytes.push(2); // StorageClass: EXTERNAL
+        bytes.push(0); // NumberOfAuxSymbols
+    }
+
+    let string_table_size = string_table.len() as u32;
+    string_table[0..4].copy_from_slice(&string_table_size.to_le_bytes());
+    bytes.extend_from_slice(&string_table);
+
+    bytes
+}
 
 #[cfg(test)]
 mod tests {
@@ -2662,6 +3209,80 @@ mod native_program_tests {
         .expect_err("string-field struct is not native");
         assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
         assert!(err.skipped.iter().any(|s| s.name == "main"));
+    }
+
+    #[test]
+    fn emits_rdata_and_bss_for_string_len() {
+        // A `main` deriving an i64 from `len` over string literals is eligible for
+        // native codegen and gains `.rdata` (the constants) + `.bss` (the heap).
+        let program = emit_alpha1_native_program(&module_for(
+            "fn main -> i64\n    let a i64 = len(\"hello\")\n    let b i64 = len(\"native\")\n    return a + b\n",
+        ))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(
+            program.skipped.is_empty(),
+            "no skips: {:?}",
+            program.skipped
+        );
+
+        // Three sections now: .text, .rdata, .bss.
+        assert_eq!(read_u16(&program.bytes, 2), 3, "three sections");
+        let sec1 = COFF_HEADER_SIZE as usize;
+        let sec2 = sec1 + SECTION_HEADER_SIZE as usize;
+        let sec3 = sec2 + SECTION_HEADER_SIZE as usize;
+        assert_eq!(&program.bytes[sec1..sec1 + 5], b".text");
+        assert_eq!(&program.bytes[sec2..sec2 + 6], b".rdata");
+        assert_eq!(&program.bytes[sec3..sec3 + 4], b".bss");
+
+        // `.bss` is uninitialized: SizeOfRawData is the reserved size, no raw
+        // pointer.
+        let bss_size = read_u32(&program.bytes, sec3 + 16);
+        assert_eq!(
+            bss_size,
+            8 + HEAP_REGION_SIZE,
+            "bss reserves heap + pointer"
+        );
+        assert_eq!(
+            read_u32(&program.bytes, sec3 + 20),
+            0,
+            "bss has no raw data"
+        );
+
+        // The interned string bytes appear verbatim in `.rdata`.
+        assert!(
+            program.bytes.windows(5).any(|w| w == b"hello"),
+            "hello constant stored"
+        );
+        assert!(
+            program.bytes.windows(6).any(|w| w == b"native"),
+            "native constant stored"
+        );
+
+        // Identical string literals are interned once (dedup): a symbol `__str1`
+        // exists (two distinct strings) but not `__str2`.
+        assert!(
+            program.bytes.windows(6).any(|w| w == b"__str1"),
+            "second string symbol present"
+        );
+    }
+
+    #[test]
+    fn dedups_repeated_string_literals() {
+        // The same literal used twice interns to a single `.rdata` constant, so
+        // only `__str0` exists.
+        let program = emit_alpha1_native_program(&module_for(
+            "fn main -> i64\n    return len(\"hi\") + len(\"hi\")\n",
+        ))
+        .expect("emit native program");
+        assert!(
+            program.bytes.windows(6).any(|w| w == b"__str0"),
+            "first string symbol present"
+        );
+        assert!(
+            !program.bytes.windows(6).any(|w| w == b"__str1"),
+            "no second symbol for a repeated literal"
+        );
     }
 
     #[test]
