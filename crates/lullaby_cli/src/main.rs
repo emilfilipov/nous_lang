@@ -64,7 +64,12 @@ fn run() -> Result<(), String> {
         ),
         CommandName::Test => test_file(invocation.path, invocation.mode),
         CommandName::Wasm => wasm_file(invocation.path, invocation.output, invocation.mode),
-        CommandName::Native => native_file(invocation.path, invocation.output, invocation.mode),
+        CommandName::Native => native_file(
+            invocation.path,
+            invocation.output,
+            invocation.mode,
+            invocation.freestanding,
+        ),
         CommandName::Lsp => lsp(),
         CommandName::Version => {
             println!("lullaby {}", env!("CARGO_PKG_VERSION"));
@@ -331,7 +336,19 @@ fn wasm_file(path: PathBuf, output: Option<PathBuf>, mode: OutputMode) -> Result
 /// the command reports the object it produced and explains that linking was
 /// unavailable rather than failing. `--verbose` lists compiled/skipped functions
 /// and the linker command.
-fn native_file(path: PathBuf, output: Option<PathBuf>, mode: OutputMode) -> Result<(), String> {
+///
+/// When `freestanding` is set (`--freestanding` / `--no-std`), the emitted
+/// executable must not depend on the C runtime: only the minimal OS import
+/// (`kernel32!ExitProcess`) needed to terminate is allowed. The default native
+/// path already links `kernel32.lib` only (the entry stub bypasses the CRT), so
+/// freestanding formalizes and guarantees that by rejecting any C-runtime
+/// dependency — an `extern fn` that requires `ucrt.lib` is `L0426`.
+fn native_file(
+    path: PathBuf,
+    output: Option<PathBuf>,
+    mode: OutputMode,
+    freestanding: bool,
+) -> Result<(), String> {
     // Library mode: a `main` is not required. A program with `main` still emits a
     // runnable executable; an export-only program (only `export fn` functions)
     // emits a C-callable library object. `emit_alpha1_native_program` requires at
@@ -374,6 +391,28 @@ fn native_file(path: PathBuf, output: Option<PathBuf>, mode: OutputMode) -> Resu
         }
     };
 
+    // Freestanding / no-std mode guarantees a no-C-runtime executable. The emitted
+    // program links only the minimal OS import (`kernel32!ExitProcess`); any
+    // additional import library (e.g. `ucrt.lib`, pulled in by an `extern fn` C
+    // call) is a C-runtime dependency and is rejected here with `L0426`. When the
+    // program has no such dependency, `import_libs` is empty and the guarantee
+    // already holds — the default native path links `kernel32.lib` only.
+    if freestanding && !program.import_libs.is_empty() {
+        let libs = program.import_libs.join(", ");
+        let report = DiagnosticReport::new(
+            "L0426",
+            DiagnosticPhase::Ir,
+            format!(
+                "freestanding (`--freestanding`) native build cannot depend on the C runtime, but this program requires the C runtime import library `{libs}` (via an `extern fn`)"
+            ),
+        )
+        .with_source_path(compiled.path.display().to_string())
+        .with_note(
+            "remove the `extern fn` (and its calls) for a freestanding build, or drop `--freestanding` to link the C runtime",
+        );
+        return Err(format_reports(&[report], mode, Some(&compiled.source)));
+    }
+
     let exe_output = output.unwrap_or_else(|| compiled.path.with_extension("exe"));
     let obj_output = exe_output.with_extension("obj");
     if let Err(error) = fs::write(&obj_output, &program.bytes) {
@@ -412,6 +451,11 @@ fn native_file(path: PathBuf, output: Option<PathBuf>, mode: OutputMode) -> Resu
     }
 
     println!("native object: {}", obj_output.display());
+    if freestanding {
+        println!(
+            "freestanding (no-std): no C runtime linked; only kernel32!ExitProcess for process exit"
+        );
+    }
     match &link {
         None => {
             println!(
@@ -1180,6 +1224,11 @@ struct Invocation {
     /// Trailing arguments passed to the running program by `run <file.lby>`.
     /// Exposed to the program through the `args()` builtin. Empty otherwise.
     program_args: Vec<String>,
+    /// Freestanding / no-std native build (`lullaby native --freestanding`).
+    /// Guarantees the emitted executable links no C runtime — only the minimal
+    /// OS import (`kernel32!ExitProcess`) needed to terminate. Ignored by every
+    /// command other than `native`.
+    freestanding: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1272,6 +1321,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
+                    freestanding: false,
                 }))
             } else {
                 Err("usage: lullaby --version".to_string())
@@ -1288,6 +1338,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
+                    freestanding: false,
                 }))
             } else {
                 Err("usage: lullaby --help".to_string())
@@ -1304,6 +1355,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
+                    freestanding: false,
                 }))
             } else {
                 Err("usage: lullaby docs".to_string())
@@ -1320,6 +1372,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
+                    freestanding: false,
                 }))
             } else {
                 Err("usage: lullaby examples".to_string())
@@ -1336,6 +1389,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
+                    freestanding: false,
                 }))
             } else {
                 Err("usage: lullaby lsp".to_string())
@@ -1354,6 +1408,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     let mut backend = Backend::Ast;
     let mut optimization = OptimizationMode::None;
     let mut output = None;
+    let mut freestanding = false;
     let mut cursor = 0;
     let usage = command_usage(command);
 
@@ -1416,6 +1471,15 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 output = Some(PathBuf::from(value));
                 cursor += 2;
             }
+            "--freestanding" | "--no-std" => {
+                // Freestanding / no-std native builds only. Guarantees the emitted
+                // executable links no C runtime (only kernel32!ExitProcess).
+                if command != "native" {
+                    return Err(usage);
+                }
+                freestanding = true;
+                cursor += 1;
+            }
             _ => break,
         }
     }
@@ -1476,6 +1540,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         optimization,
         fmt_mode: FmtMode::Print,
         program_args,
+        freestanding,
     }))
 }
 
@@ -1511,6 +1576,7 @@ fn parse_fmt_command(args: &[String]) -> Result<Option<Invocation>, String> {
         optimization: OptimizationMode::None,
         fmt_mode,
         program_args: Vec::new(),
+        freestanding: false,
     }))
 }
 
@@ -1521,7 +1587,7 @@ fn command_usage(command: &str) -> String {
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
         "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
-        "native" => "usage: lullaby native [--verbose] [-o out.exe] <file.lby>".to_string(),
+        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [-o out.exe] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
@@ -1529,7 +1595,7 @@ fn command_usage(command: &str) -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [-o out.exe] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [-o out.exe] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
         env!("CARGO_PKG_VERSION")
     );
 }

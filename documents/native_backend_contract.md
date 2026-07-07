@@ -269,6 +269,34 @@ The seven bytes above are `48 C7 C0 2A 00 00 00` = `mov rax, 42`. Because the Wi
 
 Deferred beyond this increment: no register/clobber modeling, no operand substitution (no way to reference Lullaby locals/values from the bytes), no assembly-text parsing (bytes only, not mnemonics), no verification that the bytes form valid instructions or preserve the frame, no relocation of the bytes, and non-Windows/non-x86-64 targets.
 
+## Freestanding / no-std mode (`--freestanding`) (DELIVERED, first increment)
+
+`lullaby native --freestanding` (alias `--no-std`) builds a native executable with **no C-runtime dependency**. This is the first freestanding increment: it formalizes, guarantees, and tests what the default native path already does — the emitted `.exe` links `kernel32.lib` only, zero CRT libraries (`ucrt`/`vcruntime`/`msvcrt`).
+
+### The no-CRT guarantee and minimal-OS-import model
+
+- The default native path is already CRT-free for a program with no `extern fn`: the entry stub `_lullaby_start` bypasses the C runtime (`/entry:_lullaby_start`, not `mainCRTStartup`), calls `main`, moves the result into `ecx`, and terminates through the imported `ExitProcess`. The only linked import library is `kernel32.lib`.
+- `--freestanding` turns that into a checked contract. The emitted executable's **only** OS dependency is `kernel32!ExitProcess` — the minimal import needed to terminate the process. No CRT startup, no `ucrt`/`vcruntime`/`msvcrt`, and no CRT-provided `main` entry.
+- What "freestanding" means **here**: this is still a Windows PE that uses `kernel32` for process exit. `ExitProcess`-via-`kernel32` is an accepted minimal-OS dependency for this first increment, not a bare-metal, OS-free binary.
+- Combined with inline `asm`, a freestanding `main` can even terminate by leaving its value in `rax` and returning it through the CRT-free entry stub to `ExitProcess` (see `tests/fixtures/native_only/asm_mov.lby`, which exits `42`). The stub — not the C runtime — provides the process lifecycle.
+
+### The extern-conflict diagnostic
+
+An `extern fn` call requires the C runtime import library `ucrt.lib` (it is how the external C symbol resolves), which contradicts the no-CRT guarantee. `lullaby native --freestanding` on a program that declares any `extern fn` is therefore rejected at the CLI with diagnostic **`L0426`** rather than silently linking the CRT:
+
+> freestanding (`--freestanding`) native build cannot depend on the C runtime, but this program requires the C runtime import library `ucrt.lib` (via an `extern fn`)
+
+Non-freestanding `native` is unchanged: it still links `ucrt.lib` for `extern fn` calls. `export fn` (C-callable exports), stack aggregates, and the string-constant heap step are all CRT-free and remain allowed in freestanding mode. The default (non-freestanding) `native` behavior is byte-for-byte unchanged — `--freestanding` only adds the CRT-dependency check and a status notice; it does not alter code generation or the object bytes.
+
+### Testing
+
+- `native_freestanding_has_no_crt_dependency_when_linkable` in `crates/lullaby_cli/tests/cli.rs` native-compiles `tests/fixtures/valid/native_scalars.lby` with `--freestanding` and asserts (always) that the emitted object contains **no** C-runtime marker (`ucrt`/`vcruntime`/`msvcrt`/`api-ms-win-crt`) while still importing `kernel32!ExitProcess`; when `rust-lld` + `kernel32.lib` are available it additionally asserts the linked image carries no CRT DLL import and that its exit code equals the interpreter's `main` result (`39`) mod 256. It skips only the link+run when the toolchain is unavailable — the object-level no-CRT assertion always runs.
+- `native_freestanding_rejects_extern_fn_with_l0426` asserts `--freestanding` on `tests/fixtures/native_only/ffi_llabs.lby` (an `extern fn` program) fails with `L0426` and names `ucrt.lib`.
+
+### Deferred toward true bare-metal
+
+This increment is a verifiable no-CRT Windows PE, not a bare-metal port. True bare-metal / other-OS support is deferred: a raw-syscall (or other OS-primitive) process exit with **no OS imports at all** (no `kernel32`); ELF / Mach-O / raw-binary object formats instead of Windows COFF/PE; a custom entry point and linker script; freestanding for non-x86-64 targets; and any freestanding intrinsics (no libc, no allocator beyond the existing bump heap). None of this bypasses the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+
 ## Deferred Native Work
 
-Deferred beyond this increment: `f64`/`bool`/`char`/`byte` scalar lowering, more than four parameters (stack arguments), aggregates as parameters/returns/call arguments, trapping native array bounds checks, string/enum/collection *values* (native string locals, concatenation, indexing, comparison), heap allocation exposed beyond the string-constant copy, a heap `free`/reclamation path, `match`, builtins beyond a constant-folded array `len` and string-literal `len`, cross-platform ELF/Mach-O object emission, and CRT-driven `mainCRTStartup` entry. This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+Deferred beyond this increment: `f64`/`bool`/`char`/`byte` scalar lowering, more than four parameters (stack arguments), aggregates as parameters/returns/call arguments, trapping native array bounds checks, string/enum/collection *values* (native string locals, concatenation, indexing, comparison), heap allocation exposed beyond the string-constant copy, a heap `free`/reclamation path, `match`, builtins beyond a constant-folded array `len` and string-literal `len`, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.

@@ -80,6 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1
 - `lullaby inspect [--verbose|--format json] <file.lbc>`
 - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>`
 - `lullaby run [--verbose|--format json] <file.lbc>`
+- `lullaby native [--verbose] [--freestanding|--no-std] [-o out.exe] <file.lby>`
 - `lullaby fmt [--write|--check] <file.lby>`
 - `lullaby lsp`
 - `lullaby docs`
@@ -88,6 +89,8 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1
 - `lullaby --version`
 
 `lullaby check` can validate helper/library-style `.lby` files without `main`. `lullaby compile`, `lullaby build`, and source `lullaby run` require executable source with zero-argument `main`; invalid entry points report `L0329`. `lullaby build` is an artifact-generation alias for `lullaby compile`.
+
+`lullaby native` compiles the i64-scalar subset to an x86-64 Windows COFF object and, best-effort, links it into a runnable `.exe`. Adding `--freestanding` (alias `--no-std`) builds a **no-C-runtime** executable: it links `kernel32.lib` only (zero `ucrt`/`vcruntime`/`msvcrt`) and terminates through the minimal OS import `kernel32!ExitProcess`. It is still a Windows PE, not a bare-metal binary. A freestanding build that declares an `extern fn` (which needs the C runtime) is rejected with `L0426`.
 
 ## Documentation
 

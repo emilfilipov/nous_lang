@@ -690,6 +690,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         root_cause: "An `asm` byte was out of the 0..=255 range, the statement was empty or outside `unsafe`, or the program was run on an interpreter, which cannot execute raw machine code.",
         suggested_fix: "Keep every `asm` byte in 0..=255 inside an `unsafe` block, and compile with `lullaby native` to emit and link the machine code into an `.exe` rather than running it on an interpreter.",
     },
+    DiagnosticEntry {
+        code: "L0426",
+        phase: DiagnosticPhase::Ir,
+        explanation: "A freestanding / no-std native build (`lullaby native --freestanding`) cannot depend on the C runtime, but the program declares an `extern fn` that must be linked against the C runtime import library (`ucrt.lib`).",
+        root_cause: "`--freestanding` guarantees the emitted executable links no C runtime (`ucrt`/`vcruntime`/`msvcrt`) — only the minimal OS import (`kernel32!ExitProcess`) needed to terminate. An `extern fn` call reintroduces a C runtime dependency, which is incompatible with that guarantee.",
+        suggested_fix: "Remove the `extern fn` (and its calls) from a freestanding build, or drop `--freestanding` and let the default native build link the C runtime for the extern call.",
+    },
 ];
 
 pub fn render_concise(report: &DiagnosticReport) -> String {

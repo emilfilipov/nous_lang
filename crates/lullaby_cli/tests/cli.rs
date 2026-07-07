@@ -3268,6 +3268,137 @@ fn asm_emits_raw_bytes_when_linkable() {
     assert_eq!(exit, 42, "asm `mov rax, 42` must make the process exit 42");
 }
 
+/// Whether the raw bytes of a native COFF object or linked PE image contain any
+/// C-runtime dependency marker. A CRT-linked Windows image imports one of these
+/// runtime DLLs (`ucrtbase`, `vcruntime*`, `msvcrt`, or an `api-ms-win-crt-*`
+/// forwarder); a freestanding (kernel32-only) image imports none of them, and a
+/// freestanding object carries no undefined external symbol from them either.
+fn contains_crt_marker(bytes: &[u8]) -> Option<String> {
+    // Case-insensitive substring scan over the ASCII import/symbol names embedded
+    // in the object/image. These markers never appear in a kernel32-only build.
+    const CRT_MARKERS: [&[u8]; 4] = [b"ucrt", b"vcruntime", b"msvcrt", b"api-ms-win-crt"];
+    let lower: Vec<u8> = bytes.iter().map(|b| b.to_ascii_lowercase()).collect();
+    for marker in CRT_MARKERS {
+        if lower.windows(marker.len()).any(|w| w == marker) {
+            return Some(String::from_utf8_lossy(marker).into_owned());
+        }
+    }
+    None
+}
+
+/// Freestanding / no-std native build: `lullaby native --freestanding` must emit
+/// an executable with NO C-runtime dependency — only the minimal OS import
+/// (`kernel32!ExitProcess`) needed to terminate. This proves that end to end:
+///
+/// - The emitted object contains no CRT import/symbol marker (structural, always
+///   runs). The only undefined external is `ExitProcess` (kernel32).
+/// - When `rust-lld` + `kernel32.lib` are available, the linked `.exe` also
+///   contains no CRT DLL import and its exit code equals the interpreter result
+///   (mod 256), proving the kernel32-only image runs correctly.
+///
+/// Skips the link+run gracefully when the toolchain is unavailable, but always
+/// runs the object-level no-CRT assertion.
+#[test]
+fn native_freestanding_has_no_crt_dependency_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_native_freestanding.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--freestanding",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    let listing = stdout(&emit);
+    assert!(
+        listing.contains("freestanding (no-std)"),
+        "expected the freestanding no-CRT notice: {listing}"
+    );
+    assert!(
+        listing.contains("compiled main"),
+        "expected `main` compiled: {listing}"
+    );
+
+    // Structural (always runs): the emitted object has no C-runtime marker. The
+    // only undefined external symbol is `ExitProcess` (from kernel32), which is
+    // not a CRT dependency.
+    let obj = out.with_extension("obj");
+    let obj_bytes = std::fs::read(&obj).expect("read native object");
+    if let Some(marker) = contains_crt_marker(&obj_bytes) {
+        panic!("freestanding object must not reference the C runtime; found `{marker}`");
+    }
+    // Sanity: the object references `ExitProcess` (the minimal OS import).
+    assert!(
+        obj_bytes.windows(11).any(|w| w == b"ExitProcess"),
+        "freestanding object should import kernel32!ExitProcess for process exit"
+    );
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 39, "fixture main computes 39");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping freestanding link+run parity (object-level no-CRT check already ran)"
+        );
+        return;
+    }
+
+    // The linked image must also carry no C-runtime import (kernel32-only), and
+    // its exit code must match the interpreter result (mod 256).
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe_bytes = std::fs::read(&out).expect("read linked exe");
+    if let Some(marker) = contains_crt_marker(&exe_bytes) {
+        panic!("freestanding exe must not import the C runtime; found `{marker}`");
+    }
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "freestanding native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// A freestanding build that also declares an `extern fn` (which requires the C
+/// runtime import library `ucrt.lib`) is a contradiction: `--freestanding`
+/// guarantees no C runtime. The CLI rejects the combination with `L0426` rather
+/// than silently linking the CRT.
+#[test]
+fn native_freestanding_rejects_extern_fn_with_l0426() {
+    let fixture = workspace_root().join("tests/fixtures/native_only/ffi_llabs.lby");
+    let output = lullaby()
+        .args([
+            "native",
+            "--freestanding",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(
+        !output.status.success(),
+        "freestanding + extern fn must be rejected"
+    );
+    let rendered = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(rendered.contains("L0426"), "expected L0426: {rendered}");
+    assert!(
+        rendered.contains("ucrt.lib"),
+        "diagnostic should name the offending C runtime import library: {rendered}"
+    );
+}
+
 /// Discover a C compiler for the export-into-Lullaby execution test: prefer
 /// MSVC `cl.exe` (present in a Developer Command Prompt, alongside `kernel32.lib`
 /// on `LIB`), else `clang`. Returns the compiler program name when it runs.
