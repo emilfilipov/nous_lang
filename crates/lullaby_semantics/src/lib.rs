@@ -223,6 +223,18 @@ fn result_type(ok: &TypeRef, err: &TypeRef) -> TypeRef {
     generic_type("result", &[ok.clone(), err.clone()])
 }
 
+/// Canonical `list<T>` type spelling.
+fn list_type(element: &TypeRef) -> TypeRef {
+    generic_type("list", std::slice::from_ref(element))
+}
+
+/// The element type `T` of a `list<T>` spelling, if any.
+fn list_element(ty: &TypeRef) -> Option<TypeRef> {
+    ty.generic_args("list")
+        .filter(|args| args.len() == 1)
+        .map(|mut args| args.remove(0))
+}
+
 fn render_place_path(path: &[Place]) -> String {
     let mut out = String::new();
     for place in path {
@@ -1430,7 +1442,52 @@ impl<'a> Checker<'a> {
             ExprKind::Call { name, args } if name == "ok" || name == "err" => Some(
                 self.check_result_construction(name, args, expected, expr.span, scope, function),
             ),
+            // `list_new()` has no argument to infer `T` from, so its element type
+            // comes from the contextual expected `list<...>` type, exactly like
+            // `none`/`ok`/`err` take theirs.
+            ExprKind::Call { name, args } if name == "list_new" => {
+                Some(self.check_list_new(args, expected, expr.span, function))
+            }
             _ => None,
+        }
+    }
+
+    fn check_list_new(
+        &mut self,
+        args: &[Expr],
+        expected: Option<&TypeRef>,
+        span: Span,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        if !args.is_empty() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0387",
+                format!("`list_new` expects 0 arguments but got {}", args.len()),
+                Some(function.name.clone()),
+                span,
+            ));
+            return None;
+        }
+        match expected {
+            Some(ty) if list_element(ty).is_some() => Some(ty.clone()),
+            Some(ty) => {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0387",
+                    format!("`list_new` has `list` type but `{}` was expected", ty.name),
+                    Some(function.name.clone()),
+                    span,
+                ));
+                None
+            }
+            None => {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0387",
+                    "cannot infer the element type of `list_new`; add a `list<...>` annotation or return type",
+                    Some(function.name.clone()),
+                    span,
+                ));
+                None
+            }
         }
     }
 
@@ -1735,13 +1792,16 @@ impl<'a> Checker<'a> {
             "len" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let arg_type = self.check_expr(&args[0], scope, function)?;
-                if arg_type.name == "string" || arg_type.array_element().is_some() {
+                if arg_type.name == "string"
+                    || arg_type.array_element().is_some()
+                    || list_element(&arg_type).is_some()
+                {
                     Some(TypeRef::new("i64"))
                 } else {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0373",
                         format!(
-                            "len expects a string or array value but got `{}`",
+                            "len expects a string, array, or list value but got `{}`",
                             arg_type.name
                         ),
                         Some(function.name.clone()),
@@ -1749,6 +1809,58 @@ impl<'a> Checker<'a> {
                     ));
                     None
                 }
+            }
+            "push" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                let list_ty = self.check_expr(&args[0], scope, function)?;
+                let element = self.expect_list_arg(name, &list_ty, args[0].span, function)?;
+                let value_type = self.check_expr(&args[1], scope, function)?;
+                if value_type != element {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0387",
+                        format!(
+                            "`push` element must be `{}` but got `{}`",
+                            element.name, value_type.name
+                        ),
+                        Some(function.name.clone()),
+                        args[1].span,
+                    ));
+                    return None;
+                }
+                Some(list_type(&element))
+            }
+            "get" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                let list_ty = self.check_expr(&args[0], scope, function)?;
+                let element = self.expect_list_arg(name, &list_ty, args[0].span, function)?;
+                self.expect_arg_type(name, 2, &args[1], "i64", scope, function)?;
+                Some(element)
+            }
+            "set" => {
+                self.expect_arg_count(name, args, 3, function)?;
+                let list_ty = self.check_expr(&args[0], scope, function)?;
+                let element = self.expect_list_arg(name, &list_ty, args[0].span, function)?;
+                self.expect_arg_type(name, 2, &args[1], "i64", scope, function)?;
+                let value_type = self.check_expr(&args[2], scope, function)?;
+                if value_type != element {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0387",
+                        format!(
+                            "`set` element must be `{}` but got `{}`",
+                            element.name, value_type.name
+                        ),
+                        Some(function.name.clone()),
+                        args[2].span,
+                    ));
+                    return None;
+                }
+                Some(list_type(&element))
+            }
+            "pop" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let list_ty = self.check_expr(&args[0], scope, function)?;
+                let element = self.expect_list_arg(name, &list_ty, args[0].span, function)?;
+                Some(list_type(&element))
             }
             "substring" => {
                 self.expect_arg_count(name, args, 3, function)?;
@@ -2415,6 +2527,28 @@ impl<'a> Checker<'a> {
                 self.diagnostics.push(SemanticDiagnostic::at(
                     "L0331",
                     format!("{name} expects a `{ctor}<T>` value but got `{}`", ty.name),
+                    Some(function.name.clone()),
+                    span,
+                ));
+                None
+            }
+        }
+    }
+
+    /// Verify `ty` is a `list<T>` and return its element type `T`.
+    fn expect_list_arg(
+        &mut self,
+        name: &str,
+        ty: &TypeRef,
+        span: Span,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        match list_element(ty) {
+            Some(element) => Some(element),
+            None => {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0387",
+                    format!("`{name}` expects a `list<T>` value but got `{}`", ty.name),
                     Some(function.name.clone()),
                     span,
                 ));
@@ -3560,6 +3694,51 @@ mod tests {
         let diagnostics = validate_source(source).expect_err("semantic");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0303"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_list_builtins() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 10)\n",
+            "    l = push(l, 20)\n",
+            "    l = set(l, 0, 5)\n",
+            "    let head i64 = get(l, 0)\n",
+            "    let n i64 = len(l)\n",
+            "    l = pop(l)\n",
+            "    head + n + len(l)\n",
+        );
+        assert!(
+            validate_source(source).is_ok(),
+            "{:?}",
+            validate_source(source)
+        );
+    }
+
+    #[test]
+    fn rejects_list_new_without_expected_type() {
+        let source = concat!("fn main -> i64\n", "    let l = list_new()\n", "    0\n");
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0387"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_push_element_type_mismatch() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, true)\n",
+            "    0\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0387"),
             "{diagnostics:?}"
         );
     }

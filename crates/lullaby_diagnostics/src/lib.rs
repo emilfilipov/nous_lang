@@ -449,6 +449,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Add an `option<...>`/`result<...>` type annotation on the `let`, or use it where a function return type of that shape provides the expected type.",
     },
     DiagnosticEntry {
+        code: "L0387",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A `list<T>` builtin call had a wrong argument or an uninferable element type.",
+        root_cause: "A `list_new`/`push`/`get`/`set`/`pop` call used the wrong argument type or arity, or `list_new` had no expected `list<...>` type to fix its element type.",
+        suggested_fix: "Pass a `list<T>` and matching `T` element, and give `list_new()` a `list<...>` annotation or return type so its element type is known.",
+    },
+    DiagnosticEntry {
         code: "L0501",
         phase: DiagnosticPhase::Ir,
         explanation: "The checked source program could not be lowered into typed IR.",

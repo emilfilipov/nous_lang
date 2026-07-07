@@ -8,8 +8,8 @@ use lullaby_parser::{
     TypeRef, UnaryOp, generic_type,
 };
 use lullaby_runtime::{
-    ResolvedPlace, RuntimeError, Value, apply_compound, char_find, expect_i64, expect_string,
-    get_place, set_place,
+    ResolvedPlace, RuntimeError, Value, apply_compound, char_find, expect_i64, expect_list,
+    expect_string, get_place, set_place,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -3338,6 +3338,11 @@ impl<'a> IrRuntime<'a> {
             "flush" => self.builtin_flush(args),
             "to_string" => Self::builtin_to_string(args),
             "len" => Self::builtin_len(args),
+            "list_new" => Self::builtin_list_new(args),
+            "push" => Self::builtin_push(args),
+            "get" => Self::builtin_get(args),
+            "set" => Self::builtin_set(args),
+            "pop" => Self::builtin_pop(args),
             "substring" => Self::builtin_substring(args),
             "find" => Self::builtin_find(args),
             "contains" => Self::builtin_contains(args),
@@ -4003,6 +4008,69 @@ impl<'a> IrRuntime<'a> {
                 format!("len expects a string or array but got `{other}`"),
             )),
         }
+    }
+
+    /// `list_new() -> list<T>`: a fresh empty list, represented as an array.
+    fn builtin_list_new(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("list_new", 0, args.len()))?;
+        Ok(Value::Array(Vec::new()))
+    }
+
+    /// `push(l, x) -> list<T>`: a new list with `x` appended.
+    fn builtin_push(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("push", 2, args.len()))?;
+        let mut values = expect_list("push", list)?;
+        values.push(value);
+        Ok(Value::Array(values))
+    }
+
+    /// `get(l, i) -> T`: bounds-checked element read.
+    fn builtin_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, index]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("get", 2, args.len()))?;
+        let values = expect_list("get", list)?;
+        let index = expect_i64("get", index)?;
+        if index < 0 || index as usize >= values.len() {
+            return Err(RuntimeError::new(
+                "L0413",
+                format!("list index `{index}` is out of bounds"),
+            ));
+        }
+        Ok(values[index as usize].clone())
+    }
+
+    /// `set(l, i, x) -> list<T>`: a new list with index `i` replaced by `x`.
+    fn builtin_set(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, index, value]: [Value; 3] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("set", 3, args.len()))?;
+        let mut values = expect_list("set", list)?;
+        let index = expect_i64("set", index)?;
+        if index < 0 || index as usize >= values.len() {
+            return Err(RuntimeError::new(
+                "L0413",
+                format!("list index `{index}` is out of bounds"),
+            ));
+        }
+        values[index as usize] = value;
+        Ok(Value::Array(values))
+    }
+
+    /// `pop(l) -> list<T>`: a new list without the last element.
+    fn builtin_pop(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("pop", 1, args.len()))?;
+        let mut values = expect_list("pop", list)?;
+        if values.pop().is_none() {
+            return Err(RuntimeError::new("L0413", "cannot pop from an empty list"));
+        }
+        Ok(Value::Array(values))
     }
 
     fn builtin_substring(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5064,6 +5132,32 @@ impl<'a> Lowerer<'a> {
         expected: Option<&TypeRef>,
         scope: &HashMap<String, TypeRef>,
     ) -> Option<Result<IrExpr, IrLoweringError>> {
+        // `list_new()` has no payload; its element type comes solely from the
+        // expected `list<...>` type, exactly like `none`. Semantics has already
+        // validated that an expected `list<...>` type is present here.
+        if let ExprKind::Call { name, args } = &expr.kind
+            && name == "list_new"
+            && args.is_empty()
+        {
+            let ty = match expected.cloned() {
+                Some(ty) if ty.generic_args("list").is_some() => ty,
+                _ => {
+                    return Some(Err(IrLoweringError::new(
+                        "cannot infer the element type of `list_new` without an expected `list<...>` type",
+                        Some(expr.span),
+                    )));
+                }
+            };
+            return Some(Ok(IrExpr {
+                kind: IrExprKind::Call {
+                    name: name.clone(),
+                    args: Vec::new(),
+                },
+                ty,
+                span: expr.span,
+            }));
+        }
+
         let (name, payload_expr) = match &expr.kind {
             // Bare `none` (not shadowed by a local) is unit-variant construction.
             ExprKind::Variable(name) if name == "none" && !scope.contains_key(name) => {
@@ -5168,6 +5262,26 @@ impl<'a> Lowerer<'a> {
             | "replace" | "upper" | "lower" => TypeRef::new("string"),
             "file_exists" | "contains" => TypeRef::new("bool"),
             "sys_status" | "len" | "find" => TypeRef::new("i64"),
+            // `push`/`set`/`pop` return a new `list<T>` of the same type as their
+            // list argument (already spelled `list<T>`).
+            "push" | "set" | "pop" => {
+                args.first().map(|list| list.ty.clone()).ok_or_else(|| {
+                    IrLoweringError::new(format!("{name} call missing list argument"), Some(span))
+                })?
+            }
+            // `get(l, i)` returns the element type `T` of its `list<T>` argument.
+            "get" => {
+                let list = args.first().ok_or_else(|| {
+                    IrLoweringError::new("get call missing list argument", Some(span))
+                })?;
+                list.ty
+                    .generic_args("list")
+                    .filter(|args| args.len() == 1)
+                    .map(|mut args| args.remove(0))
+                    .ok_or_else(|| {
+                        IrLoweringError::new("get call argument is not a list", Some(span))
+                    })?
+            }
             "split" => TypeRef::new("array<string>"),
             "sqrt" | "floor" | "ceil" | "round" => TypeRef::new("f64"),
             "abs" | "min" | "max" | "pow" => {

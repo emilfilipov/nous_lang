@@ -1,0 +1,17 @@
+fn build -> list<i64>
+    let l list<i64> = list_new()
+    l = push(l, 10)
+    l = push(l, 20)
+    l = push(l, 30)
+    l
+
+fn main -> i64
+    let l list<i64> = build()
+    l = set(l, 1, 25)
+    let a i64 = get(l, 0)
+    let b i64 = get(l, 2)
+    let n i64 = len(l)
+    l = pop(l)
+    let m i64 = len(l)
+    let last i64 = get(l, 1)
+    a + b + n + m + last

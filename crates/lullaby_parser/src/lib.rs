@@ -1083,7 +1083,10 @@ impl<'a> Parser<'a> {
                 // Single-argument generics reuse one shape; `result` accepts a
                 // comma-separated argument list. All emit the shared canonical
                 // spelling so string-based `TypeRef` equality holds everywhere.
-                let is_single = matches!(name.as_str(), "array" | "ptr" | "ref" | "rc" | "option");
+                let is_single = matches!(
+                    name.as_str(),
+                    "array" | "ptr" | "ref" | "rc" | "option" | "list"
+                );
                 let is_multi = name.as_str() == "result";
                 if (is_single || is_multi) && self.eat_symbol("<") {
                     let mut args = vec![self.expect_type("expected generic type argument")?];

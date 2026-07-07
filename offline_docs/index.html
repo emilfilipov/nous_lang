@@ -465,6 +465,30 @@ fn main -&gt; i64
           <li><code>match</code> over an <code>option&lt;U&gt;</code> covers <code>some</code> + <code>none</code> (or <code>_</code>); over a <code>result&lt;T, E&gt;</code> it covers <code>ok</code> + <code>err</code> (or <code>_</code>), reusing <code>L0384</code>/<code>L0385</code>.</li>
           <li><code>option</code>/<code>result</code> construct and match identically across the AST, IR, and bytecode backends, including under optimization.</li>
         </ul>
+        <h3>Growable lists (<code>list&lt;T&gt;</code>)</h3>
+        <pre data-fixture="tests/fixtures/valid/run_list.lby" data-mode="run"><code>fn build -&gt; list&lt;i64&gt;
+    let l list&lt;i64&gt; = list_new()
+    l = push(l, 10)
+    l = push(l, 20)
+    l = push(l, 30)
+    l
+
+fn main -&gt; i64
+    let l list&lt;i64&gt; = build()
+    l = set(l, 1, 25)
+    let a i64 = get(l, 0)
+    let b i64 = get(l, 2)
+    let n i64 = len(l)
+    l = pop(l)
+    let m i64 = len(l)
+    let last i64 = get(l, 1)
+    a + b + n + m + last</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_list.lby</code> (prints <code>70</code>).</p>
+        <ul>
+          <li><code>list&lt;T&gt;</code> is a growable, value-semantic list. Its "mutating" builtins are functional and return a new list, so the idiom is <code>l = push(l, x)</code>.</li>
+          <li><code>list_new()</code> builds an empty list and takes its element type from the expected <code>list&lt;...&gt;</code> type (a <code>let</code> annotation or function return type); missing that context reports <code>L0387</code>.</li>
+          <li><code>push(l, x)</code> appends, <code>get(l, i)</code> reads (bounds-checked, <code>L0413</code>), <code>set(l, i, x)</code> replaces at an index, <code>pop(l)</code> drops the last element, and <code>len(l)</code> returns the <code>i64</code> length. Wrong argument types or arities report <code>L0387</code>.</li>
+        </ul>
       </section>
 
       <section id="control-flow">
@@ -720,6 +744,7 @@ Suggested fix:
             <tr><td><code>L0384</code></td><td>Non-exhaustive match: a variant is uncovered and no <code>_</code> wildcard is present.</td></tr>
             <tr><td><code>L0385</code></td><td>Invalid match arm: unknown or duplicate variant, or wrong payload binding count.</td></tr>
             <tr><td><code>L0386</code></td><td>Cannot infer the type of <code>none</code>/<code>ok</code>/<code>err</code>; add an <code>option</code>/<code>result</code> annotation or return type.</td></tr>
+            <tr><td><code>L0387</code></td><td>Invalid <code>list&lt;T&gt;</code> builtin call or uninferable <code>list_new()</code> element type; pass a <code>list&lt;T&gt;</code> and matching <code>T</code>, and annotate <code>list_new()</code> with a <code>list&lt;...&gt;</code> type.</td></tr>
             <tr><td><code>L0501 [ir]</code></td><td>Typed IR lowering failed after semantic validation.</td></tr>
             <tr><td><code>L0502 [optimizer]</code></td><td><code>--optimize</code> was requested without an IR or bytecode backend.</td></tr>
             <tr><td><code>L0601 [bytecode]</code></td><td>Compiled <code>.lbc</code> artifact is malformed, unsupported, fails metadata/function table/memory operation compatibility checks, or violates the instruction contract.</td></tr>

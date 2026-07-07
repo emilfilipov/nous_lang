@@ -166,6 +166,18 @@ pub fn expect_i64(name: &str, value: Value) -> Result<i64, RuntimeError> {
     }
 }
 
+/// Unwrap a runtime `Value` expected to be a list (an array), reporting `L0417`
+/// otherwise. A `list<T>` is represented at runtime as a `Value::Array`.
+pub fn expect_list(name: &str, value: Value) -> Result<Vec<Value>, RuntimeError> {
+    match value {
+        Value::Array(values) => Ok(values),
+        other => Err(RuntimeError::new(
+            "L0417",
+            format!("{name} expects a list but got `{other}`"),
+        )),
+    }
+}
+
 /// First character index of `needle` in `text`, or `-1` when absent.
 pub fn char_find(text: &str, needle: &str) -> i64 {
     match text.find(needle) {
@@ -275,6 +287,11 @@ impl<'a> Runtime<'a> {
             "flush" => self.builtin_flush(args),
             "to_string" => Self::builtin_to_string(args),
             "len" => Self::builtin_len(args),
+            "list_new" => Self::builtin_list_new(args),
+            "push" => Self::builtin_push(args),
+            "get" => Self::builtin_get(args),
+            "set" => Self::builtin_set(args),
+            "pop" => Self::builtin_pop(args),
             "substring" => Self::builtin_substring(args),
             "find" => Self::builtin_find(args),
             "contains" => Self::builtin_contains(args),
@@ -992,6 +1009,69 @@ impl<'a> Runtime<'a> {
         }
     }
 
+    /// `list_new() -> list<T>`: a fresh empty list, represented as an array.
+    fn builtin_list_new(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("list_new", 0, args.len()))?;
+        Ok(Value::Array(Vec::new()))
+    }
+
+    /// `push(l, x) -> list<T>`: a new list with `x` appended.
+    fn builtin_push(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("push", 2, args.len()))?;
+        let mut values = expect_list("push", list)?;
+        values.push(value);
+        Ok(Value::Array(values))
+    }
+
+    /// `get(l, i) -> T`: bounds-checked element read.
+    fn builtin_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, index]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("get", 2, args.len()))?;
+        let values = expect_list("get", list)?;
+        let index = expect_i64("get", index)?;
+        if index < 0 || index as usize >= values.len() {
+            return Err(RuntimeError::new(
+                "L0413",
+                format!("list index `{index}` is out of bounds"),
+            ));
+        }
+        Ok(values[index as usize].clone())
+    }
+
+    /// `set(l, i, x) -> list<T>`: a new list with index `i` replaced by `x`.
+    fn builtin_set(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, index, value]: [Value; 3] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("set", 3, args.len()))?;
+        let mut values = expect_list("set", list)?;
+        let index = expect_i64("set", index)?;
+        if index < 0 || index as usize >= values.len() {
+            return Err(RuntimeError::new(
+                "L0413",
+                format!("list index `{index}` is out of bounds"),
+            ));
+        }
+        values[index as usize] = value;
+        Ok(Value::Array(values))
+    }
+
+    /// `pop(l) -> list<T>`: a new list without the last element.
+    fn builtin_pop(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("pop", 1, args.len()))?;
+        let mut values = expect_list("pop", list)?;
+        if values.pop().is_none() {
+            return Err(RuntimeError::new("L0413", "cannot pop from an empty list"));
+        }
+        Ok(Value::Array(values))
+    }
+
     fn builtin_substring(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [text, start, end]: [Value; 3] = args
             .try_into()
@@ -1602,6 +1682,38 @@ mod tests {
     fn runs_store_builtin() {
         let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(0)\n    store(ptr, 41)\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + 1\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
+    fn runs_list_builtins() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 10)\n",
+            "    l = push(l, 20)\n",
+            "    l = push(l, 30)\n",
+            "    l = set(l, 1, 25)\n",
+            "    let a i64 = get(l, 0)\n",
+            "    let b i64 = get(l, 2)\n",
+            "    let n i64 = len(l)\n",
+            "    l = pop(l)\n",
+            "    a + b + n + len(l) + get(l, 1)\n",
+        );
+        // [10,20,30] -> set(1,25) -> [10,25,30]; a=10, b=30, n=3;
+        // pop -> [10,25]; len=2, get(1)=25; 10+30+3+2+25 = 70.
+        assert_eq!(run_source(source).expect("run"), Value::I64(70));
+    }
+
+    #[test]
+    fn list_get_out_of_bounds_errors() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 1)\n",
+            "    get(l, 5)\n",
+        );
+        let error = run_source(source).expect_err("run");
+        assert_eq!(error.code, "L0413");
     }
 
     #[test]
