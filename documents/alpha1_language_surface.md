@@ -38,6 +38,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 ## Expressions
 
 - Implemented expressions include literals, variables, function calls with parentheses, grouped expressions, array literals, array indexing, arithmetic, equality, ordering, and logical operators.
+- Method-call sugar: `receiver.name(args)` desugars to `name(receiver, args)` (UFCS) at parse time, so any function whose first parameter matches the receiver can be called in method position — e.g. `p.norm2()` calls `fn norm2 p Point -> i64`. Plain `receiver.name` (no parentheses) remains struct field access.
 - Arithmetic `+`, `-`, `*`, and `/` operate on two `i64`s or two `f64`s (operands must match); `+` also concatenates two `string`s. Integer division by zero is a runtime error; `f64` division follows IEEE 754 (division by zero yields infinity/NaN).
 - Equality requires matching operand types.
 - Ordering comparisons `<`, `<=`, `>`, and `>=` require two `i64`s or two `f64`s.

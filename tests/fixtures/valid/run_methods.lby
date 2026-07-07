@@ -1,0 +1,13 @@
+struct Point
+    x i64
+    y i64
+
+fn norm2 p Point -> i64
+    p.x * p.x + p.y * p.y
+
+fn scaled p Point k i64 -> i64
+    p.norm2() * k
+
+fn main -> i64
+    let p Point = Point(3, 4)
+    p.scaled(2) + p.norm2()

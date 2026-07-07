@@ -1368,21 +1368,42 @@ impl<'a> ExprParser<'a> {
                     span,
                 };
             } else if self.eat_symbol(".") {
-                let field = match self.peek().map(|token| token.kind.clone()) {
+                let span = expr.span;
+                let name = match self.peek().map(|token| token.kind.clone()) {
                     Some(TokenKind::Identifier(name)) => {
                         self.cursor += 1;
                         name
                     }
                     _ => return Err("expected field name after `.`".to_string()),
                 };
-                let span = expr.span;
-                expr = Expr {
-                    kind: ExprKind::Field {
-                        target: Box::new(expr),
-                        field,
-                    },
-                    span,
-                };
+                if self.eat_symbol("(") {
+                    // Method-call sugar: `recv.name(args)` desugars to
+                    // `name(recv, args)` (UFCS), reusing normal call checking.
+                    let mut args = vec![expr];
+                    if !self.eat_symbol(")") {
+                        loop {
+                            args.push(self.parse_binary(0)?);
+                            if self.eat_symbol(")") {
+                                break;
+                            }
+                            if !self.eat_symbol(",") {
+                                return Err("expected `,` or `)` in method call".to_string());
+                            }
+                        }
+                    }
+                    expr = Expr {
+                        kind: ExprKind::Call { name, args },
+                        span,
+                    };
+                } else {
+                    expr = Expr {
+                        kind: ExprKind::Field {
+                            target: Box::new(expr),
+                            field: name,
+                        },
+                        span,
+                    };
+                }
             } else {
                 break;
             }
@@ -1850,6 +1871,26 @@ mod tests {
         };
         assert_eq!(name, "a");
         assert!(matches!(path.as_slice(), [Place::Index(_)]));
+    }
+
+    #[test]
+    fn desugars_method_call_to_ufcs_call() {
+        // `recv.name(args)` parses to `name(recv, args)`; plain `recv.name`
+        // stays field access.
+        let source = "fn main -> i64\n    p.scaled(2)\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Expr(Expr {
+            kind: ExprKind::Call { name, args },
+            ..
+        }) = &program.functions[0].body[0]
+        else {
+            panic!("expected method call desugared to a call");
+        };
+        assert_eq!(name, "scaled");
+        assert_eq!(args.len(), 2);
+        assert!(matches!(&args[0].kind, ExprKind::Variable(v) if v == "p"));
+        assert!(matches!(&args[1].kind, ExprKind::Integer(2)));
     }
 
     #[test]

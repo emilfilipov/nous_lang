@@ -125,6 +125,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_array.lby`: run homogeneous array literals and bounds-checked indexing.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_array_mutation.lby`: run array element assignment, compound `+=` on elements, nested array-of-struct mutation, and the `len` builtin across the AST, IR, and bytecode backends.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_named_struct.lby`: run named-field struct construction with fields supplied out of order across the AST, IR, and bytecode backends.
+- `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_methods.lby`: run UFCS method-call sugar (`p.norm2()`, `p.scaled(2)`) desugared to plain function calls across the AST, IR, and bytecode backends.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_enum.lby`: run enum/tagged-union declaration and construction — unit and payload variants stored in locals and arrays, passed through functions, across the AST, IR, and bytecode backends.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_match.lby`: run `match` pattern matching over enums — payload binding, unit-variant arms, and a `_` wildcard extracting values to compute an i64 (returns 40), across the AST, IR, and bytecode backends including optimized variants.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_file_io.lby`: run text file write, append, and read builtins.
