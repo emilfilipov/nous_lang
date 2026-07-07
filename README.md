@@ -11,7 +11,7 @@ The implemented surface (all running identically on every backend) includes:
 - **Types**: `i64`, `f64`, `bool`, `string`, `char`, `byte`, `void`; `array<T>`, growable `list<T>`, `map<K, V>`; nominal `struct` and `enum` (tagged unions); `option<T>` / `result<T, E>`; function values `fn(T) -> R`; and `rc<T>`/`ref<T>`/`ptr<T>` references.
 - **Data**: struct construction (positional and named `Point(x: 3, y: 4)`), field access and mutation, UFCS method calls (`p.dist()`), enum variants with payloads.
 - **Control flow**: `if`/`elif`/`else`, `while`, range `for`, `loop`, `break`/`continue`, exhaustive `match` with payload binding, and `throw`/`try`/`catch`.
-- **Abstraction**: user-defined generic functions (`fn f<T> ...`) with call-site inference, and first-class functions passed and returned by value.
+- **Abstraction**: user-defined generic functions (`fn f<T> ...`) with call-site inference, traits with `impl` and bounded generics (`<T: Show>`), and first-class functions passed and returned by value.
 - **Programs**: multi-file `import` with `pub` visibility; a string and math standard library, collections, and text/stream/system I/O — all documented in the [standard library catalog](documents/standard_library.md).
 - **Tooling**: strong diagnostics (concise / verbose / JSON), a canonical formatter (`lullaby fmt`), and a bytecode artifact + inspector.
 
