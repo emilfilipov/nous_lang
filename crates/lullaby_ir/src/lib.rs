@@ -10,8 +10,8 @@ use lullaby_parser::{
 };
 use lullaby_runtime::{
     ResolvedPlace, RuntimeError, SocketResource, Value, apply_compound, char_find, expect_i64,
-    expect_list, expect_map, expect_string, get_place, net_err, option_value, result_value,
-    scalar_order_keys, set_place, value_type_name,
+    expect_list, expect_map, expect_string, get_place, http_exchange, net_err, option_value,
+    result_value, scalar_order_keys, set_place, value_type_name,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -3548,6 +3548,8 @@ impl<'a> IrRuntime<'a> {
             "udp_bind" => self.builtin_udp_bind(args),
             "udp_send_to" => self.builtin_udp_send_to(args),
             "udp_recv" => self.builtin_udp_recv(args),
+            "http_get" => Self::builtin_http_get(args),
+            "http_post" => Self::builtin_http_post(args),
             // A region-creation marker has no runtime effect in the current
             // analysis-only region model.
             "region_create" => Ok(Value::Void),
@@ -4743,6 +4745,29 @@ impl<'a> IrRuntime<'a> {
             )))),
             Err(error) => Ok(net_err(&error)),
         }
+    }
+
+    /// `http_get(url string) -> result<string, string>`: perform an HTTP/1.1
+    /// GET and return the response body on a 2xx/3xx response, or `err(message)`
+    /// on a connection/parse/HTTP error.
+    fn builtin_http_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [url]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("http_get", 1, args.len()))?;
+        let url = expect_string("http_get", url)?;
+        Ok(http_exchange("GET", &url, None))
+    }
+
+    /// `http_post(url string, body string) -> result<string, string>`: perform
+    /// an HTTP/1.1 POST with a `text/plain` body and return the response body on
+    /// a 2xx/3xx response, or `err(message)` on a connection/parse/HTTP error.
+    fn builtin_http_post(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [url, body]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("http_post", 2, args.len()))?;
+        let url = expect_string("http_post", url)?;
+        let body = expect_string("http_post", body)?;
+        Ok(http_exchange("POST", &url, Some(&body)))
     }
 
     /// `push(l, x) -> list<T>`: a new list with `x` appended.
@@ -6210,7 +6235,7 @@ impl<'a> Lowerer<'a> {
             "tcp_connect" | "tcp_listen" | "tcp_accept" | "udp_bind" => {
                 generic_type("result", &[TypeRef::new("Socket"), TypeRef::new("string")])
             }
-            "tcp_read" | "udp_recv" => {
+            "tcp_read" | "udp_recv" | "http_get" | "http_post" => {
                 generic_type("result", &[TypeRef::new("string"), TypeRef::new("string")])
             }
             "tcp_write" | "udp_send_to" => {

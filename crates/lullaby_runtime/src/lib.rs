@@ -290,6 +290,108 @@ pub fn net_err(error: &std::io::Error) -> Value {
     result_value(Err(Value::String(error.to_string())))
 }
 
+/// Perform one HTTP/1.1 exchange over a fresh `TcpStream` and return the
+/// response body as a `result<string, string>` runtime value.
+///
+/// `method` is `"GET"` or `"POST"`; `body` is `None` for GET and `Some(text)`
+/// for POST (sent as `Content-Type: text/plain`). Only the `http` scheme is
+/// supported — an `https://` URL yields `err("https not supported")`. Chunked
+/// transfer decoding is not implemented; the response body is read to EOF via
+/// the `Connection: close` header. A read timeout keeps a hung server from
+/// stalling the caller. A 2xx/3xx status yields `ok(body)`; any 4xx/5xx status
+/// yields `err("http {code}: {first-body-line}")`. All connection/parse/HTTP
+/// failures are `err(...)` results, never a propagated `RuntimeError`.
+pub fn http_exchange(method: &str, url: &str, body: Option<&str>) -> Value {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let (scheme, rest) = match url.split_once("://") {
+        Some(parts) => parts,
+        None => return result_value(Err(Value::String("invalid url".to_string()))),
+    };
+    if scheme.eq_ignore_ascii_case("https") {
+        return result_value(Err(Value::String("https not supported".to_string())));
+    }
+    if !scheme.eq_ignore_ascii_case("http") {
+        return result_value(Err(Value::String(format!("unsupported scheme `{scheme}`"))));
+    }
+
+    // Split `host[:port]` from the path (default `/`).
+    let (authority, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, "/"),
+    };
+    if authority.is_empty() {
+        return result_value(Err(Value::String("missing host".to_string())));
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port_text)) => match port_text.parse::<u16>() {
+            Ok(port) => (host, port),
+            Err(_) => {
+                return result_value(Err(Value::String(format!("invalid port `{port_text}`"))));
+            }
+        },
+        None => (authority, 80u16),
+    };
+    let path = if path.is_empty() { "/" } else { path };
+
+    let mut stream = match TcpStream::connect((host, port)) {
+        Ok(stream) => stream,
+        Err(error) => return net_err(&error),
+    };
+    if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
+        return net_err(&error);
+    }
+
+    let request = match body {
+        None => format!(
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: lullaby\r\nConnection: close\r\n\r\n"
+        ),
+        Some(body) => format!(
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: lullaby\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: {len}\r\n\r\n{body}",
+            len = body.len()
+        ),
+    };
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        return net_err(&error);
+    }
+    if let Err(error) = stream.flush() {
+        return net_err(&error);
+    }
+
+    let mut response = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut response) {
+        return net_err(&error);
+    }
+
+    let split = response.windows(4).position(|window| window == b"\r\n\r\n");
+    let (head, resp_body) = match split {
+        Some(index) => (&response[..index], &response[index + 4..]),
+        None => {
+            return result_value(Err(Value::String(
+                "malformed response: no header terminator".to_string(),
+            )));
+        }
+    };
+    let head = String::from_utf8_lossy(head);
+    let status_line = head.lines().next().unwrap_or("");
+    let code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|token| token.parse::<u16>().ok());
+    let body_text = String::from_utf8_lossy(resp_body).into_owned();
+    match code {
+        Some(code) if (200..400).contains(&code) => result_value(Ok(Value::String(body_text))),
+        Some(code) => {
+            let first_line = body_text.lines().next().unwrap_or("");
+            result_value(Err(Value::String(format!("http {code}: {first_line}"))))
+        }
+        None => result_value(Err(Value::String(format!(
+            "malformed status line `{status_line}`"
+        )))),
+    }
+}
+
 /// An open network resource held behind a socket handle. Not `Clone`, which is
 /// why sockets are surfaced to Lullaby as opaque integer handles. Shared by the
 /// AST interpreter and the IR interpreter so both keep identical socket
@@ -531,6 +633,8 @@ impl<'a> Runtime<'a> {
             "udp_bind" => self.builtin_udp_bind(args),
             "udp_send_to" => self.builtin_udp_send_to(args),
             "udp_recv" => self.builtin_udp_recv(args),
+            "http_get" => Self::builtin_http_get(args),
+            "http_post" => Self::builtin_http_post(args),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("L0401", format!("unknown function `{name}`"))
@@ -833,6 +937,29 @@ impl<'a> Runtime<'a> {
             )))),
             Err(error) => Ok(net_err(&error)),
         }
+    }
+
+    /// `http_get(url string) -> result<string, string>`: perform an HTTP/1.1
+    /// GET and return the response body on a 2xx/3xx response, or `err(message)`
+    /// on a connection/parse/HTTP error.
+    fn builtin_http_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [url]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("http_get", 1, args.len()))?;
+        let url = expect_string("http_get", url)?;
+        Ok(http_exchange("GET", &url, None))
+    }
+
+    /// `http_post(url string, body string) -> result<string, string>`: perform
+    /// an HTTP/1.1 POST with a `text/plain` body and return the response body on
+    /// a 2xx/3xx response, or `err(message)` on a connection/parse/HTTP error.
+    fn builtin_http_post(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [url, body]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("http_post", 2, args.len()))?;
+        let url = expect_string("http_post", url)?;
+        let body = expect_string("http_post", body)?;
+        Ok(http_exchange("POST", &url, Some(&body)))
     }
 
     /// Execute a user function (or trait impl method) with the given argument
@@ -3087,6 +3214,33 @@ mod tests {
             "    let outcome result<Socket, string> = tcp_connect(\"127.0.0.1\", 1)\n",
             "    match outcome\n",
             "        ok(conn) -> 0\n",
+            "        err(message) -> 1\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(1));
+    }
+
+    #[test]
+    fn http_get_refused_yields_err_result() {
+        // Connecting to port 1 on loopback is a deterministic refusal, so the
+        // `result` takes the `err` arm and the program returns 1. No server.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let outcome result<string, string> = http_get(\"http://127.0.0.1:1/\")\n",
+            "    match outcome\n",
+            "        ok(body) -> 0\n",
+            "        err(message) -> 1\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(1));
+    }
+
+    #[test]
+    fn http_get_https_url_yields_err_result() {
+        // `https://` is out of scope; it returns an `err` deterministically.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let outcome result<string, string> = http_get(\"https://example.com/\")\n",
+            "    match outcome\n",
+            "        ok(body) -> 0\n",
             "        err(message) -> 1\n",
         );
         assert_eq!(run_source(source).expect("run"), Value::I64(1));

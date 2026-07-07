@@ -369,6 +369,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Pass a `string` host/data, an `i64` port, and a `Socket` handle produced by a socket builtin, matching the builtin's arity.",
     },
     DiagnosticEntry {
+        code: "L0336",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "An HTTP client builtin has an argument type or arity mismatch.",
+        root_cause: "An `http_get`/`http_post` call had the wrong number of arguments or a non-`string` argument (`http_get` takes one `string` url; `http_post` takes a `string` url and a `string` body).",
+        suggested_fix: "Pass a `string` url to `http_get`, and a `string` url plus a `string` body to `http_post`.",
+    },
+    DiagnosticEntry {
         code: "L0340",
         phase: DiagnosticPhase::Semantic,
         explanation: "A region declaration has an invalid size, alignment, or kind.",

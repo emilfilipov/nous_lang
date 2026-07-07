@@ -704,6 +704,16 @@ fn main -> i64
         ok(sock) -> 0
         err(message) -> 1</code></pre>
         <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_socket.lby</code>. Connecting to port 1 is a deterministic refusal, so it returns <code>1</code>.</p>
+        <h3>HTTP/1.1 client</h3>
+        <p>A minimal HTTP/1.1 client built over <code>TcpStream</code> (std only, no TLS). Each builtin takes a URL (with the <code>http</code> scheme) and returns the response body on a 2xx/3xx response, or an <code>err(message)</code> on a connection/parse/HTTP error. Only the <code>http</code> scheme is supported — an HTTPS URL returns <code>err("https not supported")</code>; chunked transfer decoding is not implemented (responses are read to EOF via <code>Connection: close</code>); a 4xx/5xx status returns <code>err("http {code}: {first-body-line}")</code>; a 10-second read timeout surfaces a hung server as <code>err</code>. The executable parity fixture <code>tests/fixtures/valid/run_http.lby</code> calls <code>http_get</code> against a closed loopback port, so it deterministically takes the <code>err</code> arm and returns <code>1</code> on the AST, IR, and bytecode backends without any external server.</p>
+        <table>
+          <thead><tr><th>Builtin</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td><code>http_get(url string)</code></td><td><code>result&lt;string, string&gt;</code> — HTTP/1.1 GET, returns the response body.</td></tr>
+            <tr><td><code>http_post(url string, body string)</code></td><td><code>result&lt;string, string&gt;</code> — HTTP/1.1 POST (<code>text/plain</code> body), returns the response body.</td></tr>
+          </tbody>
+        </table>
+        <p>Wrong argument types or arities report <code>L0336</code>.</p>
       </section>
 
       <section id="control-flow">
@@ -997,6 +1007,7 @@ Suggested fix:
             <tr><td><code>L0333</code></td><td>File-system builtin argument type or arity mismatch: pass a <code>string</code> path (and a <code>list&lt;byte&gt;</code> to <code>write_bytes</code>) and match the builtin arity.</td></tr>
             <tr><td><code>L0334</code></td><td><code>parallel_map</code> argument type or arity mismatch: pass a <code>fn(i64) -&gt; i64</code> first argument and a <code>list&lt;i64&gt;</code> second argument.</td></tr>
             <tr><td><code>L0335</code></td><td>TCP/UDP socket builtin argument type or arity mismatch: pass a <code>string</code> host/data, an <code>i64</code> port, and a <code>Socket</code> handle from a socket builtin, matching the builtin arity.</td></tr>
+            <tr><td><code>L0336</code></td><td>HTTP client builtin argument type or arity mismatch: pass a <code>string</code> url to <code>http_get</code>, and a <code>string</code> url plus a <code>string</code> body to <code>http_post</code>.</td></tr>
             <tr><td><code>L0373</code></td><td><code>len</code> argument is not a string or array.</td></tr>
             <tr><td><code>L0375</code></td><td>String-library builtin argument has the wrong type.</td></tr>
             <tr><td><code>L0374</code></td><td>Math builtin received a wrong or mismatched operand type.</td></tr>

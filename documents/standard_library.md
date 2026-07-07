@@ -143,6 +143,18 @@ bytecode backends.
   - `udp_recv(sock Socket) -> result<string, string>` — receive one datagram as a
     string (the sender address is dropped in this increment).
 - Wrong argument types or arities report `L0335`.
+- HTTP/1.1 client (built over `TcpStream`, no TLS):
+  - `http_get(url string) -> result<string, string>` — perform an HTTP/1.1 GET
+    and return the response body on a 2xx/3xx response, or `err(message)` on a
+    connection/parse/HTTP error.
+  - `http_post(url string, body string) -> result<string, string>` — HTTP/1.1
+    POST with a `text/plain` request body (correct `Content-Length`); return the
+    response body or `err(message)`.
+  - Only the `http` scheme is supported; an HTTPS URL returns
+    `err("https not supported")`. Chunked transfer decoding is not implemented —
+    responses are read to EOF via `Connection: close`. A 4xx/5xx status returns
+    `err("http {code}: {first-body-line}")`. A 10-second read timeout surfaces a
+    hung server as `err`. Wrong argument types or arities report `L0336`.
 
 ## Memory and references
 

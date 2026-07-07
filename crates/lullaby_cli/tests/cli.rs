@@ -1921,3 +1921,161 @@ fn udp_round_trip_on_all_backends() {
         let _ = std::fs::remove_file(&prog);
     }
 }
+
+#[test]
+fn http_get_round_trip_on_all_backends() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    // A real HTTP/1.1 GET round-trip driven from the test as the SERVER. The
+    // minimal server replies "hello" (5 bytes) with a `Content-Length` header and
+    // `Connection: close` to every request, once per backend. The Lullaby program
+    // is the client: it takes the port as a program argument via `args()`, builds
+    // the URL, `http_get`s it, and returns the response body length (5).
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let port = listener.local_addr().expect("addr").port();
+
+    let server = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _addr) = listener.accept().expect("accept");
+            let mut buffer = [0u8; 1024];
+            let _read = stream.read(&mut buffer).expect("server read");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                )
+                .expect("server write");
+            stream.flush().expect("server flush");
+        }
+    });
+
+    // `args()` yields `list<string>`; `get(args(), 0)` is the port passed on the
+    // command line. The URL is assembled with `string` concatenation.
+    let program = concat!(
+        "fn main -> i64\n    ",
+        "let port string = get(args(), 0)\n    ",
+        "let url string = \"http://127.0.0.1:\" + port + \"/\"\n    ",
+        "let outcome result<string, string> = http_get(url)\n    ",
+        "match outcome\n        ",
+        "ok(body) -> len(body)\n        ",
+        "err(message) -> 0 - 1\n",
+    );
+    let prog = std::env::temp_dir().join("lullaby_http_get.lby");
+    std::fs::write(&prog, program).expect("write program");
+    let port_arg = port.to_string();
+
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                prog.to_str().expect("program path"),
+                &port_arg,
+            ])
+            .output()
+            .expect("run cli");
+        assert!(output.status.success(), "{backend}: {output:?}");
+        // The body "hello" is 5 bytes long.
+        assert_eq!(stdout(&output).trim(), "5", "{backend} body length");
+    }
+
+    server.join().expect("server thread");
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
+fn http_post_round_trip_on_all_backends() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    // A real HTTP/1.1 POST round-trip: the minimal server reads the request,
+    // parses `Content-Length`, drains the request body, and replies with the body
+    // byte count rendered as the response body. The Lullaby program posts a fixed
+    // body and returns the length of the response body (which is the decimal
+    // digits of the request body length). The request body is "payload" (7 bytes),
+    // so the response body is "7" (1 byte) and the Lullaby program returns 1.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let port = listener.local_addr().expect("addr").port();
+
+    let server = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _addr) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buffer = [0u8; 1024];
+            // Read until the header terminator, then keep reading the declared body.
+            loop {
+                let read = stream.read(&mut buffer).expect("server read");
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&raw);
+                if let Some(header_end) = text.find("\r\n\r\n") {
+                    let length = text
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("Content-Length:")
+                                .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    let body_start = header_end + 4;
+                    if raw.len() >= body_start + length {
+                        break;
+                    }
+                }
+            }
+            let text = String::from_utf8_lossy(&raw);
+            let header_end = text.find("\r\n\r\n").expect("header terminator");
+            let length = text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("Content-Length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            let body = &raw[header_end + 4..header_end + 4 + length];
+            let reply_body = body.len().to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply_body.len(),
+                reply_body
+            );
+            stream.write_all(response.as_bytes()).expect("server write");
+            stream.flush().expect("server flush");
+        }
+    });
+
+    let program = concat!(
+        "fn main -> i64\n    ",
+        "let port string = get(args(), 0)\n    ",
+        "let url string = \"http://127.0.0.1:\" + port + \"/\"\n    ",
+        "let outcome result<string, string> = http_post(url, \"payload\")\n    ",
+        "match outcome\n        ",
+        "ok(body) -> len(body)\n        ",
+        "err(message) -> 0 - 1\n",
+    );
+    let prog = std::env::temp_dir().join("lullaby_http_post.lby");
+    std::fs::write(&prog, program).expect("write program");
+    let port_arg = port.to_string();
+
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                prog.to_str().expect("program path"),
+                &port_arg,
+            ])
+            .output()
+            .expect("run cli");
+        assert!(output.status.success(), "{backend}: {output:?}");
+        // The request body "payload" is 7 bytes, so the response body is "7"
+        // (1 byte) and the Lullaby program returns 1.
+        assert_eq!(stdout(&output).trim(), "1", "{backend} echoed length");
+    }
+
+    server.join().expect("server thread");
+    let _ = std::fs::remove_file(&prog);
+}

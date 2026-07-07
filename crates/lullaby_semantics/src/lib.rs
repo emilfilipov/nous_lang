@@ -3016,6 +3016,25 @@ impl<'a> Checker<'a> {
                     &TypeRef::new("string"),
                 ))
             }
+            "http_get" => {
+                // `(url string) -> result<string, string>`.
+                self.expect_http_arg_count(name, args, 1, function)?;
+                self.expect_http_arg_type(name, 1, &args[0], scope, function)?;
+                Some(result_type(
+                    &TypeRef::new("string"),
+                    &TypeRef::new("string"),
+                ))
+            }
+            "http_post" => {
+                // `(url string, body string) -> result<string, string>`.
+                self.expect_http_arg_count(name, args, 2, function)?;
+                self.expect_http_arg_type(name, 1, &args[0], scope, function)?;
+                self.expect_http_arg_type(name, 2, &args[1], scope, function)?;
+                Some(result_type(
+                    &TypeRef::new("string"),
+                    &TypeRef::new("string"),
+                ))
+            }
             _ => {
                 let Some(signature) = self.signatures.get(name).cloned() else {
                     self.diagnostics.push(SemanticDiagnostic::at(
@@ -4007,6 +4026,62 @@ impl<'a> Checker<'a> {
                 format!(
                     "argument {index} for `{name}` must be `{}` but got `{}`",
                     expected.name,
+                    actual
+                        .as_ref()
+                        .map(|ty| ty.name.as_str())
+                        .unwrap_or("<unknown>")
+                ),
+                Some(function.name.clone()),
+                arg.span,
+            ));
+            None
+        }
+    }
+
+    /// Validate an HTTP client builtin argument count, reporting `L0336` on a
+    /// mismatch.
+    fn expect_http_arg_count(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        expected: usize,
+        function: &Function,
+    ) -> Option<()> {
+        if args.len() == expected {
+            Some(())
+        } else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0336",
+                format!(
+                    "http builtin `{name}` expects {expected} arguments but got {}",
+                    args.len()
+                ),
+                Some(function.name.clone()),
+                args.first().map(|arg| arg.span).unwrap_or(function.span),
+            ));
+            None
+        }
+    }
+
+    /// Validate an HTTP client builtin `string` argument, reporting `L0336` on a
+    /// mismatch.
+    fn expect_http_arg_type(
+        &mut self,
+        name: &str,
+        index: usize,
+        arg: &Expr,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<()> {
+        let expected = TypeRef::new("string");
+        let actual = self.check_expr(arg, scope, function);
+        if actual.as_ref() == Some(&expected) {
+            Some(())
+        } else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0336",
+                format!(
+                    "argument {index} for `{name}` must be `string` but got `{}`",
                     actual
                         .as_ref()
                         .map(|ty| ty.name.as_str())
@@ -5835,6 +5910,38 @@ mod tests {
         let diagnostics = validate_source(source).expect_err("wrong socket arg type");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0335"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_http_builtins() {
+        // `http_get`/`http_post` both yield `result<string, string>`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let got result<string, string> = http_get(\"http://127.0.0.1/\")\n",
+            "    let posted result<string, string> = http_post(\"http://127.0.0.1/\", \"body\")\n",
+            "    match got\n",
+            "        ok(body) -> len(body)\n",
+            "        err(message) -> len(message)\n",
+        );
+        validate_source(source).expect("http builtins type-check");
+    }
+
+    #[test]
+    fn rejects_wrong_type_http_arg_with_l0336() {
+        // `http_get` expects `(string)`; passing an i64 url is a type error
+        // reported as L0336.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let got result<string, string> = http_get(5)\n",
+            "    match got\n",
+            "        ok(body) -> 0\n",
+            "        err(message) -> 1\n",
+        );
+        let diagnostics = validate_source(source).expect_err("wrong http arg type");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0336"),
             "{diagnostics:?}"
         );
     }
