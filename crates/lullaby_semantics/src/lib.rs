@@ -2494,6 +2494,15 @@ impl<'a> Checker<'a> {
                 self.expect_arg_type(name, 1, &args[0], "string", scope, function)?;
                 Some(TypeRef::new("void"))
             }
+            "wasm_log" => {
+                // `wasm_log(x i64) -> void`: a host log call. On the interpreters
+                // it prints the value as a stdout line so cross-backend parity
+                // holds; on the WASM backend it lowers to a `call` of the imported
+                // host function `env.log_i64`.
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_arg_type(name, 1, &args[0], "i64", scope, function)?;
+                Some(TypeRef::new("void"))
+            }
             "flush" => {
                 self.expect_arg_count(name, args, 0, function)?;
                 Some(TypeRef::new("void"))

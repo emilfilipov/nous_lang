@@ -85,6 +85,12 @@ backends. A wrong argument type or arity reports `L0374` (semantic) or `L0417`
 ## Standard streams and I/O
 
 - Streams: `print(text)`, `println(text)`, `warn(text)` (stderr), `flush()` — each `-> void`.
+- WebAssembly host log: `wasm_log(x i64) -> void`. On the interpreters it prints
+  the value as a stdout line; on the WebAssembly backend (`lullaby wasm`) it
+  lowers to a call of the imported host function `env.log_i64`, letting an
+  eligible exported function report values to its host. Because it is understood
+  by the WASM backend, a function that calls only `wasm_log` (and the scalar
+  subset) still compiles to `.wasm`.
 - Text files: `read_file(path) -> string`, `write_file(path, content) -> void`,
   `append_file(path, content) -> void`, `file_exists(path) -> bool`.
 - Lines and bytes: `read_lines(path) -> list<string>` (lines with no trailing

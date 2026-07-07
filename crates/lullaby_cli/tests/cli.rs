@@ -21,6 +21,16 @@ fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
+/// Whether `haystack` contains `needle` as a contiguous byte subslice.
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 #[test]
 fn checks_valid_fixture() {
     let fixture = workspace_root().join("tests/fixtures/valid/add.lby");
@@ -2305,10 +2315,13 @@ fn wasm_execution_parity_with_node() {
     // A tiny JS runner: print several exported results. i64 params/returns are
     // BigInt in JS, so pass `10n` and stringify the BigInt result.
     let runner = std::env::temp_dir().join("lullaby_wasm_runner.js");
+    // The module now imports `env.log_i64`, so instantiation must supply it even
+    // though these scalar functions do not call it.
     let js = format!(
         "const fs=require('fs');\
          const bytes=fs.readFileSync({wasm:?});\
-         WebAssembly.instantiate(bytes).then(r=>{{\
+         const imports={{env:{{log_i64:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
            const e=r.instance.exports;\
            const lines=[\
              'add='+e.add(20n,22n).toString(),\
@@ -2347,6 +2360,92 @@ fn wasm_execution_parity_with_node() {
     assert!(
         out_text.contains(&format!("main={interp_main}")),
         "{out_text}"
+    );
+}
+
+#[test]
+fn wasm_log_import_execution_parity_with_node() {
+    // The linear-memory step: a program whose exported function calls the
+    // `wasm_log` host import with several computed values. The generated JS
+    // harness supplies `env.log_i64`, capturing each call into an array, then
+    // asserts the captured sequence equals what the interpreter computes.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_log.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_log.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // The emitted module exports `memory` (the linear memory) — a quick check on
+    // the raw bytes independent of any runtime.
+    let bytes = std::fs::read(&out).expect("read wasm");
+    assert!(
+        contains_subslice(&bytes, b"memory"),
+        "module exports `memory`"
+    );
+
+    // Interpreter ground truth. `main` calls `emit()` (which logs 4, 10, 42) and
+    // then returns 36, which the CLI prints as the final line — drop that so we
+    // compare only the `wasm_log` side-effect sequence.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let mut interp_lines: Vec<String> = stdout(&run)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let interp_return = interp_lines.pop();
+    let interp_logged = interp_lines;
+    assert_eq!(interp_logged, vec!["4", "10", "42"]);
+    assert_eq!(interp_return.as_deref(), Some("36"));
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM host-import execution parity");
+        return;
+    }
+
+    // The harness provides `env.log_i64`, capturing each call into `logged`,
+    // then calls the exported `emit` and prints the captured BigInts.
+    let runner = std::env::temp_dir().join("lullaby_wasm_log_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const logged=[];\
+         const imports={{env:{{log_i64:(x)=>logged.push(x.toString())}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           r.instance.exports.emit();\
+           process.stdout.write(logged.join(';'));\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let captured: Vec<String> = String::from_utf8_lossy(&node.stdout)
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        captured, interp_logged,
+        "WASM host-log call sequence must equal the interpreter's"
     );
 }
 

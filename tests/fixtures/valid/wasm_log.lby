@@ -1,0 +1,11 @@
+fn square n i64 -> i64
+    return n * n
+
+fn emit -> void
+    wasm_log(square(2))
+    wasm_log(square(3) + 1)
+    wasm_log(40 + 2)
+
+fn main -> i64
+    emit()
+    return square(6)

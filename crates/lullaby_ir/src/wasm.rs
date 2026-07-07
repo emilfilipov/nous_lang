@@ -1,9 +1,10 @@
-//! WebAssembly backend — first increment (the scalar subset).
+//! WebAssembly backend — first increment (the scalar subset) plus the first
+//! linear-memory step.
 //!
 //! This module compiles the typed IR (`IrModule`) directly to a binary `.wasm`
 //! module using only the Rust standard library: it implements the WASM binary
-//! encoding (magic, version, Type/Function/Export/Code sections, LEB128, and the
-//! stack-machine opcodes it needs) from scratch.
+//! encoding (magic, version, Type/Import/Function/Memory/Global/Export/Code/Data
+//! sections, LEB128, and the stack-machine opcodes it needs) from scratch.
 //!
 //! Scope: only functions whose parameter and return types are all scalars in
 //! {`i64`, `f64`, `bool`, `char`, `byte`} compile to WASM. `i64` maps to wasm
@@ -11,16 +12,42 @@
 //! no result. Supported bodies: integer/float/bool literals, variables (params +
 //! `let` locals), arithmetic (`+ - * /`; integer `/` uses `i64.div_s` which traps
 //! on 0), comparisons, `and`/`or`/`not`, `if`/`elif`/`else`, `while`, `loop` with
-//! `break`/`continue`, range `for` (lowered to a loop), `return`, and calls to
-//! other compiled scalar functions (including recursion). A function that uses any
-//! non-scalar type, heap value, `match`, or a builtin is SKIPPED (it still runs on
-//! the interpreters). This first increment does not touch linear memory.
+//! `break`/`continue`, range `for` (lowered to a loop), `return`, calls to other
+//! compiled scalar functions (including recursion), and the host log builtin
+//! `wasm_log(x i64) -> void`. A function that uses any other non-scalar type, heap
+//! value, `match`, or a different builtin is SKIPPED (it still runs on the
+//! interpreters).
+//!
+//! Linear-memory groundwork: the module now exports a `"memory"` (min 1 page),
+//! imports the host function `env.log_i64 (func (param i64))` and exposes it as
+//! `wasm_log`, declares a mutable `i32` global bump pointer, writes a Data section
+//! seeding the reserved heap region, and emits an internal `__alloc(size i32) ->
+//! i32` bump-allocator helper. Imported functions occupy the LOW function indices,
+//! so every internally-defined function's index is shifted by the import count;
+//! call targets and exports are fixed up accordingly. Full string/struct/array
+//! layout in linear memory is still deferred.
 
 use std::collections::HashMap;
 
 use lullaby_parser::{BinaryOp, TypeRef, UnaryOp};
 
 use crate::{IrExpr, IrExprKind, IrFunction, IrModule, IrStmt};
+
+/// The Lullaby builtin that lowers to the imported host log function.
+const WASM_LOG: &str = "wasm_log";
+
+/// Number of imported functions. They occupy WASM function indices `0..IMPORTS`,
+/// so every internally-defined function's index is offset by this amount.
+const IMPORT_FUNC_COUNT: u32 = 1;
+
+/// WASM function index of the imported `env.log_i64` (the first, and only,
+/// import). Internal functions are numbered from `IMPORT_FUNC_COUNT` up.
+const LOG_I64_FUNC_INDEX: u32 = 0;
+
+/// The first byte offset in linear memory the bump allocator hands out. Bytes
+/// below this are a reserved data region (seeded by the Data section) so a
+/// freshly allocated pointer is never null (0) and low addresses stay reserved.
+const HEAP_BASE: i32 = 16;
 
 /// A compiled `.wasm` module plus the record of which functions compiled and
 /// which were skipped (with a reason).
@@ -116,7 +143,10 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     for function in &module.functions {
         match eligibility(function) {
             Ok(()) => {
-                func_index.insert(function.name.clone(), eligible.len() as u32);
+                // Imports occupy the low indices, so internal functions are
+                // numbered from `IMPORT_FUNC_COUNT` up.
+                let index = IMPORT_FUNC_COUNT + eligible.len() as u32;
+                func_index.insert(function.name.clone(), index);
                 eligible.push(function);
                 compiled_names.push(function.name.clone());
             }
@@ -212,6 +242,7 @@ fn eligibility(function: &IrFunction) -> Result<(), String> {
 /// A function lowered to WASM: its signature value types, extra (non-parameter)
 /// local declarations, and the encoded body instruction bytes (without the final
 /// `end`).
+#[derive(Clone)]
 struct LoweredFunction {
     name: String,
     params: Vec<WasmValType>,
@@ -664,6 +695,17 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
         },
         IrExprKind::Binary { left, op, right } => lower_binary(ctx, left, *op, right, out),
         IrExprKind::Call { name, args } => {
+            // The host log builtin lowers to a `call` of the imported
+            // `env.log_i64` (WASM function index `LOG_I64_FUNC_INDEX`).
+            if name == WASM_LOG {
+                if args.len() != 1 {
+                    return Err(format!("wasm_log expects 1 argument, got {}", args.len()));
+                }
+                lower_expr(ctx, &args[0], out)?;
+                out.push(0x10); // call
+                write_uleb(out, LOG_I64_FUNC_INDEX as u64);
+                return Ok(());
+            }
             let index = *ctx
                 .func_index
                 .get(name)
@@ -898,12 +940,58 @@ struct FuncType {
     result: Option<WasmValType>,
 }
 
-/// Encode the whole module: header + Type, Function, Export, Code sections.
-fn encode_module(functions: &[LoweredFunction]) -> Vec<u8> {
-    // Deduplicate signatures into a type table.
-    let mut types: Vec<FuncType> = Vec::new();
+/// The internal, non-exported bump-allocator helper `__alloc(size i32) -> i32`.
+/// It reads the mutable bump-pointer global, advances it by `size`, and returns
+/// the old value (the freshly allocated offset). It is groundwork for the linear
+/// memory phase; the scalar subset does not call it yet.
+fn alloc_helper() -> LoweredFunction {
+    let mut body = Vec::new();
+    body.push(0x23); // global.get
+    write_uleb(&mut body, BUMP_GLOBAL_INDEX as u64); // old bump = return value
+    body.push(0x23); // global.get
+    write_uleb(&mut body, BUMP_GLOBAL_INDEX as u64);
+    get_local(&mut body, 0); // size (param 0)
+    body.push(0x6a); // i32.add
+    body.push(0x24); // global.set
+    write_uleb(&mut body, BUMP_GLOBAL_INDEX as u64);
+    LoweredFunction {
+        name: ALLOC_HELPER_NAME.to_string(),
+        params: vec![WasmValType::I32],
+        result: Some(WasmValType::I32),
+        extra_locals: Vec::new(),
+        body,
+    }
+}
+
+/// Index of the mutable `i32` bump-pointer global.
+const BUMP_GLOBAL_INDEX: u32 = 0;
+
+/// Export name of the internal bump-allocator helper. It is distinct from any
+/// Lullaby identifier (double underscore prefix) so it cannot collide.
+const ALLOC_HELPER_NAME: &str = "__alloc";
+
+/// Encode the whole module: header + Type, Import, Function, Memory, Global,
+/// Export, Code, and Data sections.
+///
+/// The single import (`env.log_i64`) occupies WASM function index 0, so every
+/// internally-defined function is numbered from `IMPORT_FUNC_COUNT` up; the
+/// caller already assigned those shifted indices. The internal `__alloc` helper
+/// is appended after the user functions.
+fn encode_module(user_functions: &[LoweredFunction]) -> Vec<u8> {
+    // All internally-defined functions, in module (index) order: the compiled
+    // user functions, then the bump-allocator helper.
+    let mut functions: Vec<LoweredFunction> = user_functions.to_vec();
+    functions.push(alloc_helper());
+
+    // Type table. Entry 0 is reserved for the imported `env.log_i64`'s signature
+    // `(i64) -> void`; internal functions dedup against the rest.
+    let log_sig = FuncType {
+        params: vec![WasmValType::I64],
+        result: None,
+    };
+    let mut types: Vec<FuncType> = vec![log_sig];
     let mut type_of_func: Vec<u32> = Vec::with_capacity(functions.len());
-    for f in functions {
+    for f in &functions {
         let sig = FuncType {
             params: f.params.clone(),
             result: f.result,
@@ -943,7 +1031,18 @@ fn encode_module(functions: &[LoweredFunction]) -> Vec<u8> {
         push_section(&mut module, 1, &section);
     }
 
-    // Function section (id 3): type index per function.
+    // Import section (id 2): the host log function `env.log_i64`, type index 0.
+    {
+        let mut section = Vec::new();
+        write_uleb(&mut section, IMPORT_FUNC_COUNT as u64);
+        write_name(&mut section, "env");
+        write_name(&mut section, "log_i64");
+        section.push(0x00); // import kind: func
+        write_uleb(&mut section, 0); // type index 0 = (i64) -> void
+        push_section(&mut module, 2, &section);
+    }
+
+    // Function section (id 3): type index per internal function.
     {
         let mut section = Vec::new();
         write_uleb(&mut section, functions.len() as u64);
@@ -953,16 +1052,40 @@ fn encode_module(functions: &[LoweredFunction]) -> Vec<u8> {
         push_section(&mut module, 3, &section);
     }
 
-    // Export section (id 7): export each function by its Lullaby name.
+    // Memory section (id 5): one memory, min 1 page, no maximum.
     {
         let mut section = Vec::new();
-        write_uleb(&mut section, functions.len() as u64);
+        write_uleb(&mut section, 1); // one memory
+        section.push(0x00); // limits: flag 0 = min only
+        write_uleb(&mut section, 1); // min 1 page (64 KiB)
+        push_section(&mut module, 5, &section);
+    }
+
+    // Global section (id 6): the mutable `i32` bump pointer, initialized to the
+    // heap base (past the reserved data region).
+    {
+        let mut section = Vec::new();
+        write_uleb(&mut section, 1); // one global
+        section.push(WasmValType::I32.byte()); // value type i32
+        section.push(0x01); // mutable
+        section.push(0x41); // i32.const (init expr)
+        write_sleb(&mut section, HEAP_BASE as i64);
+        section.push(0x0b); // end init expr
+        push_section(&mut module, 6, &section);
+    }
+
+    // Export section (id 7): the linear memory, then every internal function by
+    // name. Function export indices are the shifted (post-import) indices.
+    {
+        let mut section = Vec::new();
+        write_uleb(&mut section, (functions.len() + 1) as u64); // +1 for memory
+        write_name(&mut section, "memory");
+        section.push(0x02); // export kind: mem
+        write_uleb(&mut section, 0); // memory index 0
         for (i, f) in functions.iter().enumerate() {
-            let name = f.name.as_bytes();
-            write_uleb(&mut section, name.len() as u64);
-            section.extend_from_slice(name);
+            write_name(&mut section, &f.name);
             section.push(0x00); // export kind: func
-            write_uleb(&mut section, i as u64);
+            write_uleb(&mut section, IMPORT_FUNC_COUNT as u64 + i as u64);
         }
         push_section(&mut module, 7, &section);
     }
@@ -971,7 +1094,7 @@ fn encode_module(functions: &[LoweredFunction]) -> Vec<u8> {
     {
         let mut section = Vec::new();
         write_uleb(&mut section, functions.len() as u64);
-        for f in functions {
+        for f in &functions {
             let mut code = Vec::new();
             // Locals: run-length compressed consecutive same-type runs.
             let runs = compress_locals(&f.extra_locals);
@@ -988,7 +1111,30 @@ fn encode_module(functions: &[LoweredFunction]) -> Vec<u8> {
         push_section(&mut module, 10, &section);
     }
 
+    // Data section (id 11): seed the reserved region [0, HEAP_BASE) with zero
+    // bytes at a constant offset. This proves the Data-section encoding and
+    // reserves low memory so the bump allocator never returns offset 0.
+    {
+        let mut section = Vec::new();
+        write_uleb(&mut section, 1); // one data segment
+        section.push(0x00); // segment kind 0: active, memory 0, offset expr
+        section.push(0x41); // i32.const (offset expr)
+        write_sleb(&mut section, 0);
+        section.push(0x0b); // end offset expr
+        let seed = [0u8; HEAP_BASE as usize];
+        write_uleb(&mut section, seed.len() as u64);
+        section.extend_from_slice(&seed);
+        push_section(&mut module, 11, &section);
+    }
+
     module
+}
+
+/// Write a WASM name: length-prefixed UTF-8 bytes.
+fn write_name(out: &mut Vec<u8>, name: &str) {
+    let bytes = name.as_bytes();
+    write_uleb(out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
 }
 
 /// Run-length compress a local declaration list into `(count, type)` runs.
@@ -1042,7 +1188,89 @@ mod tests {
         let source = "fn add a i64 b i64 -> i64\n    a + b\n";
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         let ids = section_ids(&artifact.bytes);
-        assert_eq!(ids, vec![1, 3, 7, 10], "type/function/export/code sections");
+        assert_eq!(
+            ids,
+            vec![1, 2, 3, 5, 6, 7, 10, 11],
+            "type/import/function/memory/global/export/code/data sections in canonical order"
+        );
+    }
+
+    #[test]
+    fn imports_the_host_log_function() {
+        // The Import section (id 2) declares exactly one import.
+        let source = "fn add a i64 b i64 -> i64\n    a + b\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        let import = section_body(&artifact.bytes, 2).expect("import section");
+        let (count, _) = read_uleb(&import);
+        assert_eq!(count, 1, "one import");
+        // The import names are `env`.`log_i64`.
+        assert!(
+            find_subslice(&import, b"env").is_some()
+                && find_subslice(&import, b"log_i64").is_some(),
+            "env.log_i64 import names present"
+        );
+    }
+
+    #[test]
+    fn function_section_counts_internal_functions() {
+        // Two user functions plus the internal `__alloc` helper => 3 entries in
+        // the Function section; the single import is NOT counted there.
+        let source =
+            "fn add a i64 b i64 -> i64\n    a + b\n\nfn neg n i64 -> i64\n    return 0 - n\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        let func = section_body(&artifact.bytes, 3).expect("function section");
+        let (count, _) = read_uleb(&func);
+        assert_eq!(count, 3, "two user functions + __alloc helper");
+    }
+
+    #[test]
+    fn exports_memory_and_functions() {
+        let source = "fn add a i64 b i64 -> i64\n    a + b\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        let export = section_body(&artifact.bytes, 7).expect("export section");
+        // memory + add + __alloc = 3 exports.
+        let (count, _) = read_uleb(&export);
+        assert_eq!(count, 3, "memory + add + __alloc exports");
+        assert!(
+            find_subslice(&export, b"memory").is_some(),
+            "memory export present"
+        );
+        assert!(
+            find_subslice(&export, b"__alloc").is_some(),
+            "alloc helper export present"
+        );
+    }
+
+    #[test]
+    fn wasm_log_function_compiles_and_calls_the_import() {
+        // A function that calls `wasm_log` is eligible; the emitted body contains
+        // a `call 0` targeting the imported host function (index 0).
+        let source = "fn shout n i64 -> void\n    wasm_log(n)\n    wasm_log(n + 1)\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(artifact.compiled.contains(&"shout".to_string()));
+        // The whole module still has the import present.
+        let import = section_body(&artifact.bytes, 2).expect("import section");
+        let (count, _) = read_uleb(&import);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn call_target_indices_are_shifted_past_the_import() {
+        // With an import present, a call between two user functions must target
+        // the shifted index (import count + position), not the raw position.
+        let source = "fn helper -> i64\n    7\n\nfn use_it -> i64\n    return helper()\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(
+            artifact.compiled,
+            vec!["helper".to_string(), "use_it".to_string()]
+        );
+        // `helper` is user function 0 => WASM index 1 (past the single import).
+        // The code for `use_it` must contain `call 1` (0x10 0x01).
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0x10, 0x01]).is_some(),
+            "call targets the shifted (post-import) index"
+        );
     }
 
     #[test]
@@ -1122,5 +1350,30 @@ mod tests {
             shift += 7;
         }
         (result, i)
+    }
+
+    /// Return the contents (payload) of the first section with the given id.
+    fn section_body(bytes: &[u8], want: u8) -> Option<Vec<u8>> {
+        let mut i = 8;
+        while i < bytes.len() {
+            let id = bytes[i];
+            i += 1;
+            let (len, consumed) = read_uleb(&bytes[i..]);
+            i += consumed;
+            let end = i + len as usize;
+            if id == want {
+                return Some(bytes[i..end].to_vec());
+            }
+            i = end;
+        }
+        None
+    }
+
+    /// Find the first occurrence of `needle` in `haystack`.
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        if needle.is_empty() || needle.len() > haystack.len() {
+            return None;
+        }
+        (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
     }
 }

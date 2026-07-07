@@ -3542,6 +3542,7 @@ impl<'a> IrRuntime<'a> {
             "print" => self.builtin_print("print", args, false),
             "println" => self.builtin_print("println", args, true),
             "warn" => self.builtin_warn(args),
+            "wasm_log" => self.builtin_wasm_log(args),
             "flush" => self.builtin_flush(args),
             "assert" => Self::builtin_assert(args),
             "to_string" => Self::builtin_to_string(args),
@@ -4417,6 +4418,24 @@ impl<'a> IrRuntime<'a> {
         }
         std::io::stdout().flush().map_err(|error| {
             RuntimeError::resource("L0419", format!("failed to flush stdout: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
+    /// `wasm_log(x i64) -> void`: the host log builtin. On the WASM backend it
+    /// lowers to a `call` of the imported `env.log_i64`; on the interpreters it
+    /// prints the value as a stdout line, kept at parity with the AST runtime so
+    /// all backends observe the same side effect.
+    fn builtin_wasm_log(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("wasm_log", 1, args.len()))?;
+        let value = value.as_i64()?;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        writeln!(handle, "{value}").map_err(|error| {
+            RuntimeError::resource("L0419", format!("failed to write to stdout: {error}"))
         })?;
         Ok(Value::Void)
     }
@@ -6544,10 +6563,9 @@ impl<'a> Lowerer<'a> {
                     })?
             }
             "store" | "dealloc" | "write_file" | "append_file" | "write_bytes" | "make_dir"
-            | "remove_file" | "remove_dir" | "print" | "println" | "warn" | "flush" | "assert"
-            | "rc_release" | "ptr_write" | "region_create" | "tcp_close" | "tcp_shutdown" => {
-                TypeRef::new("void")
-            }
+            | "remove_file" | "remove_dir" | "print" | "println" | "warn" | "wasm_log"
+            | "flush" | "assert" | "rc_release" | "ptr_write" | "region_create" | "tcp_close"
+            | "tcp_shutdown" => TypeRef::new("void"),
             // Network builtins report failures as runtime `result` values.
             "tcp_connect" | "tcp_listen" | "tcp_accept" | "udp_bind" => {
                 generic_type("result", &[TypeRef::new("Socket"), TypeRef::new("string")])

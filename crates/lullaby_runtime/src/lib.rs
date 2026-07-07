@@ -745,6 +745,7 @@ impl<'a> Runtime<'a> {
             "print" => self.builtin_print("print", args, false),
             "println" => self.builtin_print("println", args, true),
             "warn" => self.builtin_warn(args),
+            "wasm_log" => self.builtin_wasm_log(args),
             "flush" => self.builtin_flush(args),
             "assert" => Self::builtin_assert(args),
             "to_string" => Self::builtin_to_string(args),
@@ -2163,6 +2164,24 @@ impl<'a> Runtime<'a> {
         }
         std::io::stdout().flush().map_err(|error| {
             RuntimeError::resource("L0419", format!("failed to flush stdout: {error}"))
+        })?;
+        Ok(Value::Void)
+    }
+
+    /// `wasm_log(x i64) -> void`: the host log builtin. On the WASM backend it
+    /// lowers to a `call` of the imported `env.log_i64`; on the interpreters it
+    /// prints the value as a stdout line so all backends observe the same side
+    /// effect and the parity harness stays green.
+    fn builtin_wasm_log(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("wasm_log", 1, args.len()))?;
+        let value = expect_i64("wasm_log", value)?;
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        writeln!(handle, "{value}").map_err(|error| {
+            RuntimeError::resource("L0419", format!("failed to write to stdout: {error}"))
         })?;
         Ok(Value::Void)
     }

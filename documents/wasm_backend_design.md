@@ -10,15 +10,42 @@ produce the same results.
 
 ## Status
 
-**The scalar-subset first increment is DELIVERED.** It ships as a `wasm` module
-in `crates/lullaby_ir` (`crates/lullaby_ir/src/wasm.rs`, `emit_wasm_module`), the
+**The scalar-subset first increment is DELIVERED, plus the first linear-memory
+step (memory/data/import + `wasm_log`).** It ships as a `wasm` module in
+`crates/lullaby_ir` (`crates/lullaby_ir/src/wasm.rs`, `emit_wasm_module`), the
 `lullaby wasm [--verbose] [-o out.wasm] <file.lby>` CLI command, structural
 encoder unit tests, and node-gated execution-parity tests against the
 interpreter (`crates/lullaby_cli/tests/cli.rs`). The encoder writes the module
-header, the Type/Function/Export/Code sections, LEB128 integers, and the
-stack-machine opcodes it needs — using the Rust standard library only, no
-external crate. When no function is eligible, the CLI reports diagnostic
-`L0338`. The linear-memory/heap phase below remains deferred.
+header, the Type/Import/Function/Memory/Global/Export/Code/Data sections in
+canonical order, LEB128 integers, and the stack-machine opcodes it needs — using
+the Rust standard library only, no external crate. When no function is eligible,
+the CLI reports diagnostic `L0338`.
+
+### Linear-memory step (landed)
+
+- **Memory section (id 5)** declares one linear memory (min 1 page, 64 KiB) and
+  the **Export section** exports it as `"memory"` (export kind mem).
+- **Global section (id 6)** declares a mutable `i32` bump pointer initialized to
+  a heap base past a small reserved region.
+- **Data section (id 11)** seeds the reserved low-memory region at a constant
+  offset, so a freshly handed-out offset is never `0` (null).
+- An internal `__alloc(size i32) -> i32` bump-allocator helper reads the global,
+  advances it by `size`, and returns the old offset. It is groundwork; the scalar
+  subset does not call it yet.
+- **Import section (id 2)** imports the host function
+  `env.log_i64 (func (param i64))` and exposes it to Lullaby as the builtin
+  `wasm_log(x i64) -> void`. A `wasm_log(n)` call lowers to a `call` of the
+  imported function, which makes eligible functions side-effecting. On the
+  interpreters (AST/IR/bytecode) `wasm_log` prints the value as a stdout line, so
+  cross-backend parity holds.
+- **Import index fix-up:** imported functions occupy the LOW WASM function
+  indices (`0..IMPORT_FUNC_COUNT`), so every internally-defined function is
+  numbered from `IMPORT_FUNC_COUNT` up. Call targets between compiled functions
+  and the function-export indices are shifted by the import count; the imported
+  `env.log_i64` is index `0`.
+
+Full string/struct/enum/array layout in linear memory (using this allocator and
+memory) remains deferred.
 
 ## First increment — the scalar subset
 
@@ -38,9 +65,11 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
-- A function that uses any non-scalar type, builtin, `match` over an enum, or a
-  heap value is **rejected for WASM** with a clear diagnostic (it still runs on
-  the interpreters); those await the linear-memory phase.
+- A function that uses any non-scalar type, `match` over an enum, or a heap value
+  is **rejected for WASM** with a clear diagnostic (it still runs on the
+  interpreters); those await the linear-memory phase. The one allowed builtin is
+  `wasm_log(x i64) -> void` (the host log import above); every other builtin is
+  still rejected.
 
 ## From IR to WASM
 
@@ -54,9 +83,10 @@ resolved. A new crate/module (e.g. `crates/lullaby_wasm` or a `wasm` module in
   pushes its value; a binary op emits its operands then the op; `if`/loops use
   structured control flow with explicit result types).
 - Emit a **binary `.wasm` module** directly (no external crate): the standard
-  encoding — magic + version, then the Type, Function, Export, and Code
-  sections, with LEB128-encoded integers. This is well-specified and
-  dependency-free. (A `.wat` text option can come later; binary runs everywhere.)
+  encoding — magic + version, then the Type, Import, Function, Memory, Global,
+  Export, Code, and Data sections in canonical id order, with LEB128-encoded
+  integers. This is well-specified and dependency-free. (A `.wat` text option can
+  come later; binary runs everywhere.)
 
 ## CLI
 
@@ -89,9 +119,13 @@ execution wherever a runtime exists (CI can install one).
 
 First increment (DELIVERED): the scalar subset above, binary `.wasm` output, the
 `wasm` CLI command, structural encoder tests, and node-gated execution parity.
-Deferred (linear-memory phase): `string`/`struct`/`enum`/`array` layout, a bump
-or free-list allocator in linear memory, `match` lowering, collections, and a
-JS/DOM interop layer (imports for `console.log`/DOM) that builds on this.
+Linear-memory step (DELIVERED): exported `"memory"`, a mutable bump-pointer
+global, a seeded Data section, the internal `__alloc` helper, and the
+`env.log_i64` host import surfaced as `wasm_log` with node-gated call-sequence
+parity. Deferred (rest of the linear-memory phase): `string`/`struct`/`enum`/
+`array` layout on top of this allocator, a free-list allocator, `match` lowering,
+collections, and a richer JS/DOM interop layer (imports for `console.log`/DOM)
+that builds on `wasm_log`.
 
 ## Why these choices
 
