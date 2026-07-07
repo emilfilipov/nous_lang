@@ -25,8 +25,8 @@ pub mod native_object;
 pub mod wasm;
 
 pub use native_object::{
-    NATIVE_ENTRY_SYMBOL, NATIVE_NO_ELIGIBLE_CODE, NativeProgram, NativeProgramError,
-    NativeSkippedFunction, emit_alpha1_native_program,
+    DebugOptions, NATIVE_ENTRY_SYMBOL, NATIVE_NO_ELIGIBLE_CODE, NativeProgram, NativeProgramError,
+    NativeSkippedFunction, emit_alpha1_native_program, emit_alpha1_native_program_with_debug,
 };
 pub use wasm::{SkippedFunction, WasmArtifact, WasmError, emit_wasm_module};
 

@@ -20,6 +20,7 @@ Implemented now:
 - **First heap step: string constants + a bump heap.** String literals used by `len("...")` are emitted into a read-only `.rdata` section, referenced by REL32 relocations, copied into a `.bss` bump-allocated heap region at runtime, and scanned for their byte length so `main` can derive an i64 from string data. See "First Heap Step: String Constants And Bump Allocator" below.
 - **C-ABI FFI (calling C).** A body-less `extern fn NAME params -> Ret` declares an imported C function; a call lowers to a `call` of an undefined external symbol (Win64 integer registers, result in `rax`) and links against the C runtime (`ucrt.lib`). Calling an extern on an interpreter is `L0423`. See "C-ABI FFI (calling C)" below.
 - **C-ABI FFI (exposing Lullaby to C).** An `export fn NAME params -> Ret` is a normal (bodied) Lullaby function additionally exposed under its plain C name as an externally visible, defined `.text` symbol so C (or another object) can call **into** Lullaby. The first increment restricts an export to an i64-scalar signature (`L0424` otherwise). An export-only program (no `main`) emits a library object with no entry stub. See "C-ABI FFI (exposing Lullaby to C)" below.
+- **Native source-line debug info (`--debug`).** `lullaby native --debug` (alias `-g`) emits a CodeView `.debug$S` section with a per-function line table mapping each compiled function's entry offset to its `.lby` declaration line, plus the source file name, so a debugger (via a linker-built PDB) can break at a function and show its source line. Opt-in: without `--debug` the object bytes are byte-for-byte unchanged. See "Debug info (`--debug`)" below.
 
 Not implemented yet:
 
@@ -296,6 +297,43 @@ Non-freestanding `native` is unchanged: it still links `ucrt.lib` for `extern fn
 ### Deferred toward true bare-metal
 
 This increment is a verifiable no-CRT Windows PE, not a bare-metal port. True bare-metal / other-OS support is deferred: a raw-syscall (or other OS-primitive) process exit with **no OS imports at all** (no `kernel32`); ELF / Mach-O / raw-binary object formats instead of Windows COFF/PE; a custom entry point and linker script; freestanding for non-x86-64 targets; and any freestanding intrinsics (no libc, no allocator beyond the existing bump heap). None of this bypasses the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+
+## Debug info (`--debug`) (DELIVERED, first increment)
+
+`lullaby native --debug` (alias `-g`) emits native **source-line debug info** so a debugger can map native code addresses back to `.lby` source lines. This is the first debug-info increment: a per-function line table plus the source file name, in CodeView, gated behind `--debug`.
+
+### Format: CodeView `.debug$S`
+
+The chosen format is **CodeView** in COFF — the Windows-native debug format that `rust-lld`/`link.exe` fold into a PDB and that `llvm-readobj`/`llvm-pdbutil`/`cdb`/WinDbg consume. DWARF (`.debug_line`) is the portable alternative and is deferred; CodeView is emitted here because the native target is COFF→PE and CodeView is what the Windows link+debug toolchain reads back into a PDB.
+
+With `--debug`, the object gains one extra section, `.debug$S` (`IMAGE_SCN_CNT_INITIALIZED_DATA | MEM_READ | MEM_DISCARDABLE`), carrying a `CV_SIGNATURE_C13` stream of CodeView subsections:
+
+- `DEBUG_S_SYMBOLS` — a minimal `S_COMPILE3` (machine `CV_CFL_X64`) so the stream is a well-formed CodeView symbol subsection.
+- `DEBUG_S_LINES` — **one subsection per compiled function**. Its header's function-offset and segment fields are patched by an `IMAGE_REL_AMD64_SECREL` + `IMAGE_REL_AMD64_SECTION` relocation pair against that function's `.text` symbol, and it records the function's code size plus one line record at code offset `+0` mapping to the function's declaration line (`IsStatement`).
+- `DEBUG_S_FILECHKSMS` — a single source-file entry (checksum kind `None`) referenced by every `DEBUG_S_LINES` block.
+- `DEBUG_S_STRINGTABLE` — holds the source file name.
+
+The line numbers come from `BytecodeFunction.span.line` (the AST/IR/bytecode span already threaded through the pipeline); the emitter reads `function.span.line` into each `LoweredNativeFunction`.
+
+### Line-table granularity: per function
+
+Granularity is **per function** for this increment: each function symbol gets one line record at its entry offset (offset `+0` → its declaration line). That lets a debugger place a breakpoint at a function and show the corresponding `.lby` source line. **Per-statement** line mapping (a line record at each statement's code offset) is deferred; the span data to support it already reaches the bytecode instructions, so it is a follow-up increment rather than a schema change.
+
+### The `--debug` flag and additive emission
+
+`--debug`/`-g` is **opt-in**. Without it, no `.debug$S` section is produced and the emitted object is **byte-for-byte identical** to the default native object, so the existing native snapshot/structural tests are unaffected. `emit_alpha1_native_program` keeps its exact prior behavior; a new `emit_alpha1_native_program_with_debug(module, Some(DebugOptions { source_file }))` adds the section. The CLI passes the `.lby` path as the source file and prints a `debug info: CodeView ...` notice; the object is written and linked exactly as before (the discardable `.debug$S` section links cleanly into the PDB when a PDB is produced, and is otherwise dropped).
+
+### What a debugger can do with it
+
+After linking (`rust-lld` consumes `.debug$S` into a PDB), a debugger can set a breakpoint at any compiled function by name and, on a hit, display the correct `.lby` source line for that function's entry. `llvm-readobj --codeview <obj>` (or `llvm-pdbutil`) reads the records back directly and shows each function's `FunctionLineTable` (`LineNumberStart` = the declaration line) and the recorded source filename.
+
+### Testing
+
+- **Structural (always runs):** `emits_codeview_debug_section_with_per_function_line_info` in `crates/lullaby_ir/src/native_object.rs` emits a `--debug` object for a two-function program and asserts the `.debug$S` section exists, leads with the C13 signature, holds `DEBUG_S_SYMBOLS`/`DEBUG_S_FILECHKSMS`/`DEBUG_S_STRINGTABLE` plus one `DEBUG_S_LINES` per function with 4 header relocations, records the source file name, and maps each function's entry offset to its exact declaration line. `debug_off_is_byte_for_byte_identical_to_default` asserts the no-debug path is unchanged. `native_debug_emits_codeview_line_info` in `crates/lullaby_cli/tests/cli.rs` drives `lullaby native --debug` end to end, asserts the `.debug$S` section + source name are present and the default object has none, and — when `llvm-readobj` (bundled with the rustc toolchain) or `llvm-pdbutil` is discoverable — decodes the CodeView stream and asserts it surfaces the source file and `main`'s declaration line, skipping the readback gracefully otherwise.
+
+### Deferred debug-info work
+
+Deferred beyond this increment: a full PDB emitted by the compiler itself (this increment relies on the linker to build the PDB from `.debug$S`); per-statement line records (finer than per-function); variable/parameter/local names, types, and lexical scopes (`S_LOCAL`/`S_REGREL32`, `.debug$T` type records); inlined-frame and optimized-code stepping info; a live end-to-end debugger session assertion; and DWARF (`.debug_line`/`.debug_info`) for non-Windows / ELF-Mach-O targets.
 
 ## Deferred Native Work
 

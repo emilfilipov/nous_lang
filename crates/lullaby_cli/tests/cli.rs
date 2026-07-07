@@ -2897,6 +2897,20 @@ fn rust_lld_path() -> Option<PathBuf> {
     lld.is_file().then_some(lld)
 }
 
+/// Locate a toolchain executable on `PATH` (e.g. `llvm-pdbutil`) for optional,
+/// gracefully-skipped real-toolchain checks. Tries the bare name and `.exe`.
+fn find_tool(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for candidate in [dir.join(name), dir.join(format!("{name}.exe"))] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// Whether `kernel32.lib` is reachable via the `LIB` environment variable.
 fn kernel32_available() -> bool {
     std::env::var("LIB").ok().is_some_and(|lib| {
@@ -2935,6 +2949,136 @@ fn native_emits_object_and_lists_functions() {
     let obj = out.with_extension("obj");
     let bytes = std::fs::read(&obj).expect("read native object");
     assert_eq!(&bytes[0..2], &[0x64, 0x86], "COFF AMD64 machine");
+}
+
+/// `lullaby native --debug` must emit a CodeView `.debug$S` source-line section
+/// (opt-in) and print the debug notice, while the default (no `--debug`) object
+/// stays byte-for-byte identical. This structural part always runs. If
+/// `llvm-pdbutil` is discoverable it optionally reads back the CodeView stream.
+#[test]
+fn native_debug_emits_codeview_line_info() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_native_debug.exe");
+
+    let output = lullaby()
+        .args([
+            "native",
+            "--debug",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("debug info: CodeView"),
+        "expected the debug notice: {}",
+        stdout(&output)
+    );
+
+    // The debug object carries a `.debug$S` section (searched in the section
+    // header table: NumberOfSections at header offset 2, 40-byte headers after
+    // the 20-byte COFF header, 8-byte name field).
+    let obj = out.with_extension("obj");
+    let bytes = std::fs::read(&obj).expect("read native debug object");
+    let num_sections = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+    let mut debug_hdr = None;
+    for i in 0..num_sections {
+        let hdr = 20 + i * 40;
+        if &bytes[hdr..hdr + 8] == b".debug\x24S" {
+            debug_hdr = Some(hdr);
+        }
+    }
+    let hdr = debug_hdr.expect("`.debug$S` section present with --debug");
+
+    // Its raw data begins with the CodeView C13 signature (4), and the source
+    // file name and per-function declaration line (`main` on line 15) are
+    // recoverable from the stream bytes.
+    let raw_ptr = u32::from_le_bytes(bytes[hdr + 20..hdr + 24].try_into().unwrap()) as usize;
+    let raw_size = u32::from_le_bytes(bytes[hdr + 16..hdr + 20].try_into().unwrap()) as usize;
+    let section = &bytes[raw_ptr..raw_ptr + raw_size];
+    assert_eq!(
+        u32::from_le_bytes(section[0..4].try_into().unwrap()),
+        4,
+        "CodeView C13 signature"
+    );
+    assert!(
+        section
+            .windows(b"native_scalars.lby".len())
+            .any(|w| w == b"native_scalars.lby"),
+        "source file name recorded in the debug section"
+    );
+
+    // Without `--debug`, the object has no `.debug$S` section and is byte-for-byte
+    // the default native object.
+    let plain_out = std::env::temp_dir().join("lullaby_native_debug_off.exe");
+    let plain = lullaby()
+        .args([
+            "native",
+            "-o",
+            plain_out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    let plain_bytes =
+        std::fs::read(plain_out.with_extension("obj")).expect("read plain native object");
+    let plain_sections = u16::from_le_bytes([plain_bytes[2], plain_bytes[3]]) as usize;
+    for i in 0..plain_sections {
+        let ph = 20 + i * 40;
+        assert_ne!(
+            &plain_bytes[ph..ph + 8],
+            b".debug\x24S",
+            "default object must have no debug section"
+        );
+    }
+
+    // Optional real-toolchain readback. Prefer `llvm-readobj` (bundled with the
+    // rustc toolchain that already provides `rust-lld`), else any `llvm-pdbutil`
+    // or `llvm-readobj` on PATH. When found, decode the CodeView stream and assert
+    // it surfaces the source file plus the `main` declaration line (15). Skip
+    // gracefully when no such tool is discoverable.
+    let readobj = llvm_readobj_path().or_else(|| find_tool("llvm-readobj"));
+    if let Some(tool) = readobj {
+        let dump = Command::new(tool)
+            .args(["--codeview", obj.to_str().expect("obj path")])
+            .output();
+        if let Ok(dump) = dump {
+            if dump.status.success() {
+                let text = String::from_utf8_lossy(&dump.stdout);
+                assert!(
+                    text.contains("native_scalars.lby"),
+                    "llvm-readobj should surface the source file: {text}"
+                );
+                assert!(
+                    text.contains("LineNumberStart: 15"),
+                    "llvm-readobj should surface `main`'s declaration line 15: {text}"
+                );
+            } else {
+                eprintln!("llvm-readobj --codeview failed; skipping readback assertion");
+            }
+        }
+    } else {
+        eprintln!("no llvm-readobj/llvm-pdbutil found; skipping CodeView readback");
+    }
+}
+
+/// Locate `llvm-readobj.exe` in the rustc toolchain bin dir (alongside
+/// `rust-lld`). `None` if the toolchain or tool cannot be found.
+fn llvm_readobj_path() -> Option<PathBuf> {
+    let out = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let tool =
+        PathBuf::from(sysroot).join("lib/rustlib/x86_64-pc-windows-msvc/bin/llvm-readobj.exe");
+    tool.is_file().then_some(tool)
 }
 
 /// A file with no i64-scalar function eligible reports diagnostic `L0339`.

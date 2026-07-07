@@ -8,11 +8,11 @@ use lullaby_diagnostics::{
     DiagnosticPhase, DiagnosticReport, render_concise, render_json, render_verbose,
 };
 use lullaby_ir::{
-    BYTECODE_ARTIFACT_EXTENSION, BytecodeArtifact, BytecodeArtifactError, IrCleanupRole,
-    IrMemoryOperation, IrMemoryOperationKind, OptimizationConfig, decode_bytecode_artifact,
-    emit_alpha1_native_program, emit_wasm_module, encode_bytecode_artifact, lower,
-    lower_to_bytecode, optimize, run_bytecode_main, run_bytecode_main_with_args,
-    run_main_with_args as run_ir_main_with_args,
+    BYTECODE_ARTIFACT_EXTENSION, BytecodeArtifact, BytecodeArtifactError, DebugOptions,
+    IrCleanupRole, IrMemoryOperation, IrMemoryOperationKind, OptimizationConfig,
+    decode_bytecode_artifact, emit_alpha1_native_program_with_debug, emit_wasm_module,
+    encode_bytecode_artifact, lower, lower_to_bytecode, optimize, run_bytecode_main,
+    run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
 };
 use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex, validate_source_path};
 use lullaby_parser::{Program, format_program, parse};
@@ -69,6 +69,7 @@ fn run() -> Result<(), String> {
             invocation.output,
             invocation.mode,
             invocation.freestanding,
+            invocation.debug,
         ),
         CommandName::Lsp => lsp(),
         CommandName::Version => {
@@ -348,6 +349,7 @@ fn native_file(
     output: Option<PathBuf>,
     mode: OutputMode,
     freestanding: bool,
+    debug: bool,
 ) -> Result<(), String> {
     // Library mode: a `main` is not required. A program with `main` still emits a
     // runnable executable; an export-only program (only `export fn` functions)
@@ -373,7 +375,13 @@ fn native_file(
     })?;
     let bytecode = lower_to_bytecode(&module);
 
-    let program = match emit_alpha1_native_program(&bytecode) {
+    // With `--debug`, emit a CodeView `.debug$S` section that maps each compiled
+    // function's entry offset to its `.lby` source declaration line. Without it,
+    // the object bytes are byte-for-byte identical to the default native path.
+    let debug_options = debug.then(|| DebugOptions {
+        source_file: compiled.path.display().to_string(),
+    });
+    let program = match emit_alpha1_native_program_with_debug(&bytecode, debug_options.as_ref()) {
         Ok(program) => program,
         Err(error) => {
             let mut report = DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
@@ -454,6 +462,11 @@ fn native_file(
     if freestanding {
         println!(
             "freestanding (no-std): no C runtime linked; only kernel32!ExitProcess for process exit"
+        );
+    }
+    if debug {
+        println!(
+            "debug info: CodeView `.debug$S` source-line table emitted (per-function `.lby` line mapping)"
         );
     }
     match &link {
@@ -1229,6 +1242,10 @@ struct Invocation {
     /// OS import (`kernel32!ExitProcess`) needed to terminate. Ignored by every
     /// command other than `native`.
     freestanding: bool,
+    /// Emit native source-line debug info (`lullaby native --debug` / `-g`). Adds
+    /// a CodeView `.debug$S` section mapping each function's entry offset to its
+    /// `.lby` source line. Ignored by every command other than `native`.
+    debug: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1322,6 +1339,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
                     freestanding: false,
+                    debug: false,
                 }))
             } else {
                 Err("usage: lullaby --version".to_string())
@@ -1339,6 +1357,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
                     freestanding: false,
+                    debug: false,
                 }))
             } else {
                 Err("usage: lullaby --help".to_string())
@@ -1356,6 +1375,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
                     freestanding: false,
+                    debug: false,
                 }))
             } else {
                 Err("usage: lullaby docs".to_string())
@@ -1373,6 +1393,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
                     freestanding: false,
+                    debug: false,
                 }))
             } else {
                 Err("usage: lullaby examples".to_string())
@@ -1390,6 +1411,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     fmt_mode: FmtMode::Print,
                     program_args: Vec::new(),
                     freestanding: false,
+                    debug: false,
                 }))
             } else {
                 Err("usage: lullaby lsp".to_string())
@@ -1409,6 +1431,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     let mut optimization = OptimizationMode::None;
     let mut output = None;
     let mut freestanding = false;
+    let mut debug = false;
     let mut cursor = 0;
     let usage = command_usage(command);
 
@@ -1480,6 +1503,15 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 freestanding = true;
                 cursor += 1;
             }
+            "--debug" | "-g" => {
+                // Native source-line debug info only. Adds a CodeView `.debug$S`
+                // section; without it the object bytes are unchanged.
+                if command != "native" {
+                    return Err(usage);
+                }
+                debug = true;
+                cursor += 1;
+            }
             _ => break,
         }
     }
@@ -1541,6 +1573,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         fmt_mode: FmtMode::Print,
         program_args,
         freestanding,
+        debug,
     }))
 }
 
@@ -1577,6 +1610,7 @@ fn parse_fmt_command(args: &[String]) -> Result<Option<Invocation>, String> {
         fmt_mode,
         program_args: Vec::new(),
         freestanding: false,
+        debug: false,
     }))
 }
 
@@ -1587,7 +1621,7 @@ fn command_usage(command: &str) -> String {
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
         "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
-        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [-o out.exe] <file.lby>".to_string(),
+        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [-o out.exe] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
@@ -1595,7 +1629,7 @@ fn command_usage(command: &str) -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [-o out.exe] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [-o out.exe] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
         env!("CARGO_PKG_VERSION")
     );
 }
