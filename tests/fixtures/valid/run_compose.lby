@@ -1,0 +1,21 @@
+enum Status
+    Active
+    Idle i64
+
+struct Job
+    id i64
+    status Status
+
+fn status_score s Status -> i64
+    match s
+        Active -> 100
+        Idle(secs) -> 100 - secs
+
+fn priority j Job -> i64
+    status_score(j.status) + j.id
+
+fn main -> i64
+    let jobs list<Job> = list_new()
+    let jobs2 list<Job> = push(jobs, Job(1, Active))
+    let jobs3 list<Job> = push(jobs2, Job(2, Idle(30)))
+    priority(get(jobs3, 0)) + priority(get(jobs3, 1)) + len(jobs3)
