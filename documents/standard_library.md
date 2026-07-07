@@ -73,6 +73,13 @@ Concatenate with `+` on two `string`s.
 operands); `sqrt`, `floor`, `ceil`, `round` take and return `f64`. Integer
 `pow` requires a non-negative exponent.
 
+The transcendental builtins take and return `f64`: `sin`, `cos`, `tan`, `atan`,
+`exp` (e^x), `ln` (natural log), and `log10` are unary; `atan2(y, x)` takes two
+`f64`s and returns the angle in radians. Undefined inputs follow platform `f64`
+semantics (`NaN`/`inf`) and are bit-identical across the AST, IR, and bytecode
+backends. A wrong argument type or arity reports `L0374` (semantic) or `L0417`
+(runtime).
+
 ## Standard streams and I/O
 
 - Streams: `print(text)`, `println(text)`, `warn(text)` (stderr), `flush()` — each `-> void`.

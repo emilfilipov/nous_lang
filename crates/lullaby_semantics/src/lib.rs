@@ -2807,7 +2807,8 @@ impl<'a> Checker<'a> {
                     None
                 }
             }
-            "sqrt" | "floor" | "ceil" | "round" => {
+            "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "atan" | "exp" | "ln"
+            | "log10" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let arg_type = self.check_expr(&args[0], scope, function)?;
                 if arg_type.name == "f64" {
@@ -2816,6 +2817,26 @@ impl<'a> Checker<'a> {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0374",
                         format!("{name} expects an f64 value but got `{}`", arg_type.name),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
+            "atan2" => {
+                // `atan2(y, x)` takes two f64 values and returns the f64 angle.
+                self.expect_arg_count(name, args, 2, function)?;
+                let y = self.check_expr(&args[0], scope, function)?;
+                let x = self.check_expr(&args[1], scope, function)?;
+                if y.name == "f64" && x.name == "f64" {
+                    Some(TypeRef::new("f64"))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!(
+                            "atan2 expects two f64 values but got `{}` and `{}`",
+                            y.name, x.name
+                        ),
                         Some(function.name.clone()),
                         args[0].span,
                     ));
@@ -5030,6 +5051,45 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0374")
+        );
+    }
+
+    #[test]
+    fn validates_trig_exp_and_log_builtins() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a f64 = sin(cos(tan(atan(0.0))))\n",
+            "    let b f64 = atan2(1.0, 2.0)\n",
+            "    let c f64 = exp(ln(log10(1000.0)))\n",
+            "    if a + b + c > 0.0\n",
+            "        1\n",
+            "    else\n",
+            "        0\n",
+        );
+        assert!(
+            validate_source(source).is_ok(),
+            "{:?}",
+            validate_source(source)
+        );
+    }
+
+    #[test]
+    fn rejects_trig_builtin_on_wrong_type() {
+        let diagnostics = validate_source("fn main -> i64\n    let x f64 = sin(1)\n    0\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0374"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_atan2_with_non_f64_argument() {
+        let diagnostics = validate_source("fn main -> i64\n    let x f64 = atan2(1.0, 2)\n    0\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0374"),
+            "{diagnostics:?}"
         );
     }
 

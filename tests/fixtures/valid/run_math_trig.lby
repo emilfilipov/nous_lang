@@ -1,0 +1,21 @@
+fn check f f64 want f64 -> i64
+    if f == want
+        1
+    else
+        0
+
+fn main -> i64
+    # Trigonometric, exponential, and logarithmic f64 builtins. Every backend
+    # uses the same platform f64 implementation, so results are bit-identical;
+    # the inputs are chosen so the expected values are exactly representable.
+    let s i64 = check(sin(0.0), 0.0)
+    let c i64 = check(cos(0.0), 1.0)
+    let t i64 = check(tan(0.0), 0.0)
+    let at i64 = check(atan(0.0), 0.0)
+    let a2 i64 = check(atan2(0.0, 1.0), 0.0)
+    let e i64 = check(exp(0.0), 1.0)
+    let l i64 = check(ln(1.0), 0.0)
+    let l10 i64 = check(round(log10(1000.0)), 3.0)
+    # exp and ln are inverses; round tolerates the last-bit rounding.
+    let inv i64 = check(round(exp(ln(7.0))), 7.0)
+    s + c + t + at + a2 + e + l + l10 + inv

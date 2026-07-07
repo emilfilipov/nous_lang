@@ -770,6 +770,14 @@ impl<'a> Runtime<'a> {
             "floor" => Self::builtin_floor(args),
             "ceil" => Self::builtin_ceil(args),
             "round" => Self::builtin_round(args),
+            "sin" => Self::builtin_unary_f64("sin", args, f64::sin),
+            "cos" => Self::builtin_unary_f64("cos", args, f64::cos),
+            "tan" => Self::builtin_unary_f64("tan", args, f64::tan),
+            "atan" => Self::builtin_unary_f64("atan", args, f64::atan),
+            "exp" => Self::builtin_unary_f64("exp", args, f64::exp),
+            "ln" => Self::builtin_unary_f64("ln", args, f64::ln),
+            "log10" => Self::builtin_unary_f64("log10", args, f64::log10),
+            "atan2" => Self::builtin_atan2(args),
             "rc_new" => self.builtin_rc_new(args),
             "rc_clone" => self.builtin_rc_clone(args),
             "rc_release" => self.builtin_rc_release(args),
@@ -2591,6 +2599,40 @@ impl<'a> Runtime<'a> {
             other => Err(RuntimeError::new(
                 "L0417",
                 format!("round expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    /// Shared implementation for the unary `f64 -> f64` math builtins
+    /// (`sin`/`cos`/`tan`/`atan`/`exp`/`ln`/`log10`). Undefined inputs follow
+    /// the platform `f64` semantics (`NaN`/`inf`), identically on every backend.
+    fn builtin_unary_f64(
+        name: &str,
+        args: Vec<Value>,
+        op: fn(f64) -> f64,
+    ) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity(name, 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(op(n))),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("{name} expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `atan2(y, x)`: the angle of the vector `(x, y)` in radians.
+    fn builtin_atan2(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [y, x]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atan2", 2, args.len()))?;
+        match (y, x) {
+            (Value::F64(y), Value::F64(x)) => Ok(Value::F64(y.atan2(x))),
+            (y, x) => Err(RuntimeError::new(
+                "L0417",
+                format!("atan2 expects two f64 values but got `{y}` and `{x}`"),
             )),
         }
     }

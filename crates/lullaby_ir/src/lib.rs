@@ -2205,7 +2205,7 @@ impl CommonSubexpressionEliminator {
                 }
                 invalidate_available_exprs(name, available);
 
-                let value = match pure_expr_signature(&value) {
+                let value = match pure_expr_signature(&value).filter(|_| is_cse_eligible(&value)) {
                     Some(signature) => match available.get(&signature.key) {
                         Some(existing) => {
                             self.eliminated_common_subexpressions += 1;
@@ -2891,6 +2891,22 @@ fn is_hoist_worthwhile(expr: &IrExpr) -> bool {
     )
 }
 
+/// Only compound pure expressions are worth eliminating as common
+/// subexpressions. Reusing a variable for a bare literal or another variable is
+/// never a win, and — because copy propagation can then alias the new binding
+/// to a variable that is later mutated — it is unsound inside loops (a
+/// `let i = 0` next to a `let a = 0` must not become `let i = a`).
+fn is_cse_eligible(expr: &IrExpr) -> bool {
+    matches!(
+        expr.kind,
+        IrExprKind::Unary { .. }
+            | IrExprKind::Binary { .. }
+            | IrExprKind::Index { .. }
+            | IrExprKind::Field { .. }
+            | IrExprKind::Array(_)
+    )
+}
+
 #[derive(Default)]
 struct CopyPropagator {
     propagated_copies: usize,
@@ -3554,6 +3570,14 @@ impl<'a> IrRuntime<'a> {
             "max" => Self::builtin_max(args),
             "pow" => Self::builtin_pow(args),
             "sqrt" => Self::builtin_sqrt(args),
+            "sin" => Self::builtin_unary_f64("sin", args, f64::sin),
+            "cos" => Self::builtin_unary_f64("cos", args, f64::cos),
+            "tan" => Self::builtin_unary_f64("tan", args, f64::tan),
+            "atan" => Self::builtin_unary_f64("atan", args, f64::atan),
+            "exp" => Self::builtin_unary_f64("exp", args, f64::exp),
+            "ln" => Self::builtin_unary_f64("ln", args, f64::ln),
+            "log10" => Self::builtin_unary_f64("log10", args, f64::log10),
+            "atan2" => Self::builtin_atan2(args),
             "floor" => Self::builtin_floor(args),
             "ceil" => Self::builtin_ceil(args),
             "round" => Self::builtin_round(args),
@@ -5284,6 +5308,39 @@ impl<'a> IrRuntime<'a> {
         }
     }
 
+    /// Shared implementation for the unary `f64 -> f64` math builtins, matching
+    /// the AST runtime so every backend produces bit-identical results.
+    fn builtin_unary_f64(
+        name: &str,
+        args: Vec<Value>,
+        op: fn(f64) -> f64,
+    ) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity(name, 1, args.len()))?;
+        match value {
+            Value::F64(n) => Ok(Value::F64(op(n))),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("{name} expects an f64 but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `atan2(y, x)`: the angle of the vector `(x, y)` in radians.
+    fn builtin_atan2(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [y, x]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atan2", 2, args.len()))?;
+        match (y, x) {
+            (Value::F64(y), Value::F64(x)) => Ok(Value::F64(y.atan2(x))),
+            (y, x) => Err(RuntimeError::new(
+                "L0417",
+                format!("atan2 expects two f64 values but got `{y}` and `{x}`"),
+            )),
+        }
+    }
+
     fn builtin_floor(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [value]: [Value; 1] = args
             .try_into()
@@ -6514,7 +6571,8 @@ impl<'a> Lowerer<'a> {
             "recv" | "mutex_get" | "mutex_add" => TypeRef::new("i64"),
             "try_recv" => generic_type("option", std::slice::from_ref(&TypeRef::new("i64"))),
             "send" | "task_join" | "mutex_set" => TypeRef::new("void"),
-            "sqrt" | "floor" | "ceil" | "round" => TypeRef::new("f64"),
+            "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "atan" | "exp" | "ln"
+            | "log10" | "atan2" => TypeRef::new("f64"),
             "abs" | "min" | "max" | "pow" => {
                 let value = args.first().ok_or_else(|| {
                     IrLoweringError::new(format!("{name} call missing argument"), Some(span))
