@@ -237,6 +237,27 @@ pub struct IfBranch {
     pub body: Vec<Stmt>,
 }
 
+/// One arm of a `match`: a pattern plus an inline-or-block body. An inline
+/// `pattern -> expr` becomes a single-expression body, exactly like `if`/`try`
+/// arms; a block body's last expression is the arm's value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Vec<Stmt>,
+}
+
+/// A `match` arm pattern: a variant (with optional positional payload bindings)
+/// or the `_` wildcard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MatchPattern {
+    Variant {
+        name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<String>,
+    },
+    Wildcard,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -281,6 +302,14 @@ pub enum ExprKind {
     Field {
         target: Box<Expr>,
         field: String,
+    },
+    /// Pattern matching over an enum: `match SCRUTINEE` followed by an indented
+    /// arm list. Like `if`/`try`, a `match` is an expression: when every arm
+    /// yields the same type it produces that value; otherwise it is a void
+    /// statement.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
     },
 }
 
@@ -566,6 +595,11 @@ impl<'a> Parser<'a> {
             return self.parse_try();
         }
 
+        if self.eat_keyword(Keyword::Match).is_some() {
+            let match_expr = self.parse_match()?;
+            return Some(Stmt::Expr(match_expr));
+        }
+
         if self.next_is_assignment() {
             return self.parse_assignment();
         }
@@ -764,6 +798,87 @@ impl<'a> Parser<'a> {
             catch_body,
             span,
         })
+    }
+
+    /// Parse `match SCRUTINEE` followed by an indented arm list. The `match`
+    /// keyword has already been consumed. Each arm is `pattern -> inline_expr`
+    /// or `pattern ->` followed by an indented block, mirroring the arrow
+    /// inline-or-block spelling used by function bodies and `if`/`try` arms.
+    fn parse_match(&mut self) -> Option<Expr> {
+        let span = self.previous().span;
+        let scrutinee = self.parse_expr_line(span)?;
+        self.expect_newline("expected newline after match scrutinee");
+        self.expect(TokenKindRef::Indent, "expected indented match arms")?;
+        let mut arms = Vec::new();
+        while !self.at(TokenKindRef::Dedent) && !self.at(TokenKindRef::Eof) {
+            let pattern = self.parse_match_pattern()?;
+            if !self.eat(TokenKindRef::Arrow) {
+                self.error(
+                    "L0215",
+                    "expected `->` after match pattern",
+                    self.peek().span,
+                );
+                return None;
+            }
+            let body = self.parse_arm_body(span)?;
+            arms.push(MatchArm { pattern, body });
+            self.skip_newlines();
+        }
+        self.expect(TokenKindRef::Dedent, "expected match body dedent")?;
+        Some(Expr {
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span,
+        })
+    }
+
+    /// Parse a match arm pattern: `_` (wildcard), a bare `Variant`, or
+    /// `Variant(bind1, bind2, ...)` with positional payload bindings.
+    fn parse_match_pattern(&mut self) -> Option<MatchPattern> {
+        // `_` lexes as an identifier (its leading `_` is an identifier char), so
+        // the wildcard is recognized by matching that identifier text exactly.
+        if matches!(&self.peek().kind, TokenKind::Identifier(name) if name == "_") {
+            self.advance();
+            return Some(MatchPattern::Wildcard);
+        }
+        let name = self.expect_identifier("expected match pattern variant name")?;
+        let mut bindings = Vec::new();
+        if self.eat_symbol("(") && !self.eat_symbol(")") {
+            loop {
+                bindings.push(self.expect_identifier("expected payload binding name")?);
+                if self.eat_symbol(")") {
+                    break;
+                }
+                if !self.eat_symbol(",") {
+                    self.error(
+                        "L0215",
+                        "expected `,` or `)` in match pattern bindings",
+                        self.peek().span,
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(MatchPattern::Variant { name, bindings })
+    }
+
+    /// Parse the body of an arrow arm: either an inline expression on the same
+    /// line, or a newline-introduced indented block whose last expression is the
+    /// arm's value.
+    fn parse_arm_body(&mut self, span: Span) -> Option<Vec<Stmt>> {
+        if self.at(TokenKindRef::Newline) {
+            self.expect_newline("expected newline after `->`");
+            self.expect(TokenKindRef::Indent, "expected indented match arm body")?;
+            let body = self.parse_block(&[BlockEnd::Dedent]);
+            self.expect(TokenKindRef::Dedent, "expected match arm body dedent")?;
+            Some(body)
+        } else {
+            let expr = self.parse_expr_line(span)?;
+            self.expect_newline("expected newline after match arm expression");
+            Some(vec![Stmt::Expr(expr)])
+        }
     }
 
     /// Parse `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]`.
@@ -1150,7 +1265,6 @@ fn planned_syntax_name(kind: &TokenKind) -> Option<&'static str> {
         Keyword::Trait => "trait",
         Keyword::Interface => "interface",
         Keyword::Class => "class",
-        Keyword::Match => "match",
         Keyword::Switch => "switch",
         Keyword::Catch => "catch",
         Keyword::Async => "async",
@@ -1524,6 +1638,67 @@ mod tests {
         };
         assert_eq!(catch_name, "e");
         assert!(matches!(body[0], Stmt::Throw { .. }));
+    }
+
+    #[test]
+    fn parses_match_expression_with_bindings_and_wildcard() {
+        let source = concat!(
+            "enum Shape\n    Circle f64\n    Rect f64 f64\n    Empty\n\n",
+            "fn area s Shape -> f64\n",
+            "    match s\n",
+            "        Circle(r) -> 3.14 * r * r\n",
+            "        Rect(w, h) -> w * h\n",
+            "        _ -> 0.0\n",
+        );
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Expr(Expr {
+            kind: ExprKind::Match { arms, .. },
+            ..
+        }) = &program.functions[0].body[0]
+        else {
+            panic!("expected match expression statement");
+        };
+        assert_eq!(arms.len(), 3);
+        assert_eq!(
+            arms[0].pattern,
+            MatchPattern::Variant {
+                name: "Circle".to_string(),
+                bindings: vec!["r".to_string()],
+            }
+        );
+        assert_eq!(
+            arms[1].pattern,
+            MatchPattern::Variant {
+                name: "Rect".to_string(),
+                bindings: vec!["w".to_string(), "h".to_string()],
+            }
+        );
+        assert_eq!(arms[2].pattern, MatchPattern::Wildcard);
+    }
+
+    #[test]
+    fn parses_match_arm_with_indented_block_body() {
+        let source = concat!(
+            "enum Opt\n    Some i64\n    None\n\n",
+            "fn unwrap o Opt -> i64\n",
+            "    match o\n",
+            "        Some(v) ->\n",
+            "            let doubled i64 = v * 2\n",
+            "            doubled\n",
+            "        None -> 0\n",
+        );
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let Stmt::Expr(Expr {
+            kind: ExprKind::Match { arms, .. },
+            ..
+        }) = &program.functions[0].body[0]
+        else {
+            panic!("expected match expression statement");
+        };
+        assert_eq!(arms[0].body.len(), 2);
+        assert!(matches!(arms[0].body[0], Stmt::Let { .. }));
     }
 
     #[test]

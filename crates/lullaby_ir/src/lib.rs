@@ -4,7 +4,8 @@ use std::process::Command;
 
 use lullaby_diagnostics::{Span, TraceFrame};
 use lullaby_parser::{
-    AssignOp, BinaryOp, Expr, ExprKind, Function, Place, Program, Stmt, TypeRef, UnaryOp,
+    AssignOp, BinaryOp, Expr, ExprKind, Function, MatchArm, MatchPattern, Place, Program, Stmt,
+    TypeRef, UnaryOp,
 };
 use lullaby_runtime::{
     ResolvedPlace, RuntimeError, Value, apply_compound, char_find, expect_i64, expect_string,
@@ -121,12 +122,34 @@ pub enum IrStmt {
         catch_body: Vec<IrStmt>,
         span: Span,
     },
+    Match {
+        scrutinee: IrExpr,
+        arms: Vec<IrMatchArm>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrIfBranch {
     pub condition: IrExpr,
     pub body: Vec<IrStmt>,
+}
+
+/// One arm of an IR `match`: a pattern plus a lowered body block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IrMatchArm {
+    pub pattern: IrMatchPattern,
+    pub body: Vec<IrStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IrMatchPattern {
+    Variant {
+        name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<String>,
+    },
+    Wildcard,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -454,6 +477,14 @@ fn collect_memory_operations_from_block(
                 collect_memory_operations_from_block(function, body, operations);
                 collect_memory_operations_from_block(function, catch_body, operations);
             }
+            IrStmt::Match {
+                scrutinee, arms, ..
+            } => {
+                collect_memory_operations_from_expr(function, scrutinee, operations);
+                for arm in arms {
+                    collect_memory_operations_from_block(function, &arm.body, operations);
+                }
+            }
             IrStmt::Return(None) | IrStmt::Break(_) | IrStmt::Continue(_) => {}
         }
     }
@@ -755,12 +786,33 @@ pub enum BytecodeInstruction {
         catch_body: Vec<BytecodeInstruction>,
         span: Span,
     },
+    Match {
+        scrutinee: BytecodeExpr,
+        arms: Vec<BytecodeMatchArm>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeIfBranch {
     pub condition: BytecodeExpr,
     pub body: Vec<BytecodeInstruction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BytecodeMatchArm {
+    pub pattern: BytecodeMatchPattern,
+    pub body: Vec<BytecodeInstruction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BytecodeMatchPattern {
+    Variant {
+        name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        bindings: Vec<String>,
+    },
+    Wildcard,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -953,6 +1005,14 @@ fn collect_bytecode_memory_operations_from_block(
             } => {
                 collect_bytecode_memory_operations_from_block(function, body, operations);
                 collect_bytecode_memory_operations_from_block(function, catch_body, operations);
+            }
+            BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } => {
+                collect_bytecode_memory_operations_from_expr(function, scrutinee, operations);
+                for arm in arms {
+                    collect_bytecode_memory_operations_from_block(function, &arm.body, operations);
+                }
             }
             BytecodeInstruction::Return(None)
             | BytecodeInstruction::Break(_)
@@ -1278,6 +1338,12 @@ fn validate_bytecode_instructions(
                 validate_bytecode_instructions(function_name, body, loop_depth)?;
                 validate_bytecode_instructions(function_name, catch_body, loop_depth)?;
             }
+            BytecodeInstruction::Match { arms, .. } => {
+                // `match` is not a loop: keep the same loop depth for each arm.
+                for arm in arms {
+                    validate_bytecode_instructions(function_name, &arm.body, loop_depth)?;
+                }
+            }
             BytecodeInstruction::Let { .. }
             | BytecodeInstruction::Assign { .. }
             | BytecodeInstruction::Return(_)
@@ -1412,6 +1478,31 @@ fn lower_bytecode_instruction(statement: &IrStmt) -> BytecodeInstruction {
             catch_body: lower_bytecode_block(catch_body),
             span: *span,
         },
+        IrStmt::Match {
+            scrutinee,
+            arms,
+            span,
+        } => BytecodeInstruction::Match {
+            scrutinee: lower_bytecode_expr(scrutinee),
+            arms: arms
+                .iter()
+                .map(|arm| BytecodeMatchArm {
+                    pattern: ir_match_pattern_to_bytecode(&arm.pattern),
+                    body: lower_bytecode_block(&arm.body),
+                })
+                .collect(),
+            span: *span,
+        },
+    }
+}
+
+fn ir_match_pattern_to_bytecode(pattern: &IrMatchPattern) -> BytecodeMatchPattern {
+    match pattern {
+        IrMatchPattern::Variant { name, bindings } => BytecodeMatchPattern::Variant {
+            name: name.clone(),
+            bindings: bindings.clone(),
+        },
+        IrMatchPattern::Wildcard => BytecodeMatchPattern::Wildcard,
     }
 }
 
@@ -1567,6 +1658,31 @@ fn bytecode_instruction_to_ir(instruction: &BytecodeInstruction) -> IrStmt {
             catch_body: bytecode_block_to_ir(catch_body),
             span: *span,
         },
+        BytecodeInstruction::Match {
+            scrutinee,
+            arms,
+            span,
+        } => IrStmt::Match {
+            scrutinee: bytecode_expr_to_ir(scrutinee),
+            arms: arms
+                .iter()
+                .map(|arm| IrMatchArm {
+                    pattern: bytecode_match_pattern_to_ir(&arm.pattern),
+                    body: bytecode_block_to_ir(&arm.body),
+                })
+                .collect(),
+            span: *span,
+        },
+    }
+}
+
+fn bytecode_match_pattern_to_ir(pattern: &BytecodeMatchPattern) -> IrMatchPattern {
+    match pattern {
+        BytecodeMatchPattern::Variant { name, bindings } => IrMatchPattern::Variant {
+            name: name.clone(),
+            bindings: bindings.clone(),
+        },
+        BytecodeMatchPattern::Wildcard => IrMatchPattern::Wildcard,
     }
 }
 
@@ -1738,6 +1854,21 @@ impl ConstantFolder {
                 body: self.fold_block(body),
                 catch_name: catch_name.clone(),
                 catch_body: self.fold_block(catch_body),
+                span: *span,
+            },
+            IrStmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => IrStmt::Match {
+                scrutinee: self.fold_expr(scrutinee),
+                arms: arms
+                    .iter()
+                    .map(|arm| IrMatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: self.fold_block(&arm.body),
+                    })
+                    .collect(),
                 span: *span,
             },
         }
@@ -2120,6 +2251,26 @@ impl CommonSubexpressionEliminator {
                     span: *span,
                 }
             }
+            IrStmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                let scrutinee = self.rewrite_expr(scrutinee);
+                let arms = arms
+                    .iter()
+                    .map(|arm| IrMatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: self.eliminate_block(&arm.body, &mut HashMap::new()),
+                    })
+                    .collect();
+                available.clear();
+                IrStmt::Match {
+                    scrutinee,
+                    arms,
+                    span: *span,
+                }
+            }
         }
     }
 
@@ -2379,6 +2530,7 @@ impl LoopInvariantMover {
             | IrStmt::Continue(_)
             | IrStmt::Throw { .. }
             | IrStmt::Try { .. }
+            | IrStmt::Match { .. }
             | IrStmt::Expr(_) => vec![statement.clone()],
         }
     }
@@ -2517,6 +2669,16 @@ fn collect_declared_names(statements: &[IrStmt], names: &mut HashSet<String>) {
                 collect_declared_names(body, names);
                 collect_declared_names(catch_body, names);
             }
+            IrStmt::Match { arms, .. } => {
+                for arm in arms {
+                    if let IrMatchPattern::Variant { bindings, .. } = &arm.pattern {
+                        for binding in bindings {
+                            names.insert(binding.clone());
+                        }
+                    }
+                    collect_declared_names(&arm.body, names);
+                }
+            }
             IrStmt::For { name, body, .. } => {
                 names.insert(name.clone());
                 collect_declared_names(body, names);
@@ -2555,6 +2717,11 @@ fn collect_mutated_names(statements: &[IrStmt], names: &mut HashSet<String>) {
             } => {
                 collect_mutated_names(body, names);
                 collect_mutated_names(catch_body, names);
+            }
+            IrStmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_mutated_names(&arm.body, names);
+                }
             }
             IrStmt::For { name, body, .. } => {
                 names.insert(name.clone());
@@ -2800,6 +2967,26 @@ impl CopyPropagator {
                     span: *span,
                 }
             }
+            IrStmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                let scrutinee = self.propagate_expr(scrutinee, aliases);
+                let arms = arms
+                    .iter()
+                    .map(|arm| IrMatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: self.propagate_block(&arm.body, &mut HashMap::new()),
+                    })
+                    .collect();
+                aliases.clear();
+                IrStmt::Match {
+                    scrutinee,
+                    arms,
+                    span: *span,
+                }
+            }
         }
     }
 
@@ -3026,6 +3213,21 @@ impl DeadCodeEliminator {
                 body: self.eliminate_block(body),
                 catch_name: catch_name.clone(),
                 catch_body: self.eliminate_block(catch_body),
+                span: *span,
+            },
+            IrStmt::Match {
+                scrutinee,
+                arms,
+                span,
+            } => IrStmt::Match {
+                scrutinee: scrutinee.clone(),
+                arms: arms
+                    .iter()
+                    .map(|arm| IrMatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: self.eliminate_block(&arm.body),
+                    })
+                    .collect(),
                 span: *span,
             },
             IrStmt::Let { .. }
@@ -3356,6 +3558,9 @@ impl<'a> IrRuntime<'a> {
                 }
                 other => other,
             },
+            IrStmt::Match {
+                scrutinee, arms, ..
+            } => self.eval_match(scrutinee, arms, env),
         };
         result.map_err(|error| self.annotate_error(error, span))
     }
@@ -3369,6 +3574,48 @@ impl<'a> IrRuntime<'a> {
         let result = self.eval_block(statements, env);
         env.pop_scope();
         result
+    }
+
+    /// Evaluate an IR `match` identically to the AST runtime: select the arm
+    /// whose variant matches the scrutinee's enum value (or the `_` wildcard),
+    /// bind payloads to arm-scoped locals, and evaluate the arm block.
+    fn eval_match(
+        &mut self,
+        scrutinee: &IrExpr,
+        arms: &[IrMatchArm],
+        env: &mut Env,
+    ) -> Result<Control, RuntimeError> {
+        let value = self.eval_expr(scrutinee, env)?;
+        let Value::Enum {
+            variant, payload, ..
+        } = value
+        else {
+            return Err(RuntimeError::new(
+                "L0383",
+                "match scrutinee did not evaluate to an enum value",
+            ));
+        };
+        for arm in arms {
+            match &arm.pattern {
+                IrMatchPattern::Wildcard => {
+                    return self.eval_scoped_block(&arm.body, env);
+                }
+                IrMatchPattern::Variant { name, bindings } if name == &variant => {
+                    env.push_scope();
+                    for (binding, value) in bindings.iter().zip(payload.iter()) {
+                        env.define(binding.clone(), value.clone());
+                    }
+                    let result = self.eval_block(&arm.body, env);
+                    env.pop_scope();
+                    return result;
+                }
+                IrMatchPattern::Variant { .. } => {}
+            }
+        }
+        Err(RuntimeError::new(
+            "L0384",
+            format!("no match arm covered variant `{variant}`"),
+        ))
     }
 
     fn resolve_places(
@@ -4089,7 +4336,8 @@ fn statement_span(statement: &IrStmt) -> Span {
         | IrStmt::For { span, .. }
         | IrStmt::Loop { span, .. }
         | IrStmt::Throw { span, .. }
-        | IrStmt::Try { span, .. } => *span,
+        | IrStmt::Try { span, .. }
+        | IrStmt::Match { span, .. } => *span,
         IrStmt::Return(Some(expr)) | IrStmt::Expr(expr) => expr.span,
         IrStmt::Return(None) => Span::new(1, 1),
     }
@@ -4317,6 +4565,13 @@ impl<'a> Lowerer<'a> {
             )),
             Stmt::Break(span) => Ok(IrStmt::Break(*span)),
             Stmt::Continue(span) => Ok(IrStmt::Continue(*span)),
+            // A `match` reaches lowering wrapped in a `Stmt::Expr`; lower it to a
+            // dedicated `IrStmt::Match` so it threads through the IR and bytecode
+            // backends and optimizers exactly like `try`.
+            Stmt::Expr(Expr {
+                kind: ExprKind::Match { scrutinee, arms },
+                span,
+            }) => self.lower_match(scrutinee, arms, *span, scope),
             Stmt::Expr(expr) => Ok(IrStmt::Expr(self.lower_expr(expr, scope)?)),
             Stmt::If {
                 branches,
@@ -4455,6 +4710,56 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+    }
+
+    /// Lower a `match` to an `IrStmt::Match`. Each arm's payload bindings are
+    /// typed by the owning variant's declared payload types and inserted into a
+    /// per-arm scope, so arm bodies lower against the right binding types.
+    fn lower_match(
+        &self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        span: Span,
+        scope: &mut HashMap<String, TypeRef>,
+    ) -> Result<IrStmt, IrLoweringError> {
+        let scrutinee = self.lower_expr(scrutinee, scope)?;
+        let enum_name = scrutinee.ty.name.clone();
+        let mut lowered_arms = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let mut arm_scope = scope.clone();
+            let pattern = match &arm.pattern {
+                MatchPattern::Wildcard => IrMatchPattern::Wildcard,
+                MatchPattern::Variant { name, bindings } => {
+                    let payload = self.variant_payload(&enum_name, name);
+                    for (binding, ty) in bindings.iter().zip(payload.iter()) {
+                        arm_scope.insert(binding.clone(), ty.clone());
+                    }
+                    IrMatchPattern::Variant {
+                        name: name.clone(),
+                        bindings: bindings.clone(),
+                    }
+                }
+            };
+            let body = self.lower_block(&arm.body, &mut arm_scope)?;
+            lowered_arms.push(IrMatchArm { pattern, body });
+        }
+        Ok(IrStmt::Match {
+            scrutinee,
+            arms: lowered_arms,
+            span,
+        })
+    }
+
+    /// The declared payload types of `variant` within enum `enum_name`, if the
+    /// enum and variant exist.
+    fn variant_payload(&self, enum_name: &str, variant: &str) -> Vec<TypeRef> {
+        self.program
+            .enums
+            .iter()
+            .find(|declaration| declaration.name == enum_name)
+            .and_then(|declaration| declaration.variants.iter().find(|v| v.name == variant))
+            .map(|v| v.payload.clone())
+            .unwrap_or_default()
     }
 
     fn lower_place(
@@ -4648,6 +4953,15 @@ impl<'a> Lowerer<'a> {
                     },
                     ty,
                 )
+            }
+            // A `match` is lowered as a statement (`IrStmt::Match`) at its
+            // statement position; the indentation-only surface never nests it
+            // inside another expression, so reaching here is a lowering bug.
+            ExprKind::Match { .. } => {
+                return Err(IrLoweringError::new(
+                    "`match` can only appear as a statement expression",
+                    Some(expr.span),
+                ));
             }
         };
 
@@ -5581,6 +5895,32 @@ mod tests {
         assert_eq!(ast, Value::String("ok:5 err:neg".to_string()));
         assert_eq!(ir, ast);
         assert_eq!(bytecode, ast);
+    }
+
+    #[test]
+    fn ir_and_bytecode_match_ast_for_pattern_matching() {
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Rect i64 i64\n    Empty\n\n",
+            "enum Color\n    Red\n    Green\n    Blue\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(r) -> r * r\n",
+            "        Rect(w, h) -> w * h\n",
+            "        Empty -> 0\n\n",
+            "fn rank c Color -> i64\n",
+            "    match c\n",
+            "        Green -> 10\n",
+            "        _ -> 1\n\n",
+            "fn main -> i64\n",
+            "    area(Circle(3)) + area(Rect(4, 5)) + area(Empty) + rank(Green) + rank(Red)\n",
+        );
+        let (ast, ir, bytecode, optimized_ir, optimized_bytecode) =
+            run_all_backend_variants(source);
+        assert_eq!(ast, Value::I64(40));
+        assert_eq!(ir, ast);
+        assert_eq!(bytecode, ast);
+        assert_eq!(optimized_ir, ast);
+        assert_eq!(optimized_bytecode, ast);
     }
 
     #[test]

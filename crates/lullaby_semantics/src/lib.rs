@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use lullaby_diagnostics::Span;
 use lullaby_parser::{
-    AssignOp, BinaryOp, EnumDecl, EnumVariant, Expr, ExprKind, Function, IfBranch, Param, Place,
-    Program, RegionDecl, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    AssignOp, BinaryOp, EnumDecl, EnumVariant, Expr, ExprKind, Function, IfBranch, MatchArm,
+    MatchPattern, Param, Place, Program, RegionDecl, Stmt, StructDecl, StructField, TypeRef,
+    UnaryOp,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,6 +325,28 @@ fn rewrite_stmt_types(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
                 .collect(),
             span: *span,
         },
+        // A `match` reaches semantics wrapped in a `Stmt::Expr`; rewrite type
+        // annotations inside its arm bodies so aliases in arm `let`s resolve.
+        Stmt::Expr(Expr {
+            kind: ExprKind::Match { scrutinee, arms },
+            span,
+        }) => Stmt::Expr(Expr {
+            kind: ExprKind::Match {
+                scrutinee: scrutinee.clone(),
+                arms: arms
+                    .iter()
+                    .map(|arm| MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: arm
+                            .body
+                            .iter()
+                            .map(|s| rewrite_stmt_types(s, map))
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            span: *span,
+        }),
         other => other.clone(),
     }
 }
@@ -1037,6 +1060,12 @@ impl<'a> Checker<'a> {
                     self.check_freed_uses(value, freed, function);
                 }
             }
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_freed_uses(scrutinee, freed, function);
+                for arm in arms {
+                    self.walk_lifetimes(&arm.body, &mut freed.clone(), function);
+                }
+            }
             ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) => {
             }
         }
@@ -1246,6 +1275,9 @@ impl<'a> Checker<'a> {
                         None
                     }
                 }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_match(scrutinee, arms, expr.span, scope, function)
             }
         };
 
@@ -1833,6 +1865,132 @@ impl<'a> Checker<'a> {
             }
         }
         Some(TypeRef::new(enum_name))
+    }
+
+    /// Validate a `match` over an enum. The scrutinee must be an enum type
+    /// (`L0383`). Each arm's variant must belong to that enum with the correct
+    /// binding arity (`L0385`), duplicate variant arms are rejected (`L0385`),
+    /// and the match must be exhaustive — every variant covered or a `_`
+    /// wildcard present (`L0384`). The result type is the arms' common body type
+    /// when they all agree, mirroring `if`/`try`; otherwise it is void.
+    fn check_match(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let scrutinee_type = self.check_expr(scrutinee, scope, function);
+        let enum_name = match scrutinee_type
+            .as_ref()
+            .and_then(|ty| self.enums.get(&ty.name).map(|_| ty.name.clone()))
+        {
+            Some(name) => name,
+            None => {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0383",
+                    format!(
+                        "match scrutinee must be an enum type but got `{}`",
+                        scrutinee_type
+                            .as_ref()
+                            .map(|ty| ty.name.as_str())
+                            .unwrap_or("<unknown>")
+                    ),
+                    Some(function.name.clone()),
+                    scrutinee.span,
+                ));
+                // Still check arm bodies to surface nested errors.
+                for arm in arms {
+                    let mut arm_scope = scope.clone();
+                    self.check_block(&arm.body, &mut arm_scope, function);
+                }
+                return None;
+            }
+        };
+
+        let declared_variants = self.enums.get(&enum_name).cloned().unwrap_or_default();
+        let mut covered: HashSet<String> = HashSet::new();
+        let mut has_wildcard = false;
+        let mut arm_types: Vec<Option<TypeRef>> = Vec::new();
+
+        for arm in arms {
+            let mut arm_scope = scope.clone();
+            match &arm.pattern {
+                MatchPattern::Wildcard => {
+                    has_wildcard = true;
+                }
+                MatchPattern::Variant { name, bindings } => {
+                    match declared_variants.iter().find(|v| &v.name == name) {
+                        Some(variant) => {
+                            if !covered.insert(name.clone()) {
+                                self.diagnostics.push(SemanticDiagnostic::at(
+                                    "L0385",
+                                    format!("duplicate match arm for variant `{name}`"),
+                                    Some(function.name.clone()),
+                                    span,
+                                ));
+                            }
+                            if bindings.len() != variant.payload.len() {
+                                self.diagnostics.push(SemanticDiagnostic::at(
+                                    "L0385",
+                                    format!(
+                                        "variant `{name}` binds {} value(s) but declares {} payload type(s)",
+                                        bindings.len(),
+                                        variant.payload.len()
+                                    ),
+                                    Some(function.name.clone()),
+                                    span,
+                                ));
+                            }
+                            // Bind each payload to an arm-scoped local typed by
+                            // the variant's declared payload type. When arities
+                            // differ, bind the overlap so nested checks proceed.
+                            for (binding, ty) in bindings.iter().zip(variant.payload.iter()) {
+                                arm_scope.locals.insert(binding.clone(), ty.clone());
+                            }
+                        }
+                        None => {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0385",
+                                format!("variant `{name}` does not belong to enum `{enum_name}`"),
+                                Some(function.name.clone()),
+                                span,
+                            ));
+                        }
+                    }
+                }
+            }
+            arm_types.push(self.check_block(&arm.body, &mut arm_scope, function));
+        }
+
+        // Exhaustiveness: every variant covered, or a `_` wildcard present.
+        if !has_wildcard {
+            let missing: Vec<String> = declared_variants
+                .iter()
+                .filter(|v| !covered.contains(&v.name))
+                .map(|v| v.name.clone())
+                .collect();
+            if !missing.is_empty() {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0384",
+                    format!(
+                        "match over enum `{enum_name}` is not exhaustive; missing variant(s): {}",
+                        missing.join(", ")
+                    ),
+                    Some(function.name.clone()),
+                    span,
+                ));
+            }
+        }
+
+        // Result type: the common arm body type when every arm agrees.
+        match arm_types.split_first() {
+            Some((first, rest)) if rest.iter().all(|ty| ty.as_ref() == first.as_ref()) => {
+                first.clone()
+            }
+            _ => None,
+        }
     }
 
     /// Validate named-field construction `Name(field: expr, ...)`: every
@@ -2898,6 +3056,100 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0382")
+        );
+    }
+
+    #[test]
+    fn validates_exhaustive_match_with_bindings() {
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Rect i64 i64\n    Empty\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(r) -> r * r\n",
+            "        Rect(w, h) -> w * h\n",
+            "        Empty -> 0\n\n",
+            "fn main -> i64\n    area(Circle(3))\n",
+        );
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn validates_match_with_wildcard_arm() {
+        let source = concat!(
+            "enum Color\n    Red\n    Green\n    Blue\n\n",
+            "fn rank c Color -> i64\n",
+            "    match c\n",
+            "        Green -> 10\n",
+            "        _ -> 1\n\n",
+            "fn main -> i64\n    rank(Blue)\n",
+        );
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_match_on_non_enum_scrutinee() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let x i64 = 1\n",
+            "    match x\n",
+            "        _ -> 0\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0383"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_match() {
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Rect i64 i64\n    Empty\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(r) -> r\n",
+            "        Empty -> 0\n\n",
+            "fn main -> i64\n    area(Empty)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0384"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_match_arm_with_wrong_binding_arity() {
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Empty\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(a, b) -> a\n",
+            "        Empty -> 0\n\n",
+            "fn main -> i64\n    area(Empty)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0385"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_match_arm_with_unknown_variant() {
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Empty\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(r) -> r\n",
+            "        Square -> 0\n",
+            "        Empty -> 0\n\n",
+            "fn main -> i64\n    area(Empty)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0385"),
+            "{diagnostics:?}"
         );
     }
 }

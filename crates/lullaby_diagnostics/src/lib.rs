@@ -421,6 +421,27 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Pass matching numeric operands: `abs`/`min`/`max`/`pow` accept two `i64` or two `f64`; `sqrt`/`floor`/`ceil`/`round` require an `f64`.",
     },
     DiagnosticEntry {
+        code: "L0383",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A `match` selects on an enum value.",
+        root_cause: "The scrutinee of a `match` is not an enum type.",
+        suggested_fix: "Match on an enum value, or use `if`/comparisons for non-enum types.",
+    },
+    DiagnosticEntry {
+        code: "L0384",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A `match` must cover every variant of its enum.",
+        root_cause: "One or more variants of the scrutinee's enum have no arm and there is no `_` wildcard.",
+        suggested_fix: "Add an arm for each missing variant, or add a `_` wildcard arm.",
+    },
+    DiagnosticEntry {
+        code: "L0385",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A `match` arm must name a valid variant with matching bindings.",
+        root_cause: "An arm names an unknown variant, repeats a variant, or binds the wrong number of payload values.",
+        suggested_fix: "Use each enum variant at most once and bind exactly one name per declared payload value.",
+    },
+    DiagnosticEntry {
         code: "L0501",
         phase: DiagnosticPhase::Ir,
         explanation: "The checked source program could not be lowered into typed IR.",

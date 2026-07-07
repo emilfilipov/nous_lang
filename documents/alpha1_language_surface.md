@@ -49,6 +49,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Implemented loops: `while`, inclusive range `for name from start to end`, optional `by step`, and `loop`.
 - Implemented loop controls: `break` and `continue`.
 - Loop control outside a loop is a semantic error.
+- Pattern matching: `match SCRUTINEE` selects on an enum value with an indented arm list. Each arm is a pattern (`Variant(bind1, bind2, ...)` binding positional payloads, a bare `Variant` for a unit variant, or `_` wildcard), then `->`, then an inline expression or an indented block whose last expression is the arm's value. Like `if`/`try`, a `match` is an expression: when every arm yields the same type it produces that value (so it can be a function's final expression); otherwise it is a void statement. Matches must be exhaustive — every variant covered or a `_` present (`L0384`); a non-enum scrutinee reports `L0383`, and an unknown/duplicate variant arm or wrong binding arity reports `L0385`. Pattern matching runs identically on the AST, IR, and bytecode backends (including under optimization).
 
 ## Builtins
 
@@ -106,10 +107,10 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 The following are not implemented Alpha 1 behavior:
 
 - Native code generation for the full language, linking, and machine-code binary output (a COFF object prototype exists for a small subset).
-- Modules, packages, imports, unions, traits, interfaces, classes, and pattern matching (structs and enums are implemented — structs including field mutation and positional/named-field construction, enums including unit/payload declaration and construction; `match`, struct/enum methods, and generics over enums are deferred).
+- Modules, packages, imports, unions, traits, interfaces, and classes (structs and enums are implemented — structs including field mutation and positional/named-field construction, enums including unit/payload declaration and construction, and `match` pattern matching over enums with payload binding, exhaustiveness, and `_` wildcard; struct/enum methods and generics over enums are deferred).
 - User-defined generics beyond `array<T>` and the `ptr<T>`/`ref<T>`/`rc<T>` reference types and type aliases (struct/record and map generics remain planned).
 - GC hooks and runtime region allocation (region *declarations* are analyzed as compile-time metadata; reference counting via `rc<T>` and conservative lifetime analysis are implemented).
 - Binary I/O, memory mapping, async, sockets, IPC, and general syscall APIs (standard text streams and file/system builtins are implemented).
 - A full installer; Alpha 1 uses a Windows portable archive with optional user PATH helper scripts.
 
-When planned syntax keywords such as `import`, `module`, `match`, or a bare `catch` appear as source syntax, the parser reports `L0211` instead of accepting a partial or ambiguous construct.
+When planned syntax keywords such as `import`, `module`, `switch`, or a bare `catch` appear as source syntax, the parser reports `L0211` instead of accepting a partial or ambiguous construct.

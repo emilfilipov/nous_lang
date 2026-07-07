@@ -4,7 +4,10 @@ use std::fs;
 use std::process::Command;
 
 use lullaby_diagnostics::{Span, TraceFrame};
-use lullaby_parser::{AssignOp, BinaryOp, Expr, ExprKind, Function, Place, Program, Stmt, UnaryOp};
+use lullaby_parser::{
+    AssignOp, BinaryOp, Expr, ExprKind, Function, MatchArm, MatchPattern, Place, Program, Stmt,
+    UnaryOp,
+};
 
 // `Eq` is intentionally omitted: `Value::F64` holds an `f64`, which is not `Eq`.
 #[derive(Debug, Clone, PartialEq)]
@@ -387,6 +390,13 @@ impl<'a> Runtime<'a> {
             }
             Stmt::Break(_) => Ok(Control::Break),
             Stmt::Continue(_) => Ok(Control::Continue),
+            // A `match` arrives wrapped in a `Stmt::Expr`; evaluate it here so its
+            // arm blocks propagate control flow and produce a value like
+            // `if`/`try`.
+            Stmt::Expr(Expr {
+                kind: ExprKind::Match { scrutinee, arms },
+                ..
+            }) => self.eval_match(scrutinee, arms, env),
             Stmt::Expr(expr) => self.eval_expr(expr, env).map(Control::Value),
             Stmt::If {
                 branches,
@@ -502,6 +512,49 @@ impl<'a> Runtime<'a> {
         let result = self.eval_block(statements, env);
         env.pop_scope();
         result
+    }
+
+    /// Evaluate a `match`: select the arm whose variant matches the scrutinee's
+    /// enum value (or the `_` wildcard), bind payload values to the arm's locals
+    /// in a child scope, and evaluate the arm block. Exhaustiveness is enforced
+    /// at compile time, so a valid program always selects an arm.
+    fn eval_match(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        env: &mut Env,
+    ) -> Result<Control, RuntimeError> {
+        let value = self.eval_expr(scrutinee, env)?;
+        let Value::Enum {
+            variant, payload, ..
+        } = value
+        else {
+            return Err(RuntimeError::new(
+                "L0383",
+                "match scrutinee did not evaluate to an enum value",
+            ));
+        };
+        for arm in arms {
+            match &arm.pattern {
+                MatchPattern::Wildcard => {
+                    return self.eval_scoped_block(&arm.body, env);
+                }
+                MatchPattern::Variant { name, bindings } if name == &variant => {
+                    env.push_scope();
+                    for (binding, value) in bindings.iter().zip(payload.iter()) {
+                        env.define(binding.clone(), value.clone());
+                    }
+                    let result = self.eval_block(&arm.body, env);
+                    env.pop_scope();
+                    return result;
+                }
+                MatchPattern::Variant { .. } => {}
+            }
+        }
+        Err(RuntimeError::new(
+            "L0384",
+            format!("no match arm covered variant `{variant}`"),
+        ))
     }
 
     /// Resolve a parser assignment path into concrete places, evaluating each
@@ -638,6 +691,19 @@ impl<'a> Runtime<'a> {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 self.call_function(name, ordered)
+            }
+            // `match` normally arrives as a statement and is handled in
+            // `eval_statement`; this path covers a `match` nested as a value and
+            // evaluates its selected arm to a plain value.
+            ExprKind::Match { scrutinee, arms } => {
+                let mut child = env.clone();
+                match self.eval_match(scrutinee, arms, &mut child)? {
+                    Control::Value(value) | Control::Return(value) => Ok(value),
+                    Control::Break | Control::Continue => Err(RuntimeError::new(
+                        "L0410",
+                        "loop control escaped a match arm",
+                    )),
+                }
             }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
@@ -1845,6 +1911,34 @@ mod tests {
         // passes them through functions, and returns an i64 computed from plain
         // locals (there is no `match` yet).
         let source = "enum Color\n    Red\n    Green\n    Blue\n\nenum Shape\n    Circle f64\n    Rect f64 f64\n    Empty\n\nfn tag c Color -> i64\n    7\n\nfn main -> i64\n    let c Color = Green\n    let palette array<Color> = [Red, Green, Blue]\n    let circle Shape = Circle(2.0)\n    let hole Shape = Empty\n    let shapes array<Shape> = [circle, hole]\n    tag(c) + len(palette) + len(shapes)\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(12));
+    }
+
+    #[test]
+    fn matches_enum_and_extracts_payload() {
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Rect i64 i64\n    Empty\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(r) -> r * r\n",
+            "        Rect(w, h) -> w * h\n",
+            "        Empty -> 0\n\n",
+            "fn main -> i64\n",
+            "    area(Circle(3)) + area(Rect(4, 5)) + area(Empty)\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(29));
+    }
+
+    #[test]
+    fn match_wildcard_arm_covers_remaining_variants() {
+        let source = concat!(
+            "enum Color\n    Red\n    Green\n    Blue\n\n",
+            "fn rank c Color -> i64\n",
+            "    match c\n",
+            "        Green -> 10\n",
+            "        _ -> 1\n\n",
+            "fn main -> i64\n    rank(Green) + rank(Red) + rank(Blue)\n",
+        );
         assert_eq!(run_source(source).expect("run"), Value::I64(12));
     }
 

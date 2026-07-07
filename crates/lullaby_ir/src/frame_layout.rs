@@ -164,6 +164,19 @@ impl LayoutBuilder {
                         Some((catch_name, TypeRef::new("string"))),
                     );
                 }
+                IrStmt::Match { arms, .. } => {
+                    // Each arm body is its own scope; a variant arm's payload
+                    // bindings are locals declared in that arm's scope. Payload
+                    // types are not carried on the pattern, so bindings take a
+                    // default word-sized slot.
+                    for arm in arms {
+                        let seeds = match &arm.pattern {
+                            crate::IrMatchPattern::Variant { bindings, .. } => bindings.clone(),
+                            crate::IrMatchPattern::Wildcard => Vec::new(),
+                        };
+                        self.walk_child_scope_seeded(&arm.body, depth + 1, &seeds);
+                    }
+                }
                 IrStmt::Assign { .. }
                 | IrStmt::Return(_)
                 | IrStmt::Break(_)
@@ -186,6 +199,18 @@ impl LayoutBuilder {
         if let Some((name, ty)) = loop_var {
             self.add_slot(name, &ty, SlotClass::LoopVariable, depth);
             names.push(name.to_string());
+        }
+        self.walk_block(body, depth, &mut names);
+        self.finish_scope(depth, names);
+    }
+
+    /// Walk a nested block as its own scope, seeding zero or more bindings (a
+    /// match arm's payload bindings) declared before the body.
+    fn walk_child_scope_seeded(&mut self, body: &[IrStmt], depth: usize, seeds: &[String]) {
+        let mut names: Vec<String> = Vec::new();
+        for seed in seeds {
+            self.add_slot(seed, &TypeRef::new("enum_payload"), SlotClass::Local, depth);
+            names.push(seed.clone());
         }
         self.walk_block(body, depth, &mut names);
         self.finish_scope(depth, names);
