@@ -756,6 +756,9 @@ impl<'a> Runtime<'a> {
             "substring" => Self::builtin_substring(args),
             "find" => Self::builtin_find(args),
             "contains" => Self::builtin_contains(args),
+            "starts_with" => Self::builtin_starts_with(args),
+            "ends_with" => Self::builtin_ends_with(args),
+            "repeat" => Self::builtin_repeat(args),
             "split" => Self::builtin_split(args),
             "join" => Self::builtin_join(args),
             "trim" => Self::builtin_trim(args),
@@ -2405,6 +2408,38 @@ impl<'a> Runtime<'a> {
         let text = expect_string("contains", text)?;
         let needle = expect_string("contains", needle)?;
         Ok(Value::Bool(text.contains(&needle)))
+    }
+
+    fn builtin_starts_with(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text, prefix]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("starts_with", 2, args.len()))?;
+        let text = expect_string("starts_with", text)?;
+        let prefix = expect_string("starts_with", prefix)?;
+        Ok(Value::Bool(text.starts_with(&prefix)))
+    }
+
+    fn builtin_ends_with(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text, suffix]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("ends_with", 2, args.len()))?;
+        let text = expect_string("ends_with", text)?;
+        let suffix = expect_string("ends_with", suffix)?;
+        Ok(Value::Bool(text.ends_with(&suffix)))
+    }
+
+    fn builtin_repeat(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text, count]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("repeat", 2, args.len()))?;
+        let text = expect_string("repeat", text)?;
+        let count = expect_i64("repeat", count)?;
+        let result = if count <= 0 {
+            String::new()
+        } else {
+            text.repeat(count as usize)
+        };
+        Ok(Value::String(result))
     }
 
     fn builtin_split(args: Vec<Value>) -> Result<Value, RuntimeError> {

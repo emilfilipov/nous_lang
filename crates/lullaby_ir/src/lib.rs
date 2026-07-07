@@ -3563,6 +3563,9 @@ impl<'a> IrRuntime<'a> {
             "substring" => Self::builtin_substring(args),
             "find" => Self::builtin_find(args),
             "contains" => Self::builtin_contains(args),
+            "starts_with" => Self::builtin_starts_with(args),
+            "ends_with" => Self::builtin_ends_with(args),
+            "repeat" => Self::builtin_repeat(args),
             "split" => Self::builtin_split(args),
             "join" => Self::builtin_join(args),
             "trim" => Self::builtin_trim(args),
@@ -5155,6 +5158,38 @@ impl<'a> IrRuntime<'a> {
         Ok(Value::Bool(text.contains(&needle)))
     }
 
+    fn builtin_starts_with(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text, prefix]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("starts_with", 2, args.len()))?;
+        let text = expect_string("starts_with", text)?;
+        let prefix = expect_string("starts_with", prefix)?;
+        Ok(Value::Bool(text.starts_with(&prefix)))
+    }
+
+    fn builtin_ends_with(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text, suffix]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("ends_with", 2, args.len()))?;
+        let text = expect_string("ends_with", text)?;
+        let suffix = expect_string("ends_with", suffix)?;
+        Ok(Value::Bool(text.ends_with(&suffix)))
+    }
+
+    fn builtin_repeat(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text, count]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("repeat", 2, args.len()))?;
+        let text = expect_string("repeat", text)?;
+        let count = expect_i64("repeat", count)?;
+        let result = if count <= 0 {
+            String::new()
+        } else {
+            text.repeat(count as usize)
+        };
+        Ok(Value::String(result))
+    }
+
     fn builtin_split(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [text, sep]: [Value; 2] = args
             .try_into()
@@ -6509,12 +6544,13 @@ impl<'a> Lowerer<'a> {
                 generic_type("result", &[TypeRef::new("i64"), TypeRef::new("string")])
             }
             "read_file" | "sys_output" | "to_string" | "substring" | "join" | "trim"
-            | "replace" | "upper" | "lower" => TypeRef::new("string"),
+            | "replace" | "upper" | "lower" | "repeat" => TypeRef::new("string"),
             "read_lines" | "list_dir" => {
                 generic_type("list", std::slice::from_ref(&TypeRef::new("string")))
             }
             "read_bytes" => generic_type("list", std::slice::from_ref(&TypeRef::new("byte"))),
-            "file_exists" | "is_file" | "is_dir" | "contains" | "map_has" => TypeRef::new("bool"),
+            "file_exists" | "is_file" | "is_dir" | "contains" | "starts_with" | "ends_with"
+            | "map_has" => TypeRef::new("bool"),
             "sys_status" | "file_size" | "len" | "find" | "map_len" | "char_code" | "byte_val" => {
                 TypeRef::new("i64")
             }

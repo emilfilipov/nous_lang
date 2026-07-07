@@ -2715,6 +2715,18 @@ impl<'a> Checker<'a> {
                 self.expect_string_builtin_arg(name, 2, &args[1], "string", scope, function)?;
                 Some(TypeRef::new("bool"))
             }
+            "starts_with" | "ends_with" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                self.expect_string_builtin_arg(name, 1, &args[0], "string", scope, function)?;
+                self.expect_string_builtin_arg(name, 2, &args[1], "string", scope, function)?;
+                Some(TypeRef::new("bool"))
+            }
+            "repeat" => {
+                self.expect_arg_count(name, args, 2, function)?;
+                self.expect_string_builtin_arg(name, 1, &args[0], "string", scope, function)?;
+                self.expect_string_builtin_arg(name, 2, &args[1], "i64", scope, function)?;
+                Some(TypeRef::new("string"))
+            }
             "split" => {
                 self.expect_arg_count(name, args, 2, function)?;
                 self.expect_string_builtin_arg(name, 1, &args[0], "string", scope, function)?;
@@ -4631,6 +4643,17 @@ mod tests {
     #[test]
     fn rejects_string_builtin_wrong_type() {
         let diagnostics = validate_source("fn main -> i64\n    substring(42, 0, 1)\n    0\n")
+            .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0375")
+        );
+    }
+
+    #[test]
+    fn rejects_repeat_wrong_count_type() {
+        let diagnostics = validate_source("fn main -> i64\n    repeat(\"ab\", \"x\")\n    0\n")
             .expect_err("semantic");
         assert!(
             diagnostics

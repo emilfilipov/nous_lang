@@ -902,6 +902,9 @@ fn main -> i64
             <tr><td><code>trim(s)</code></td><td>Removes leading and trailing ASCII whitespace.</td></tr>
             <tr><td><code>replace(s, from, to)</code></td><td>Replaces every occurrence of <code>from</code>; an empty <code>from</code> is a runtime error.</td></tr>
             <tr><td><code>upper(s)</code> / <code>lower(s)</code></td><td>Returns an upper- or lower-cased copy of <code>s</code>.</td></tr>
+            <tr><td><code>starts_with(s, prefix)</code></td><td>Returns a <code>bool</code> for whether <code>s</code> begins with <code>prefix</code>.</td></tr>
+            <tr><td><code>ends_with(s, suffix)</code></td><td>Returns a <code>bool</code> for whether <code>s</code> ends with <code>suffix</code>.</td></tr>
+            <tr><td><code>repeat(s, count)</code></td><td>Returns <code>s</code> concatenated <code>count</code> (<code>i64</code>) times; <code>count &lt;= 0</code> yields the empty string.</td></tr>
           </tbody>
         </table>
         <pre data-fixture="tests/fixtures/valid/docs_string.lby" data-mode="run"><code>fn main -> string

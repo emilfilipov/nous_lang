@@ -64,7 +64,9 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 `substring(s, start, end)`, `find(s, needle) -> i64` (`-1` if absent),
 `contains(s, needle) -> bool`, `split(s, sep) -> array<string>`,
 `join(parts array<string>, sep) -> string`, `trim(s) -> string`,
-`replace(s, from, to) -> string`, `upper(s) -> string`, `lower(s) -> string`.
+`replace(s, from, to) -> string`, `upper(s) -> string`, `lower(s) -> string`,
+`starts_with(s, prefix) -> bool`, `ends_with(s, suffix) -> bool`,
+`repeat(s, count i64) -> string` (`count <= 0` yields `""`).
 Concatenate with `+` on two `string`s.
 
 ## Math
