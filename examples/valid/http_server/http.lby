@@ -1,0 +1,113 @@
+# http — a tiny HTTP/1.1 server "framework" module written in pure Lullaby on
+# top of the TCP socket builtins. It parses the request line, routes on the
+# path, and builds a well-formed HTTP/1.1 response string. This is the reusable
+# seed of a router: request parsing, routing, and response building are all
+# exported pub functions the entry program composes.
+#
+# String literals in Lullaby do not interpret escape sequences, so the CRLF
+# and LF separators are built from char codes (13 = CR, 10 = LF).
+
+pub fn cr -> string
+    to_string(char_from(13))
+
+pub fn lf -> string
+    to_string(char_from(10))
+
+pub fn crlf -> string
+    cr() + lf()
+
+# Parse a single decimal digit character (a one-character string) to its value,
+# returning 0 - 1 for a non-digit. Used to read the port/count program args
+# without a numeric-parse builtin.
+pub fn digit_value c string -> i64
+    if c == "0"
+        return 0
+    if c == "1"
+        return 1
+    if c == "2"
+        return 2
+    if c == "3"
+        return 3
+    if c == "4"
+        return 4
+    if c == "5"
+        return 5
+    if c == "6"
+        return 6
+    if c == "7"
+        return 7
+    if c == "8"
+        return 8
+    if c == "9"
+        return 9
+    return 0 - 1
+
+# Parse a non-negative decimal integer from a string, char by char. A malformed
+# character stops parsing and yields 0 - 1.
+pub fn parse_i64 s string -> i64
+    let acc i64 = 0
+    let n i64 = len(s)
+    let i i64 = 0
+    while i < n
+        let ch string = substring(s, i, i + 1)
+        let d i64 = digit_value(ch)
+        if d < 0
+            return 0 - 1
+        acc = acc * 10 + d
+        i = i + 1
+    return acc
+
+# Split raw request text into lines on CRLF first, falling back to bare LF, and
+# return the first line (the request line: "METHOD PATH VERSION").
+pub fn request_line raw string -> string
+    let by_crlf array<string> = split(raw, crlf())
+    if len(by_crlf) > 1
+        return first_line(by_crlf)
+    let by_lf array<string> = split(raw, lf())
+    return first_line(by_lf)
+
+# First element of a split result, or the empty string when there are none.
+pub fn first_line lines array<string> -> string
+    if len(lines) > 0
+        return lines[0]
+    return ""
+
+# The request PATH — the second space-separated token of the request line.
+pub fn request_path raw string -> string
+    let line string = request_line(raw)
+    let parts array<string> = split(line, " ")
+    if len(parts) > 1
+        return parts[1]
+    return "/"
+
+# Route a path to its response body. This is the router seed: extend it with
+# more path arms as the "framework" grows.
+pub fn route_body path string -> string
+    if path == "/"
+        return "Hello from Lullaby!"
+    if path == "/health"
+        return "ok"
+    return "Not Found"
+
+# The HTTP status line text for a path (200 for known routes, 404 otherwise).
+pub fn route_status path string -> string
+    if path == "/"
+        return "200 OK"
+    if path == "/health"
+        return "200 OK"
+    return "404 Not Found"
+
+# Build a complete HTTP/1.1 response string: status line, Content-Length,
+# Connection: close, blank line, then the body.
+pub fn build_response status string body string -> string
+    let head string = "HTTP/1.1 " + status + crlf()
+    let length string = "Content-Length: " + to_string(len(body)) + crlf()
+    let conn string = "Connection: close" + crlf()
+    return head + length + conn + crlf() + body
+
+# Handle one parsed request: route on the path and build the response.
+pub fn handle raw string -> string
+    let path string = request_path(raw)
+    let status string = route_status(path)
+    let body string = route_body(path)
+    return build_response(status, body)

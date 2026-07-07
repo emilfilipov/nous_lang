@@ -690,7 +690,8 @@ fn main -> i64
             <tr><td><code>tcp_listen(host string, port i64)</code></td><td><code>result&lt;Socket, string&gt;</code> — bind and listen.</td></tr>
             <tr><td><code>tcp_accept(listener Socket)</code></td><td><code>result&lt;Socket, string&gt;</code> — block for a connection, return a stream.</td></tr>
             <tr><td><code>tcp_read(conn Socket)</code></td><td><code>result&lt;string, string&gt;</code> — read up to 4096 bytes (empty on clean EOF).</td></tr>
-            <tr><td><code>tcp_write(conn Socket, data string)</code></td><td><code>result&lt;i64, string&gt;</code> — write bytes, return the count.</td></tr>
+            <tr><td><code>tcp_write(conn Socket, data string)</code></td><td><code>result&lt;i64, string&gt;</code> — write the full byte buffer, flush, return the count.</td></tr>
+            <tr><td><code>tcp_shutdown(conn Socket)</code></td><td><code>void</code> — gracefully shut down the write half (signal EOF) so a buffered response is delivered before the socket is dropped.</td></tr>
             <tr><td><code>tcp_close(conn Socket)</code></td><td><code>void</code> — free the handle.</td></tr>
             <tr><td><code>udp_bind(host string, port i64)</code></td><td><code>result&lt;Socket, string&gt;</code> — bind a datagram socket.</td></tr>
             <tr><td><code>udp_send_to(sock Socket, data string, host string, port i64)</code></td><td><code>result&lt;i64, string&gt;</code> — send one datagram, return the count.</td></tr>
@@ -714,6 +715,8 @@ fn main -> i64
           </tbody>
         </table>
         <p>Wrong argument types or arities report <code>L0336</code>.</p>
+        <h3>Writing an HTTP server in Lullaby</h3>
+        <p>A full HTTP/1.1 <em>server</em> can be written in pure Lullaby on the TCP socket builtins — request-line parsing (<code>split</code>), path routing, and response building are ordinary <code>pub</code> functions. Each connection is served with the graceful teardown order <code>tcp_write</code> then <code>tcp_shutdown</code> then <code>tcp_close</code>, so the buffered response is delivered (EOF signalled on the write half) before the socket is dropped and an ordinary client never sees an empty reply. The worked example lives at <code>examples/valid/http_server/</code> (<code>server.lby</code> plus a reusable <code>http.lby</code> module); run it with <code>lullaby run server.lby 8080 5</code> to serve five requests on port 8080.</p>
       </section>
 
       <section id="control-flow">

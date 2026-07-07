@@ -133,7 +133,12 @@ bytecode backends.
   - `tcp_read(conn Socket) -> result<string, string>` — read up to 4096 bytes as
     a UTF-8 string (empty string on clean EOF).
   - `tcp_write(conn Socket, data string) -> result<i64, string>` — write the
-    string's bytes; return the byte count.
+    string's full byte buffer (short writes are retried) and flush; return the
+    byte count.
+  - `tcp_shutdown(conn Socket) -> void` — gracefully shut down the write half of
+    the connection (signal EOF to the peer) so a buffered response is delivered
+    before the socket is dropped. The graceful teardown order for a server is
+    `tcp_write` then `tcp_shutdown` then `tcp_close`.
   - `tcp_close(conn Socket) -> void` — free the handle.
 - UDP:
   - `udp_bind(host string, port i64) -> result<Socket, string>` — bind a datagram
@@ -155,6 +160,12 @@ bytecode backends.
     responses are read to EOF via `Connection: close`. A 4xx/5xx status returns
     `err("http {code}: {first-body-line}")`. A 10-second read timeout surfaces a
     hung server as `err`. Wrong argument types or arities report `L0336`.
+- A complete HTTP/1.1 **server** can be written in pure Lullaby on these socket
+  builtins — request-line parsing (`split`), path routing, and response building
+  are ordinary `pub` functions, with the per-connection teardown
+  `tcp_write` then `tcp_shutdown` then `tcp_close`. See
+  `examples/valid/http_server/` (`server.lby` plus the reusable `http.lby`
+  module).
 
 ## Memory and references
 

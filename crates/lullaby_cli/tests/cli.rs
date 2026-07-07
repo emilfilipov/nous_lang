@@ -2079,3 +2079,97 @@ fn http_post_round_trip_on_all_backends() {
     server.join().expect("server thread");
     let _ = std::fs::remove_file(&prog);
 }
+
+/// End-to-end HTTP/1.1 round-trip where the Lullaby program is the SERVER,
+/// written in pure Lullaby (`examples/valid/http_server/server.lby`) on top of
+/// the socket builtins plus `tcp_shutdown`. A Rust `TcpStream` HTTP client
+/// sends a real request and reads the full response to EOF, asserting the
+/// status line and body — proving a graceful teardown delivers the buffered
+/// response (no "Empty reply"). Runs on every backend.
+#[test]
+fn http_server_round_trip_on_all_backends() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    // Send one HTTP request over a fresh connection and read the whole response
+    // to EOF (the server sends `Connection: close` and shuts down its write half).
+    fn request(port: u16, path: &str) -> String {
+        // Retry the connect briefly while the Lullaby server binds and listens.
+        let mut stream = None;
+        for _ in 0..100 {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+        let mut stream = stream.expect("connect to lullaby http server");
+        let req = format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        stream.write_all(req.as_bytes()).expect("client write");
+        stream.flush().expect("client flush");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("client read to EOF");
+        response
+    }
+
+    let server_path = workspace_root().join("examples/valid/http_server/server.lby");
+
+    for backend in ["ast", "ir", "bytecode"] {
+        // Pick a free port, then release it so the Lullaby server can bind it.
+        let port = {
+            let probe = TcpListener::bind("127.0.0.1:0").expect("probe bind");
+            probe.local_addr().expect("addr").port()
+        };
+
+        // Serve two requests: one for `/` and one for an unknown path.
+        let path = server_path.clone();
+        let port_arg = port.to_string();
+        let server = std::thread::spawn(move || {
+            lullaby()
+                .args([
+                    "run",
+                    "--backend",
+                    backend,
+                    path.to_str().expect("server path"),
+                    &port_arg,
+                    "2",
+                ])
+                .output()
+                .expect("run cli")
+        });
+
+        // Known route: expect a 200 with the server's greeting body.
+        let ok_response = request(port, "/");
+        let status_line = ok_response.lines().next().unwrap_or_default();
+        assert_eq!(
+            status_line, "HTTP/1.1 200 OK",
+            "{backend} status line for /: {ok_response:?}"
+        );
+        assert!(
+            ok_response.ends_with("Hello from Lullaby!"),
+            "{backend} greeting body for /: {ok_response:?}"
+        );
+        assert!(
+            ok_response.contains("Content-Length: 19"),
+            "{backend} content-length for /: {ok_response:?}"
+        );
+
+        // Unknown route: expect a 404.
+        let missing_response = request(port, "/does-not-exist");
+        let missing_status = missing_response.lines().next().unwrap_or_default();
+        assert_eq!(
+            missing_status, "HTTP/1.1 404 Not Found",
+            "{backend} status line for unknown path: {missing_response:?}"
+        );
+
+        let output = server.join().expect("server thread");
+        assert!(
+            output.status.success(),
+            "{backend} lullaby server: {output:?}"
+        );
+    }
+}

@@ -2997,6 +2997,13 @@ impl<'a> Checker<'a> {
                 self.expect_socket_arg_type(name, 1, &args[0], "Socket", scope, function)?;
                 Some(TypeRef::new("void"))
             }
+            "tcp_shutdown" => {
+                // `(conn Socket) -> void`: gracefully shut down the write half so
+                // buffered bytes are delivered (EOF) before the socket is dropped.
+                self.expect_socket_arg_count(name, args, 1, function)?;
+                self.expect_socket_arg_type(name, 1, &args[0], "Socket", scope, function)?;
+                Some(TypeRef::new("void"))
+            }
             "udp_send_to" => {
                 // `(sock Socket, data string, host string, port i64)
                 // -> result<i64, string>`.

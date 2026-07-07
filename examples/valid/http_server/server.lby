@@ -1,0 +1,64 @@
+# server — a bounded HTTP/1.1 server entry point written in pure Lullaby.
+#
+# It binds a TCP listener on 127.0.0.1 at a port taken from the program args,
+# serves a bounded number of requests (so it always terminates and never hangs
+# a test), and delegates request parsing, routing, and response building to the
+# reusable `http` framework module. The teardown sequence per connection is
+# tcp_write -> tcp_shutdown -> tcp_close, so the buffered response is delivered
+# (EOF signalled on the write half) before the socket is dropped.
+#
+# Run it, for example, as:
+#   lullaby run server.lby 8080 5
+# then in another terminal:  curl -v 127.0.0.1:8080/
+
+import http
+
+# Return program argument `i` as a string, or `fallback` when it is absent.
+fn arg_or i i64 fallback string -> string
+    let all list<string> = args()
+    if len(all) > i
+        return get(all, i)
+    return fallback
+
+fn main -> i64
+    let port_arg string = arg_or(0, "8080")
+    let count_arg string = arg_or(1, "1")
+    let port i64 = parse_i64(port_arg)
+    let count i64 = parse_i64(count_arg)
+    let bound result<Socket, string> = tcp_listen("127.0.0.1", port)
+    match bound
+        ok(listener) -> serve(listener, count)
+        err(message) -> 0 - 1
+
+# Accept and serve `count` connections, then return the number served.
+fn serve listener Socket count i64 -> i64
+    let served i64 = 0
+    while served < count
+        let accepted result<Socket, string> = tcp_accept(listener)
+        match accepted
+            ok(conn) -> handle_conn(conn)
+            err(message) -> 0
+        served = served + 1
+    return served
+
+# Read one request off a connection, build the response, write it back, then
+# gracefully shut down the write half and close the socket.
+fn handle_conn conn Socket -> i64
+    let request result<string, string> = tcp_read(conn)
+    match request
+        ok(text) -> respond(conn, text)
+        err(message) -> close_only(conn)
+
+fn respond conn Socket text string -> i64
+    let response string = handle(text)
+    let sent result<i64, string> = tcp_write(conn, response)
+    tcp_shutdown(conn)
+    tcp_close(conn)
+    match sent
+        ok(count) -> count
+        err(message) -> 0 - 1
+
+fn close_only conn Socket -> i64
+    tcp_shutdown(conn)
+    tcp_close(conn)
+    return 0

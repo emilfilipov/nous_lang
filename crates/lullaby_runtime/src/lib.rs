@@ -629,6 +629,7 @@ impl<'a> Runtime<'a> {
             "tcp_accept" => self.builtin_tcp_accept(args),
             "tcp_read" => self.builtin_tcp_read(args),
             "tcp_write" => self.builtin_tcp_write(args),
+            "tcp_shutdown" => self.builtin_tcp_shutdown(args),
             "tcp_close" => self.builtin_socket_close(args),
             "udp_bind" => self.builtin_udp_bind(args),
             "udp_send_to" => self.builtin_udp_send_to(args),
@@ -835,12 +836,11 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("tcp_write", 2, args.len()))?;
         let slot = self.socket_slot("tcp_write", &conn)?;
         let data = expect_string("tcp_write", data)?;
+        let bytes = data.as_bytes();
         let written = match &mut self.sockets[slot] {
             Some(SocketResource::Stream(stream)) => {
-                stream.write(data.as_bytes()).and_then(|count| {
-                    stream.flush()?;
-                    Ok(count)
-                })
+                // Write the FULL buffer (short writes are possible) and flush.
+                stream.write_all(bytes).and_then(|()| stream.flush())
             }
             _ => {
                 return Ok(result_value(Err(Value::String(
@@ -849,8 +849,30 @@ impl<'a> Runtime<'a> {
             }
         };
         match written {
-            Ok(count) => Ok(result_value(Ok(Value::I64(count as i64)))),
+            Ok(()) => Ok(result_value(Ok(Value::I64(bytes.len() as i64)))),
             Err(error) => Ok(net_err(&error)),
+        }
+    }
+
+    /// `tcp_shutdown(conn Socket) -> void`: gracefully shut down the write half
+    /// of the connection (`Shutdown::Write`), signaling EOF to the peer so any
+    /// buffered response is delivered before the socket is dropped. Shutting down
+    /// a non-stream or already-closed handle is a no-op.
+    fn builtin_tcp_shutdown(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::net::Shutdown;
+        let [socket]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("tcp_shutdown", 1, args.len()))?;
+        if let Value::Socket(handle) = socket {
+            if let Some(Some(SocketResource::Stream(stream))) = self.sockets.get(handle) {
+                let _ = stream.shutdown(Shutdown::Write);
+            }
+            Ok(Value::Void)
+        } else {
+            Err(RuntimeError::new(
+                "L0417",
+                format!("tcp_shutdown expects a Socket but got `{socket}`"),
+            ))
         }
     }
 
