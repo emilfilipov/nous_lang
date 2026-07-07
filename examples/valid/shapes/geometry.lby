@@ -1,0 +1,24 @@
+# geometry — a small shapes module exposing an Area trait and two impls, plus a
+# generic that works for any Area type. Shows traits + generics living in a
+# reusable module: exactly how a graphics/game framework layer is composed.
+
+pub trait Area
+    fn area self -> i64
+
+pub struct Rect
+    w i64
+    h i64
+
+impl Area for Rect
+    fn area self -> i64
+        self.w * self.h
+
+pub struct Square
+    side i64
+
+impl Area for Square
+    fn area self -> i64
+        self.side * self.side
+
+pub fn scaled_area<T: Area> s T factor i64 -> i64
+    s.area() * factor

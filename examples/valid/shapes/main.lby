@@ -1,0 +1,6 @@
+import geometry
+
+fn main -> i64
+    let r Rect = Rect(3, 4)
+    let s Square = Square(5)
+    r.area() + s.area() + scaled_area(r, 10) + scaled_area(s, 2)

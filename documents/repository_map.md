@@ -112,6 +112,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p lullaby_cli -- examples`: print the local example fixture directory path.
 - `cargo run -p lullaby_cli -- run examples/valid/calculator.lby`: run a user-facing packaged example.
 - `cargo run -p lullaby_cli -- run examples/valid/game_math/main.lby`: run a multi-file example where `main.lby` imports a pure-Lullaby `vec2` game-math module — demonstrating the "framework module wraps basic functions" pattern with `import`/`pub`, struct methods, and chaining, identically on all backends.
+- `cargo run -p lullaby_cli -- run examples/valid/shapes/main.lby`: run a multi-file example where a `geometry` module exposes an `Area` trait, two `impl`s, and a bounded generic `scaled_area<T: Area>`, imported and used from `main.lby` — showing traits + generics + modules composing across a module boundary on all backends.
 - `cargo run -p lullaby_cli -- check examples/invalid/type_mismatch.lby`: inspect a user-facing invalid example diagnostic.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_arithmetic.lby`: run a valid fixture through source validation, lexing, parsing, semantic validation, runtime execution, and stdout output.
 - `cargo run -p lullaby_cli -- run tests/fixtures/valid/run_inferred_let.lby`: run initializer-inferred local bindings through source validation, semantic inference, runtime execution, and stdout output.
