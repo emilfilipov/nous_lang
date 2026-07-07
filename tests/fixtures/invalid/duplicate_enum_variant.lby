@@ -1,0 +1,6 @@
+enum Bad
+    A
+    A
+
+fn main -> i64
+    0

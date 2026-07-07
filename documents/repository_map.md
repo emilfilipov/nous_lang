@@ -140,6 +140,9 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo run -p lullaby_cli -- check tests/fixtures/invalid/type_mismatch.lby`: verify semantic type mismatch diagnostics.
 - `cargo run -p lullaby_cli -- check tests/fixtures/invalid/assignment_type_mismatch.lby`: verify assignment type mismatch diagnostics.
 - `cargo run -p lullaby_cli -- check tests/fixtures/invalid/break_outside_loop.lby`: verify loop-control placement diagnostics.
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/nonexhaustive_match.lby`: verify non-exhaustive `match` diagnostics (`L0384`).
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/uninferable_none.lby`: verify uninferable `none`/`ok`/`err` diagnostics (`L0386`).
+- `cargo run -p lullaby_cli -- check tests/fixtures/invalid/duplicate_enum_variant.lby`: verify invalid enum declaration diagnostics (`L0380`).
 - `cargo run -p lullaby_cli -- check tests/fixtures/invalid/logical_type_mismatch.lby`: verify logical operand type diagnostics.
 - `cargo run -p lullaby_cli -- check tests/fixtures/invalid/ordering_type_mismatch.lby`: verify non-numeric ordering comparison diagnostics.
 - `cargo run -p lullaby_cli -- check tests/fixtures/invalid/for_range_type_mismatch.lby`: verify range-for bound type diagnostics.

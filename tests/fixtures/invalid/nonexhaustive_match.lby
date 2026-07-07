@@ -1,0 +1,10 @@
+enum Shape
+    Circle i64
+    Empty
+
+fn area s Shape -> i64
+    match s
+        Circle(r) -> r
+
+fn main -> i64
+    area(Circle(2))

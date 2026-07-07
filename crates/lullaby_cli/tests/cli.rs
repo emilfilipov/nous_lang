@@ -1033,6 +1033,51 @@ fn rejects_type_mismatch() {
 }
 
 #[test]
+fn rejects_non_exhaustive_match() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/nonexhaustive_match.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr(&output).contains("L0384 [semantic error]"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn rejects_uninferable_none() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/uninferable_none.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr(&output).contains("L0386 [semantic error]"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn rejects_duplicate_enum_variant() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/duplicate_enum_variant.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr(&output).contains("L0380 [semantic error]"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn reports_type_mismatch_as_ordered_json() {
     let fixture = workspace_root().join("tests/fixtures/invalid/type_mismatch.lby");
     let output = lullaby()
