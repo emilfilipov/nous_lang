@@ -2852,6 +2852,15 @@ impl<'a> Checker<'a> {
                 self.expect_scalar_builtin_arg(name, 1, &args[0], "byte", scope, function)?;
                 Some(TypeRef::new("i64"))
             }
+            "env" => {
+                self.expect_process_arg_count(name, args, 1, call_span, function)?;
+                self.expect_process_arg(name, 1, &args[0], "string", scope, function)?;
+                Some(option_type(&TypeRef::new("string")))
+            }
+            "args" => {
+                self.expect_process_arg_count(name, args, 0, call_span, function)?;
+                Some(list_type(&TypeRef::new("string")))
+            }
             _ => {
                 let Some(signature) = self.signatures.get(name).cloned() else {
                     self.diagnostics.push(SemanticDiagnostic::at(
@@ -3769,6 +3778,65 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Validate a process/environment builtin (`env`/`args`) argument count,
+    /// reporting `L0332` on a mismatch.
+    fn expect_process_arg_count(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        expected: usize,
+        call_span: Span,
+        function: &Function,
+    ) -> Option<()> {
+        if args.len() == expected {
+            Some(())
+        } else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0332",
+                format!(
+                    "process builtin `{name}` expects {expected} arguments but got {}",
+                    args.len()
+                ),
+                Some(function.name.clone()),
+                args.first().map(|arg| arg.span).unwrap_or(call_span),
+            ));
+            None
+        }
+    }
+
+    /// Validate a process/environment builtin (`env`) argument against an
+    /// expected type, reporting `L0332` on a mismatch.
+    fn expect_process_arg(
+        &mut self,
+        name: &str,
+        index: usize,
+        arg: &Expr,
+        expected: &str,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<()> {
+        let expected = TypeRef::new(expected);
+        let actual = self.check_expr(arg, scope, function);
+        if actual.as_ref() == Some(&expected) {
+            Some(())
+        } else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0332",
+                format!(
+                    "argument {index} for `{name}` must be `{}` but got `{}`",
+                    expected.name,
+                    actual
+                        .as_ref()
+                        .map(|ty| ty.name.as_str())
+                        .unwrap_or("<unknown>")
+                ),
+                Some(function.name.clone()),
+                arg.span,
+            ));
+            None
+        }
+    }
+
     /// Validate a string-library builtin argument against an expected type,
     /// reporting `L0375` on a mismatch.
     fn expect_string_builtin_arg(
@@ -4606,6 +4674,47 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0389")
+        );
+    }
+
+    #[test]
+    fn validates_env_and_args_process_builtins() {
+        // `env(name)` yields `option<string>`; `args()` yields `list<string>`.
+        let source = concat!(
+            "fn env_flag name string -> i64\n",
+            "    match env(name)\n",
+            "        some(_) -> 1\n",
+            "        none -> 0\n\n",
+            "fn main -> i64\n",
+            "    env_flag(\"HOME\") + len(args())\n",
+        );
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_env_with_wrong_argument_type() {
+        let diagnostics = validate_source(concat!(
+            "fn main -> i64\n",
+            "    match env(5)\n",
+            "        some(_) -> 1\n",
+            "        none -> 0\n",
+        ))
+        .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0332")
+        );
+    }
+
+    #[test]
+    fn rejects_args_with_wrong_arity() {
+        let diagnostics =
+            validate_source("fn main -> i64\n    len(args(1))\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0332")
         );
     }
 

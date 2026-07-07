@@ -267,12 +267,21 @@ pub fn char_find(text: &str, needle: &str) -> i64 {
 }
 
 pub fn run_main(program: &Program) -> Result<Value, RuntimeError> {
+    run_main_with_args(program, Vec::new())
+}
+
+/// Run `main` with the running program's CLI arguments, which the `args()`
+/// builtin exposes. `run_main` is the zero-argument wrapper.
+pub fn run_main_with_args(program: &Program, args: Vec<String>) -> Result<Value, RuntimeError> {
     let mut runtime = Runtime::new(program)?;
+    runtime.program_args = args;
     runtime.call_function("main", Vec::new())
 }
 
 struct Runtime<'a> {
     functions: HashMap<&'a str, &'a Function>,
+    /// The running program's CLI arguments, exposed by the `args()` builtin.
+    program_args: Vec<String>,
     /// Declared struct types: name -> ordered field names, used to build struct
     /// values from positional construction arguments.
     structs: HashMap<&'a str, Vec<String>>,
@@ -349,6 +358,7 @@ impl<'a> Runtime<'a> {
 
         Ok(Self {
             functions,
+            program_args: Vec::new(),
             structs,
             variants,
             heap: Vec::new(),
@@ -449,6 +459,8 @@ impl<'a> Runtime<'a> {
             "rc_get" | "ref_get" | "ptr_read" => self.builtin_ref_get(name, args),
             "rc_borrow" => self.builtin_rc_borrow(args),
             "ptr_write" => self.builtin_store(args),
+            "env" => Self::builtin_env(args),
+            "args" => self.builtin_args(args),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("L0401", format!("unknown function `{name}`"))
@@ -456,6 +468,31 @@ impl<'a> Runtime<'a> {
                 self.invoke_function(function, args)
             }
         }
+    }
+
+    /// `env(name string) -> option<string>`: `some(value)` when the environment
+    /// variable is set, `none` otherwise.
+    fn builtin_env(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [name]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("env", 1, args.len()))?;
+        let name = expect_string("env", name)?;
+        Ok(option_value(std::env::var(&name).ok().map(Value::String)))
+    }
+
+    /// `args() -> list<string>`: the running program's CLI arguments (an empty
+    /// list when none were passed), represented as an array of strings.
+    fn builtin_args(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("args", 0, args.len()))?;
+        Ok(Value::Array(
+            self.program_args
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ))
     }
 
     /// Execute a user function (or trait impl method) with the given argument

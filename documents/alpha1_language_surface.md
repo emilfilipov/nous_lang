@@ -65,6 +65,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
 - Text file builtins: `read_file(path)`, `write_file(path, content)`, `append_file(path, content)`, and `file_exists(path)`.
 - System command builtins: `sys_status(program, args)` and `sys_output(program, args)`, where `args` is `array<string>`.
 - System command builtins execute a program with an argv array directly and do not invoke a shell.
+- Process/environment builtins: `env(name string)` reads an environment variable and returns `option<string>` — `some(value)` when set, `none` otherwise — so reads are unwrapped with `match`. `args()` returns the running program's CLI arguments as a `list<string>` (an empty list when none were passed); `lullaby run <file.lby> [args...]` passes trailing tokens after the source path as those program arguments. Wrong argument types or arities to `env`/`args` report `L0332`.
 - Standard stream builtins: `print(text)` and `println(text)` write a `string` to stdout, `warn(text)` writes a `string` line to stderr, and `flush()` flushes stdout. Each returns `void`.
 - String operations: `to_string(x)` converts an `i64`, `f64`, `bool`, `string`, `char`, or `byte` to a `string`; `+` concatenates when both operands are `string` (and still adds when both are `i64`). Mixed `string`/`i64` operands to `+` are a type error (`L0307`). This makes computed values printable, e.g. `println("answer: " + to_string(40 + 2))`.
 - Char/byte conversions: `char_code(c char)` returns an `i64` Unicode scalar value and `char_from(i i64)` returns a `char` (runtime error on an invalid scalar); `byte(i i64)` returns a `byte` (runtime error outside 0–255) and `byte_val(b byte)` returns its `i64` value. Wrong argument types or arities report `L0389`.
@@ -93,7 +94,7 @@ This document freezes the installable Alpha 1 surface. The implemented parser gr
   - `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`
   - `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>`
   - `lullaby inspect [--verbose|--format json] <file.lbc>`
-  - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>`
+  - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]`
   - `lullaby run [--verbose|--format json] <file.lbc>`
   - `lullaby fmt [--write|--check] <file.lby>`
   - `lullaby docs`

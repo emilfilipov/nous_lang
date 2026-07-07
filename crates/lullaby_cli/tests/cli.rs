@@ -1486,3 +1486,70 @@ fn rejects_system_builtin_argument_type_mismatch() {
     assert!(!output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("L0313"));
 }
+
+#[test]
+fn run_passes_trailing_program_args_to_args_builtin() {
+    // `lullaby run <file.lby> alpha beta` exposes ["alpha", "beta"] through the
+    // `args()` builtin on every backend, so the program observes 2 arguments.
+    let mut prog = std::env::temp_dir();
+    prog.push("lullaby_cli_args_count.lby");
+    std::fs::write(&prog, "fn main -> i64\n    len(args())\n").expect("write program");
+
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                prog.to_str().expect("program path"),
+                "alpha",
+                "beta",
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        assert_eq!(stdout(&output).trim(), "2", "{backend}");
+    }
+
+    // With no trailing arguments, `args()` is an empty list.
+    let output = lullaby()
+        .args(["run", prog.to_str().expect("program path")])
+        .output()
+        .expect("run cli");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output).trim(), "0");
+
+    let _ = std::fs::remove_file(&prog);
+}
+
+#[test]
+fn run_env_builtin_reads_process_environment() {
+    // `env(name)` reads a variable the child process is given, and reports a
+    // definitely-unset variable as `none`.
+    let mut prog = std::env::temp_dir();
+    prog.push("lullaby_cli_env_read.lby");
+    std::fs::write(
+        &prog,
+        "fn main -> string\n    match env(\"LULLABY_CLI_ENV_TEST\")\n        some(v) -> v\n        none -> \"MISSING\"\n",
+    )
+    .expect("write program");
+
+    let set = lullaby()
+        .args(["run", prog.to_str().expect("program path")])
+        .env("LULLABY_CLI_ENV_TEST", "present")
+        .output()
+        .expect("run cli");
+    assert!(set.status.success(), "{set:?}");
+    assert_eq!(stdout(&set).trim(), "present");
+
+    let unset = lullaby()
+        .args(["run", prog.to_str().expect("program path")])
+        .env_remove("LULLABY_CLI_ENV_TEST")
+        .output()
+        .expect("run cli");
+    assert!(unset.status.success(), "{unset:?}");
+    assert_eq!(stdout(&unset).trim(), "MISSING");
+
+    let _ = std::fs::remove_file(&prog);
+}

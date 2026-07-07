@@ -81,6 +81,15 @@ operands); `sqrt`, `floor`, `ceil`, `round` take and return `f64`. Integer
 - System commands: `sys_status(program, args array<string>) -> i64`,
   `sys_output(program, args array<string>) -> string` (no shell).
 
+## Process and environment
+
+- `env(name string) -> option<string>` reads an environment variable, returning
+  `some(value)` when set and `none` otherwise.
+- `args() -> list<string>` returns the running program's CLI arguments (an empty
+  list when none were passed). `lullaby run <file.lby> [args...]` supplies the
+  trailing tokens after the source path as those program arguments.
+- Wrong argument types or arities to `env`/`args` report `L0332`.
+
 ## Memory and references
 
 - Heap: `alloc(value)`, `load(ptr)`, `store(ptr, value)`, `dealloc(ptr)`.

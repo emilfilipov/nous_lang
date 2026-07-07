@@ -1,0 +1,9 @@
+fn env_flag name string -> i64
+    match env(name)
+        some(_) -> 1
+        none -> 0
+
+fn main -> i64
+    let unset i64 = env_flag("LULLABY_DEFINITELY_UNSET_VAR_XYZ")
+    let count i64 = len(args())
+    unset + count

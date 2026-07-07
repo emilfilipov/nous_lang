@@ -769,6 +769,8 @@ fn main -&gt; i64
             <tr><td><code>file_exists(path)</code></td><td>Returns whether host metadata for the path can be read.</td></tr>
             <tr><td><code>sys_status(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns its exit status.</td></tr>
             <tr><td><code>sys_output(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns stdout.</td></tr>
+            <tr><td><code>env(name)</code></td><td>Reads an environment variable, returning <code>option&lt;string&gt;</code> (<code>some(value)</code> when set, <code>none</code> otherwise).</td></tr>
+            <tr><td><code>args()</code></td><td>Returns the running program's CLI arguments as a <code>list&lt;string&gt;</code> (empty when none were passed). <code>lullaby run &lt;file.lby&gt; [args...]</code> supplies trailing tokens after the source path.</td></tr>
           </tbody>
         </table>
         <pre data-fixture="tests/fixtures/valid/run_file_io.lby" data-mode="run"><code>fn main -> string
@@ -779,6 +781,16 @@ fn main -&gt; i64
         <pre data-fixture="tests/fixtures/valid/docs_sys_status.lby" data-mode="check"><code>fn main -> i64
     sys_status("rustc", ["--version"])</code></pre>
         <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_sys_status.lby</code>.</p>
+        <pre data-fixture="tests/fixtures/valid/run_env_args.lby" data-mode="run"><code>fn env_flag name string -> i64
+    match env(name)
+        some(_) -> 1
+        none -> 0
+
+fn main -> i64
+    let unset i64 = env_flag("LULLABY_DEFINITELY_UNSET_VAR_XYZ")
+    let count i64 = len(args())
+    unset + count</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/run_env_args.lby</code>. Run with no program arguments it yields <code>0</code> (<code>env</code> returns <code>none</code>, <code>args()</code> is empty).</p>
       </section>
 
       <section id="string-builtins">
@@ -840,7 +852,7 @@ fn main -> i64
             <tr><td><code>cargo run -p lullaby_cli -- build --optimize alpha -o path/to/file.lbc path/to/file.lby</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- inspect path/to/file.lbc</code></td><td>Print artifact format, version, entry point, metadata target/payload, function count, and memory operation count without executing the program.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- inspect --format json path/to/file.lbc</code></td><td>Print bytecode artifact metadata, function signatures, and ordered <code>memory_operations</code> with sequence numbers as deterministic JSON for tools.</td></tr>
-            <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lby</code></td><td>Validate and execute zero-argument <code>main</code> in the default AST runtime.</td></tr>
+            <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lby [args...]</code></td><td>Validate and execute zero-argument <code>main</code> in the default AST runtime. Trailing tokens after the source path become the program's <code>args()</code>.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lbc</code></td><td>Load and execute a compiled bytecode artifact.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- run --backend ir path/to/file.lby</code></td><td>Validate, lower to typed IR, and execute with the IR interpreter.</td></tr>
             <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode path/to/file.lby</code></td><td>Validate, lower through typed IR into the instruction-bytecode backend, and execute it.</td></tr>
@@ -925,6 +937,7 @@ Suggested fix:
             <tr><td><code>L0327</code></td><td>Ordering comparison operands are not both the same orderable scalar (<code>i64</code>, <code>f64</code>, <code>char</code>, or <code>byte</code>).</td></tr>
             <tr><td><code>L0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
             <tr><td><code>L0329</code></td><td>Executable source passed to <code>compile</code>, <code>build</code>, or source <code>run</code> is missing zero-argument <code>main</code>.</td></tr>
+            <tr><td><code>L0332</code></td><td>Process builtin argument type or arity mismatch: <code>env</code> needs one <code>string</code> and <code>args()</code> takes no arguments.</td></tr>
             <tr><td><code>L0373</code></td><td><code>len</code> argument is not a string or array.</td></tr>
             <tr><td><code>L0375</code></td><td>String-library builtin argument has the wrong type.</td></tr>
             <tr><td><code>L0374</code></td><td>Math builtin received a wrong or mismatched operand type.</td></tr>

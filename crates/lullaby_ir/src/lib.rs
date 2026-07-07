@@ -429,7 +429,14 @@ pub fn optimize(module: &IrModule, config: &OptimizationConfig) -> (IrModule, Op
 }
 
 pub fn run_main(module: &IrModule) -> Result<Value, RuntimeError> {
+    run_main_with_args(module, Vec::new())
+}
+
+/// Run `main` on the IR interpreter with the running program's CLI arguments,
+/// which the `args()` builtin exposes. `run_main` is the zero-argument wrapper.
+pub fn run_main_with_args(module: &IrModule, args: Vec<String>) -> Result<Value, RuntimeError> {
     let mut runtime = IrRuntime::new(module)?;
+    runtime.program_args = args;
     runtime.call_function("main", Vec::new())
 }
 
@@ -1428,6 +1435,16 @@ pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
 }
 
 pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError> {
+    run_bytecode_main_with_args(module, Vec::new())
+}
+
+/// Run `main` on the bytecode VM (via the shared IR interpreter) with the
+/// running program's CLI arguments, which the `args()` builtin exposes.
+/// `run_bytecode_main` is the zero-argument wrapper.
+pub fn run_bytecode_main_with_args(
+    module: &BytecodeModule,
+    args: Vec<String>,
+) -> Result<Value, RuntimeError> {
     let ir = IrModule {
         structs: module.structs.clone(),
         enums: module.enums.clone(),
@@ -1447,7 +1464,7 @@ pub fn run_bytecode_main(module: &BytecodeModule) -> Result<Value, RuntimeError>
             .collect(),
         trait_methods: module.trait_methods.clone(),
     };
-    run_main(&ir)
+    run_main_with_args(&ir, args)
 }
 
 fn lower_bytecode_block(statements: &[IrStmt]) -> Vec<BytecodeInstruction> {
@@ -3331,6 +3348,8 @@ fn is_unconditional_terminator(statement: &IrStmt) -> bool {
 
 struct IrRuntime<'a> {
     functions: HashMap<&'a str, &'a IrFunction>,
+    /// The running program's CLI arguments, exposed by the `args()` builtin.
+    program_args: Vec<String>,
     structs: HashMap<&'a str, Vec<String>>,
     /// Enum variant name -> owning enum name. Variant names are globally unique.
     variants: HashMap<&'a str, &'a str>,
@@ -3399,6 +3418,7 @@ impl<'a> IrRuntime<'a> {
 
         Ok(Self {
             functions,
+            program_args: Vec::new(),
             structs,
             variants,
             heap: Vec::new(),
@@ -3497,6 +3517,8 @@ impl<'a> IrRuntime<'a> {
             "rc_get" | "ref_get" | "ptr_read" => self.builtin_ref_get(name, args),
             "rc_borrow" => self.builtin_rc_borrow(args),
             "ptr_write" => self.builtin_store(args),
+            "env" => Self::builtin_env(args),
+            "args" => self.builtin_args(args),
             // A region-creation marker has no runtime effect in the current
             // analysis-only region model.
             "region_create" => Ok(Value::Void),
@@ -4247,6 +4269,31 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("list_new", 0, args.len()))?;
         Ok(Value::Array(Vec::new()))
+    }
+
+    /// `env(name string) -> option<string>`: `some(value)` when the environment
+    /// variable is set, `none` otherwise.
+    fn builtin_env(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [name]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("env", 1, args.len()))?;
+        let name = expect_string("env", name)?;
+        Ok(option_value(std::env::var(&name).ok().map(Value::String)))
+    }
+
+    /// `args() -> list<string>`: the running program's CLI arguments (an empty
+    /// list when none were passed), represented as an array of strings.
+    fn builtin_args(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("args", 0, args.len()))?;
+        Ok(Value::Array(
+            self.program_args
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ))
     }
 
     /// `push(l, x) -> list<T>`: a new list with `x` appended.
@@ -5681,6 +5728,9 @@ impl<'a> Lowerer<'a> {
                 generic_type("option", std::slice::from_ref(&value))
             }
             "split" => TypeRef::new("array<string>"),
+            // `env(name)` yields `option<string>`; `args()` yields `list<string>`.
+            "env" => generic_type("option", std::slice::from_ref(&TypeRef::new("string"))),
+            "args" => generic_type("list", std::slice::from_ref(&TypeRef::new("string"))),
             "sqrt" | "floor" | "ceil" | "round" => TypeRef::new("f64"),
             "abs" | "min" | "max" | "pow" => {
                 let value = args.first().ok_or_else(|| {

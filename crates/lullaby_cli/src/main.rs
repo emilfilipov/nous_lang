@@ -11,11 +11,11 @@ use lullaby_ir::{
     BYTECODE_ARTIFACT_EXTENSION, BytecodeArtifact, BytecodeArtifactError, IrCleanupRole,
     IrMemoryOperation, IrMemoryOperationKind, OptimizationConfig, decode_bytecode_artifact,
     encode_bytecode_artifact, lower, lower_to_bytecode, optimize, run_bytecode_main,
-    run_main as run_ir_main,
+    run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
 };
-use lullaby_lexer::{Diagnostic, lex, validate_source_path};
+use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex, validate_source_path};
 use lullaby_parser::{Program, format_program, parse};
-use lullaby_runtime::{ErrorCategory, RuntimeError, Value, run_main};
+use lullaby_runtime::{ErrorCategory, RuntimeError, Value, run_main_with_args};
 use lullaby_semantics::{CheckedProgram, validate, validate_executable};
 
 mod loader;
@@ -53,6 +53,7 @@ fn run() -> Result<(), String> {
             invocation.mode,
             invocation.backend,
             invocation.optimization,
+            invocation.program_args,
         ),
         CommandName::Version => {
             println!("lullaby {}", env!("CARGO_PKG_VERSION"));
@@ -253,6 +254,7 @@ fn run_file(
     mode: OutputMode,
     backend: Backend,
     optimization: OptimizationMode,
+    program_args: Vec<String>,
 ) -> Result<(), String> {
     if path.extension().and_then(|value| value.to_str()) == Some(BYTECODE_ARTIFACT_EXTENSION) {
         if backend != Backend::Ast || optimization != OptimizationMode::None {
@@ -273,7 +275,7 @@ fn run_file(
     };
 
     let result = match backend {
-        Backend::Ast => run_main(&compiled.program),
+        Backend::Ast => run_main_with_args(&compiled.program, program_args),
         Backend::Ir => {
             let module = lower(&compiled.checked).map_err(|error| {
                 format_reports(
@@ -283,7 +285,7 @@ fn run_file(
                 )
             })?;
             let module = optimize_module(module, optimization);
-            run_ir_main(&module)
+            run_ir_main_with_args(&module, program_args)
         }
         Backend::Bytecode => {
             let module = lower(&compiled.checked).map_err(|error| {
@@ -295,7 +297,7 @@ fn run_file(
             })?;
             let module = optimize_module(module, optimization);
             let bytecode = lower_to_bytecode(&module);
-            run_bytecode_main(&bytecode)
+            run_bytecode_main_with_args(&bytecode, program_args)
         }
     };
 
@@ -693,6 +695,9 @@ struct Invocation {
     optimization: OptimizationMode,
     /// How `fmt` emits its result (ignored by other commands).
     fmt_mode: FmtMode,
+    /// Trailing arguments passed to the running program by `run <file.lby>`.
+    /// Exposed to the program through the `args()` builtin. Empty otherwise.
+    program_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -780,6 +785,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     backend: Backend::Ast,
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
+                    program_args: Vec::new(),
                 }))
             } else {
                 Err("usage: lullaby --version".to_string())
@@ -795,6 +801,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     backend: Backend::Ast,
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
+                    program_args: Vec::new(),
                 }))
             } else {
                 Err("usage: lullaby --help".to_string())
@@ -810,6 +817,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     backend: Backend::Ast,
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
+                    program_args: Vec::new(),
                 }))
             } else {
                 Err("usage: lullaby docs".to_string())
@@ -825,6 +833,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     backend: Backend::Ast,
                     optimization: OptimizationMode::None,
                     fmt_mode: FmtMode::Print,
+                    program_args: Vec::new(),
                 }))
             } else {
                 Err("usage: lullaby examples".to_string())
@@ -905,9 +914,20 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     let Some(path) = args.get(cursor) else {
         return Err(usage);
     };
-    if args.get(cursor + 1).is_some() {
-        return Err(usage);
-    }
+    // `lullaby run <file.lby> [program args...]` passes trailing tokens to the
+    // running program, exposed through the `args()` builtin. Every other command
+    // (and `.lbc` run) keeps the strict "no trailing token" behavior.
+    let runs_source = command == "run"
+        && Path::new(path).extension().and_then(|value| value.to_str())
+            == Some(CANONICAL_EXTENSION);
+    let program_args: Vec<String> = if runs_source {
+        args[cursor + 1..].to_vec()
+    } else {
+        if args.get(cursor + 1).is_some() {
+            return Err(usage);
+        }
+        Vec::new()
+    };
     if command == "run" && backend == Backend::Ast && optimization != OptimizationMode::None {
         return Err(format_reports(
             &[DiagnosticReport::new(
@@ -940,6 +960,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         backend,
         optimization,
         fmt_mode: FmtMode::Print,
+        program_args,
     }))
 }
 
@@ -974,6 +995,7 @@ fn parse_fmt_command(args: &[String]) -> Result<Option<Invocation>, String> {
         backend: Backend::Ast,
         optimization: OptimizationMode::None,
         fmt_mode,
+        program_args: Vec::new(),
     }))
 }
 
@@ -982,14 +1004,14 @@ fn command_usage(command: &str) -> String {
         "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
-        "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
+        "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
 }
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
         env!("CARGO_PKG_VERSION")
     );
 }
