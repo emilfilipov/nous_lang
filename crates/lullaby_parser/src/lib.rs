@@ -346,6 +346,10 @@ pub enum ExprKind {
     Float(f64),
     Bool(bool),
     String(String),
+    /// A `'c'` char literal: exactly one Unicode scalar.
+    Char(char),
+    /// A `byte` literal never appears in source; `byte`/`byte_val` builtins
+    /// produce and consume byte values at runtime.
     Array(Vec<Expr>),
     Variable(String),
     Index {
@@ -1518,6 +1522,10 @@ impl<'a> ExprParser<'a> {
             }
             TokenKind::String(value) => Ok(Expr {
                 kind: ExprKind::String(value),
+                span: token.span,
+            }),
+            TokenKind::Char(value) => Ok(Expr {
+                kind: ExprKind::Char(value),
                 span: token.span,
             }),
             TokenKind::Keyword(Keyword::True) => Ok(Expr {

@@ -204,6 +204,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Add the missing closing quote or split the text into supported string literals.",
     },
     DiagnosticEntry {
+        code: "L0105",
+        phase: DiagnosticPhase::Lexer,
+        explanation: "A char literal must contain exactly one Unicode scalar between single quotes.",
+        root_cause: "The `'...'` literal was empty, held more than one character, or was never closed.",
+        suggested_fix: "Write a single-character char literal such as 'a', or use a string literal (\"...\") for text.",
+    },
+    DiagnosticEntry {
         code: "L0205",
         phase: DiagnosticPhase::Parser,
         explanation: "The parser expected a required structural token such as a newline, indent, or dedent.",
@@ -461,6 +468,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         explanation: "A `map<K, V>` builtin call had a wrong argument, an unsupported key type, or an uninferable key/value type.",
         root_cause: "A `map_new`/`map_set`/`map_get`/`map_has`/`map_len`/`map_del` call used the wrong argument type or arity, used a key type other than `i64`/`string`, or `map_new` had no expected `map<...>` type to fix its key/value types.",
         suggested_fix: "Pass a `map<K, V>` with `i64`/`string` keys and matching `K`/`V` arguments, and give `map_new()` a `map<...>` annotation or return type so its key/value types are known.",
+    },
+    DiagnosticEntry {
+        code: "L0389",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "A `char`/`byte` builtin call had a wrong argument type or arity.",
+        root_cause: "A `char_code`/`char_from`/`byte`/`byte_val` call used the wrong argument type or argument count.",
+        suggested_fix: "Call `char_code(c char)`/`char_from(i i64)`/`byte(i i64)`/`byte_val(b byte)` with a single argument of the required type.",
     },
     DiagnosticEntry {
         code: "L0501",

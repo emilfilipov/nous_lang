@@ -1177,8 +1177,11 @@ impl<'a> Checker<'a> {
                     self.walk_lifetimes(&arm.body, &mut freed.clone(), function);
                 }
             }
-            ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::String(_) => {
-            }
+            ExprKind::Integer(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::String(_)
+            | ExprKind::Char(_) => {}
         }
     }
 
@@ -1218,6 +1221,7 @@ impl<'a> Checker<'a> {
             ExprKind::Float(_) => Some(TypeRef::new("f64")),
             ExprKind::Bool(_) => Some(TypeRef::new("bool")),
             ExprKind::String(_) => Some(TypeRef::new("string")),
+            ExprKind::Char(_) => Some(TypeRef::new("char")),
             ExprKind::Array(values) => self.check_array_literal(values, scope, function),
             ExprKind::Variable(name) => match scope.locals.get(name) {
                 Some(ty) => Some(ty.clone()),
@@ -1347,12 +1351,15 @@ impl<'a> Checker<'a> {
                     | BinaryOp::LessEqual
                     | BinaryOp::Greater
                     | BinaryOp::GreaterEqual => {
-                        if same_numeric.is_some() {
+                        // Ordering compares two i64s, two f64s, two chars (by code
+                        // point), or two bytes (numerically).
+                        if same_numeric.is_some() || same_orderable_scalar(&left_type, &right_type)
+                        {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0327",
-                                "ordering comparison operands must both be i64 or both be f64",
+                                "ordering comparison operands must both be i64, both be f64, both be char, or both be byte",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -1853,13 +1860,16 @@ impl<'a> Checker<'a> {
             "to_string" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let arg_type = self.check_expr(&args[0], scope, function)?;
-                if matches!(arg_type.name.as_str(), "i64" | "f64" | "bool" | "string") {
+                if matches!(
+                    arg_type.name.as_str(),
+                    "i64" | "f64" | "bool" | "string" | "char" | "byte"
+                ) {
                     Some(TypeRef::new("string"))
                 } else {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0313",
                         format!(
-                            "to_string expects an i64, f64, bool, or string value but got `{}`",
+                            "to_string expects an i64, f64, bool, string, char, or byte value but got `{}`",
                             arg_type.name
                         ),
                         Some(function.name.clone()),
@@ -2223,6 +2233,26 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 Some(TypeRef::new("void"))
+            }
+            "char_code" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_scalar_builtin_arg(name, 1, &args[0], "char", scope, function)?;
+                Some(TypeRef::new("i64"))
+            }
+            "char_from" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_scalar_builtin_arg(name, 1, &args[0], "i64", scope, function)?;
+                Some(TypeRef::new("char"))
+            }
+            "byte" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_scalar_builtin_arg(name, 1, &args[0], "i64", scope, function)?;
+                Some(TypeRef::new("byte"))
+            }
+            "byte_val" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_scalar_builtin_arg(name, 1, &args[0], "byte", scope, function)?;
+                Some(TypeRef::new("i64"))
             }
             _ => {
                 let Some(signature) = self.signatures.get(name).cloned() else {
@@ -2844,6 +2874,39 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Validate a `char`/`byte` builtin argument against an expected type,
+    /// reporting `L0389` on a mismatch.
+    fn expect_scalar_builtin_arg(
+        &mut self,
+        name: &str,
+        index: usize,
+        arg: &Expr,
+        expected: &str,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<()> {
+        let expected = TypeRef::new(expected);
+        let actual = self.check_expr(arg, scope, function);
+        if actual.as_ref() == Some(&expected) {
+            Some(())
+        } else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0389",
+                format!(
+                    "argument {index} for `{name}` must be `{}` but got `{}`",
+                    expected.name,
+                    actual
+                        .as_ref()
+                        .map(|ty| ty.name.as_str())
+                        .unwrap_or("<unknown>")
+                ),
+                Some(function.name.clone()),
+                arg.span,
+            ));
+            None
+        }
+    }
+
     /// Validate a string-library builtin argument against an expected type,
     /// reporting `L0375` on a mismatch.
     fn expect_string_builtin_arg(
@@ -2895,6 +2958,15 @@ fn same_numeric_type(left: &Option<TypeRef>, right: &Option<TypeRef>) -> Option<
         (Some(l), Some(r)) if l == r && matches!(l.name.as_str(), "i64" | "f64") => Some(l.clone()),
         _ => None,
     }
+}
+
+/// True when both operands are the same orderable scalar type beyond the numeric
+/// ones — `char` (ordered by code point) or `byte` (ordered numerically).
+fn same_orderable_scalar(left: &Option<TypeRef>, right: &Option<TypeRef>) -> bool {
+    matches!(
+        (left, right),
+        (Some(l), Some(r)) if l == r && matches!(l.name.as_str(), "char" | "byte")
+    )
 }
 
 /// If `expr` is a resource-freeing call (`dealloc(x)` or `rc_release(x)`) whose
@@ -3573,6 +3645,34 @@ mod tests {
         let source =
             "fn main -> string\n    \"n=\" + to_string(1 + 2) + \" b=\" + to_string(true)\n";
         assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn validates_char_and_byte_builtins_and_comparisons() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a char = 'a'\n",
+            "    let b char = char_from(char_code(a) + 1)\n",
+            "    let ordered i64 = 0\n",
+            "    if a < b\n",
+            "        ordered = 1\n",
+            "    let small byte = byte(10)\n",
+            "    let big byte = byte(250)\n",
+            "    let s string = to_string(a) + to_string(small)\n",
+            "    char_code(b) + byte_val(big) + ordered + len(s)\n",
+        );
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_char_builtin_with_wrong_argument_type() {
+        let diagnostics =
+            validate_source("fn main -> i64\n    char_code(65)\n").expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0389")
+        );
     }
 
     #[test]

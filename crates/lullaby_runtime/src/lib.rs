@@ -16,6 +16,10 @@ pub enum Value {
     F64(f64),
     Bool(bool),
     String(String),
+    /// A Unicode scalar value.
+    Char(char),
+    /// An 8-bit unsigned integer (0-255).
+    Byte(u8),
     Array(Vec<Value>),
     Ptr(usize),
     Struct {
@@ -40,6 +44,8 @@ impl fmt::Display for Value {
             Self::F64(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::String(value) => write!(formatter, "{value}"),
+            Self::Char(value) => write!(formatter, "{value}"),
+            Self::Byte(value) => write!(formatter, "{value}"),
             Self::Array(values) => {
                 let values = values
                     .iter()
@@ -174,6 +180,17 @@ pub fn expect_i64(name: &str, value: Value) -> Result<i64, RuntimeError> {
             "L0417",
             format!("{name} expects an i64 but got `{other}`"),
         )),
+    }
+}
+
+/// Map a matched pair of `Char`/`Byte` values to comparable `u32` order keys
+/// (a char's code point, a byte's numeric value). Returns `None` for any other
+/// pair so ordering can fall through to the `i64` path.
+pub fn scalar_order_keys(left: &Value, right: &Value) -> Option<(u32, u32)> {
+    match (left, right) {
+        (Value::Char(l), Value::Char(r)) => Some((*l as u32, *r as u32)),
+        (Value::Byte(l), Value::Byte(r)) => Some((u32::from(*l), u32::from(*r))),
+        _ => None,
     }
 }
 
@@ -325,6 +342,10 @@ impl<'a> Runtime<'a> {
             "warn" => self.builtin_warn(args),
             "flush" => self.builtin_flush(args),
             "to_string" => Self::builtin_to_string(args),
+            "char_code" => Self::builtin_char_code(args),
+            "char_from" => Self::builtin_char_from(args),
+            "byte" => Self::builtin_byte(args),
+            "byte_val" => Self::builtin_byte_val(args),
             "len" => Self::builtin_len(args),
             "list_new" => Self::builtin_list_new(args),
             "push" => Self::builtin_push(args),
@@ -662,6 +683,7 @@ impl<'a> Runtime<'a> {
             ExprKind::Float(value) => Ok(Value::F64(*value)),
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
             ExprKind::String(value) => Ok(Value::String(value.clone())),
+            ExprKind::Char(value) => Ok(Value::Char(*value)),
             ExprKind::Array(values) => values
                 .iter()
                 .map(|value| self.eval_expr(value, env))
@@ -826,6 +848,21 @@ impl<'a> Runtime<'a> {
             }
             BinaryOp::Equal => Ok(Value::Bool(left == right)),
             BinaryOp::NotEqual => Ok(Value::Bool(left != right)),
+            // Char ordering compares by Unicode code point; byte ordering is
+            // numeric. Both fall through to i64 ordering otherwise.
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
+                if scalar_order_keys(&left, &right).is_some() =>
+            {
+                let (l, r) = scalar_order_keys(&left, &right)
+                    .expect("guarded by the match arm condition above");
+                Ok(Value::Bool(match op {
+                    BinaryOp::Less => l < r,
+                    BinaryOp::LessEqual => l <= r,
+                    BinaryOp::Greater => l > r,
+                    BinaryOp::GreaterEqual => l >= r,
+                    _ => unreachable!("guarded to ordering operators"),
+                }))
+            }
             BinaryOp::Less => Ok(Value::Bool(left.as_i64()? < right.as_i64()?)),
             BinaryOp::LessEqual => Ok(Value::Bool(left.as_i64()? <= right.as_i64()?)),
             BinaryOp::Greater => Ok(Value::Bool(left.as_i64()? > right.as_i64()?)),
@@ -1030,12 +1067,76 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("to_string", 1, args.len()))?;
         match value {
-            Value::I64(_) | Value::F64(_) | Value::Bool(_) | Value::String(_) => {
-                Ok(Value::String(value.to_string()))
-            }
+            Value::I64(_)
+            | Value::F64(_)
+            | Value::Bool(_)
+            | Value::String(_)
+            | Value::Char(_)
+            | Value::Byte(_) => Ok(Value::String(value.to_string())),
             other => Err(RuntimeError::new(
                 "L0417",
                 format!("to_string cannot convert `{other}`"),
+            )),
+        }
+    }
+
+    /// `char_code(c char) -> i64`: the char's Unicode scalar value.
+    fn builtin_char_code(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("char_code", 1, args.len()))?;
+        match value {
+            Value::Char(c) => Ok(Value::I64(c as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("char_code expects a char but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `char_from(i i64) -> char`: the char for a Unicode scalar value; a runtime
+    /// error when `i` is not a valid Unicode scalar.
+    fn builtin_char_from(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("char_from", 1, args.len()))?;
+        let code = expect_i64("char_from", value)?;
+        u32::try_from(code)
+            .ok()
+            .and_then(char::from_u32)
+            .map(Value::Char)
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "L0417",
+                    format!("char_from got `{code}`, which is not a valid Unicode scalar value"),
+                )
+            })
+    }
+
+    /// `byte(i i64) -> byte`: an 8-bit unsigned value; a runtime error outside 0-255.
+    fn builtin_byte(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("byte", 1, args.len()))?;
+        let number = expect_i64("byte", value)?;
+        u8::try_from(number).map(Value::Byte).map_err(|_| {
+            RuntimeError::new(
+                "L0417",
+                format!("byte got `{number}`, which is outside the 0-255 range"),
+            )
+        })
+    }
+
+    /// `byte_val(b byte) -> i64`: the numeric value of a byte.
+    fn builtin_byte_val(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("byte_val", 1, args.len()))?;
+        match value {
+            Value::Byte(b) => Ok(Value::I64(b as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("byte_val expects a byte but got `{other}`"),
             )),
         }
     }
@@ -1774,6 +1875,37 @@ mod tests {
     fn runs_function_calls_and_arithmetic() {
         let source = "fn add x i64 y i64 -> i64\n    x + y\n\nfn main -> i64\n    let value i64 = add(40, 2)\n    value\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
+    fn runs_char_and_byte_builtins() {
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a char = 'A'\n",
+            "    let b char = char_from(char_code(a) + 1)\n",
+            "    let ordered i64 = 0\n",
+            "    if a < b\n",
+            "        ordered = 1\n",
+            "    let big byte = byte(250)\n",
+            "    let text string = to_string(a) + to_string(byte(10))\n",
+            "    char_code(b) + byte_val(big) + ordered + len(text)\n",
+        );
+        // code('B')=66 + byte_val(250)=250 + ordered=1 + len("A10")=3 = 320.
+        assert_eq!(run_source(source).expect("run"), Value::I64(320));
+    }
+
+    #[test]
+    fn char_from_rejects_invalid_scalar() {
+        let source = "fn main -> char\n    char_from(0 - 1)\n";
+        let error = run_source(source).expect_err("invalid scalar");
+        assert_eq!(error.code, "L0417");
+    }
+
+    #[test]
+    fn byte_rejects_out_of_range() {
+        let source = "fn main -> byte\n    byte(300)\n";
+        let error = run_source(source).expect_err("out of range");
+        assert_eq!(error.code, "L0417");
     }
 
     #[test]

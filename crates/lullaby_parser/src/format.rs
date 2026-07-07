@@ -310,6 +310,9 @@ fn render_expr(expr: &Expr) -> String {
         // The lexer stores string contents verbatim (no escape processing) and
         // a literal cannot contain a quote, so render the value as-is.
         ExprKind::String(value) => format!("\"{value}\""),
+        // A char literal cannot contain a quote (the lexer stops at the closing
+        // `'`), so render the scalar as-is between single quotes.
+        ExprKind::Char(value) => format!("'{value}'"),
         ExprKind::Array(values) => {
             let items = values
                 .iter()

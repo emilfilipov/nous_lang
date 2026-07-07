@@ -27,6 +27,7 @@ pub enum TokenKind {
     Keyword(Keyword),
     Number(String),
     String(String),
+    Char(char),
     Symbol(String),
     Arrow,
     Newline,
@@ -245,6 +246,11 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            if ch == '\'' {
+                index = self.lex_char(&chars, index, line_number, column);
+                continue;
+            }
+
             if ch.is_ascii_digit() {
                 let start = index;
                 while index < chars.len()
@@ -331,6 +337,47 @@ impl<'a> Lexer<'a> {
         self.diagnostics.push(Diagnostic::new(
             "L0104",
             "unterminated string literal",
+            Span::new(line_number, column),
+        ));
+        index
+    }
+
+    /// Lex a single-quoted char literal `'c'` holding exactly one Unicode scalar.
+    /// An empty (`''`), multi-character (`'ab'`), or unterminated literal is an
+    /// `L0105` diagnostic. Returns the index just past the closing quote (or the
+    /// scanned extent on error) so lexing can continue.
+    fn lex_char(
+        &mut self,
+        chars: &[char],
+        start: usize,
+        line_number: usize,
+        column: usize,
+    ) -> usize {
+        let mut index = start + 1;
+        let mut value: Vec<char> = Vec::new();
+        while index < chars.len() {
+            if chars[index] == '\'' {
+                if value.len() == 1 {
+                    self.tokens.push(Token::new(
+                        TokenKind::Char(value[0]),
+                        Span::new(line_number, column),
+                    ));
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        "L0105",
+                        "char literal must contain exactly one character",
+                        Span::new(line_number, column),
+                    ));
+                }
+                return index + 1;
+            }
+            value.push(chars[index]);
+            index += 1;
+        }
+
+        self.diagnostics.push(Diagnostic::new(
+            "L0105",
+            "unterminated char literal",
             Span::new(line_number, column),
         ));
         index
@@ -445,6 +492,22 @@ mod tests {
                 .iter()
                 .any(|token| token.kind == TokenKind::Keyword(Keyword::Catch))
         );
+    }
+
+    #[test]
+    fn lexes_char_literal() {
+        let tokens = lex("fn main -> char\n    'a'\n").expect("valid source");
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Char('a'))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_char_literal() {
+        let diagnostics = lex("fn main -> char\n    'ab'\n").expect_err("invalid source");
+        assert_eq!(diagnostics[0].code, "L0105");
     }
 
     #[test]

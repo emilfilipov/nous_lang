@@ -1,0 +1,16 @@
+fn main -> i64
+    let a char = 'A'
+    let b char = char_from(char_code(a) + 1)
+    let code i64 = char_code(b)
+    let ordered i64 = 0
+    if a < b
+        ordered = 1
+    let small byte = byte(10)
+    let big byte = byte(250)
+    let val i64 = byte_val(big)
+    let byte_ordered i64 = 0
+    if small < big
+        byte_ordered = 1
+    let text string = to_string(a) + to_string(small)
+    let text_len i64 = len(text)
+    code + ordered + val + byte_ordered + text_len

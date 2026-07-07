@@ -9,7 +9,7 @@ use lullaby_parser::{
 };
 use lullaby_runtime::{
     ResolvedPlace, RuntimeError, Value, apply_compound, char_find, expect_i64, expect_list,
-    expect_map, expect_string, get_place, option_value, set_place,
+    expect_map, expect_string, get_place, option_value, scalar_order_keys, set_place,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,8 @@ pub enum IrExprKind {
     Float(f64),
     Bool(bool),
     String(String),
+    /// A `'c'` char literal: exactly one Unicode scalar.
+    Char(char),
     Array(Vec<IrExpr>),
     Variable(String),
     Index {
@@ -546,6 +548,7 @@ fn collect_memory_operations_from_expr(
         | IrExprKind::Float(_)
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
+        | IrExprKind::Char(_)
         | IrExprKind::Variable(_) => {}
     }
 }
@@ -835,6 +838,8 @@ pub enum BytecodeExprKind {
     Float(f64),
     Bool(bool),
     String(String),
+    /// A `'c'` char literal: exactly one Unicode scalar.
+    Char(char),
     Array(Vec<BytecodeExpr>),
     Variable(String),
     Index {
@@ -1074,6 +1079,7 @@ fn collect_bytecode_memory_operations_from_expr(
         | BytecodeExprKind::Float(_)
         | BytecodeExprKind::Bool(_)
         | BytecodeExprKind::String(_)
+        | BytecodeExprKind::Char(_)
         | BytecodeExprKind::Variable(_) => {}
     }
 }
@@ -1519,6 +1525,7 @@ fn lower_bytecode_expr(expr: &IrExpr) -> BytecodeExpr {
         IrExprKind::Float(value) => BytecodeExprKind::Float(*value),
         IrExprKind::Bool(value) => BytecodeExprKind::Bool(*value),
         IrExprKind::String(value) => BytecodeExprKind::String(value.clone()),
+        IrExprKind::Char(value) => BytecodeExprKind::Char(*value),
         IrExprKind::Array(values) => {
             BytecodeExprKind::Array(values.iter().map(lower_bytecode_expr).collect())
         }
@@ -1699,6 +1706,7 @@ fn bytecode_expr_to_ir(expr: &BytecodeExpr) -> IrExpr {
         BytecodeExprKind::Float(value) => IrExprKind::Float(*value),
         BytecodeExprKind::Bool(value) => IrExprKind::Bool(*value),
         BytecodeExprKind::String(value) => IrExprKind::String(value.clone()),
+        BytecodeExprKind::Char(value) => IrExprKind::Char(*value),
         BytecodeExprKind::Array(values) => {
             IrExprKind::Array(values.iter().map(bytecode_expr_to_ir).collect())
         }
@@ -1941,6 +1949,7 @@ impl ConstantFolder {
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
+            | IrExprKind::Char(_)
             | IrExprKind::Variable(_) => expr.clone(),
         }
     }
@@ -2331,6 +2340,7 @@ impl CommonSubexpressionEliminator {
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
+            | IrExprKind::Char(_)
             | IrExprKind::Variable(_) => expr.clone(),
         }
     }
@@ -2349,6 +2359,7 @@ fn pure_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
         ),
         IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Char(value) => (format!("char:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::Variable(name) => {
             let mut dependencies = HashSet::new();
             dependencies.insert(name.clone());
@@ -2746,6 +2757,7 @@ fn loop_invariant_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
         ),
         IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
+        IrExprKind::Char(value) => (format!("char:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::Variable(name) => {
             let mut dependencies = HashSet::new();
             dependencies.insert(name.clone());
@@ -3062,7 +3074,8 @@ impl CopyPropagator {
             IrExprKind::Integer(_)
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
-            | IrExprKind::String(_) => expr.clone(),
+            | IrExprKind::String(_)
+            | IrExprKind::Char(_) => expr.clone(),
         }
     }
 }
@@ -3105,6 +3118,7 @@ fn expr_requires_optimizer_barrier(expr: &IrExpr) -> bool {
         | IrExprKind::Float(_)
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
+        | IrExprKind::Char(_)
         | IrExprKind::Variable(_) => false,
     }
 }
@@ -3337,6 +3351,10 @@ impl<'a> IrRuntime<'a> {
             "warn" => self.builtin_warn(args),
             "flush" => self.builtin_flush(args),
             "to_string" => Self::builtin_to_string(args),
+            "char_code" => Self::builtin_char_code(args),
+            "char_from" => Self::builtin_char_from(args),
+            "byte" => Self::builtin_byte(args),
+            "byte_val" => Self::builtin_byte_val(args),
             "len" => Self::builtin_len(args),
             "list_new" => Self::builtin_list_new(args),
             "push" => Self::builtin_push(args),
@@ -3656,6 +3674,7 @@ impl<'a> IrRuntime<'a> {
             IrExprKind::Float(value) => Ok(Value::F64(*value)),
             IrExprKind::Bool(value) => Ok(Value::Bool(*value)),
             IrExprKind::String(value) => Ok(Value::String(value.clone())),
+            IrExprKind::Char(value) => Ok(Value::Char(*value)),
             IrExprKind::Array(values) => values
                 .iter()
                 .map(|value| self.eval_expr(value, env))
@@ -3788,6 +3807,21 @@ impl<'a> IrRuntime<'a> {
             }
             BinaryOp::Equal => Ok(Value::Bool(left == right)),
             BinaryOp::NotEqual => Ok(Value::Bool(left != right)),
+            // Char ordering compares by Unicode code point; byte ordering is
+            // numeric. Both fall through to i64 ordering otherwise.
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
+                if scalar_order_keys(&left, &right).is_some() =>
+            {
+                let (l, r) = scalar_order_keys(&left, &right)
+                    .expect("guarded by the match arm condition above");
+                Ok(Value::Bool(match op {
+                    BinaryOp::Less => l < r,
+                    BinaryOp::LessEqual => l <= r,
+                    BinaryOp::Greater => l > r,
+                    BinaryOp::GreaterEqual => l >= r,
+                    _ => unreachable!("guarded to ordering operators"),
+                }))
+            }
             BinaryOp::Less => Ok(Value::Bool(left.as_i64()? < right.as_i64()?)),
             BinaryOp::LessEqual => Ok(Value::Bool(left.as_i64()? <= right.as_i64()?)),
             BinaryOp::Greater => Ok(Value::Bool(left.as_i64()? > right.as_i64()?)),
@@ -3992,12 +4026,76 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("to_string", 1, args.len()))?;
         match value {
-            Value::I64(_) | Value::F64(_) | Value::Bool(_) | Value::String(_) => {
-                Ok(Value::String(value.to_string()))
-            }
+            Value::I64(_)
+            | Value::F64(_)
+            | Value::Bool(_)
+            | Value::String(_)
+            | Value::Char(_)
+            | Value::Byte(_) => Ok(Value::String(value.to_string())),
             other => Err(RuntimeError::new(
                 "L0417",
                 format!("to_string cannot convert `{other}`"),
+            )),
+        }
+    }
+
+    /// `char_code(c char) -> i64`: the char's Unicode scalar value.
+    fn builtin_char_code(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("char_code", 1, args.len()))?;
+        match value {
+            Value::Char(c) => Ok(Value::I64(c as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("char_code expects a char but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `char_from(i i64) -> char`: the char for a Unicode scalar value; a runtime
+    /// error when `i` is not a valid Unicode scalar.
+    fn builtin_char_from(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("char_from", 1, args.len()))?;
+        let code = expect_i64("char_from", value)?;
+        u32::try_from(code)
+            .ok()
+            .and_then(char::from_u32)
+            .map(Value::Char)
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "L0417",
+                    format!("char_from got `{code}`, which is not a valid Unicode scalar value"),
+                )
+            })
+    }
+
+    /// `byte(i i64) -> byte`: an 8-bit unsigned value; a runtime error outside 0-255.
+    fn builtin_byte(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("byte", 1, args.len()))?;
+        let number = expect_i64("byte", value)?;
+        u8::try_from(number).map(Value::Byte).map_err(|_| {
+            RuntimeError::new(
+                "L0417",
+                format!("byte got `{number}`, which is outside the 0-255 range"),
+            )
+        })
+    }
+
+    /// `byte_val(b byte) -> i64`: the numeric value of a byte.
+    fn builtin_byte_val(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("byte_val", 1, args.len()))?;
+        match value {
+            Value::Byte(b) => Ok(Value::I64(b as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("byte_val expects a byte but got `{other}`"),
             )),
         }
     }
@@ -4997,6 +5095,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Float(value) => (IrExprKind::Float(*value), TypeRef::new("f64")),
             ExprKind::Bool(value) => (IrExprKind::Bool(*value), TypeRef::new("bool")),
             ExprKind::String(value) => (IrExprKind::String(value.clone()), TypeRef::new("string")),
+            ExprKind::Char(value) => (IrExprKind::Char(*value), TypeRef::new("char")),
             ExprKind::Array(values) => {
                 let values = values
                     .iter()
@@ -5351,7 +5450,11 @@ impl<'a> Lowerer<'a> {
             "read_file" | "sys_output" | "to_string" | "substring" | "join" | "trim"
             | "replace" | "upper" | "lower" => TypeRef::new("string"),
             "file_exists" | "contains" | "map_has" => TypeRef::new("bool"),
-            "sys_status" | "len" | "find" | "map_len" => TypeRef::new("i64"),
+            "sys_status" | "len" | "find" | "map_len" | "char_code" | "byte_val" => {
+                TypeRef::new("i64")
+            }
+            "char_from" => TypeRef::new("char"),
+            "byte" => TypeRef::new("byte"),
             // `push`/`set`/`pop` return a new `list<T>` of the same type as their
             // list argument (already spelled `list<T>`).
             "push" | "set" | "pop" => {
