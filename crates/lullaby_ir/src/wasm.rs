@@ -1,37 +1,54 @@
-//! WebAssembly backend — first increment (the scalar subset) plus the first
-//! linear-memory step.
+//! WebAssembly backend — the scalar subset, the linear-memory step, and heap
+//! types (strings and fixed aggregates) laid out in linear memory.
 //!
 //! This module compiles the typed IR (`IrModule`) directly to a binary `.wasm`
 //! module using only the Rust standard library: it implements the WASM binary
 //! encoding (magic, version, Type/Import/Function/Memory/Global/Export/Code/Data
 //! sections, LEB128, and the stack-machine opcodes it needs) from scratch.
 //!
-//! Scope: only functions whose parameter and return types are all scalars in
+//! Scalar subset: functions whose parameter and return types are all scalars in
 //! {`i64`, `f64`, `bool`, `char`, `byte`} compile to WASM. `i64` maps to wasm
 //! `i64`, `f64` to `f64`, and `bool`/`char`/`byte` to `i32`. `void` return means
 //! no result. Supported bodies: integer/float/bool literals, variables (params +
 //! `let` locals), arithmetic (`+ - * /`; integer `/` uses `i64.div_s` which traps
 //! on 0), comparisons, `and`/`or`/`not`, `if`/`elif`/`else`, `while`, `loop` with
 //! `break`/`continue`, range `for` (lowered to a loop), `return`, calls to other
-//! compiled scalar functions (including recursion), and the host log builtin
-//! `wasm_log(x i64) -> void`. A function that uses any other non-scalar type, heap
-//! value, `match`, or a different builtin is SKIPPED (it still runs on the
-//! interpreters).
+//! compiled functions (including recursion), and the host log builtin
+//! `wasm_log(x i64) -> void`.
 //!
-//! Linear-memory groundwork: the module now exports a `"memory"` (min 1 page),
+//! Heap types (this increment): `string`, `struct`, and fixed `array` values are
+//! **pointers** (`i32`) into linear memory.
+//! - A `string` is a pointer to `[len: i32 (char count)][utf8 bytes]`. String
+//!   literals are laid out once in the Data section (their pointer is a constant
+//!   static offset); `len(s)` loads the leading `i32`.
+//! - A `struct` is a pointer to a contiguous run of 8-byte slots, one per field in
+//!   declared order. Positional construction (a call whose name is the struct)
+//!   `__alloc`s the run and stores each field; `.field` reads a slot; `p.field =
+//!   v` writes a slot.
+//! - A fixed `array` literal is a pointer to `[len: i32][elem slots...]` with one
+//!   8-byte slot per element. `a[i]` loads a slot (WASM traps on out-of-bounds
+//!   memory access); `a[i] = v` stores one; `len(a)` loads the leading `i32`.
+//!   Element/field values may themselves be scalars or pointers (nested
+//!   strings/structs/arrays), stored by their WASM slot type.
+//!
+//! A function that uses `match`/enums, a different builtin, `option`/`result`/
+//! `list`/`map`, or any type still outside this set is SKIPPED with a reason (it
+//! still runs on the interpreters).
+//!
+//! Linear-memory infrastructure: the module exports a `"memory"` (min 1 page),
 //! imports the host function `env.log_i64 (func (param i64))` and exposes it as
 //! `wasm_log`, declares a mutable `i32` global bump pointer, writes a Data section
-//! seeding the reserved heap region, and emits an internal `__alloc(size i32) ->
-//! i32` bump-allocator helper. Imported functions occupy the LOW function indices,
-//! so every internally-defined function's index is shifted by the import count;
-//! call targets and exports are fixed up accordingly. Full string/struct/array
-//! layout in linear memory is still deferred.
+//! seeding the reserved region and the string-literal pool, and emits an internal
+//! `__alloc(size i32) -> i32` bump-allocator helper used to build structs/arrays
+//! at runtime. Imported functions occupy the LOW function indices, so every
+//! internally-defined function's index is shifted by the import count; call
+//! targets and exports are fixed up accordingly. Enums/`match` remain deferred.
 
 use std::collections::HashMap;
 
 use lullaby_parser::{BinaryOp, TypeRef, UnaryOp};
 
-use crate::{IrExpr, IrExprKind, IrFunction, IrModule, IrStmt};
+use crate::{IrExpr, IrExprKind, IrFunction, IrModule, IrStmt, IrStructDef};
 
 /// The Lullaby builtin that lowers to the imported host log function.
 const WASM_LOG: &str = "wasm_log";
@@ -44,10 +61,24 @@ const IMPORT_FUNC_COUNT: u32 = 1;
 /// import). Internal functions are numbered from `IMPORT_FUNC_COUNT` up.
 const LOG_I64_FUNC_INDEX: u32 = 0;
 
-/// The first byte offset in linear memory the bump allocator hands out. Bytes
-/// below this are a reserved data region (seeded by the Data section) so a
-/// freshly allocated pointer is never null (0) and low addresses stay reserved.
-const HEAP_BASE: i32 = 16;
+/// The first byte offset in linear memory reserved before any user data. Bytes
+/// below this are a reserved region (seeded by the Data section) so a pointer is
+/// never null (0) and low addresses stay reserved. String literals are laid out
+/// starting at this offset; the bump allocator's global is initialized past both
+/// the reserved region and the whole string-literal pool.
+const RESERVED_BASE: i32 = 16;
+
+/// Bytes per aggregate slot: struct fields and array elements each occupy one
+/// 8-byte slot regardless of their WASM value type. Uniform 8-byte slots keep the
+/// layout naturally aligned for `i64`/`f64` loads and stores and make offset math
+/// a simple `slot_index * 8`.
+const SLOT_SIZE: i32 = 8;
+
+/// Bytes for the leading `i32` length header shared by strings and arrays.
+const LEN_HEADER: i32 = 4;
+
+/// The builtin that reads a string's or array's length header.
+const LEN_BUILTIN: &str = "len";
 
 /// A compiled `.wasm` module plus the record of which functions compiled and
 /// which were skipped (with a reason).
@@ -108,13 +139,58 @@ fn scalar_val_type(ty: &TypeRef) -> Option<WasmValType> {
     }
 }
 
+/// Whether a type is a heap type represented as an `i32` pointer into linear
+/// memory: `string`, a named struct (resolved via `structs`), or a fixed
+/// `array<T>` whose element is itself a supported slot type.
+fn is_pointer_type(ty: &TypeRef, structs: &HashMap<String, Vec<(String, TypeRef)>>) -> bool {
+    if ty.name == "string" {
+        return true;
+    }
+    if structs.contains_key(&ty.name) {
+        return true;
+    }
+    if let Some(elem) = ty.array_element() {
+        return slot_val_type(&elem, structs).is_some();
+    }
+    false
+}
+
+/// The WASM value type an aggregate slot (struct field / array element) holds:
+/// the scalar type for a scalar, or `i32` for any pointer (string/struct/array).
+/// `None` for a type the WASM backend cannot lay out (e.g. enums, `option`,
+/// `list`, `map`), which makes the enclosing aggregate ineligible.
+fn slot_val_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+) -> Option<WasmValType> {
+    if let Some(vt) = scalar_val_type(ty) {
+        return Some(vt);
+    }
+    if is_pointer_type(ty, structs) {
+        return Some(WasmValType::I32);
+    }
+    None
+}
+
+/// The WASM value type used for a first-class value of `ty`: a scalar's own type,
+/// or `i32` for a pointer (string/struct/array). `None` for anything else.
+fn value_val_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+) -> Option<WasmValType> {
+    slot_val_type(ty, structs)
+}
+
 /// The result type for a function: empty for `void`, else one value type.
-/// `Err(())` means the return type is a non-scalar (function ineligible).
-fn return_val_type(ty: &TypeRef) -> Result<Option<WasmValType>, ()> {
+/// `Err(())` means the return type is not a supported WASM value type.
+fn return_val_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+) -> Result<Option<WasmValType>, ()> {
     if ty.is_void() {
         return Ok(None);
     }
-    scalar_val_type(ty).map(Some).ok_or(())
+    value_val_type(ty, structs).map(Some).ok_or(())
 }
 
 /// A resolved local: its WASM index and value type.
@@ -132,6 +208,10 @@ struct Local {
 /// by its Lullaby name; an ineligible one is recorded in `skipped` with a reason.
 /// If no function is eligible, this returns `Err(WasmError)` with code `L0338`.
 pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
+    // A struct name -> ordered `(field, type)` map, used everywhere we classify a
+    // type (pointer vs scalar) or compute a struct's field layout.
+    let structs = struct_table(&module.structs);
+
     // First pass: decide signature eligibility and assign WASM function indices
     // to the functions we will compile. Calls between compiled functions resolve
     // against this index map.
@@ -141,7 +221,7 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     let mut eligible: Vec<&IrFunction> = Vec::new();
 
     for function in &module.functions {
-        match eligibility(function) {
+        match eligibility(function, &structs) {
             Ok(()) => {
                 // Imports occupy the low indices, so internal functions are
                 // numbered from `IMPORT_FUNC_COUNT` up.
@@ -165,13 +245,23 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
         });
     }
 
-    // Second pass: lower each eligible function's body. A lowering failure (a
+    // The internal `__alloc` helper is appended after the user functions in
+    // `encode_module`, so its WASM function index is fixed here. Record it so
+    // aggregate construction can `call` it.
+    func_index.insert(
+        ALLOC_HELPER_NAME.to_string(),
+        IMPORT_FUNC_COUNT + eligible.len() as u32,
+    );
+
+    // Second pass: lower each eligible function's body into a shared string-literal
+    // pool (so identical literals share one static offset). A lowering failure (a
     // construct we cannot compile) demotes that function to skipped. Because that
-    // changes index assignment, we re-run the whole emission over the reduced
-    // set. This converges quickly (each pass removes at least one function).
+    // changes index assignment, we re-run the whole emission over the reduced set.
+    // This converges quickly (each pass removes at least one function).
+    let mut pool = StringPool::new();
     let mut lowered: Vec<LoweredFunction> = Vec::new();
     for function in &eligible {
-        match lower_function(function, &func_index) {
+        match lower_function(function, &func_index, &structs, &mut pool) {
             Ok(l) => lowered.push(l),
             Err(reason) => {
                 let demoted = SkippedFunction {
@@ -201,12 +291,57 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
         }
     }
 
-    let bytes = encode_module(&lowered);
+    let bytes = encode_module(&lowered, &pool);
     Ok(WasmArtifact {
         bytes,
         compiled: compiled_names,
         skipped,
     })
+}
+
+/// Build the struct name -> ordered `(field, type)` map from the IR struct defs.
+fn struct_table(defs: &[IrStructDef]) -> HashMap<String, Vec<(String, TypeRef)>> {
+    defs.iter()
+        .map(|d| (d.name.clone(), d.fields.clone()))
+        .collect()
+}
+
+/// The static data pool for string literals. Each distinct literal is laid out
+/// once as `[len: i32 char-count][utf8 bytes]` starting at `RESERVED_BASE`; the
+/// value of the literal is the byte offset of its length header.
+struct StringPool {
+    /// Literal text -> its pointer (offset of the length header).
+    offsets: HashMap<String, i32>,
+    /// The concatenated pool bytes, laid out from `RESERVED_BASE` upward.
+    bytes: Vec<u8>,
+}
+
+impl StringPool {
+    fn new() -> Self {
+        Self {
+            offsets: HashMap::new(),
+            bytes: Vec::new(),
+        }
+    }
+
+    /// Intern a literal, returning its pointer (a constant static offset).
+    fn intern(&mut self, text: &str) -> i32 {
+        if let Some(&offset) = self.offsets.get(text) {
+            return offset;
+        }
+        let offset = RESERVED_BASE + self.bytes.len() as i32;
+        let char_count = text.chars().count() as i32;
+        self.bytes.extend_from_slice(&char_count.to_le_bytes());
+        self.bytes.extend_from_slice(text.as_bytes());
+        self.offsets.insert(text.to_string(), offset);
+        offset
+    }
+
+    /// The byte offset one past the end of the pool: the first address the bump
+    /// allocator may hand out (its global's initial value).
+    fn heap_base(&self) -> i32 {
+        RESERVED_BASE + self.bytes.len() as i32
+    }
 }
 
 /// Append a skip record unless one with that name is already present.
@@ -218,19 +353,23 @@ fn merge_skip(skips: &mut Vec<SkippedFunction>, skip: SkippedFunction) {
 
 // -- Eligibility -------------------------------------------------------------
 
-/// Check whether a function's signature is entirely in the scalar subset.
-fn eligibility(function: &IrFunction) -> Result<(), String> {
+/// Check whether a function's signature is entirely in the supported WASM value
+/// set: scalars, or pointer types (`string`, struct, fixed `array`).
+fn eligibility(
+    function: &IrFunction,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+) -> Result<(), String> {
     for param in &function.params {
-        if scalar_val_type(&param.ty).is_none() {
+        if value_val_type(&param.ty, structs).is_none() {
             return Err(format!(
-                "parameter `{}` has non-scalar type `{}`",
+                "parameter `{}` has unsupported type `{}`",
                 param.name, param.ty.name
             ));
         }
     }
-    if return_val_type(&function.return_type).is_err() {
+    if return_val_type(&function.return_type, structs).is_err() {
         return Err(format!(
-            "return type `{}` is not a scalar",
+            "return type `{}` is not a supported WASM value type",
             function.return_type.name
         ));
     }
@@ -262,14 +401,28 @@ struct LowerCtx<'a> {
     param_count: u32,
     /// Function-name -> WASM function index, for calls.
     func_index: &'a HashMap<String, u32>,
+    /// Struct name -> ordered `(field, type)` fields, for aggregate layout.
+    structs: &'a HashMap<String, Vec<(String, TypeRef)>>,
+    /// name -> IR type for every param and `let`/`for` local, so path assignment
+    /// can walk aggregate field/element types (the `Local` map only keeps the
+    /// WASM value type).
+    local_ir_types: HashMap<String, TypeRef>,
+    /// Shared static string-literal pool (assigns constant offsets).
+    pool: &'a mut StringPool,
 }
 
 impl<'a> LowerCtx<'a> {
-    fn new(function: &IrFunction, func_index: &'a HashMap<String, u32>) -> Result<Self, String> {
+    fn new(
+        function: &IrFunction,
+        func_index: &'a HashMap<String, u32>,
+        structs: &'a HashMap<String, Vec<(String, TypeRef)>>,
+        pool: &'a mut StringPool,
+    ) -> Result<Self, String> {
         let mut locals = HashMap::new();
+        let mut local_ir_types = HashMap::new();
         for (i, param) in function.params.iter().enumerate() {
-            let ty = scalar_val_type(&param.ty)
-                .ok_or_else(|| format!("parameter `{}` is not a scalar", param.name))?;
+            let ty = value_val_type(&param.ty, structs)
+                .ok_or_else(|| format!("parameter `{}` has an unsupported type", param.name))?;
             locals.insert(
                 param.name.clone(),
                 Local {
@@ -277,12 +430,16 @@ impl<'a> LowerCtx<'a> {
                     ty,
                 },
             );
+            local_ir_types.insert(param.name.clone(), param.ty.clone());
         }
         Ok(Self {
             locals,
             extra_locals: Vec::new(),
             param_count: function.params.len() as u32,
             func_index,
+            structs,
+            local_ir_types,
+            pool,
         })
     }
 
@@ -292,17 +449,30 @@ impl<'a> LowerCtx<'a> {
         self.extra_locals.push(ty);
         index
     }
+
+    /// The recorded IR type of a named local, if any.
+    fn local_ir_type(&self, name: &str) -> Option<TypeRef> {
+        self.local_ir_types.get(name).cloned()
+    }
 }
 
 fn lower_function(
     function: &IrFunction,
     func_index: &HashMap<String, u32>,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    pool: &mut StringPool,
 ) -> Result<LoweredFunction, String> {
-    let result = match return_val_type(&function.return_type) {
+    let result = match return_val_type(&function.return_type, structs) {
         Ok(result) => result,
-        Err(()) => return Err("return type is not a scalar".to_string()),
+        Err(()) => return Err("return type is not a supported WASM value type".to_string()),
     };
-    let mut ctx = LowerCtx::new(function, func_index)?;
+    let params = function
+        .params
+        .iter()
+        .map(|p| value_val_type(&p.ty, structs).expect("checked eligible"))
+        .collect();
+
+    let mut ctx = LowerCtx::new(function, func_index, structs, pool)?;
 
     let mut body = Vec::new();
     lower_stmts(&mut ctx, &function.body, &mut body, &LoopCtx::none())?;
@@ -316,12 +486,6 @@ fn lower_function(
                 .to_string(),
         );
     }
-
-    let params = function
-        .params
-        .iter()
-        .map(|p| scalar_val_type(&p.ty).expect("checked eligible"))
-        .collect();
 
     Ok(LoweredFunction {
         name: function.name.clone(),
@@ -383,11 +547,12 @@ fn lower_stmt(
         IrStmt::Let {
             name, ty, value, ..
         } => {
-            let vty = scalar_val_type(ty)
-                .ok_or_else(|| format!("`let {name}` has non-scalar type `{}`", ty.name))?;
+            let vty = value_val_type(ty, ctx.structs)
+                .ok_or_else(|| format!("`let {name}` has an unsupported type `{}`", ty.name))?;
             lower_expr(ctx, value, out)?;
             let index = ctx.add_local(vty);
             ctx.locals.insert(name.clone(), Local { index, ty: vty });
+            ctx.local_ir_types.insert(name.clone(), ty.clone());
             set_local(out, index);
             Ok(())
         }
@@ -398,33 +563,10 @@ fn lower_stmt(
             value,
             ..
         } => {
-            if !path.is_empty() {
-                return Err("field/index assignment is not in the WASM scalar subset".to_string());
+            if path.is_empty() {
+                return lower_local_assign(ctx, name, *op, value, out);
             }
-            let local = *ctx
-                .locals
-                .get(name)
-                .ok_or_else(|| format!("assignment to unknown local `{name}`"))?;
-            match op {
-                lullaby_parser::AssignOp::Replace => {
-                    lower_expr(ctx, value, out)?;
-                }
-                other => {
-                    // Compound assignment: local = local <op> value.
-                    get_local(out, local.index);
-                    lower_expr(ctx, value, out)?;
-                    let bin = match other {
-                        lullaby_parser::AssignOp::Add => BinaryOp::Add,
-                        lullaby_parser::AssignOp::Subtract => BinaryOp::Subtract,
-                        lullaby_parser::AssignOp::Multiply => BinaryOp::Multiply,
-                        lullaby_parser::AssignOp::Divide => BinaryOp::Divide,
-                        lullaby_parser::AssignOp::Replace => unreachable!(),
-                    };
-                    emit_binary_op_typed(bin, local.ty, out)?;
-                }
-            }
-            set_local(out, local.index);
-            Ok(())
+            lower_path_assign(ctx, name, path, *op, value, out)
         }
         IrStmt::Return(value) => {
             if let Some(expr) = value {
@@ -482,9 +624,114 @@ fn lower_stmt(
             ..
         } => lower_for(ctx, name, start, end, step.as_ref(), body, out),
         IrStmt::Throw { .. } | IrStmt::Try { .. } => {
-            Err("throw/try is not in the WASM scalar subset".to_string())
+            Err("throw/try is not supported by the WASM backend".to_string())
         }
-        IrStmt::Match { .. } => Err("match is not in the WASM scalar subset".to_string()),
+        IrStmt::Match { .. } => {
+            Err("match/enums are not yet supported by the WASM backend".to_string())
+        }
+    }
+}
+
+/// Lower a plain local assignment `name = value` or `name op= value`.
+fn lower_local_assign(
+    ctx: &mut LowerCtx,
+    name: &str,
+    op: lullaby_parser::AssignOp,
+    value: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let local = *ctx
+        .locals
+        .get(name)
+        .ok_or_else(|| format!("assignment to unknown local `{name}`"))?;
+    match op {
+        lullaby_parser::AssignOp::Replace => {
+            lower_expr(ctx, value, out)?;
+        }
+        other => {
+            // Compound assignment: local = local <op> value.
+            get_local(out, local.index);
+            lower_expr(ctx, value, out)?;
+            emit_binary_op_typed(assign_binop(other), local.ty, out)?;
+        }
+    }
+    set_local(out, local.index);
+    Ok(())
+}
+
+/// Lower an assignment to a struct field or array element, `name<path> = value`
+/// (and the compound forms). The address of the target slot is computed once,
+/// stashed in a scratch `i32` local, then a load-op-store (compound) or a plain
+/// store writes the value.
+fn lower_path_assign(
+    ctx: &mut LowerCtx,
+    name: &str,
+    path: &[crate::IrPlace],
+    op: lullaby_parser::AssignOp,
+    value: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    // Reconstruct the target's leaf type by walking the path from the base local.
+    let base = *ctx
+        .locals
+        .get(name)
+        .ok_or_else(|| format!("assignment to unknown local `{name}`"))?;
+    if base.ty != WasmValType::I32 {
+        return Err("field/index assignment requires a pointer (aggregate) base".to_string());
+    }
+    let base_ty = ctx
+        .local_ir_type(name)
+        .ok_or_else(|| format!("no IR type recorded for local `{name}`"))?;
+
+    // Push the base pointer, then fold each hop into the running address. For a
+    // non-final hop the slot holds a nested aggregate POINTER, so load it before
+    // applying the next hop's offset; the final hop leaves the slot ADDRESS so we
+    // can store into it.
+    get_local(out, base.index);
+    let mut cur_ty = base_ty;
+    for (i, place) in path.iter().enumerate() {
+        cur_ty = lower_place_address(ctx, &cur_ty, place, out)?;
+        if i + 1 < path.len() {
+            let slot_ty = slot_val_type(&cur_ty, ctx.structs)
+                .ok_or_else(|| "intermediate path slot has unsupported type".to_string())?;
+            emit_load(slot_ty, out);
+        }
+    }
+    // The target slot address is now on the stack. Stash it in a scratch local so
+    // we can reuse it for the load (compound) and the store.
+    let addr = ctx.add_local(WasmValType::I32);
+    set_local(out, addr);
+
+    let slot_ty = slot_val_type(&cur_ty, ctx.structs)
+        .ok_or_else(|| format!("assignment target has unsupported type `{}`", cur_ty.name))?;
+
+    match op {
+        lullaby_parser::AssignOp::Replace => {
+            get_local(out, addr);
+            lower_expr(ctx, value, out)?;
+            emit_store(slot_ty, out);
+        }
+        other => {
+            // addr; load; value; op; then store at addr.
+            get_local(out, addr);
+            get_local(out, addr);
+            emit_load(slot_ty, out);
+            lower_expr(ctx, value, out)?;
+            emit_binary_op_typed(assign_binop(other), slot_ty, out)?;
+            emit_store(slot_ty, out);
+        }
+    }
+    Ok(())
+}
+
+/// The `BinaryOp` a compound `AssignOp` desugars to.
+fn assign_binop(op: lullaby_parser::AssignOp) -> BinaryOp {
+    match op {
+        lullaby_parser::AssignOp::Add => BinaryOp::Add,
+        lullaby_parser::AssignOp::Subtract => BinaryOp::Subtract,
+        lullaby_parser::AssignOp::Multiply => BinaryOp::Multiply,
+        lullaby_parser::AssignOp::Divide => BinaryOp::Divide,
+        lullaby_parser::AssignOp::Replace => unreachable!("Replace handled by caller"),
     }
 }
 
@@ -592,6 +839,8 @@ fn lower_for(
             ty: WasmValType::I64,
         },
     );
+    ctx.local_ir_types
+        .insert(name.to_string(), TypeRef::new("i64"));
     let end_index = ctx.add_local(WasmValType::I64);
     let step_index = ctx.add_local(WasmValType::I64);
 
@@ -694,6 +943,17 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             }
         },
         IrExprKind::Binary { left, op, right } => lower_binary(ctx, left, *op, right, out),
+        IrExprKind::String(text) => {
+            // A string literal is a constant pointer to its interned Data-section
+            // layout `[len i32][utf8 bytes]`.
+            let offset = ctx.pool.intern(text);
+            out.push(0x41); // i32.const
+            write_sleb(out, offset as i64);
+            Ok(())
+        }
+        IrExprKind::Array(elements) => lower_array_literal(ctx, expr, elements, out),
+        IrExprKind::Index { target, index } => lower_index_read(ctx, target, index, out),
+        IrExprKind::Field { target, field } => lower_field_read(ctx, target, field, out),
         IrExprKind::Call { name, args } => {
             // The host log builtin lowers to a `call` of the imported
             // `env.log_i64` (WASM function index `LOG_I64_FUNC_INDEX`).
@@ -706,10 +966,18 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 write_uleb(out, LOG_I64_FUNC_INDEX as u64);
                 return Ok(());
             }
-            let index = *ctx
-                .func_index
-                .get(name)
-                .ok_or_else(|| format!("call to non-scalar or unknown function `{name}`"))?;
+            // `len(s)`/`len(a)` reads the leading i32 length header at the pointer.
+            if name == LEN_BUILTIN {
+                return lower_len(ctx, args, out);
+            }
+            // A call whose name is a declared struct is a struct construction: the
+            // IR lowerer emits struct literals as positional `Call`s.
+            if ctx.structs.contains_key(name) {
+                return lower_struct_construction(ctx, name, args, out);
+            }
+            let index = *ctx.func_index.get(name).ok_or_else(|| {
+                format!("call to unsupported builtin or unknown function `{name}`")
+            })?;
             for arg in args {
                 lower_expr(ctx, arg, out)?;
             }
@@ -717,14 +985,132 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             write_uleb(out, index as u64);
             Ok(())
         }
-        IrExprKind::String(_)
-        | IrExprKind::Array(_)
-        | IrExprKind::Index { .. }
-        | IrExprKind::Field { .. }
-        | IrExprKind::Await { .. } => {
-            Err("expression uses a non-scalar value (unsupported in WASM)".to_string())
-        }
+        IrExprKind::Await { .. } => Err("await is not supported by the WASM backend".to_string()),
     }
+}
+
+/// Lower `len(x)` where `x` is a `string` or `array`: load the leading `i32`
+/// length header (char count for strings, element count for arrays), then extend
+/// to `i64` (the builtin's result type on the interpreters).
+fn lower_len(ctx: &mut LowerCtx, args: &[IrExpr], out: &mut Vec<u8>) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err(format!("len expects 1 argument, got {}", args.len()));
+    }
+    let arg = &args[0];
+    if value_val_type(&arg.ty, ctx.structs) != Some(WasmValType::I32) {
+        return Err(format!(
+            "len expects a string or array but got `{}`",
+            arg.ty.name
+        ));
+    }
+    lower_expr(ctx, arg, out)?; // pointer (i32)
+    out.push(0x28); // i32.load
+    out.push(0x02); // align 2 (4-byte)
+    write_uleb(out, 0); // offset 0 (the length header)
+    // i64.extend_i32_s -> the builtin returns i64.
+    out.push(0xac);
+    Ok(())
+}
+
+/// Lower a struct construction `Struct(f0, f1, ...)`: `__alloc` a run of one
+/// 8-byte slot per field, then store each field value at its slot offset. Leaves
+/// the base pointer on the stack.
+fn lower_struct_construction(
+    ctx: &mut LowerCtx,
+    name: &str,
+    args: &[IrExpr],
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let fields = ctx
+        .structs
+        .get(name)
+        .ok_or_else(|| format!("`{name}` is not a struct"))?
+        .clone();
+    if args.len() != fields.len() {
+        return Err(format!(
+            "struct `{name}` expects {} fields, got {}",
+            fields.len(),
+            args.len()
+        ));
+    }
+    let ptr = alloc_bytes(ctx, fields.len() as i32 * SLOT_SIZE, out);
+    for (slot, ((_, field_ty), arg)) in fields.iter().zip(args).enumerate() {
+        let slot_ty = slot_val_type(field_ty, ctx.structs)
+            .ok_or_else(|| format!("struct `{name}` field has unsupported type"))?;
+        get_local(out, ptr); // base pointer
+        lower_expr(ctx, arg, out)?; // field value
+        emit_store_at(slot_ty, slot as i32 * SLOT_SIZE, out);
+    }
+    get_local(out, ptr);
+    Ok(())
+}
+
+/// Lower a fixed array literal `[e0, e1, ...]`: `__alloc` a `[len i32][slots]`
+/// block, write the length header and each element slot, and leave the base
+/// pointer on the stack.
+fn lower_array_literal(
+    ctx: &mut LowerCtx,
+    expr: &IrExpr,
+    elements: &[IrExpr],
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let elem_ty = expr
+        .ty
+        .array_element()
+        .ok_or_else(|| format!("array literal has non-array type `{}`", expr.ty.name))?;
+    let slot_ty = slot_val_type(&elem_ty, ctx.structs)
+        .ok_or_else(|| format!("array element type `{}` is unsupported", elem_ty.name))?;
+    let total = LEN_HEADER + elements.len() as i32 * SLOT_SIZE;
+    let ptr = alloc_bytes(ctx, total, out);
+    // Length header: i32.store [ptr + 0] = element count.
+    get_local(out, ptr);
+    out.push(0x41); // i32.const
+    write_sleb(out, elements.len() as i64);
+    out.push(0x36); // i32.store
+    out.push(0x02); // align 2
+    write_uleb(out, 0);
+    for (i, element) in elements.iter().enumerate() {
+        get_local(out, ptr);
+        lower_expr(ctx, element, out)?;
+        emit_store_at(slot_ty, LEN_HEADER + i as i32 * SLOT_SIZE, out);
+    }
+    get_local(out, ptr);
+    Ok(())
+}
+
+/// Lower a struct field read `target.field`: push the target pointer, add the
+/// field's slot offset, and load the slot.
+fn lower_field_read(
+    ctx: &mut LowerCtx,
+    target: &IrExpr,
+    field: &str,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let (offset, slot_ty) = struct_field_slot(ctx, &target.ty, field)?;
+    lower_expr(ctx, target, out)?; // base pointer
+    emit_load_at(slot_ty, offset, out);
+    Ok(())
+}
+
+/// Lower an array element read `target[index]`: compute the slot address, then
+/// load it. WASM traps on out-of-bounds memory access (no explicit bounds check
+/// this increment).
+fn lower_index_read(
+    ctx: &mut LowerCtx,
+    target: &IrExpr,
+    index: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let elem_ty = target
+        .ty
+        .array_element()
+        .ok_or_else(|| format!("indexing a non-array type `{}`", target.ty.name))?;
+    let slot_ty = slot_val_type(&elem_ty, ctx.structs)
+        .ok_or_else(|| format!("array element type `{}` is unsupported", elem_ty.name))?;
+    lower_expr(ctx, target, out)?; // base pointer (i32)
+    lower_array_slot_offset(ctx, index, out)?; // += header + index*SLOT_SIZE
+    emit_load(slot_ty, out);
+    Ok(())
 }
 
 fn lower_binary(
@@ -767,6 +1153,141 @@ fn lower_binary(
     lower_expr(ctx, left, out)?;
     lower_expr(ctx, right, out)?;
     emit_binary_op_typed(op, operand_ty, out)
+}
+
+// -- Linear-memory helpers ---------------------------------------------------
+
+/// `__alloc(size)` a run of `size` bytes and stash the returned pointer in a
+/// fresh scratch `i32` local; return that local's index. The pointer is reused
+/// for each field/element store and finally re-pushed as the aggregate value.
+fn alloc_bytes(ctx: &mut LowerCtx, size: i32, out: &mut Vec<u8>) -> u32 {
+    let alloc_index = *ctx
+        .func_index
+        .get(ALLOC_HELPER_NAME)
+        .expect("__alloc index recorded");
+    out.push(0x41); // i32.const size
+    write_sleb(out, size as i64);
+    out.push(0x10); // call __alloc
+    write_uleb(out, alloc_index as u64);
+    let ptr = ctx.add_local(WasmValType::I32);
+    set_local(out, ptr);
+    ptr
+}
+
+/// The `(byte offset, slot WASM type)` of a struct field, given the struct's
+/// type and the field name.
+fn struct_field_slot(
+    ctx: &LowerCtx,
+    struct_ty: &TypeRef,
+    field: &str,
+) -> Result<(i32, WasmValType), String> {
+    let fields = ctx
+        .structs
+        .get(&struct_ty.name)
+        .ok_or_else(|| format!("`{}` is not a struct", struct_ty.name))?;
+    let position = fields
+        .iter()
+        .position(|(name, _)| name == field)
+        .ok_or_else(|| format!("unknown field `{field}` on `{}`", struct_ty.name))?;
+    let slot_ty = slot_val_type(&fields[position].1, ctx.structs)
+        .ok_or_else(|| format!("field `{field}` has an unsupported type"))?;
+    Ok((position as i32 * SLOT_SIZE, slot_ty))
+}
+
+/// Given a base pointer already on the stack, add `LEN_HEADER + index*SLOT_SIZE`
+/// so the top of stack is the element slot address. The `index` expression is an
+/// `i64`; it is truncated to `i32` for the address arithmetic.
+fn lower_array_slot_offset(
+    ctx: &mut LowerCtx,
+    index: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    // offset = LEN_HEADER + index * SLOT_SIZE (index is i64 -> i32).
+    lower_expr(ctx, index, out)?;
+    out.push(0xa7); // i32.wrap_i64
+    out.push(0x41); // i32.const SLOT_SIZE
+    write_sleb(out, SLOT_SIZE as i64);
+    out.push(0x6c); // i32.mul
+    out.push(0x41); // i32.const LEN_HEADER
+    write_sleb(out, LEN_HEADER as i64);
+    out.push(0x6a); // i32.add
+    out.push(0x6a); // i32.add  (base + offset)
+    Ok(())
+}
+
+/// Fold one assignment-path hop into the running address on the stack, returning
+/// the hop's leaf IR type. On entry the current base/element pointer is on the
+/// stack; on exit the slot address for this hop is on the stack.
+fn lower_place_address(
+    ctx: &mut LowerCtx,
+    cur_ty: &TypeRef,
+    place: &crate::IrPlace,
+    out: &mut Vec<u8>,
+) -> Result<TypeRef, String> {
+    match place {
+        crate::IrPlace::Field(field) => {
+            let (offset, _) = struct_field_slot(ctx, cur_ty, field)?;
+            if offset != 0 {
+                out.push(0x41); // i32.const offset
+                write_sleb(out, offset as i64);
+                out.push(0x6a); // i32.add
+            }
+            let fields = ctx
+                .structs
+                .get(&cur_ty.name)
+                .ok_or_else(|| format!("`{}` is not a struct", cur_ty.name))?;
+            let field_ty = fields
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, ty)| ty.clone())
+                .ok_or_else(|| format!("unknown field `{field}`"))?;
+            Ok(field_ty)
+        }
+        crate::IrPlace::Index(index) => {
+            let elem_ty = cur_ty
+                .array_element()
+                .ok_or_else(|| format!("indexing a non-array type `{}`", cur_ty.name))?;
+            lower_array_slot_offset(ctx, index, out)?;
+            Ok(elem_ty)
+        }
+    }
+}
+
+/// A non-mid-path store at a base pointer already on the stack followed by the
+/// value: `emit_store` picks the opcode. Alignment `2` = 4-byte for `i32`, `3` =
+/// 8-byte for `i64`/`f64` (offset 0).
+fn emit_store(ty: WasmValType, out: &mut Vec<u8>) {
+    emit_store_at(ty, 0, out);
+}
+
+/// Store the value on the stack (with the base pointer pushed just before it) at
+/// `base + offset`.
+fn emit_store_at(ty: WasmValType, offset: i32, out: &mut Vec<u8>) {
+    let (opcode, align) = match ty {
+        WasmValType::I32 => (0x36u8, 2u64), // i32.store
+        WasmValType::I64 => (0x37, 3),      // i64.store
+        WasmValType::F64 => (0x39, 3),      // f64.store
+    };
+    out.push(opcode);
+    write_uleb(out, align);
+    write_uleb(out, offset as u64);
+}
+
+/// Load a slot value from the address on the stack.
+fn emit_load(ty: WasmValType, out: &mut Vec<u8>) {
+    emit_load_at(ty, 0, out);
+}
+
+/// Load a slot value from `base + offset` (base pointer on the stack).
+fn emit_load_at(ty: WasmValType, offset: i32, out: &mut Vec<u8>) {
+    let (opcode, align) = match ty {
+        WasmValType::I32 => (0x28u8, 2u64), // i32.load
+        WasmValType::I64 => (0x29, 3),      // i64.load
+        WasmValType::F64 => (0x2b, 3),      // f64.load
+    };
+    out.push(opcode);
+    write_uleb(out, align);
+    write_uleb(out, offset as u64);
 }
 
 /// Emit the opcode(s) for a binary op given the operand WASM type.
@@ -835,16 +1356,19 @@ fn emit_i32_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
 }
 
 /// The WASM value type an expression leaves on the stack, using the IR's type
-/// annotation. `None` for a `void` expression.
+/// annotation. `None` for a `void` expression. A pointer type (string/struct/
+/// array) reports `i32`.
 fn expr_val_type(ctx: &LowerCtx, expr: &IrExpr) -> Result<Option<WasmValType>, String> {
-    let _ = ctx;
     if expr.ty.is_void() {
         return Ok(None);
     }
-    if let Some(vt) = scalar_val_type(&expr.ty) {
+    if let Some(vt) = value_val_type(&expr.ty, ctx.structs) {
         return Ok(Some(vt));
     }
-    Err(format!("expression has non-scalar type `{}`", expr.ty.name))
+    Err(format!(
+        "expression has unsupported type `{}`",
+        expr.ty.name
+    ))
 }
 
 /// Whether a non-void function body always leaves a value / returns on every
@@ -943,8 +1467,8 @@ struct FuncType {
 
 /// The internal, non-exported bump-allocator helper `__alloc(size i32) -> i32`.
 /// It reads the mutable bump-pointer global, advances it by `size`, and returns
-/// the old value (the freshly allocated offset). It is groundwork for the linear
-/// memory phase; the scalar subset does not call it yet.
+/// the old value (the freshly allocated offset). Struct/array construction calls
+/// it to reserve their layout in linear memory.
 fn alloc_helper() -> LoweredFunction {
     let mut body = Vec::new();
     body.push(0x23); // global.get
@@ -977,8 +1501,10 @@ const ALLOC_HELPER_NAME: &str = "__alloc";
 /// The single import (`env.log_i64`) occupies WASM function index 0, so every
 /// internally-defined function is numbered from `IMPORT_FUNC_COUNT` up; the
 /// caller already assigned those shifted indices. The internal `__alloc` helper
-/// is appended after the user functions.
-fn encode_module(user_functions: &[LoweredFunction]) -> Vec<u8> {
+/// is appended after the user functions. `pool` supplies the interned
+/// string-literal bytes seeded into the Data section and fixes the bump global's
+/// initial value (past the reserved region and the whole literal pool).
+fn encode_module(user_functions: &[LoweredFunction], pool: &StringPool) -> Vec<u8> {
     // All internally-defined functions, in module (index) order: the compiled
     // user functions, then the bump-allocator helper.
     let mut functions: Vec<LoweredFunction> = user_functions.to_vec();
@@ -1062,15 +1588,16 @@ fn encode_module(user_functions: &[LoweredFunction]) -> Vec<u8> {
         push_section(&mut module, 5, &section);
     }
 
-    // Global section (id 6): the mutable `i32` bump pointer, initialized to the
-    // heap base (past the reserved data region).
+    // Global section (id 6): the mutable `i32` bump pointer, initialized past the
+    // reserved region AND the string-literal pool so `__alloc` never overwrites
+    // static string data.
     {
         let mut section = Vec::new();
         write_uleb(&mut section, 1); // one global
         section.push(WasmValType::I32.byte()); // value type i32
         section.push(0x01); // mutable
         section.push(0x41); // i32.const (init expr)
-        write_sleb(&mut section, HEAP_BASE as i64);
+        write_sleb(&mut section, pool.heap_base() as i64);
         section.push(0x0b); // end init expr
         push_section(&mut module, 6, &section);
     }
@@ -1112,19 +1639,21 @@ fn encode_module(user_functions: &[LoweredFunction]) -> Vec<u8> {
         push_section(&mut module, 10, &section);
     }
 
-    // Data section (id 11): seed the reserved region [0, HEAP_BASE) with zero
-    // bytes at a constant offset. This proves the Data-section encoding and
-    // reserves low memory so the bump allocator never returns offset 0.
+    // Data section (id 11): one active segment at offset 0 seeding the reserved
+    // region [0, RESERVED_BASE) with zeros (so a handed-out pointer is never null)
+    // followed by the interned string-literal pool starting at `RESERVED_BASE`.
     {
+        let mut segment = vec![0u8; RESERVED_BASE as usize];
+        segment.extend_from_slice(&pool.bytes);
+
         let mut section = Vec::new();
         write_uleb(&mut section, 1); // one data segment
         section.push(0x00); // segment kind 0: active, memory 0, offset expr
         section.push(0x41); // i32.const (offset expr)
         write_sleb(&mut section, 0);
         section.push(0x0b); // end offset expr
-        let seed = [0u8; HEAP_BASE as usize];
-        write_uleb(&mut section, seed.len() as u64);
-        section.extend_from_slice(&seed);
+        write_uleb(&mut section, segment.len() as u64);
+        section.extend_from_slice(&segment);
         push_section(&mut module, 11, &section);
     }
 
@@ -1276,12 +1805,47 @@ mod tests {
 
     #[test]
     fn scalar_and_nonscalar_split() {
-        let source = "fn add a i64 b i64 -> i64\n    a + b\n\nfn greet s string -> string\n    s\n";
+        // `add` is scalar; `wrap` returns `option<i64>`, still outside the WASM
+        // value set (strings/structs/arrays are now supported, enums/option are
+        // not), so it is skipped.
+        let source =
+            "fn add a i64 b i64 -> i64\n    a + b\n\nfn wrap n i64 -> option<i64>\n    some(n)\n";
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         assert_eq!(artifact.compiled, vec!["add".to_string()]);
         assert_eq!(artifact.skipped.len(), 1);
-        assert_eq!(artifact.skipped[0].name, "greet");
-        assert!(artifact.skipped[0].reason.contains("non-scalar"));
+        assert_eq!(artifact.skipped[0].name, "wrap");
+        assert!(artifact.skipped[0].reason.contains("supported"));
+    }
+
+    #[test]
+    fn string_returning_function_compiles() {
+        // A function that takes and returns a `string` is now eligible: strings
+        // are `i32` pointers into linear memory.
+        let source =
+            "fn pick b bool -> string\n    if b\n        return \"yes\"\n    return \"no\"\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["pick".to_string()]);
+        // The literal bytes appear in the module's Data section.
+        assert!(
+            find_subslice(&artifact.bytes, b"yes").is_some()
+                && find_subslice(&artifact.bytes, b"no").is_some(),
+            "string literals seeded into the data section"
+        );
+    }
+
+    #[test]
+    fn struct_and_array_functions_compile() {
+        // A struct constructed/read and a fixed array built/indexed both compile:
+        // they lower to `__alloc` + typed loads/stores.
+        let source = concat!(
+            "struct Point\n    x i64\n    y i64\n\n",
+            "fn make a i64 b i64 -> i64\n",
+            "    let p Point = Point(a, b)\n",
+            "    let xs array<i64> = [a, b, a + b]\n",
+            "    p.x + xs[2] + len(xs)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(artifact.compiled.contains(&"make".to_string()));
     }
 
     #[test]
@@ -1300,7 +1864,9 @@ mod tests {
 
     #[test]
     fn no_eligible_functions_errors() {
-        let source = "fn greet s string -> string\n    s\n";
+        // `option<i64>` is not in the supported WASM value set, so nothing is
+        // eligible and the backend reports L0338.
+        let source = "fn wrap n i64 -> option<i64>\n    some(n)\n";
         let err = emit_wasm_module(&module_for(source)).expect_err("no eligible");
         assert_eq!(err.code, "L0338");
         assert_eq!(err.skipped.len(), 1);

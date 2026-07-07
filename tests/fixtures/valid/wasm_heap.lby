@@ -1,0 +1,27 @@
+struct Point
+    x i64
+    y i64
+
+fn greet_len -> i64
+    let s string = "hello"
+    len(s)
+
+fn point_sum a i64 b i64 -> i64
+    let p Point = Point(a, b)
+    p.x + p.y
+
+fn point_mutated a i64 -> i64
+    let p Point = Point(a, a)
+    p.y = a + 10
+    p.x + p.y
+
+fn array_probe -> i64
+    let xs array<i64> = [10, 20, 30, 40]
+    xs[0] += 5
+    let total i64 = 0
+    for i from 0 to len(xs) - 1
+        total += xs[i]
+    total + len(xs)
+
+fn main -> i64
+    greet_len() + point_sum(3, 4) + point_mutated(1) + array_probe()

@@ -10,9 +10,10 @@ produce the same results.
 
 ## Status
 
-**The scalar-subset first increment is DELIVERED, plus the first linear-memory
-step (memory/data/import + `wasm_log`).** It ships as a `wasm` module in
-`crates/lullaby_ir` (`crates/lullaby_ir/src/wasm.rs`, `emit_wasm_module`), the
+**DELIVERED: the scalar subset, the linear-memory step (memory/data/import +
+`wasm_log`), and heap types — strings and fixed aggregates — laid out in linear
+memory.** It ships as a `wasm` module in `crates/lullaby_ir`
+(`crates/lullaby_ir/src/wasm.rs`, `emit_wasm_module`), the
 `lullaby wasm [--verbose] [-o out.wasm] <file.lby>` CLI command, structural
 encoder unit tests, and node-gated execution-parity tests against the
 interpreter (`crates/lullaby_cli/tests/cli.rs`). The encoder writes the module
@@ -21,17 +22,19 @@ canonical order, LEB128 integers, and the stack-machine opcodes it needs — usi
 the Rust standard library only, no external crate. When no function is eligible,
 the CLI reports diagnostic `L0338`.
 
-### Linear-memory step (landed)
+### Linear-memory infrastructure (landed)
 
 - **Memory section (id 5)** declares one linear memory (min 1 page, 64 KiB) and
   the **Export section** exports it as `"memory"` (export kind mem).
-- **Global section (id 6)** declares a mutable `i32` bump pointer initialized to
-  a heap base past a small reserved region.
-- **Data section (id 11)** seeds the reserved low-memory region at a constant
-  offset, so a freshly handed-out offset is never `0` (null).
+- **Global section (id 6)** declares a mutable `i32` bump pointer initialized past
+  the reserved region AND the whole string-literal pool, so `__alloc` never
+  overwrites static string data.
+- **Data section (id 11)** is one active segment at offset 0: the reserved
+  low-memory region (zeros, so a handed-out pointer is never `0`/null) followed by
+  the interned string-literal pool at `RESERVED_BASE` (16).
 - An internal `__alloc(size i32) -> i32` bump-allocator helper reads the global,
-  advances it by `size`, and returns the old offset. It is groundwork; the scalar
-  subset does not call it yet.
+  advances it by `size`, and returns the old offset. Struct and array
+  construction call it to reserve their layout.
 - **Import section (id 2)** imports the host function
   `env.log_i64 (func (param i64))` and exposes it to Lullaby as the builtin
   `wasm_log(x i64) -> void`. A `wasm_log(n)` call lowers to a `call` of the
@@ -44,8 +47,39 @@ the CLI reports diagnostic `L0338`.
   and the function-export indices are shifted by the import count; the imported
   `env.log_i64` is index `0`.
 
-Full string/struct/enum/array layout in linear memory (using this allocator and
-memory) remains deferred.
+### Heap types (landed)
+
+`string`, `struct`, and fixed `array` values are **`i32` pointers** into linear
+memory. Their WASM slot type is the scalar's own type for a scalar, or `i32` for
+a pointer (nested strings/structs/arrays).
+
+- **Strings:** a `string` is a pointer to `[len: i32 char-count][utf8 bytes]`.
+  Each distinct string literal is interned ONCE into the Data section (a constant
+  static offset is its value). `len(s)` lowers to `i32.load` of the header then
+  `i64.extend_i32_s` (the builtin returns `i64`, char count to match the
+  interpreters). Runtime string building (`+` concat, `to_string`, `substring`,
+  …) is not yet lowered — a function using it is skipped.
+- **Structs:** a `struct` is a pointer to a contiguous run of one 8-byte slot per
+  field in declared order (uniform 8-byte slots keep `i64`/`f64` naturally
+  aligned and make offsets a simple `slot_index * 8`). Positional construction (a
+  `Call` whose name is the struct, as the IR lowerer emits struct literals)
+  `__alloc`s the run and stores each field; `.field` reads a slot with a typed
+  `*.load`; `p.field = v` (and compound forms) writes a slot with a typed
+  `*.store`.
+- **Arrays:** a fixed `array` literal is a pointer to `[len: i32][elem slots...]`,
+  one 8-byte slot per element. `a[i]` computes `base + 4 + i*8` (index truncated
+  `i64 -> i32`) and loads; `a[i] = v` stores; `len(a)` loads the leading `i32`.
+  WASM traps on out-of-bounds memory access, so no explicit bounds check is
+  emitted this increment.
+- **Assignment paths:** `a.b.c = v` and `xs[i].f = v` fold each hop into a running
+  address; non-final hops load the nested pointer, the final hop leaves the slot
+  address for the store (or a load-op-store for compound assignment).
+
+**Deferred:** enums/tagged unions and `match` lowering (the tag+payload memory
+representation and branch-on-tag); the built-in generic enums `option`/`result`;
+the growable `list`/`map` collections; runtime string construction; and a
+free-list allocator (`__alloc` never frees this increment). Functions using any
+of these are skipped with a reason and still run on the interpreters.
 
 ## First increment — the scalar subset
 
@@ -65,11 +99,12 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
-- A function that uses any non-scalar type, `match` over an enum, or a heap value
-  is **rejected for WASM** with a clear diagnostic (it still runs on the
-  interpreters); those await the linear-memory phase. The one allowed builtin is
-  `wasm_log(x i64) -> void` (the host log import above); every other builtin is
-  still rejected.
+- A function that uses an enum/`match`, `option`/`result`/`list`/`map`, a runtime
+  string builder, or any type still outside the supported set is **rejected for
+  WASM** with a clear diagnostic (it still runs on the interpreters). The allowed
+  builtins are `wasm_log(x i64) -> void` (the host log import above) and
+  `len(string|array) -> i64`; every other builtin is still rejected. Strings,
+  structs, and fixed arrays are now supported — see **Heap types (landed)** above.
 
 ## From IR to WASM
 
@@ -122,10 +157,16 @@ First increment (DELIVERED): the scalar subset above, binary `.wasm` output, the
 Linear-memory step (DELIVERED): exported `"memory"`, a mutable bump-pointer
 global, a seeded Data section, the internal `__alloc` helper, and the
 `env.log_i64` host import surfaced as `wasm_log` with node-gated call-sequence
-parity. Deferred (rest of the linear-memory phase): `string`/`struct`/`enum`/
-`array` layout on top of this allocator, a free-list allocator, `match` lowering,
-collections, and a richer JS/DOM interop layer (imports for `console.log`/DOM)
-that builds on `wasm_log`.
+parity. Heap types (DELIVERED): `string` literals and `len(s)` in the Data
+section, `struct` and fixed `array` construction/field/index load-store through
+`__alloc`, and `len(a)` — see **Heap types (landed)**. The
+`tests/fixtures/valid/wasm_heap.lby` fixture runs on all interpreters (`main` =
+133) and, under node, its exports and the interned string layout in `memory`
+match (`crates/lullaby_cli/tests/cli.rs::wasm_heap_types_execution_parity_with_node`).
+Deferred: enum/tagged-union + `match` lowering (tag+payload memory, branch on
+tag), `option`/`result`, growable `list`/`map`, runtime string construction, a
+free-list allocator, and a richer JS/DOM interop layer (imports for
+`console.log`/DOM) that builds on `wasm_log`.
 
 ## Why these choices
 

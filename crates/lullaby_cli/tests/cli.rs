@@ -2260,12 +2260,13 @@ fn wasm_emits_module_and_lists_functions() {
 
 #[test]
 fn wasm_reports_no_eligible_functions() {
-    // A file whose only function uses a non-scalar type: nothing is eligible, so
-    // the WASM backend reports L0338.
+    // A file whose only function uses a type outside the supported WASM value set
+    // (strings/structs/arrays are now supported, `option`/enums are not): nothing
+    // is eligible, so the WASM backend reports L0338.
     // `wasm` reuses the executable pipeline, which requires `main`; make `main`
-    // itself non-scalar (returns `string`) so nothing is eligible and the
-    // emitter reports L0338 rather than compiling anything.
-    let source = "fn main -> string\n    \"hi\"\n";
+    // itself return `option<i64>` so nothing is eligible and the emitter reports
+    // L0338 rather than compiling anything.
+    let source = "fn main -> option<i64>\n    some(1)\n";
     let tmp = std::env::temp_dir().join("lullaby_wasm_none.lby");
     std::fs::write(&tmp, source).expect("write temp");
     let output = lullaby()
@@ -2447,6 +2448,106 @@ fn wasm_log_import_execution_parity_with_node() {
         captured, interp_logged,
         "WASM host-log call sequence must equal the interpreter's"
     );
+}
+
+#[test]
+fn wasm_heap_types_execution_parity_with_node() {
+    // The heap-types step: a program that builds a string, a struct (with a field
+    // mutation), and a fixed array (with an indexed write and a `for`-loop read),
+    // all laid out in linear memory. Each exported function's WASM result must
+    // match the interpreter, and the emitted `memory` must hold the interned
+    // string literal.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_heap.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_heap.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // The emitted module exports `memory` and seeds the `"hello"` literal into
+    // its Data section — a raw-bytes check independent of any runtime.
+    let bytes = std::fs::read(&out).expect("read wasm");
+    assert!(
+        contains_subslice(&bytes, b"memory"),
+        "module exports `memory`"
+    );
+    assert!(
+        contains_subslice(&bytes, b"hello"),
+        "string literal seeded into the data section"
+    );
+
+    // Interpreter ground truth for `main` (which calls every heap function).
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "133");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM heap-types execution parity");
+        return;
+    }
+
+    // The runner instantiates the module (a no-op `env.log_i64`), calls each
+    // export, and additionally reads the interned `[len i32][utf8]` string layout
+    // straight out of `memory` at the reserved base (offset 16).
+    let runner = std::env::temp_dir().join("lullaby_wasm_heap_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           const e=r.instance.exports;\
+           const dv=new DataView(e.memory.buffer);\
+           const slen=dv.getInt32(16,true);\
+           const sbytes=new Uint8Array(e.memory.buffer).slice(20,20+slen);\
+           const lines=[\
+             'greet_len='+e.greet_len().toString(),\
+             'point_sum='+e.point_sum(3n,4n).toString(),\
+             'point_mutated='+e.point_mutated(1n).toString(),\
+             'array_probe='+e.array_probe().toString(),\
+             'main='+e.main().toString(),\
+             'str='+Buffer.from(sbytes).toString()+'/'+slen\
+           ];\
+           process.stdout.write(lines.join(';'));\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    // `len` on a string literal read from linear memory.
+    assert!(out_text.contains("greet_len=5"), "{out_text}");
+    // Struct field reads.
+    assert!(out_text.contains("point_sum=7"), "{out_text}");
+    // Struct field mutation.
+    assert!(out_text.contains("point_mutated=12"), "{out_text}");
+    // Array literal, indexed write, `for`-loop indexed read, and array `len`.
+    assert!(out_text.contains("array_probe=109"), "{out_text}");
+    // Whole-program `main` matches the interpreter.
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "{out_text}"
+    );
+    // The interned string layout in `memory` decodes back to the literal.
+    assert!(out_text.contains("str=hello/5"), "{out_text}");
 }
 
 // -- Native x86-64 backend (i64-scalar subset, link-to-exe) ------------------
