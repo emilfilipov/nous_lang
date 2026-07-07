@@ -2498,6 +2498,21 @@ impl<'a> Checker<'a> {
                 self.expect_arg_count(name, args, 0, function)?;
                 Some(TypeRef::new("void"))
             }
+            "assert" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let arg_type = self.check_expr(&args[0], scope, function)?;
+                if arg_type.name == "bool" {
+                    Some(TypeRef::new("void"))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0342",
+                        format!("assert expects a bool argument but got `{}`", arg_type.name),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
             "to_string" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let arg_type = self.check_expr(&args[0], scope, function)?;
@@ -6214,6 +6229,24 @@ mod tests {
         let diagnostics = validate_source(source).expect_err("wrong http arg type");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0336"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_assert_with_bool_argument() {
+        // `assert(cond bool) -> void` type-checks when its argument is a bool.
+        let source = "fn main -> void\n    assert(2 + 2 == 4)\n";
+        validate_source(source).expect("assert with bool argument");
+    }
+
+    #[test]
+    fn rejects_non_bool_assert_with_l0342() {
+        // `assert` expects a single `bool`; passing an i64 is reported as L0342.
+        let source = "fn main -> void\n    assert(5)\n";
+        let diagnostics = validate_source(source).expect_err("non-bool assert argument");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0342"),
             "{diagnostics:?}"
         );
     }

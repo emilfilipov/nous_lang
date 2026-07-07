@@ -209,6 +209,18 @@ bytecode backends.
 - `result<T, E>` with `ok`/`err` plus `match` is the value-based alternative;
   `option<T>` (`some`/`none`) models absence.
 
+## Testing
+
+- `assert(cond bool) -> void` raises a catchable runtime error with the message
+  `assertion failed` (the same error path `throw` uses, so `try`/`catch` recovers
+  it) when `cond` is false, and returns `void` when true. A non-`bool` argument is
+  a type error (`L0342`).
+- `lullaby test <file.lby>` is the test runner: it validates the file as a library
+  (no `main` needed) and runs every zero-parameter `test_*` function through the
+  interpreter, reporting `PASS`/`FAIL` per test plus a `N passed, M failed`
+  summary and a non-zero exit when any test fails. A test fails if it produces a
+  runtime error, so `assert` is the natural way to write test bodies.
+
 ## Notes
 
 - This prelude is a documentation artifact over the compiler's built-in surface;

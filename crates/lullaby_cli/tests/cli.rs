@@ -2472,3 +2472,41 @@ fn native_execution_parity_when_linkable() {
         "native exit code must equal the interpreter result (mod 256)"
     );
 }
+
+#[test]
+fn test_runner_passes_on_demo_suite() {
+    // The user-facing demo test suite has four `test_*` functions that all pass
+    // via `assert`, with no `main`. `lullaby test` exits 0 and reports all pass.
+    let demo = workspace_root().join("examples/valid/tests_demo/tests_demo.lby");
+    let output = lullaby()
+        .args(["test", demo.to_str().expect("demo path")])
+        .output()
+        .expect("run cli");
+    let out = stdout(&output);
+    assert!(output.status.success(), "{output:?}\n{out}");
+    assert!(out.contains("PASS test_arith"), "{out}");
+    assert!(out.contains("4 passed, 0 failed"), "{out}");
+}
+
+#[test]
+fn test_runner_reports_failing_assert_and_exits_nonzero() {
+    // A test that `assert(false)`s must fail: `lullaby test` prints FAIL with the
+    // `assertion failed` message and exits non-zero.
+    let tmp = std::env::temp_dir().join("lullaby_test_failing.lby");
+    std::fs::write(
+        &tmp,
+        "fn test_passes -> void\n    assert(true)\n\nfn test_fails -> void\n    assert(false)\n",
+    )
+    .expect("write temp");
+    let output = lullaby()
+        .args(["test", tmp.to_str().expect("temp path")])
+        .output()
+        .expect("run cli");
+    let out = stdout(&output);
+    assert!(!output.status.success(), "{output:?}\n{out}");
+    assert!(out.contains("PASS test_passes"), "{out}");
+    assert!(out.contains("FAIL test_fails"), "{out}");
+    assert!(out.contains("assertion failed"), "{out}");
+    assert!(out.contains("1 passed, 1 failed"), "{out}");
+    let _ = std::fs::remove_file(&tmp);
+}

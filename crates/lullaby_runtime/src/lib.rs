@@ -563,9 +563,23 @@ pub fn run_main_with_args(program: &Program, args: Vec<String>) -> Result<Value,
 /// Shared-program entry: build an interpreter borrowing `&*arc` while retaining
 /// an owned `Arc<Program>` clone for detached-thread spawning.
 fn run_main_shared(arc: Arc<Program>, args: Vec<String>) -> Result<Value, RuntimeError> {
+    if !arc.functions.iter().any(|function| function.name == "main") {
+        return Err(RuntimeError::new("L0422", "missing `main` function"));
+    }
     let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
     runtime.program_args = args;
     runtime.call_function("main", Vec::new())
+}
+
+/// Run a single named zero-argument function against `program` through the AST
+/// interpreter, mirroring `run_main` but for an arbitrary entry point (used by
+/// the `lullaby test` runner). The program need not define `main`. Returns the
+/// function's value on success, or the propagated `RuntimeError` — including a
+/// user `throw` / failed `assert` (code `L0420`) — on failure.
+pub fn run_named_function(program: &Program, name: &str) -> Result<Value, RuntimeError> {
+    let arc = Arc::new(program.clone());
+    let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
+    runtime.call_function(name, Vec::new())
 }
 
 struct Runtime<'a> {
@@ -612,10 +626,6 @@ impl<'a> Runtime<'a> {
             .iter()
             .map(|function| (function.name.as_str(), function))
             .collect::<HashMap<_, _>>();
-
-        if !functions.contains_key("main") {
-            return Err(RuntimeError::new("L0422", "missing `main` function"));
-        }
 
         // Build the trait-method dispatch table from all impl blocks and record
         // the set of trait method names so calls can be recognized.
@@ -736,6 +746,7 @@ impl<'a> Runtime<'a> {
             "println" => self.builtin_print("println", args, true),
             "warn" => self.builtin_warn(args),
             "flush" => self.builtin_flush(args),
+            "assert" => Self::builtin_assert(args),
             "to_string" => Self::builtin_to_string(args),
             "char_code" => Self::builtin_char_code(args),
             "char_from" => Self::builtin_char_from(args),
@@ -2156,6 +2167,20 @@ impl<'a> Runtime<'a> {
         Ok(Value::Void)
     }
 
+    /// `assert(cond bool) -> void`: raises a catchable user-error (the same code
+    /// `L0420` a `throw` produces, so `try`/`catch` recovers it) with the message
+    /// `assertion failed` when `cond` is false; returns void when true.
+    fn builtin_assert(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("assert", 1, args.len()))?;
+        if value.as_bool()? {
+            Ok(Value::Void)
+        } else {
+            Err(RuntimeError::new("L0420", "assertion failed"))
+        }
+    }
+
     fn builtin_to_string(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [value]: [Value; 1] = args
             .try_into()
@@ -3493,6 +3518,45 @@ mod tests {
         let error = run_source(source).expect_err("runtime error");
         assert_eq!(error.code, "L0420");
         assert_eq!(error.message, "unhandled");
+    }
+
+    #[test]
+    fn assert_true_returns_void() {
+        let source = "fn main -> void\n    assert(true)\n";
+        assert_eq!(run_source(source).expect("run"), Value::Void);
+    }
+
+    #[test]
+    fn assert_false_yields_catchable_runtime_error() {
+        // `assert(false)` raises the same catchable user-error a `throw` does.
+        let source = "fn main -> void\n    assert(false)\n";
+        let error = run_source(source).expect_err("runtime error");
+        assert_eq!(error.code, "L0420");
+        assert_eq!(error.message, "assertion failed");
+    }
+
+    #[test]
+    fn assert_false_is_recoverable_by_try_catch() {
+        let source = "fn main -> i64\n    let result i64 = 0\n    try\n        assert(false)\n    catch message\n        result = 7\n    result\n";
+        assert_eq!(run_source(source).expect("run"), Value::I64(7));
+    }
+
+    #[test]
+    fn run_named_function_runs_a_test_without_main() {
+        // A library-style program with no `main`: run a named zero-arg function
+        // directly. A passing test returns Ok; a failing one propagates L0420.
+        let source =
+            "fn test_ok -> void\n    assert(true)\n\nfn test_bad -> void\n    assert(false)\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        validate(&program).expect("semantic");
+        assert_eq!(
+            run_named_function(&program, "test_ok").expect("run test_ok"),
+            Value::Void
+        );
+        let error = run_named_function(&program, "test_bad").expect_err("test_bad fails");
+        assert_eq!(error.code, "L0420");
+        assert_eq!(error.message, "assertion failed");
     }
 
     #[test]

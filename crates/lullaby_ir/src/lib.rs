@@ -3543,6 +3543,7 @@ impl<'a> IrRuntime<'a> {
             "println" => self.builtin_print("println", args, true),
             "warn" => self.builtin_warn(args),
             "flush" => self.builtin_flush(args),
+            "assert" => Self::builtin_assert(args),
             "to_string" => Self::builtin_to_string(args),
             "char_code" => Self::builtin_char_code(args),
             "char_from" => Self::builtin_char_from(args),
@@ -4418,6 +4419,20 @@ impl<'a> IrRuntime<'a> {
             RuntimeError::resource("L0419", format!("failed to flush stdout: {error}"))
         })?;
         Ok(Value::Void)
+    }
+
+    /// `assert(cond bool) -> void`: raises the same catchable user-error (code
+    /// `L0420`) a `throw` produces when `cond` is false; returns void otherwise.
+    /// Kept at parity with the AST runtime's `builtin_assert`.
+    fn builtin_assert(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("assert", 1, args.len()))?;
+        if value.as_bool()? {
+            Ok(Value::Void)
+        } else {
+            Err(RuntimeError::new("L0420", "assertion failed"))
+        }
     }
 
     fn builtin_to_string(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -6529,7 +6544,7 @@ impl<'a> Lowerer<'a> {
                     })?
             }
             "store" | "dealloc" | "write_file" | "append_file" | "write_bytes" | "make_dir"
-            | "remove_file" | "remove_dir" | "print" | "println" | "warn" | "flush"
+            | "remove_file" | "remove_dir" | "print" | "println" | "warn" | "flush" | "assert"
             | "rc_release" | "ptr_write" | "region_create" | "tcp_close" | "tcp_shutdown" => {
                 TypeRef::new("void")
             }

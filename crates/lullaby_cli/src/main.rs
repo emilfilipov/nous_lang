@@ -16,7 +16,7 @@ use lullaby_ir::{
 };
 use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex, validate_source_path};
 use lullaby_parser::{Program, format_program, parse};
-use lullaby_runtime::{ErrorCategory, RuntimeError, Value, run_main_with_args};
+use lullaby_runtime::{ErrorCategory, RuntimeError, Value, run_main_with_args, run_named_function};
 use lullaby_semantics::{CheckedProgram, validate, validate_executable};
 
 mod loader;
@@ -25,7 +25,12 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("{message}");
+            // An empty message is a bare non-zero exit request (e.g. `lullaby
+            // test` after it already printed per-test results); don't emit a
+            // spurious blank stderr line.
+            if !message.is_empty() {
+                eprintln!("{message}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -56,6 +61,7 @@ fn run() -> Result<(), String> {
             invocation.optimization,
             invocation.program_args,
         ),
+        CommandName::Test => test_file(invocation.path, invocation.mode),
         CommandName::Wasm => wasm_file(invocation.path, invocation.output, invocation.mode),
         CommandName::Native => native_file(invocation.path, invocation.output, invocation.mode),
         CommandName::Version => {
@@ -504,6 +510,95 @@ fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
             failure.source.as_deref(),
         )),
     }
+}
+
+/// Run the language-level test suite in a `.lby` source file. The source is
+/// validated as a LIBRARY (no `main` required), then every top-level function
+/// whose name starts with `test_`, takes zero parameters, is non-generic, and
+/// returns `void`/`i64`/`bool` is run through the AST interpreter. A test passes
+/// if it returns without a runtime error and fails if it produces one (an
+/// `assert(false)` throw, or any other runtime error). Prints one line per test
+/// plus a summary and exits non-zero if any test failed.
+fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
+    let compiled = match compile(&path, SourceMode::Library) {
+        Ok(compiled) => compiled,
+        Err(failure) => {
+            return Err(format_reports(
+                &failure.reports,
+                mode,
+                failure.source.as_deref(),
+            ));
+        }
+    };
+
+    let verbose = mode == OutputMode::Verbose;
+    let mut names = Vec::new();
+    for function in &compiled.program.functions {
+        if !function.name.starts_with("test_") {
+            continue;
+        }
+        // Skip test-named functions that cannot be run as a zero-argument entry
+        // point, noting why so the surface stays discoverable.
+        if !function.params.is_empty() {
+            println!(
+                "skip {}: takes parameters (test functions must take zero parameters)",
+                function.name
+            );
+            continue;
+        }
+        if !function.type_params.is_empty() {
+            println!("skip {}: is generic", function.name);
+            continue;
+        }
+        if !matches!(function.return_type.name.as_str(), "void" | "i64" | "bool") {
+            println!(
+                "skip {}: returns `{}` (expected void, i64, or bool)",
+                function.name, function.return_type.name
+            );
+            continue;
+        }
+        names.push(function.name.clone());
+    }
+
+    if names.is_empty() {
+        println!("no tests found (define functions named `test_*` with zero parameters)");
+        println!("0 passed, 0 failed");
+        return Ok(());
+    }
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    for name in &names {
+        match run_named_function(&compiled.program, name) {
+            Ok(_) => {
+                passed += 1;
+                println!("PASS {name}");
+            }
+            Err(error) => {
+                failed += 1;
+                println!("FAIL {name}: {}", error.message);
+                if verbose {
+                    for frame in &error.traceback {
+                        match frame.span {
+                            Some(span) => println!(
+                                "    at {} ({}:{})",
+                                frame.function, span.line, span.column
+                            ),
+                            None => println!("    at {}", frame.function),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    println!("{passed} passed, {failed} failed");
+    if failed > 0 {
+        // Non-zero exit without an extra diagnostic line: the per-test output and
+        // summary already report the failures.
+        return Err(String::new());
+    }
+    Ok(())
 }
 
 fn run_file(
@@ -977,6 +1072,7 @@ enum CommandName {
     Fmt,
     Inspect,
     Run,
+    Test,
     Wasm,
     Native,
     Version,
@@ -1098,7 +1194,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                 Err("usage: lullaby examples".to_string())
             }
         }
-        "build" | "check" | "compile" | "inspect" | "run" | "wasm" | "native" => {
+        "build" | "check" | "compile" | "inspect" | "run" | "test" | "wasm" | "native" => {
             parse_file_command(command, &args[1..])
         }
         "fmt" => parse_fmt_command(&args[1..]),
@@ -1124,7 +1220,9 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 cursor += 1;
             }
             "--format" | "--diagnostic-format" => {
-                if mode != OutputMode::Concise
+                // `test` has a fixed textual report and does not offer JSON.
+                if command == "test"
+                    || mode != OutputMode::Concise
                     || args.get(cursor + 1).map(String::as_str) != Some("json")
                 {
                     return Err(usage);
@@ -1216,6 +1314,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
             "check" => CommandName::Check,
             "compile" => CommandName::Compile,
             "inspect" => CommandName::Inspect,
+            "test" => CommandName::Test,
             "wasm" => CommandName::Wasm,
             "native" => CommandName::Native,
             _ => CommandName::Run,
@@ -1270,6 +1369,7 @@ fn command_usage(command: &str) -> String {
         "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
+        "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
         "native" => "usage: lullaby native [--verbose] [-o out.exe] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
@@ -1279,7 +1379,7 @@ fn command_usage(command: &str) -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby>\n  lullaby native [--verbose] [-o out.exe] <file.lby>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby>\n  lullaby native [--verbose] [-o out.exe] <file.lby>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
         env!("CARGO_PKG_VERSION")
     );
 }

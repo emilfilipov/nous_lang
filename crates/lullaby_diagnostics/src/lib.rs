@@ -397,6 +397,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         suggested_fix: "Give each region a unique name.",
     },
     DiagnosticEntry {
+        code: "L0342",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "An `assert` call has a non-bool argument.",
+        root_cause: "The `assert` builtin was called with an argument whose type is not `bool`.",
+        suggested_fix: "Pass a single `bool` condition to `assert`.",
+    },
+    DiagnosticEntry {
         code: "L0350",
         phase: DiagnosticPhase::Semantic,
         explanation: "A resource is used after it was freed (use-after-free or double-free).",

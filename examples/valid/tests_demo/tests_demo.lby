@@ -1,0 +1,24 @@
+fn unwrap_or o option<i64> fallback i64 -> i64
+    match o
+        some(v) -> v
+        none -> fallback
+
+fn test_arith -> void
+    assert(2 + 2 == 4)
+    assert(10 - 3 == 7)
+    assert(6 * 7 == 42)
+
+fn test_strings -> void
+    assert(len("abc") == 3)
+    assert(contains("hello world", "world"))
+    assert(upper("abc") == "ABC")
+
+fn test_option -> void
+    let some_value option<i64> = some(9)
+    let none_value option<i64> = none
+    assert(unwrap_or(some_value, 0) == 9)
+    assert(unwrap_or(none_value, 5) == 5)
+
+fn test_bool_return -> bool
+    assert(true and not false)
+    true

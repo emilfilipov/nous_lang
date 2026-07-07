@@ -107,6 +107,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `L0338` | ir | No functions were eligible for the WebAssembly scalar subset. | `lullaby wasm` found no top-level function whose parameters and return type are all scalars (`i64`/`f64`/`bool`/`char`/`byte`); every function uses a non-scalar type, heap value, `match`, or a builtin. | Add or expose a scalar function, or keep running the program on the interpreters until the linear-memory WASM phase lands. |
 | `L0340` | semantic | Invalid region size, alignment, or kind. | Size is not positive, alignment is not a power of two, or kind is not `static`/`dynamic`. | Use a positive size, power-of-two alignment, and a `static` or `dynamic` kind. |
 | `L0341` | semantic | Duplicate region name. | A region name was declared more than once in the same function. | Give each region a unique name. |
+| `L0342` | semantic | `assert` argument is not `bool`. | The `assert` builtin was called with an argument whose type is not `bool`. | Pass a single `bool` condition to `assert`. |
 | `L0350` | semantic | Use-after-free / double-free. | A binding is used or freed again after a straight-line `dealloc`/`rc_release`. | Remove the later use, or reallocate/rebind first. |
 | `L0351` | semantic | Borrowed `ref<T>` escapes its owner. | A function declares a `ref<T>` return type. | Return an owning `rc<T>` or a value instead. |
 | `L0360` | semantic | Duplicate type alias. | Two `alias` declarations share a name. | Give each type alias a unique name. |
