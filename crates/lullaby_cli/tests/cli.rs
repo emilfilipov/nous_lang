@@ -1,4 +1,4 @@
-﻿use std::path::PathBuf;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn workspace_root() -> PathBuf {
@@ -2347,5 +2347,128 @@ fn wasm_execution_parity_with_node() {
     assert!(
         out_text.contains(&format!("main={interp_main}")),
         "{out_text}"
+    );
+}
+
+// -- Native x86-64 backend (i64-scalar subset, link-to-exe) ------------------
+
+/// Locate `rust-lld.exe` under the rustc sysroot (mirrors the CLI's discovery).
+/// `None` if rustc or the linker cannot be found.
+fn rust_lld_path() -> Option<PathBuf> {
+    let out = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let lld = PathBuf::from(sysroot).join("lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe");
+    lld.is_file().then_some(lld)
+}
+
+/// Whether `kernel32.lib` is reachable via the `LIB` environment variable.
+fn kernel32_available() -> bool {
+    std::env::var("LIB").ok().is_some_and(|lib| {
+        lib.split(';')
+            .any(|dir| !dir.is_empty() && PathBuf::from(dir.trim()).join("kernel32.lib").is_file())
+    })
+}
+
+/// Emit + verbose-list the native object for the i64-scalar fixture. This part
+/// always runs: it exercises the emitter and CLI wiring regardless of linking.
+#[test]
+fn native_emits_object_and_lists_functions() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_native_list.exe");
+    let output = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let listing = stdout(&output);
+    for name in ["add", "fib", "sum_to", "main"] {
+        assert!(
+            listing.contains(&format!("compiled {name}")),
+            "expected `{name}` compiled: {listing}"
+        );
+    }
+
+    // The object file is always written (the reliable floor) and starts with the
+    // AMD64 COFF machine magic (0x8664, little-endian).
+    let obj = out.with_extension("obj");
+    let bytes = std::fs::read(&obj).expect("read native object");
+    assert_eq!(&bytes[0..2], &[0x64, 0x86], "COFF AMD64 machine");
+}
+
+/// A file with no i64-scalar function eligible reports diagnostic `L0339`.
+#[test]
+fn native_reports_no_eligible_functions() {
+    let source = "fn main -> string\n    \"hi\"\n";
+    let tmp = std::env::temp_dir().join("lullaby_native_none.lby");
+    std::fs::write(&tmp, source).expect("write temp");
+    let output = lullaby()
+        .args(["native", "--verbose", tmp.to_str().expect("temp path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success());
+    let rendered = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(rendered.contains("L0339"), "expected L0339: {rendered}");
+    assert!(
+        rendered.contains("skipped main"),
+        "expected verbose skip reason: {rendered}"
+    );
+}
+
+/// Best-effort execution parity: link the i64-scalar fixture into a real `.exe`
+/// and assert its exit code equals the interpreter's `main` result (mod 256).
+/// If `rust-lld` or `kernel32.lib` is unavailable, skip with a message.
+#[test]
+fn native_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_native_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 39, "fixture main computes 39");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native link+run parity"
+        );
+        return;
+    }
+
+    // The CLI should have produced the `.exe`; run it and compare exit codes.
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "native exit code must equal the interpreter result (mod 256)"
     );
 }

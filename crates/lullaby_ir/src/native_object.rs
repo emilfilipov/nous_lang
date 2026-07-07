@@ -7,7 +7,8 @@ use lullaby_parser::{AssignOp, BinaryOp};
 
 use crate::native_contract::{NativeObjectFormat, NativeTarget, alpha1_native_backend_contract};
 use crate::{
-    BytecodeExpr, BytecodeExprKind, BytecodeFunction, BytecodeInstruction, BytecodeModule,
+    BytecodeExpr, BytecodeExprKind, BytecodeFunction, BytecodeIfBranch, BytecodeInstruction,
+    BytecodeModule,
 };
 
 const AMD64_MACHINE: u16 = 0x8664;
@@ -575,6 +576,1234 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+// ===========================================================================
+// Extended native program emitter (multi-function, linkable, i64-scalar subset)
+// ===========================================================================
+//
+// The prototype `emit_alpha1_coff_object` above lowers a single literal-return
+// `main`. The emitter below extends the same COFF machinery to the full
+// i64-scalar subset the WASM backend targets: every function whose parameters
+// and return type are all `i64` (up to four parameters, Win64 register args) is
+// compiled to x86-64 machine code, with control flow (`if`/`while`/`loop`/`for`)
+// lowered structurally and inter-function calls resolved through COFF
+// relocations. An entry stub (`_lullaby_start`) calls `main`, moves its result
+// into `ecx`, and calls `ExitProcess` (imported from kernel32) so the process
+// exit code is `main`'s result mod 256. Functions using anything outside the
+// subset are SKIPPED (they still run on the interpreters).
+
+/// The result of emitting a linkable native program: the COFF object bytes plus
+/// the record of which functions compiled and which were skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeProgram {
+    /// Target triple (`x86_64-pc-windows-msvc`).
+    pub target: NativeTarget,
+    /// The COFF object bytes (a real linkable `.obj`).
+    pub bytes: Vec<u8>,
+    /// The entry-point symbol name the linker should use (`/entry:`).
+    pub entry_symbol: String,
+    /// Names of functions compiled to native code, in module order.
+    pub compiled: Vec<String>,
+    /// Functions skipped for the native subset, each with a reason.
+    pub skipped: Vec<NativeSkippedFunction>,
+}
+
+/// A function that was not eligible for the native i64-scalar subset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeSkippedFunction {
+    pub name: String,
+    pub reason: String,
+}
+
+/// A hard failure while emitting the native program. The only hard error is "no
+/// i64-scalar function was eligible", surfaced by the CLI as diagnostic `L0339`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeProgramError {
+    pub code: &'static str,
+    pub message: String,
+    /// Functions skipped, so the CLI can still report why nothing compiled.
+    pub skipped: Vec<NativeSkippedFunction>,
+}
+
+/// Diagnostic code for "no i64-scalar functions eligible for native codegen".
+/// Kept inline (like the WASM backend's `L0338`) rather than in the shared
+/// diagnostic registry, which only carries frontend/semantic codes.
+pub const NATIVE_NO_ELIGIBLE_CODE: &str = "L0339";
+
+/// The entry-stub symbol name. The linker is invoked with `/entry:` set to this.
+pub const NATIVE_ENTRY_SYMBOL: &str = "_lullaby_start";
+
+/// The imported process-exit function (from kernel32). Referenced by the entry
+/// stub through a REL32 relocation; the linker binds it to the import thunk.
+const EXIT_PROCESS_SYMBOL: &str = "ExitProcess";
+
+/// COFF relocation type for a 32-bit PC-relative reference to a symbol, used for
+/// `call rel32` and `jmp rel32` targeting another symbol (`IMAGE_REL_AMD64_REL32`).
+const IMAGE_REL_AMD64_REL32: u16 = 0x0004;
+
+/// Emit a linkable COFF object for the i64-scalar-subset functions of `module`.
+///
+/// Eligible functions (all params + return are `i64`, at most four params, and a
+/// body built from the supported subset) are lowered to x86-64. An entry stub
+/// calls `main` and forwards its result to `ExitProcess`. Ineligible functions
+/// are recorded in `skipped`. If no function is eligible, returns an error with
+/// code `L0339`.
+pub fn emit_alpha1_native_program(
+    module: &BytecodeModule,
+) -> Result<NativeProgram, NativeProgramError> {
+    let contract = alpha1_native_backend_contract();
+    let target = contract.first_target;
+
+    // First pass: decide signature eligibility. Calls resolve against the set of
+    // names we intend to compile.
+    let mut skipped: Vec<NativeSkippedFunction> = Vec::new();
+    let mut eligible_names: Vec<String> = Vec::new();
+    for function in &module.functions {
+        match native_signature_eligibility(function) {
+            Ok(()) => eligible_names.push(function.name.clone()),
+            Err(reason) => skipped.push(NativeSkippedFunction {
+                name: function.name.clone(),
+                reason,
+            }),
+        }
+    }
+
+    // Second pass: lower each eligible body. A lowering failure demotes the
+    // function to skipped and drops it from the callable set, then re-runs (a
+    // call to a demoted function must also fail). Converges quickly.
+    loop {
+        let callable: std::collections::HashSet<&str> =
+            eligible_names.iter().map(String::as_str).collect();
+        let mut lowered: Vec<LoweredNativeFunction> = Vec::new();
+        let mut demoted: Option<NativeSkippedFunction> = None;
+
+        for name in &eligible_names {
+            let function = module
+                .functions
+                .iter()
+                .find(|f| &f.name == name)
+                .expect("eligible name exists");
+            match lower_native_function(function, &callable) {
+                Ok(l) => lowered.push(l),
+                Err(reason) => {
+                    demoted = Some(NativeSkippedFunction {
+                        name: name.clone(),
+                        reason,
+                    });
+                    break;
+                }
+            }
+        }
+
+        if let Some(demoted) = demoted {
+            eligible_names.retain(|n| n != &demoted.name);
+            merge_native_skip(&mut skipped, demoted);
+            continue;
+        }
+
+        if lowered.is_empty() || !lowered.iter().any(|f| f.name == "main") {
+            // The entry stub requires `main`. If `main` is not eligible there is
+            // nothing runnable to emit.
+            let reason = if lowered.is_empty() {
+                "no functions were eligible for the native i64-scalar subset".to_string()
+            } else {
+                "`main` is not eligible for the native i64-scalar subset".to_string()
+            };
+            return Err(NativeProgramError {
+                code: NATIVE_NO_ELIGIBLE_CODE,
+                message: reason,
+                skipped,
+            });
+        }
+
+        let compiled: Vec<String> = lowered.iter().map(|f| f.name.clone()).collect();
+        let bytes = write_native_program_object(&lowered);
+        return Ok(NativeProgram {
+            target,
+            bytes,
+            entry_symbol: NATIVE_ENTRY_SYMBOL.to_string(),
+            compiled,
+            skipped,
+        });
+    }
+}
+
+fn merge_native_skip(skips: &mut Vec<NativeSkippedFunction>, skip: NativeSkippedFunction) {
+    if !skips.iter().any(|s| s.name == skip.name) {
+        skips.push(skip);
+    }
+}
+
+/// Whether a function's signature is entirely `i64` with at most four params
+/// (Win64 register arguments; stack args are deferred).
+fn native_signature_eligibility(function: &BytecodeFunction) -> Result<(), String> {
+    if function.params.len() > 4 {
+        return Err(format!(
+            "native subset supports at most four i64 parameters; `{}` has {}",
+            function.name,
+            function.params.len()
+        ));
+    }
+    for param in &function.params {
+        if param.ty.name != "i64" {
+            return Err(format!(
+                "parameter `{}` has non-i64 type `{}`",
+                param.name, param.ty.name
+            ));
+        }
+    }
+    if function.return_type.name != "i64" {
+        return Err(format!(
+            "return type `{}` is not i64",
+            function.return_type.name
+        ));
+    }
+    Ok(())
+}
+
+/// A function lowered to x86-64: its symbol name, machine-code bytes, and the
+/// relocations (at byte offsets within the code) that reference other symbols.
+struct LoweredNativeFunction {
+    name: String,
+    code: Vec<u8>,
+    relocations: Vec<CodeRelocation>,
+}
+
+/// A relocation inside a function body: patch a 4-byte REL32 field at `offset`
+/// (relative to the function's own code start) to reference `symbol`.
+struct CodeRelocation {
+    /// Byte offset of the 4-byte field within this function's code.
+    offset: u32,
+    /// The symbol name referenced.
+    symbol: String,
+}
+
+/// Per-function native lowering state (a stack-machine codegen over `rax`).
+struct NativeCtx<'a> {
+    /// name -> rbp-relative slot displacement (positive; slot is at `[rbp - d]`).
+    locals: HashMap<String, i32>,
+    /// Total local stack bytes reserved (16-byte aligned, incl. shadow space).
+    frame_size: i32,
+    /// The set of function names that can be called (compiled functions).
+    callable: &'a std::collections::HashSet<&'a str>,
+    /// Relocations accumulated while emitting this function.
+    relocations: Vec<CodeRelocation>,
+}
+
+impl<'a> NativeCtx<'a> {
+    /// Plan the stack frame: assign a slot to every parameter and `let`/`for`
+    /// local, reserving 8 bytes each, plus 32 bytes of Win64 shadow space when
+    /// the function makes calls. All slots are `[rbp - displacement]`.
+    fn plan(
+        function: &'a BytecodeFunction,
+        callable: &'a std::collections::HashSet<&'a str>,
+    ) -> Result<Self, String> {
+        let mut locals: HashMap<String, i32> = HashMap::new();
+        let mut next_slot: i32 = 0;
+
+        // Parameters first (they will be spilled from registers in the prologue).
+        for param in &function.params {
+            next_slot += 8;
+            locals.insert(param.name.clone(), next_slot);
+        }
+
+        // Then `let` and `for` induction locals discovered anywhere in the body.
+        collect_native_locals(&function.instructions, &mut locals, &mut next_slot);
+
+        let has_call = body_has_call(&function.instructions);
+        // Reserve local slots plus (if calling) 32 bytes of shadow space.
+        let shadow = if has_call { 32 } else { 0 };
+        let raw = next_slot + shadow;
+        // Keep the frame a multiple of 16 so that after `push rbp` and a `call`
+        // the callee sees a 16-byte-aligned rsp per the Win64 ABI.
+        let frame_size = ((raw + 15) / 16) * 16;
+
+        Ok(Self {
+            locals,
+            frame_size,
+            callable,
+            relocations: Vec::new(),
+        })
+    }
+
+    fn local_slot(&self, name: &str) -> Result<i32, String> {
+        self.locals
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("unknown native local `{name}`"))
+    }
+}
+
+/// Recursively collect `let`/`for` locals, assigning each a fresh 8-byte slot.
+fn collect_native_locals(
+    body: &[BytecodeInstruction],
+    locals: &mut HashMap<String, i32>,
+    next_slot: &mut i32,
+) {
+    for instruction in body {
+        match instruction {
+            BytecodeInstruction::Let { name, .. } => {
+                locals.entry(name.clone()).or_insert_with(|| {
+                    *next_slot += 8;
+                    *next_slot
+                });
+            }
+            BytecodeInstruction::For { name, body, .. } => {
+                locals.entry(name.clone()).or_insert_with(|| {
+                    *next_slot += 8;
+                    *next_slot
+                });
+                // Two hidden slots per `for`: the loop bound and the step. Keyed
+                // by the counter name so `lower_native_for` finds the same slots.
+                for suffix in ["__end", "__step"] {
+                    let key = format!("{name}{suffix}");
+                    locals.entry(key).or_insert_with(|| {
+                        *next_slot += 8;
+                        *next_slot
+                    });
+                }
+                collect_native_locals(body, locals, next_slot);
+            }
+            BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    collect_native_locals(&branch.body, locals, next_slot);
+                }
+                collect_native_locals(else_body, locals, next_slot);
+            }
+            BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
+                collect_native_locals(body, locals, next_slot);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether any instruction in a body issues a call (so the frame needs shadow
+/// space). Conservatively scans nested bodies and expressions.
+fn body_has_call(body: &[BytecodeInstruction]) -> bool {
+    body.iter().any(instruction_has_call)
+}
+
+fn instruction_has_call(instruction: &BytecodeInstruction) -> bool {
+    match instruction {
+        BytecodeInstruction::Let { value, .. } => expr_has_call(value),
+        BytecodeInstruction::Assign { value, .. } => expr_has_call(value),
+        BytecodeInstruction::Return(Some(expr)) | BytecodeInstruction::Expr(expr) => {
+            expr_has_call(expr)
+        }
+        BytecodeInstruction::Return(None)
+        | BytecodeInstruction::Break(_)
+        | BytecodeInstruction::Continue(_) => false,
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|b| expr_has_call(&b.condition) || body_has_call(&b.body))
+                || body_has_call(else_body)
+        }
+        BytecodeInstruction::While {
+            condition, body, ..
+        } => expr_has_call(condition) || body_has_call(body),
+        BytecodeInstruction::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            expr_has_call(start)
+                || expr_has_call(end)
+                || step.as_ref().is_some_and(expr_has_call)
+                || body_has_call(body)
+        }
+        BytecodeInstruction::Loop { body, .. } => body_has_call(body),
+        BytecodeInstruction::Throw { .. }
+        | BytecodeInstruction::Try { .. }
+        | BytecodeInstruction::Match { .. } => false,
+    }
+}
+
+fn expr_has_call(expr: &BytecodeExpr) -> bool {
+    match &expr.kind {
+        BytecodeExprKind::Call { .. } => true,
+        BytecodeExprKind::Binary { left, right, .. } => expr_has_call(left) || expr_has_call(right),
+        BytecodeExprKind::Unary { expr, .. } => expr_has_call(expr),
+        _ => false,
+    }
+}
+
+/// Loop targets: the byte offsets a `break`/`continue` jumps to. Because loop
+/// bodies are emitted before we know the loop-end (or, for `for`, the step)
+/// offset, jumps whose target is not yet known are recorded as patch sites and
+/// fixed up when the loop is fully emitted.
+struct NativeLoop {
+    /// Code offset of the `continue` target when already known (`while`/`loop`
+    /// jump back to the top). `None` for a `for` loop, whose `continue` must
+    /// jump forward to the step block: those jumps are recorded in
+    /// `continue_sites` and patched once the step block's offset is known.
+    continue_target: Option<usize>,
+    /// Patch sites (offsets of 4-byte rel32 fields) for forward `continue` jumps.
+    continue_sites: Vec<usize>,
+    /// Patch sites (offsets of 4-byte rel32 fields) for `break` jumps.
+    break_sites: Vec<usize>,
+}
+
+fn lower_native_function(
+    function: &BytecodeFunction,
+    callable: &std::collections::HashSet<&str>,
+) -> Result<LoweredNativeFunction, String> {
+    let mut ctx = NativeCtx::plan(function, callable)?;
+    let mut code = Vec::new();
+
+    // Prologue: push rbp; mov rbp, rsp; sub rsp, frame_size.
+    code.extend_from_slice(&[0x55, 0x48, 0x89, 0xE5]);
+    emit_sub_rsp(&mut code, ctx.frame_size);
+
+    // Spill register parameters (rcx, rdx, r8, r9) into their slots.
+    // mov [rbp - slot], reg
+    const PARAM_STORE: [&[u8]; 4] = [
+        &[0x48, 0x89, 0x8D], // mov [rbp+disp32], rcx
+        &[0x48, 0x89, 0x95], // mov [rbp+disp32], rdx
+        &[0x4C, 0x89, 0x85], // mov [rbp+disp32], r8
+        &[0x4C, 0x89, 0x8D], // mov [rbp+disp32], r9
+    ];
+    for (index, param) in function.params.iter().enumerate() {
+        let slot = ctx.local_slot(&param.name)?;
+        code.extend_from_slice(PARAM_STORE[index]);
+        code.extend_from_slice(&(-slot).to_le_bytes());
+    }
+
+    let mut loops: Vec<NativeLoop> = Vec::new();
+
+    // A function whose last statement is a value-producing tail expression (e.g.
+    // a body of just `a + b`) returns that value. Lower the leading statements
+    // normally, then lower the tail expression and emit the return epilogue so
+    // the result in rax is returned rather than being clobbered by the
+    // fallthrough safety epilogue below.
+    let instructions = &function.instructions;
+    let tail_is_value_expr = matches!(
+        instructions.last(),
+        Some(BytecodeInstruction::Expr(expr)) if !expr.ty.is_void()
+    );
+    if tail_is_value_expr {
+        let (head, tail) = instructions.split_at(instructions.len() - 1);
+        lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
+        if let BytecodeInstruction::Expr(expr) = &tail[0] {
+            lower_native_expr(&mut ctx, expr, &mut code)?;
+        }
+        emit_native_epilogue(&mut code, ctx.frame_size);
+    } else {
+        lower_native_stmts(&mut ctx, instructions, &mut code, &mut loops)?;
+    }
+
+    // Fallthrough epilogue: functions in this subset are non-void and expected to
+    // return on every path, but emit a safe `xor eax,eax` + epilogue so a missing
+    // tail return cannot run off the end of the section.
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+    emit_native_epilogue(&mut code, ctx.frame_size);
+
+    Ok(LoweredNativeFunction {
+        name: function.name.clone(),
+        code,
+        relocations: ctx.relocations,
+    })
+}
+
+/// Emit `sub rsp, imm` (imm >= 0). Uses imm8 form when it fits, else imm32.
+fn emit_sub_rsp(code: &mut Vec<u8>, amount: i32) {
+    if amount == 0 {
+        return;
+    }
+    if (0..=127).contains(&amount) {
+        code.extend_from_slice(&[0x48, 0x83, 0xEC, amount as u8]);
+    } else {
+        code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+        code.extend_from_slice(&amount.to_le_bytes());
+    }
+}
+
+/// Emit `add rsp, imm; pop rbp; ret`.
+fn emit_native_epilogue(code: &mut Vec<u8>, frame_size: i32) {
+    if frame_size != 0 {
+        if (0..=127).contains(&frame_size) {
+            code.extend_from_slice(&[0x48, 0x83, 0xC4, frame_size as u8]);
+        } else {
+            code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+            code.extend_from_slice(&frame_size.to_le_bytes());
+        }
+    }
+    code.extend_from_slice(&[0x5D, 0xC3]); // pop rbp; ret
+}
+
+fn lower_native_stmts(
+    ctx: &mut NativeCtx,
+    body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    for stmt in body {
+        lower_native_stmt(ctx, stmt, code, loops)?;
+    }
+    Ok(())
+}
+
+fn lower_native_stmt(
+    ctx: &mut NativeCtx,
+    stmt: &BytecodeInstruction,
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    match stmt {
+        BytecodeInstruction::Let {
+            name, ty, value, ..
+        } => {
+            if ty.name != "i64" {
+                return Err(format!("`let {name}` has non-i64 type `{}`", ty.name));
+            }
+            lower_native_expr(ctx, value, code)?;
+            let slot = ctx.local_slot(name)?;
+            store_local(code, slot); // mov [rbp - slot], rax
+            Ok(())
+        }
+        BytecodeInstruction::Assign {
+            name,
+            path,
+            op,
+            value,
+            ..
+        } => {
+            if !path.is_empty() {
+                return Err("field/index assignment is not in the native subset".to_string());
+            }
+            let slot = ctx.local_slot(name)?;
+            match op {
+                AssignOp::Replace => {
+                    lower_native_expr(ctx, value, code)?;
+                }
+                other => {
+                    // rax = local <op> value
+                    load_local(code, slot); // mov rax, [rbp - slot]
+                    code.push(0x50); // push rax (left)
+                    lower_native_expr(ctx, value, code)?; // rax = right
+                    let bin = match other {
+                        AssignOp::Add => BinaryOp::Add,
+                        AssignOp::Subtract => BinaryOp::Subtract,
+                        AssignOp::Multiply => BinaryOp::Multiply,
+                        AssignOp::Divide => BinaryOp::Divide,
+                        AssignOp::Replace => unreachable!(),
+                    };
+                    emit_i64_binop_from_stack(code, bin)?;
+                }
+            }
+            store_local(code, slot);
+            Ok(())
+        }
+        BytecodeInstruction::Return(Some(expr)) => {
+            lower_native_expr(ctx, expr, code)?;
+            emit_native_epilogue(code, ctx.frame_size);
+            Ok(())
+        }
+        BytecodeInstruction::Return(None) => {
+            Err("native subset functions must return an i64 value".to_string())
+        }
+        BytecodeInstruction::Expr(expr) => {
+            // A tail expression is the function result; a non-tail call result is
+            // discarded. Either way, evaluate it (leaving the value in rax).
+            lower_native_expr(ctx, expr, code)?;
+            Ok(())
+        }
+        BytecodeInstruction::Break(_) => {
+            let loop_ctx = loops.last_mut().ok_or("`break` outside a loop")?;
+            // jmp rel32 (target patched at loop end).
+            code.push(0xE9);
+            let site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            loop_ctx.break_sites.push(site);
+            Ok(())
+        }
+        BytecodeInstruction::Continue(_) => {
+            let loop_ctx = loops.last_mut().ok_or("`continue` outside a loop")?;
+            match loop_ctx.continue_target {
+                Some(target) => emit_jmp_to(code, target),
+                None => {
+                    // Forward jump to the (not-yet-emitted) step block.
+                    code.push(0xE9);
+                    let site = code.len();
+                    code.extend_from_slice(&[0, 0, 0, 0]);
+                    loop_ctx.continue_sites.push(site);
+                }
+            }
+            Ok(())
+        }
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => lower_native_if(ctx, branches, else_body, code, loops),
+        BytecodeInstruction::While {
+            condition, body, ..
+        } => lower_native_while(ctx, condition, body, code, loops),
+        BytecodeInstruction::Loop { body, .. } => lower_native_loop(ctx, body, code, loops),
+        BytecodeInstruction::For {
+            name,
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => lower_native_for(ctx, name, start, end, step.as_ref(), body, code, loops),
+        BytecodeInstruction::Throw { .. } | BytecodeInstruction::Try { .. } => {
+            Err("throw/try is not in the native subset".to_string())
+        }
+        BytecodeInstruction::Match { .. } => Err("match is not in the native subset".to_string()),
+    }
+}
+
+/// Lower an `if`/`elif`/`else` chain. Each branch: evaluate condition into rax,
+/// `test rax,rax`; `jz next`; body; `jmp end`. The final else falls through.
+fn lower_native_if(
+    ctx: &mut NativeCtx,
+    branches: &[BytecodeIfBranch],
+    else_body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    let mut end_jumps: Vec<usize> = Vec::new();
+
+    for branch in branches {
+        lower_native_expr(ctx, &branch.condition, code)?;
+        code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+        // jz next_branch (rel32, patched below).
+        code.extend_from_slice(&[0x0F, 0x84]);
+        let jz_site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        lower_native_stmts(ctx, &branch.body, code, loops)?;
+
+        // jmp end (rel32, patched at the very end).
+        code.push(0xE9);
+        let end_site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+        end_jumps.push(end_site);
+
+        // Patch the jz to land here (start of the next branch / else).
+        patch_rel32(code, jz_site);
+    }
+
+    // Else body (may be empty).
+    lower_native_stmts(ctx, else_body, code, loops)?;
+
+    // Patch every branch's trailing `jmp end` to land here.
+    let end = code.len();
+    for site in end_jumps {
+        patch_rel32_to(code, site, end);
+    }
+    Ok(())
+}
+
+/// Lower `while cond: body` as: top: eval cond; `test`; `jz end`; body;
+/// `jmp top`; end:. `break` targets `end`, `continue` targets `top`.
+fn lower_native_while(
+    ctx: &mut NativeCtx,
+    condition: &BytecodeExpr,
+    body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    let top = code.len();
+    lower_native_expr(ctx, condition, code)?;
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x0F, 0x84]); // jz end (patched)
+    let exit_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    loops.push(NativeLoop {
+        continue_target: Some(top),
+        continue_sites: Vec::new(),
+        break_sites: Vec::new(),
+    });
+    lower_native_stmts(ctx, body, code, loops)?;
+    let loop_ctx = loops.pop().expect("loop pushed");
+
+    emit_jmp_to(code, top); // jmp top
+
+    let end = code.len();
+    patch_rel32_to(code, exit_site, end);
+    for site in loop_ctx.break_sites {
+        patch_rel32_to(code, site, end);
+    }
+    Ok(())
+}
+
+/// Lower an infinite `loop`: top: body; `jmp top`; end:. `break` exits.
+fn lower_native_loop(
+    ctx: &mut NativeCtx,
+    body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    let top = code.len();
+    loops.push(NativeLoop {
+        continue_target: Some(top),
+        continue_sites: Vec::new(),
+        break_sites: Vec::new(),
+    });
+    lower_native_stmts(ctx, body, code, loops)?;
+    let loop_ctx = loops.pop().expect("loop pushed");
+
+    emit_jmp_to(code, top);
+
+    let end = code.len();
+    for site in loop_ctx.break_sites {
+        patch_rel32_to(code, site, end);
+    }
+    Ok(())
+}
+
+/// Lower a range `for i = start..=end step s` to an `i64` counter loop mirroring
+/// the interpreter's inclusive range: ascending stops when `i > end`, descending
+/// when `i < end`. `continue` jumps to the step, `break` exits.
+#[allow(clippy::too_many_arguments)]
+fn lower_native_for(
+    ctx: &mut NativeCtx,
+    name: &str,
+    start: &BytecodeExpr,
+    end: &BytecodeExpr,
+    step: Option<&BytecodeExpr>,
+    body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    // The counter and its two hidden slots (bound, step) were reserved during
+    // frame planning, keyed by the counter name.
+    let i_slot = ctx.local_slot(name)?;
+    let end_slot = ctx.local_slot(&format!("{name}__end"))?;
+    let step_slot = ctx.local_slot(&format!("{name}__step"))?;
+
+    // i = start
+    lower_native_expr(ctx, start, code)?;
+    store_local(code, i_slot);
+    // end_local = end
+    lower_native_expr(ctx, end, code)?;
+    store_local(code, end_slot);
+    // step_local = step (default 1)
+    match step {
+        Some(step_expr) => lower_native_expr(ctx, step_expr, code)?,
+        None => emit_mov_rax_imm(code, 1),
+    }
+    store_local(code, step_slot);
+
+    let top = code.len();
+    // Loop guard: decide whether to run another iteration.
+    // cond = (step >= 0) ? (i <= end) : (i >= end), placed in al.
+    load_local(code, step_slot); // mov rax, [step]
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    // js descending  (jump if step < 0)
+    code.extend_from_slice(&[0x0F, 0x88]);
+    let js_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // Ascending: cond = (i <= end)  ->  setle al
+    emit_for_compare(code, i_slot, end_slot, 0x9E);
+    code.push(0xE9); // jmp check
+    let asc_done = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // Descending: cond = (i >= end)  ->  setge al
+    patch_rel32(code, js_site);
+    emit_for_compare(code, i_slot, end_slot, 0x9D);
+
+    // check: test al, al; jz end
+    patch_rel32(code, asc_done);
+    code.extend_from_slice(&[0x84, 0xC0]); // test al, al
+    code.extend_from_slice(&[0x0F, 0x84]); // jz end (patched)
+    let exit_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // `continue` jumps forward to the step block, so its target is not yet known.
+    loops.push(NativeLoop {
+        continue_target: None,
+        continue_sites: Vec::new(),
+        break_sites: Vec::new(),
+    });
+    lower_native_stmts(ctx, body, code, loops)?;
+    let loop_ctx = loops.pop().expect("loop pushed");
+
+    // Step block (target of `continue`): i += step.
+    let step_label = code.len();
+    for site in loop_ctx.continue_sites {
+        patch_rel32_to(code, site, step_label);
+    }
+    load_local(code, i_slot); // mov rax, [i]
+    code.push(0x50); // push rax
+    load_local(code, step_slot); // mov rax, [step]
+    emit_i64_binop_from_stack(code, BinaryOp::Add)?;
+    store_local(code, i_slot);
+
+    emit_jmp_to(code, top);
+
+    let end = code.len();
+    patch_rel32_to(code, exit_site, end);
+    for site in loop_ctx.break_sites {
+        patch_rel32_to(code, site, end);
+    }
+    Ok(())
+}
+
+/// Emit `mov rax, [i]; cmp rax, [end]; set<cc> al` where `set_opcode` is the
+/// second byte of the `0F` `setcc` form (e.g. `0x9E` = setle, `0x9D` = setge).
+fn emit_for_compare(code: &mut Vec<u8>, i_slot: i32, end_slot: i32, set_opcode: u8) {
+    load_local(code, i_slot); // mov rax, [rbp - i_slot]
+    // cmp rax, [rbp - end_slot]  ->  48 3B 85 disp32
+    code.extend_from_slice(&[0x48, 0x3B, 0x85]);
+    code.extend_from_slice(&(-end_slot).to_le_bytes());
+    // set<cc> al
+    code.extend_from_slice(&[0x0F, set_opcode, 0xC0]);
+}
+
+// -- Expression lowering (result left in rax) --------------------------------
+
+fn lower_native_expr(
+    ctx: &mut NativeCtx,
+    expr: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    match &expr.kind {
+        BytecodeExprKind::Integer(value) => {
+            emit_mov_rax_imm(code, *value);
+            Ok(())
+        }
+        BytecodeExprKind::Variable(name) => {
+            let slot = ctx.local_slot(name)?;
+            load_local(code, slot);
+            Ok(())
+        }
+        BytecodeExprKind::Unary { op, expr: inner } => match op {
+            lullaby_parser::UnaryOp::Not => {
+                // Boolean `not`: rax = (inner == 0) ? 1 : 0.
+                lower_native_expr(ctx, inner, code)?;
+                code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+                code.extend_from_slice(&[0x0F, 0x94, 0xC0]); // sete al
+                code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                Ok(())
+            }
+        },
+        BytecodeExprKind::Binary { left, op, right } => {
+            lower_native_binary(ctx, left, *op, right, code)
+        }
+        BytecodeExprKind::Call { name, args } => {
+            if !ctx.callable.contains(name.as_str()) {
+                return Err(format!(
+                    "call to non-i64-scalar or unknown function `{name}`"
+                ));
+            }
+            if args.len() > 4 {
+                return Err(format!(
+                    "native calls support at most four arguments; `{name}` got {}",
+                    args.len()
+                ));
+            }
+            // Evaluate args left-to-right, pushing each result. Then pop into the
+            // Win64 argument registers in order.
+            for arg in args {
+                lower_native_expr(ctx, arg, code)?;
+                code.push(0x50); // push rax
+            }
+            // Pop in reverse so the first argument lands in rcx.
+            const ARG_POP: [&[u8]; 4] = [
+                &[0x59],       // pop rcx
+                &[0x5A],       // pop rdx
+                &[0x41, 0x58], // pop r8
+                &[0x41, 0x59], // pop r9
+            ];
+            for index in (0..args.len()).rev() {
+                code.extend_from_slice(ARG_POP[index]);
+            }
+            // call rel32 -> relocation against the target symbol.
+            code.push(0xE8);
+            let site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            ctx.relocations.push(CodeRelocation {
+                offset: site as u32,
+                symbol: name.clone(),
+            });
+            Ok(())
+        }
+        BytecodeExprKind::Bool(_)
+        | BytecodeExprKind::Float(_)
+        | BytecodeExprKind::Char(_)
+        | BytecodeExprKind::String(_)
+        | BytecodeExprKind::Array(_)
+        | BytecodeExprKind::Index { .. }
+        | BytecodeExprKind::Field { .. } => {
+            Err("expression is not in the native i64-scalar subset".to_string())
+        }
+    }
+}
+
+/// Lower a binary expression. `and`/`or` short-circuit; other operators evaluate
+/// left (pushed), right (in rax), then combine popping the left back.
+fn lower_native_binary(
+    ctx: &mut NativeCtx,
+    left: &BytecodeExpr,
+    op: BinaryOp,
+    right: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    match op {
+        BinaryOp::And => {
+            // rax = left ? (right != 0 ? 1 : 0) : 0
+            lower_native_expr(ctx, left, code)?;
+            code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+            code.extend_from_slice(&[0x0F, 0x84]); // jz false (patched)
+            let false_site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            lower_native_expr(ctx, right, code)?;
+            normalize_bool(code); // rax = (rax != 0) ? 1 : 0
+            code.push(0xE9); // jmp done
+            let done_site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            patch_rel32(code, false_site);
+            code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+            patch_rel32(code, done_site);
+            Ok(())
+        }
+        BinaryOp::Or => {
+            // rax = left ? 1 : (right != 0 ? 1 : 0)
+            lower_native_expr(ctx, left, code)?;
+            code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+            code.extend_from_slice(&[0x0F, 0x85]); // jnz true (patched)
+            let true_site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            lower_native_expr(ctx, right, code)?;
+            normalize_bool(code);
+            code.push(0xE9); // jmp done
+            let done_site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            patch_rel32(code, true_site);
+            emit_mov_rax_imm(code, 1);
+            patch_rel32(code, done_site);
+            Ok(())
+        }
+        _ => {
+            lower_native_expr(ctx, left, code)?;
+            code.push(0x50); // push rax (left)
+            lower_native_expr(ctx, right, code)?; // right in rax
+            emit_i64_binop_from_stack(code, op)
+        }
+    }
+}
+
+/// Normalize rax to a canonical boolean (1 if non-zero, else 0).
+fn normalize_bool(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x0F, 0x95, 0xC0]); // setne al
+    code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+}
+
+/// Combine a binary op whose left operand is on the stack (pushed) and whose
+/// right operand is in rax. Result left in rax.
+fn emit_i64_binop_from_stack(code: &mut Vec<u8>, op: BinaryOp) -> Result<(), String> {
+    // pop rcx (left); result = rcx <op> rax for arithmetic that isn't commutative
+    // is handled by moving operands into the right registers below.
+    match op {
+        BinaryOp::Add => {
+            code.push(0x59); // pop rcx (left)
+            code.extend_from_slice(&[0x48, 0x01, 0xC8]); // add rax, rcx
+        }
+        BinaryOp::Subtract => {
+            // want left - right = rcx - rax
+            code.push(0x59); // pop rcx (left)
+            code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
+            code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx
+        }
+        BinaryOp::Multiply => {
+            code.push(0x59); // pop rcx (left)
+            code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC1]); // imul rax, rcx
+        }
+        BinaryOp::Divide => {
+            // left / right = rcx / rax ; idiv divides rdx:rax by operand.
+            code.push(0x59); // pop rcx (left = dividend)
+            code.extend_from_slice(&[0x49, 0x89, 0xC0]); // mov r8, rax (divisor)
+            code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx (dividend)
+            code.extend_from_slice(&[0x48, 0x99]); // cqo (sign-extend into rdx)
+            code.extend_from_slice(&[0x49, 0xF7, 0xF8]); // idiv r8
+        }
+        BinaryOp::Equal
+        | BinaryOp::NotEqual
+        | BinaryOp::Less
+        | BinaryOp::LessEqual
+        | BinaryOp::Greater
+        | BinaryOp::GreaterEqual => {
+            code.push(0x59); // pop rcx (left)
+            code.extend_from_slice(&[0x48, 0x39, 0xC1]); // cmp rcx, rax
+            let set_opcode = match op {
+                BinaryOp::Equal => 0x94,        // sete
+                BinaryOp::NotEqual => 0x95,     // setne
+                BinaryOp::Less => 0x9C,         // setl
+                BinaryOp::LessEqual => 0x9E,    // setle
+                BinaryOp::Greater => 0x9F,      // setg
+                BinaryOp::GreaterEqual => 0x9D, // setge
+                _ => unreachable!(),
+            };
+            code.extend_from_slice(&[0x0F, set_opcode, 0xC0]); // set<cc> al
+            code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+        }
+        BinaryOp::And | BinaryOp::Or => {
+            return Err("logical and/or must be short-circuited".to_string());
+        }
+    }
+    Ok(())
+}
+
+// -- Small instruction helpers -----------------------------------------------
+
+/// `mov rax, imm64` (always the 10-byte form for simplicity/correctness).
+fn emit_mov_rax_imm(code: &mut Vec<u8>, value: i64) {
+    code.extend_from_slice(&[0x48, 0xB8]);
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
+/// `mov rax, [rbp - slot]`.
+fn load_local(code: &mut Vec<u8>, slot: i32) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x85]);
+    code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// `mov [rbp - slot], rax`.
+fn store_local(code: &mut Vec<u8>, slot: i32) {
+    code.extend_from_slice(&[0x48, 0x89, 0x85]);
+    code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// Emit `jmp rel32` to an already-known target offset.
+fn emit_jmp_to(code: &mut Vec<u8>, target: usize) {
+    code.push(0xE9);
+    let site = code.len();
+    let rel = (target as i64) - (site as i64 + 4);
+    code.extend_from_slice(&(rel as i32).to_le_bytes());
+}
+
+/// Patch the 4-byte rel32 field at `site` so it points to the current end of
+/// `code` (i.e. the instruction right after everything emitted so far).
+fn patch_rel32(code: &mut [u8], site: usize) {
+    let target = code.len();
+    patch_rel32_to(code, site, target);
+}
+
+/// Patch the 4-byte rel32 field at `site` to point to `target`.
+fn patch_rel32_to(code: &mut [u8], site: usize, target: usize) {
+    let rel = (target as i64) - (site as i64 + 4);
+    let bytes = (rel as i32).to_le_bytes();
+    code[site..site + 4].copy_from_slice(&bytes);
+}
+
+// -- COFF object writer (multi-function, relocations, imports) ---------------
+//
+// The object has a single `.text` section holding the entry stub followed by
+// every compiled function. External symbols name each function and the imported
+// `ExitProcess`; REL32 relocations bind inter-function calls, the entry stub's
+// call to `main`, and the entry stub's call to `ExitProcess`. Long symbol names
+// (> 8 bytes) are stored in a string table, as COFF requires.
+
+/// Assemble the whole `.text` blob (entry stub + functions) and the section
+/// relocations, then write the COFF headers, section data, symbol table, and
+/// string table.
+fn write_native_program_object(functions: &[LoweredNativeFunction]) -> Vec<u8> {
+    // Lay out `.text`: entry stub first, then each function. Record each
+    // function's start offset so relocations resolve.
+    let mut text: Vec<u8> = Vec::new();
+    let mut relocations: Vec<TextRelocation> = Vec::new();
+
+    // Entry stub: sub rsp, 40 (align + shadow); call main; mov ecx, eax;
+    // call ExitProcess; (int3 padding). The `sub rsp,40` keeps rsp 16-aligned at
+    // each `call` (return address makes 8; 40 = 0x28 restores alignment).
+    let stub_start = text.len();
+    text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 40
+    text.push(0xE8); // call main (rel32)
+    relocations.push(TextRelocation {
+        offset: (text.len()) as u32,
+        symbol_index: 0, // filled after we know the symbol order (main is known)
+        symbol_name: "main".to_string(),
+    });
+    text.extend_from_slice(&[0, 0, 0, 0]);
+    text.extend_from_slice(&[0x89, 0xC1]); // mov ecx, eax (exit code = main's result)
+    text.push(0xE8); // call ExitProcess (rel32)
+    relocations.push(TextRelocation {
+        offset: (text.len()) as u32,
+        symbol_index: 0,
+        symbol_name: EXIT_PROCESS_SYMBOL.to_string(),
+    });
+    text.extend_from_slice(&[0, 0, 0, 0]);
+    text.push(0xCC); // int3 (unreachable; ExitProcess does not return)
+    let _ = stub_start;
+
+    // Each compiled function, remembering its start offset for symbol addresses.
+    let mut func_offsets: HashMap<String, u32> = HashMap::new();
+    for function in functions {
+        // Align each function start to 16 bytes with int3 padding for tidy
+        // disassembly (not required, but conventional).
+        while !text.len().is_multiple_of(16) {
+            text.push(0xCC);
+        }
+        let start = text.len() as u32;
+        func_offsets.insert(function.name.clone(), start);
+        let body_base = text.len();
+        text.extend_from_slice(&function.code);
+        // Translate each per-function relocation into a section relocation.
+        for reloc in &function.relocations {
+            relocations.push(TextRelocation {
+                offset: body_base as u32 + reloc.offset,
+                symbol_index: 0,
+                symbol_name: reloc.symbol.clone(),
+            });
+        }
+    }
+
+    // Build the symbol table. Symbol 0 is the entry stub; then every function;
+    // then the imported ExitProcess (undefined). Callers (relocations) reference
+    // symbols by name, resolved to an index here.
+    struct SymbolDef {
+        name: String,
+        section_number: i16, // 1 = .text, 0 = undefined (external import)
+        value: u32,          // offset within the section
+    }
+
+    let mut symbols: Vec<SymbolDef> = Vec::new();
+    symbols.push(SymbolDef {
+        name: NATIVE_ENTRY_SYMBOL.to_string(),
+        section_number: 1,
+        value: 0,
+    });
+    for function in functions {
+        symbols.push(SymbolDef {
+            name: function.name.clone(),
+            section_number: 1,
+            value: *func_offsets.get(&function.name).expect("function offset"),
+        });
+    }
+    symbols.push(SymbolDef {
+        name: EXIT_PROCESS_SYMBOL.to_string(),
+        section_number: 0,
+        value: 0,
+    });
+
+    let symbol_index_of = |name: &str| -> u32 {
+        symbols
+            .iter()
+            .position(|s| s.name == name)
+            .expect("symbol exists") as u32
+    };
+
+    // Resolve relocation symbol indices now that the table is known.
+    for reloc in &mut relocations {
+        reloc.symbol_index = symbol_index_of(&reloc.symbol_name);
+    }
+
+    // -- Compute layout offsets ---------------------------------------------
+    let num_relocs = relocations.len() as u32;
+    let raw_text_offset = COFF_HEADER_SIZE + SECTION_HEADER_SIZE;
+    let reloc_table_offset = raw_text_offset + text.len() as u32;
+    let symbol_table_offset = reloc_table_offset + num_relocs * COFF_RELOC_SIZE;
+    let num_symbols = symbols.len() as u32;
+
+    // -- Emit ----------------------------------------------------------------
+    let mut bytes = Vec::new();
+
+    // COFF header.
+    push_u16(&mut bytes, AMD64_MACHINE);
+    push_u16(&mut bytes, 1); // one section
+    push_u32(&mut bytes, 0); // timestamp
+    push_u32(&mut bytes, symbol_table_offset);
+    push_u32(&mut bytes, num_symbols);
+    push_u16(&mut bytes, 0); // optional header size
+    push_u16(&mut bytes, 0); // characteristics
+
+    // Section header for `.text`.
+    push_fixed_name(&mut bytes, ".text", 8);
+    push_u32(&mut bytes, 0); // VirtualSize
+    push_u32(&mut bytes, 0); // VirtualAddress
+    push_u32(&mut bytes, text.len() as u32); // SizeOfRawData
+    push_u32(&mut bytes, raw_text_offset); // PointerToRawData
+    push_u32(
+        &mut bytes,
+        if num_relocs == 0 {
+            0
+        } else {
+            reloc_table_offset
+        },
+    ); // PointerToRelocations
+    push_u32(&mut bytes, 0); // PointerToLinenumbers
+    push_u16(&mut bytes, num_relocs as u16); // NumberOfRelocations
+    push_u16(&mut bytes, 0); // NumberOfLinenumbers
+    push_u32(&mut bytes, TEXT_CHARACTERISTICS);
+
+    // Section raw data.
+    bytes.extend_from_slice(&text);
+
+    // Relocation records: VirtualAddress (u32), SymbolTableIndex (u32), Type (u16).
+    for reloc in &relocations {
+        push_u32(&mut bytes, reloc.offset);
+        push_u32(&mut bytes, reloc.symbol_index);
+        push_u16(&mut bytes, IMAGE_REL_AMD64_REL32);
+    }
+
+    // Symbol table + string table. Long names go to the string table, which is
+    // appended immediately after the symbol records and begins with its own
+    // 4-byte length field.
+    let mut string_table: Vec<u8> = Vec::new();
+    string_table.extend_from_slice(&[0, 0, 0, 0]); // placeholder for size
+    for symbol in &symbols {
+        if symbol.name.len() <= 8 {
+            push_fixed_name(&mut bytes, &symbol.name, 8);
+        } else {
+            // Name field: 4 zero bytes then a 4-byte offset into the string table
+            // (offset counts from the start of the string table, incl. the size).
+            let offset = string_table.len() as u32;
+            push_u32(&mut bytes, 0);
+            push_u32(&mut bytes, offset);
+            string_table.extend_from_slice(symbol.name.as_bytes());
+            string_table.push(0);
+        }
+        push_u32(&mut bytes, symbol.value); // Value (section offset)
+        push_u16(&mut bytes, section_number_field(symbol.section_number)); // SectionNumber
+        push_u16(&mut bytes, 0x20); // Type: function
+        bytes.push(2); // StorageClass: EXTERNAL
+        bytes.push(0); // NumberOfAuxSymbols
+    }
+
+    // Patch and append the string table.
+    let string_table_size = string_table.len() as u32;
+    string_table[0..4].copy_from_slice(&string_table_size.to_le_bytes());
+    bytes.extend_from_slice(&string_table);
+
+    bytes
+}
+
+/// A relocation within the `.text` section.
+struct TextRelocation {
+    /// Byte offset of the 4-byte field within the section.
+    offset: u32,
+    /// Index into the symbol table.
+    symbol_index: u32,
+    /// Symbol name (resolved to `symbol_index` once the table is built).
+    symbol_name: String,
+}
+
+/// Encode a signed COFF section number (`1` for `.text`, `0` for undefined) into
+/// the unsigned 16-bit field.
+fn section_number_field(section_number: i16) -> u16 {
+    section_number as u16
+}
+
+const COFF_RELOC_SIZE: u32 = 10;
+
 #[cfg(test)]
 mod tests {
     use lullaby_diagnostics::Span;
@@ -762,5 +1991,156 @@ mod tests {
             ty: TypeRef::new(ty),
             span: Span { line: 1, column: 1 },
         }
+    }
+}
+
+#[cfg(test)]
+mod native_program_tests {
+    use super::*;
+    use crate::{lower, lower_to_bytecode};
+    use lullaby_lexer::lex;
+    use lullaby_parser::parse;
+    use lullaby_semantics::validate_executable;
+
+    /// Compile source through the full frontend into a `BytecodeModule`.
+    fn module_for(source: &str) -> BytecodeModule {
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let checked = validate_executable(&program).expect("semantic");
+        let ir = lower(&checked).expect("lower");
+        lower_to_bytecode(&ir)
+    }
+
+    /// Parse the little-endian u32 at `offset` in `bytes`.
+    fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    /// Parse the little-endian u16 at `offset` in `bytes`.
+    fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+        u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
+    }
+
+    #[test]
+    fn emits_object_for_add_and_main() {
+        let program = emit_alpha1_native_program(&module_for(
+            "fn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(20, 22)\n",
+        ))
+        .expect("emit native program");
+
+        assert_eq!(program.target.triple, "x86_64-pc-windows-msvc");
+        assert_eq!(program.entry_symbol, NATIVE_ENTRY_SYMBOL);
+        assert_eq!(
+            program.compiled,
+            vec!["add".to_string(), "main".to_string()]
+        );
+        assert!(program.skipped.is_empty());
+
+        // COFF header: AMD64 machine, one section.
+        assert_eq!(read_u16(&program.bytes, 0), AMD64_MACHINE);
+        assert_eq!(read_u16(&program.bytes, 2), 1, "one section");
+
+        // `.text` section header begins right after the COFF header.
+        let sec = COFF_HEADER_SIZE as usize;
+        assert_eq!(&program.bytes[sec..sec + 5], b".text");
+        let num_relocs = read_u16(&program.bytes, sec + 32);
+        // Three relocations: stub->main, stub->ExitProcess, main->add.
+        assert_eq!(num_relocs, 3, "expected three relocations");
+
+        // The entry stub is the first bytes of `.text`: `sub rsp, 40` then a call.
+        let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+        assert_eq!(
+            &program.bytes[text_offset..text_offset + 5],
+            &[0x48, 0x83, 0xEC, 0x28, 0xE8]
+        );
+    }
+
+    #[test]
+    fn emits_object_for_if_based_function() {
+        // A recursive `if`-based `fib` plus a `main` calling it. Every function is
+        // i64-scalar, so all compile.
+        let program = emit_alpha1_native_program(&module_for(
+            "fn fib n i64 -> i64\n    if n < 2\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main -> i64\n    return fib(6)\n",
+        ))
+        .expect("emit native program");
+        assert_eq!(
+            program.compiled,
+            vec!["fib".to_string(), "main".to_string()]
+        );
+
+        // The compiled `fib` code must contain a `test rax, rax` (the `if`
+        // condition test) and a `setl al` (the `<` comparison).
+        let sec = COFF_HEADER_SIZE as usize;
+        let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+        let text_size = read_u32(&program.bytes, sec + 16) as usize;
+        let text = &program.bytes[text_offset..text_offset + text_size];
+        assert!(
+            text.windows(3).any(|w| w == [0x48, 0x85, 0xC0]),
+            "expected a `test rax, rax`"
+        );
+        assert!(
+            text.windows(3).any(|w| w == [0x0F, 0x9C, 0xC0]),
+            "expected a `setl al` for `<`"
+        );
+    }
+
+    #[test]
+    fn emits_object_for_while_loop() {
+        let program = emit_alpha1_native_program(&module_for(
+            "fn main -> i64\n    let n i64 = 0\n    let sum i64 = 0\n    while n < 5\n        n += 1\n        sum += n\n    return sum\n",
+        ))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+
+        // Only the entry stub references external symbols (main, ExitProcess); the
+        // loop is self-contained, so exactly two relocations exist.
+        let sec = COFF_HEADER_SIZE as usize;
+        assert_eq!(read_u16(&program.bytes, sec + 32), 2);
+    }
+
+    #[test]
+    fn skips_non_i64_functions_but_compiles_the_rest() {
+        // `greet` returns a string (skipped); `main` and `add` are i64 (compiled).
+        let program = emit_alpha1_native_program(&module_for(
+            "fn greet s string -> string\n    s\n\nfn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(1, 2)\n",
+        ))
+        .expect("emit native program");
+        assert_eq!(
+            program.compiled,
+            vec!["add".to_string(), "main".to_string()]
+        );
+        assert_eq!(program.skipped.len(), 1);
+        assert_eq!(program.skipped[0].name, "greet");
+    }
+
+    #[test]
+    fn errors_when_no_i64_scalar_function_is_eligible() {
+        // `main` itself returns a string, so nothing is eligible for native.
+        let err = emit_alpha1_native_program(&module_for("fn main -> string\n    \"hi\"\n"))
+            .expect_err("no eligible");
+        assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+        assert!(err.skipped.iter().any(|s| s.name == "main"));
+    }
+
+    #[test]
+    fn string_table_holds_long_symbol_names() {
+        // A function name longer than eight bytes must live in the COFF string
+        // table; the emitter must still produce a valid object.
+        let program = emit_alpha1_native_program(&module_for(
+            "fn accumulate_total n i64 -> i64\n    n + 1\n\nfn main -> i64\n    return accumulate_total(41)\n",
+        ))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"accumulate_total".to_string()),
+            "long-named function compiled"
+        );
+        // The long name appears verbatim in the string table at the tail.
+        assert!(
+            program
+                .bytes
+                .windows("accumulate_total".len())
+                .any(|w| w == b"accumulate_total"),
+            "long symbol name stored"
+        );
     }
 }

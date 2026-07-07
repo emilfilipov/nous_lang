@@ -23,6 +23,10 @@ pub mod native_contract;
 pub mod native_object;
 pub mod wasm;
 
+pub use native_object::{
+    NATIVE_ENTRY_SYMBOL, NATIVE_NO_ELIGIBLE_CODE, NativeProgram, NativeProgramError,
+    NativeSkippedFunction, emit_alpha1_native_program,
+};
 pub use wasm::{SkippedFunction, WasmArtifact, WasmError, emit_wasm_module};
 
 pub const BYTECODE_ARTIFACT_FORMAT: &str = "lullaby-bytecode";

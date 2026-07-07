@@ -31,6 +31,34 @@ This satisfies "the alpha milestone has explicit binary-output or
 bytecode-output validation" and "verification reports are machine-readable and
 human-readable" against the current subset.
 
+## DELIVERED: Extended COFF Emitter + Best-Effort Link To `.exe`
+
+The `x86_64-pc-windows-msvc` path now goes past bytecode validation to a real,
+runnable native binary for the **i64-scalar subset**:
+
+- `emit_alpha1_native_program` (`crates/lullaby_ir/src/native_object.rs`) emits a
+  single-`.text` COFF object holding an entry stub plus every eligible i64-scalar
+  function, with `IMAGE_REL_AMD64_REL32` relocations for inter-function calls,
+  the stub's call to `main`, and the stub's call to the imported `ExitProcess`
+  (from `kernel32`). Long symbol names use the COFF string table. Eligibility and
+  lowering are specified in
+  [native_backend_contract.md](native_backend_contract.md).
+- The `lullaby native [--verbose] [-o out.exe] <file.lby>` command always writes
+  the COFF object (the reliable floor) and then drives `rust-lld -flavor link`
+  (`/subsystem:console`, `/entry:_lullaby_start`, the object, `kernel32.lib`) to
+  produce a PE `.exe`. `rust-lld` is discovered under the rustc sysroot; library
+  search paths come from the MSVC `LIB` environment variable. When `rust-lld` or
+  `kernel32.lib` cannot be located, the command reports the object and explains
+  that linking was unavailable rather than failing.
+- Verification: structural/snapshot emitter tests in `lullaby_ir` always run; a
+  best-effort execution-parity test in `crates/lullaby_cli/tests/cli.rs` links
+  the `native_scalars.lby` fixture and asserts the `.exe` exit code equals the
+  interpreter's `main` result (mod 256), skipping the link+run when the toolchain
+  is unavailable.
+
+Deferred: `f64`/`bool`/`char`/`byte` scalars, more than four parameters (stack
+arguments), heap values, and ELF/Mach-O output remain future work.
+
 ## Symbol Resolution
 
 - **Symbol table.** Each compiled module publishes a symbol table keyed by a

@@ -1,0 +1,19 @@
+fn add a i64 b i64 -> i64
+    a + b
+
+fn fib n i64 -> i64
+    if n < 2
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fn sum_to n i64 -> i64
+    let total i64 = 0
+    for i from 1 to n
+        total += i
+    return total
+
+fn main -> i64
+    let a i64 = add(20, 1)
+    let f i64 = fib(6)
+    let s i64 = sum_to(4)
+    return a + f + s

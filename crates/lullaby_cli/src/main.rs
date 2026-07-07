@@ -10,8 +10,9 @@ use lullaby_diagnostics::{
 use lullaby_ir::{
     BYTECODE_ARTIFACT_EXTENSION, BytecodeArtifact, BytecodeArtifactError, IrCleanupRole,
     IrMemoryOperation, IrMemoryOperationKind, OptimizationConfig, decode_bytecode_artifact,
-    emit_wasm_module, encode_bytecode_artifact, lower, lower_to_bytecode, optimize,
-    run_bytecode_main, run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
+    emit_alpha1_native_program, emit_wasm_module, encode_bytecode_artifact, lower,
+    lower_to_bytecode, optimize, run_bytecode_main, run_bytecode_main_with_args,
+    run_main_with_args as run_ir_main_with_args,
 };
 use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex, validate_source_path};
 use lullaby_parser::{Program, format_program, parse};
@@ -56,6 +57,7 @@ fn run() -> Result<(), String> {
             invocation.program_args,
         ),
         CommandName::Wasm => wasm_file(invocation.path, invocation.output, invocation.mode),
+        CommandName::Native => native_file(invocation.path, invocation.output, invocation.mode),
         CommandName::Version => {
             println!("lullaby {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -304,6 +306,186 @@ fn wasm_file(path: PathBuf, output: Option<PathBuf>, mode: OutputMode) -> Result
         }
     }
     Ok(())
+}
+
+/// Compile the i64-scalar-subset functions of a `.lby` source file to a native
+/// x86-64 COFF object and, best-effort, link it into a runnable Windows `.exe`.
+///
+/// The object is always written (the reliable floor). Linking is attempted with
+/// `rust-lld` when it and `kernel32.lib` can be located; if either is missing,
+/// the command reports the object it produced and explains that linking was
+/// unavailable rather than failing. `--verbose` lists compiled/skipped functions
+/// and the linker command.
+fn native_file(path: PathBuf, output: Option<PathBuf>, mode: OutputMode) -> Result<(), String> {
+    let compiled = match compile(&path, SourceMode::Executable) {
+        Ok(compiled) => compiled,
+        Err(failure) => {
+            return Err(format_reports(
+                &failure.reports,
+                mode,
+                failure.source.as_deref(),
+            ));
+        }
+    };
+
+    let module = lower(&compiled.checked).map_err(|error| {
+        format_reports(
+            &[ir_report(error, &compiled.path)],
+            mode,
+            Some(&compiled.source),
+        )
+    })?;
+    let bytecode = lower_to_bytecode(&module);
+
+    let program = match emit_alpha1_native_program(&bytecode) {
+        Ok(program) => program,
+        Err(error) => {
+            let mut report = DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
+                .with_source_path(compiled.path.display().to_string());
+            report = report.with_note(
+                "the native backend compiles only i64-scalar functions (params and return all i64)",
+            );
+            let mut rendered = format_reports(&[report], mode, Some(&compiled.source));
+            if mode == OutputMode::Verbose {
+                for skip in &error.skipped {
+                    rendered.push_str(&format!("\nskipped {}: {}", skip.name, skip.reason));
+                }
+            }
+            return Err(rendered);
+        }
+    };
+
+    let exe_output = output.unwrap_or_else(|| compiled.path.with_extension("exe"));
+    let obj_output = exe_output.with_extension("obj");
+    if let Err(error) = fs::write(&obj_output, &program.bytes) {
+        return Err(format_reports(
+            &[DiagnosticReport::new(
+                "L0003",
+                DiagnosticPhase::Resource,
+                format!("failed to write `{}`: {error}", obj_output.display()),
+            )
+            .with_source_path(obj_output.display().to_string())],
+            mode,
+            None,
+        ));
+    }
+
+    // Best-effort link.
+    let link = link_native_object(&obj_output, &exe_output, &program.entry_symbol);
+
+    if mode == OutputMode::Json {
+        println!("{{\"status\":\"ok\",\"diagnostics\":[]}}");
+        return Ok(());
+    }
+
+    println!("native object: {}", obj_output.display());
+    match &link {
+        LinkOutcome::Linked => println!("native exe: {}", exe_output.display()),
+        LinkOutcome::Unavailable(reason) => {
+            println!("linking unavailable: {reason}");
+            println!("emitted object only (link manually with rust-lld + kernel32.lib)");
+        }
+        LinkOutcome::Failed(reason) => {
+            println!("linking failed: {reason}");
+        }
+    }
+    if mode == OutputMode::Verbose {
+        for name in &program.compiled {
+            println!("compiled {name}");
+        }
+        for skip in &program.skipped {
+            println!("skipped {}: {}", skip.name, skip.reason);
+        }
+    }
+    Ok(())
+}
+
+/// The result of the best-effort link step.
+enum LinkOutcome {
+    /// A `.exe` was produced.
+    Linked,
+    /// The toolchain (rust-lld or kernel32.lib) could not be located.
+    Unavailable(String),
+    /// The linker ran but returned an error.
+    Failed(String),
+}
+
+/// Discover `rust-lld` and the library search paths, then invoke it in lld-link
+/// mode to produce a console `.exe`. Only `kernel32.lib` (for `ExitProcess`) is
+/// required; the entry stub bypasses the CRT via `/entry:`.
+fn link_native_object(obj: &Path, exe: &Path, entry_symbol: &str) -> LinkOutcome {
+    let Some(lld) = find_rust_lld() else {
+        return LinkOutcome::Unavailable("rust-lld not found in the rustc sysroot".to_string());
+    };
+    let lib_paths = discover_lib_paths();
+    if !lib_paths
+        .iter()
+        .any(|dir| dir.join("kernel32.lib").is_file())
+    {
+        return LinkOutcome::Unavailable(
+            "kernel32.lib not found (set the MSVC `LIB` environment variable, e.g. run from a Developer Command Prompt)"
+                .to_string(),
+        );
+    }
+
+    let mut command = std::process::Command::new(&lld);
+    command.args(["-flavor", "link", "/nologo", "/subsystem:console"]);
+    command.arg(format!("/entry:{entry_symbol}"));
+    command.arg(format!("/out:{}", exe.display()));
+    for dir in &lib_paths {
+        command.arg(format!("/libpath:{}", dir.display()));
+    }
+    command.arg(obj);
+    command.arg("kernel32.lib");
+
+    match command.output() {
+        Ok(out) if out.status.success() => LinkOutcome::Linked,
+        Ok(out) => {
+            let mut detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if detail.is_empty() {
+                detail = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            }
+            LinkOutcome::Failed(detail)
+        }
+        Err(error) => LinkOutcome::Failed(format!("could not run rust-lld: {error}")),
+    }
+}
+
+/// Locate `rust-lld.exe` under `<rustc --print sysroot>/lib/rustlib/...`.
+fn find_rust_lld() -> Option<PathBuf> {
+    let output = std::process::Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let candidate = PathBuf::from(sysroot)
+        .join("lib")
+        .join("rustlib")
+        .join("x86_64-pc-windows-msvc")
+        .join("bin")
+        .join("rust-lld.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+/// Collect library search directories: the MSVC `LIB` environment variable (set
+/// in a Developer Command Prompt) split on `;`, plus any it names that exist.
+fn discover_lib_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(lib) = env::var("LIB") {
+        for entry in lib.split(';') {
+            let entry = entry.trim();
+            if !entry.is_empty() {
+                let dir = PathBuf::from(entry);
+                if dir.is_dir() {
+                    paths.push(dir);
+                }
+            }
+        }
+    }
+    paths
 }
 
 fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
@@ -796,6 +978,7 @@ enum CommandName {
     Inspect,
     Run,
     Wasm,
+    Native,
     Version,
     Help,
 }
@@ -915,7 +1098,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                 Err("usage: lullaby examples".to_string())
             }
         }
-        "build" | "check" | "compile" | "inspect" | "run" | "wasm" => {
+        "build" | "check" | "compile" | "inspect" | "run" | "wasm" | "native" => {
             parse_file_command(command, &args[1..])
         }
         "fmt" => parse_fmt_command(&args[1..]),
@@ -974,7 +1157,10 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 cursor += 2;
             }
             "--output" | "-o" => {
-                if (command != "compile" && command != "build" && command != "wasm")
+                if (command != "compile"
+                    && command != "build"
+                    && command != "wasm"
+                    && command != "native")
                     || output.is_some()
                 {
                     return Err(usage);
@@ -1031,6 +1217,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
             "compile" => CommandName::Compile,
             "inspect" => CommandName::Inspect,
             "wasm" => CommandName::Wasm,
+            "native" => CommandName::Native,
             _ => CommandName::Run,
         },
         path: PathBuf::from(path),
@@ -1084,6 +1271,7 @@ fn command_usage(command: &str) -> String {
         "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
+        "native" => "usage: lullaby native [--verbose] [-o out.exe] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
@@ -1091,7 +1279,7 @@ fn command_usage(command: &str) -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby>\n  lullaby native [--verbose] [-o out.exe] <file.lby>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby docs\n  lullaby examples\n  lullaby --version",
         env!("CARGO_PKG_VERSION")
     );
 }
