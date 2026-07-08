@@ -200,6 +200,45 @@ const LEN_HEADER: i32 = 4;
 /// The builtin that reads a string's or array's length header.
 const LEN_BUILTIN: &str = "len";
 
+// -- Growable list layout ----------------------------------------------------
+//
+// A growable `list<T>` (scalar `T`) is an `i32` pointer to a header
+// `[len: i32][cap: i32][elem slots...]`: the current element count, the allocated
+// capacity, then `cap` 8-byte element slots (uniform `SLOT_SIZE` slots like
+// struct/array elements, so a scalar element is naturally aligned and the offset
+// of element `i` is a simple `LIST_DATA_OFF + i * SLOT_SIZE`). `len` shares the
+// leading `i32` offset with strings/arrays, so `len(l)` reuses the array path.
+//
+// Value semantics: Lullaby lists are value-semantic (`l = push(l, x)` returns a
+// NEW list). Every mutating op (`push`/`set`/`pop`) deep-copies the source list
+// first and mutates the fresh copy, and a list crossing a call boundary is
+// deep-copied like any other mutable aggregate — so mutating one binding can
+// never be observed through another. The bump allocator never reclaims, so a
+// list that grows (or is copied) orphans its old block, exactly like the existing
+// string/struct/array heap growth.
+
+/// Byte offset of a list's `len` header (element count). Shares offset 0 with the
+/// string/array length header so `len(l)` reuses the array length path.
+const LIST_LEN_OFF: i32 = 0;
+
+/// Byte offset of a list's `cap` header (allocated capacity, in elements).
+const LIST_CAP_OFF: i32 = 4;
+
+/// Byte offset of a list's first element slot: past the two `i32` headers.
+const LIST_DATA_OFF: i32 = 8;
+
+/// Initial capacity a `list_new()` header (and the first growth of an empty list)
+/// allocates, so a handful of pushes do not each trigger a realloc.
+const LIST_INITIAL_CAP: i32 = 4;
+
+/// Builtins that construct or read growable lists, matched by name in call
+/// lowering (the arity/element type is validated there against the IR types).
+const LIST_NEW_BUILTIN: &str = "list_new";
+const LIST_PUSH_BUILTIN: &str = "push";
+const LIST_GET_BUILTIN: &str = "get";
+const LIST_SET_BUILTIN: &str = "set";
+const LIST_POP_BUILTIN: &str = "pop";
+
 /// Byte offset of an enum's first payload slot. The leading discriminant tag is
 /// an `i32` at offset 0; the first payload slot starts at `SLOT_SIZE` so every
 /// 8-byte payload slot stays naturally aligned for `i64`/`f64` loads and stores,
@@ -389,7 +428,22 @@ fn is_pointer_type(
     if let Some(elem) = ty.array_element() {
         return slot_val_type(&elem, structs, enums).is_some();
     }
+    if supported_list_element(ty).is_some() {
+        return true;
+    }
     false
+}
+
+/// The scalar element type of a supported growable `list<T>`, or `None` if `ty` is
+/// not a list or its element is not a scalar. Lists of heap elements
+/// (`list<string>`/`list<struct>`/`list<list<…>>`/`list<map<…>>`) are DEFERRED —
+/// the WASM backend only lays out scalar-element lists this increment — so such a
+/// list is unsupported and its enclosing function is skipped (still runs on the
+/// interpreters).
+fn supported_list_element(ty: &TypeRef) -> Option<TypeRef> {
+    let elem = ty.list_element()?;
+    scalar_val_type(&elem)?;
+    Some(elem)
 }
 
 /// Whether `ty` is a MUTABLE aggregate whose value semantics require a
@@ -416,6 +470,12 @@ fn is_mutable_aggregate(
     }
     if let Some(elem) = ty.array_element() {
         return slot_val_type(&elem, structs, enums).is_some();
+    }
+    // A scalar-element growable `list<T>` is a mutable aggregate: it is deep-copied
+    // when it crosses a call boundary so a callee mutating its parameter cannot
+    // alter the caller's list, exactly like the interpreters' `Value::clone`.
+    if supported_list_element(ty).is_some() {
+        return true;
     }
     false
 }
@@ -1582,7 +1642,30 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 lower_expr(ctx, &args[0], out)?;
                 return Ok(());
             }
-            // `len(s)`/`len(a)` reads the leading i32 length header at the pointer.
+            // Growable `list<T>` (scalar `T`) builtins. `list_new()` allocates an
+            // empty header; `push`/`get`/`set`/`pop` operate on a `list`-typed
+            // first argument (checked so these names cannot shadow a user function
+            // or an array op). `len(l)` is NOT special-cased here — a list's `len`
+            // shares offset 0 with the string/array length header, so the generic
+            // `len` path below reads it. A list op whose element is a heap type is
+            // deferred: `supported_list_element` returns `None`, so lowering errors
+            // and the function is demoted to the interpreters.
+            if name == LIST_NEW_BUILTIN {
+                return lower_list_new(ctx, args, out);
+            }
+            if name == LIST_PUSH_BUILTIN && args.len() == 2 && args[0].ty.list_element().is_some() {
+                return lower_list_push(ctx, &args[0], &args[1], out);
+            }
+            if name == LIST_GET_BUILTIN && args.len() == 2 && args[0].ty.list_element().is_some() {
+                return lower_list_get(ctx, &args[0], &args[1], out);
+            }
+            if name == LIST_SET_BUILTIN && args.len() == 3 && args[0].ty.list_element().is_some() {
+                return lower_list_set(ctx, &args[0], &args[1], &args[2], out);
+            }
+            if name == LIST_POP_BUILTIN && args.len() == 1 && args[0].ty.list_element().is_some() {
+                return lower_list_pop(ctx, &args[0], out);
+            }
+            // `len(s)`/`len(a)`/`len(l)` reads the leading i32 length header.
             if name == LEN_BUILTIN {
                 return lower_len(ctx, args, out);
             }
@@ -2092,6 +2175,9 @@ fn emit_deep_copy(ctx: &mut LowerCtx, ty: &TypeRef, out: &mut Vec<u8>) -> Result
     if ty.array_element().is_some() {
         return emit_deep_copy_array(ctx, ty, out);
     }
+    if supported_list_element(ty).is_some() {
+        return emit_list_deep_copy(ctx, out);
+    }
     Err(format!(
         "cannot deep-copy non-aggregate type `{}` (wasm backend)",
         ty.name
@@ -2231,6 +2317,352 @@ fn emit_deep_copy_array(ctx: &mut LowerCtx, ty: &TypeRef, out: &mut Vec<u8>) -> 
     out.push(0x0b); // end block
 
     get_local(out, dst);
+    Ok(())
+}
+
+// -- Growable list codegen ---------------------------------------------------
+
+/// `__alloc(size)` where `size` (an `i32`) is already on the stack, stashing the
+/// returned pointer in a fresh scratch `i32` local; return that local's index.
+/// The constant-size companion is [`alloc_bytes`]; this variant handles a runtime
+/// byte count (a list's `LIST_DATA_OFF + cap * SLOT_SIZE`).
+fn alloc_runtime(ctx: &mut LowerCtx, out: &mut Vec<u8>) -> u32 {
+    let alloc_index = *ctx
+        .func_index
+        .get(ALLOC_HELPER_NAME)
+        .expect("__alloc index recorded");
+    out.push(0x10); // call __alloc (size already on the stack)
+    write_uleb(out, alloc_index as u64);
+    let ptr = ctx.add_local(WasmValType::I32);
+    set_local(out, ptr);
+    ptr
+}
+
+/// Push `LIST_DATA_OFF + cap * SLOT_SIZE` (the byte size of a list backing block
+/// with `cap` element slots) onto the stack, given an `i32` local holding `cap`.
+fn emit_list_block_size(cap_local: u32, out: &mut Vec<u8>) {
+    get_local(out, cap_local);
+    out.push(0x41); // i32.const SLOT_SIZE
+    write_sleb(out, SLOT_SIZE as i64);
+    out.push(0x6c); // i32.mul  -> cap * SLOT_SIZE
+    out.push(0x41); // i32.const LIST_DATA_OFF
+    write_sleb(out, LIST_DATA_OFF as i64);
+    out.push(0x6a); // i32.add  -> LIST_DATA_OFF + cap * SLOT_SIZE
+}
+
+/// Copy the first `count` element slots (each `SLOT_SIZE` bytes) from `src` to
+/// `dst` list backing blocks in a runtime loop. `count` is an `i32` local; `src`
+/// and `dst` are `i32` locals holding list base pointers. Element slots are copied
+/// word-for-word by `SLOT_SIZE`-aligned `i64` load/store — list elements are
+/// always scalar (see [`supported_list_element`]), so a flat word copy is an exact
+/// deep copy and needs no per-element type dispatch.
+fn emit_list_copy_elems(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out: &mut Vec<u8>) {
+    let i = ctx.add_local(WasmValType::I32);
+    out.push(0x41); // i32.const 0
+    write_sleb(out, 0);
+    set_local(out, i);
+    out.push(0x02); // block
+    out.push(0x40);
+    out.push(0x03); // loop
+    out.push(0x40);
+    // break when i >= count
+    get_local(out, i);
+    get_local(out, count);
+    out.push(0x4e); // i32.ge_s
+    out.push(0x0d); // br_if 1 (out of the block)
+    write_uleb(out, 1);
+    // off = LIST_DATA_OFF + i * SLOT_SIZE
+    let off = ctx.add_local(WasmValType::I32);
+    get_local(out, i);
+    out.push(0x41); // i32.const SLOT_SIZE
+    write_sleb(out, SLOT_SIZE as i64);
+    out.push(0x6c); // i32.mul
+    out.push(0x41); // i32.const LIST_DATA_OFF
+    write_sleb(out, LIST_DATA_OFF as i64);
+    out.push(0x6a); // i32.add
+    set_local(out, off);
+    // memory[dst + off] = memory[src + off] (one 8-byte word)
+    get_local(out, dst);
+    get_local(out, off);
+    out.push(0x6a); // i32.add -> dst addr
+    get_local(out, src);
+    get_local(out, off);
+    out.push(0x6a); // i32.add -> src addr
+    emit_load(WasmValType::I64, out);
+    emit_store(WasmValType::I64, out);
+    // i += 1
+    get_local(out, i);
+    out.push(0x41); // i32.const 1
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, i);
+    out.push(0x0c); // br 0 (repeat)
+    write_uleb(out, 0);
+    out.push(0x0b); // end loop
+    out.push(0x0b); // end block
+}
+
+/// Deep-copy the growable `list<T>` whose pointer is on the stack, leaving a fresh
+/// independent `[len][cap][slots]` block's pointer on the stack. The copy keeps the
+/// source's `len` and `cap` and duplicates its `len` element slots. This is the
+/// WASM realization of the interpreters' `Value::clone` on a list: mutating the
+/// copy (or the original) is never observable through the other pointer.
+fn emit_list_deep_copy(ctx: &mut LowerCtx, out: &mut Vec<u8>) -> Result<(), String> {
+    let src = ctx.add_local(WasmValType::I32);
+    set_local(out, src);
+    // len = load [src + LIST_LEN_OFF], cap = load [src + LIST_CAP_OFF]
+    let len = ctx.add_local(WasmValType::I32);
+    get_local(out, src);
+    emit_load_at(WasmValType::I32, LIST_LEN_OFF, out);
+    set_local(out, len);
+    let cap = ctx.add_local(WasmValType::I32);
+    get_local(out, src);
+    emit_load_at(WasmValType::I32, LIST_CAP_OFF, out);
+    set_local(out, cap);
+    // dst = __alloc(LIST_DATA_OFF + cap * SLOT_SIZE)
+    emit_list_block_size(cap, out);
+    let dst = alloc_runtime(ctx, out);
+    // dst.len = len; dst.cap = cap
+    get_local(out, dst);
+    get_local(out, len);
+    emit_store_at(WasmValType::I32, LIST_LEN_OFF, out);
+    get_local(out, dst);
+    get_local(out, cap);
+    emit_store_at(WasmValType::I32, LIST_CAP_OFF, out);
+    // copy the `len` live element slots
+    emit_list_copy_elems(ctx, src, dst, len, out);
+    get_local(out, dst);
+    Ok(())
+}
+
+/// Lower `list_new() -> list<T>`: `__alloc` an empty `[len=0][cap=LIST_INITIAL_CAP]
+/// [slots...]` block and leave its pointer on the stack. Allocating a small initial
+/// capacity means the first few `push`es do not each realloc.
+fn lower_list_new(ctx: &mut LowerCtx, args: &[IrExpr], out: &mut Vec<u8>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!("list_new expects 0 arguments, got {}", args.len()));
+    }
+    let ptr = alloc_bytes(ctx, LIST_DATA_OFF + LIST_INITIAL_CAP * SLOT_SIZE, out);
+    get_local(out, ptr);
+    out.push(0x41); // i32.const 0 (len)
+    write_sleb(out, 0);
+    emit_store_at(WasmValType::I32, LIST_LEN_OFF, out);
+    get_local(out, ptr);
+    out.push(0x41); // i32.const LIST_INITIAL_CAP (cap)
+    write_sleb(out, LIST_INITIAL_CAP as i64);
+    emit_store_at(WasmValType::I32, LIST_CAP_OFF, out);
+    get_local(out, ptr);
+    Ok(())
+}
+
+/// Lower `push(l, x) -> list<T>` (value-semantic append): deep-copy `l`, grow the
+/// copy when it is full (double the capacity, or seed `LIST_INITIAL_CAP` from an
+/// empty list, reallocating and copying the live elements — the old block is
+/// orphaned in the no-reclaim bump heap), store `x` into slot `len`, bump `len`,
+/// and leave the fresh list pointer on the stack. Because `push` always returns a
+/// NEW list, `l = push(l, x)` matches the interpreters' `Value::clone`-then-append.
+fn lower_list_push(
+    ctx: &mut LowerCtx,
+    list: &IrExpr,
+    value: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let elem_ty = supported_list_element(&list.ty).ok_or_else(|| {
+        format!(
+            "push expects a scalar-element list but got `{}`",
+            list.ty.name
+        )
+    })?;
+    let slot_ty = scalar_val_type(&elem_ty)
+        .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
+    // Deep-copy the source list into a fresh, independent block (value semantics).
+    lower_expr(ctx, list, out)?;
+    emit_list_deep_copy(ctx, out)?;
+    let lst = ctx.add_local(WasmValType::I32);
+    set_local(out, lst);
+    // Grow if len == cap.
+    let len = ctx.add_local(WasmValType::I32);
+    get_local(out, lst);
+    emit_load_at(WasmValType::I32, LIST_LEN_OFF, out);
+    set_local(out, len);
+    let cap = ctx.add_local(WasmValType::I32);
+    get_local(out, lst);
+    emit_load_at(WasmValType::I32, LIST_CAP_OFF, out);
+    set_local(out, cap);
+    // if len >= cap { grow }
+    get_local(out, len);
+    get_local(out, cap);
+    out.push(0x4e); // i32.ge_s
+    out.push(0x04); // if
+    out.push(0x40); // void block type
+    emit_list_grow(ctx, lst, len, cap, out);
+    out.push(0x0b); // end if
+    // slot address of element `len`: lst + LIST_DATA_OFF + len * SLOT_SIZE
+    get_local(out, lst);
+    get_local(out, len);
+    out.push(0x41); // i32.const SLOT_SIZE
+    write_sleb(out, SLOT_SIZE as i64);
+    out.push(0x6c); // i32.mul
+    out.push(0x41); // i32.const LIST_DATA_OFF
+    write_sleb(out, LIST_DATA_OFF as i64);
+    out.push(0x6a); // i32.add
+    out.push(0x6a); // i32.add -> element slot address
+    lower_expr(ctx, value, out)?; // the value to append
+    emit_store(slot_ty, out);
+    // len += 1
+    get_local(out, lst);
+    get_local(out, len);
+    out.push(0x41); // i32.const 1
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    emit_store_at(WasmValType::I32, LIST_LEN_OFF, out);
+    get_local(out, lst);
+    Ok(())
+}
+
+/// Grow the list in `lst` (an `i32` local) so it has room past `len` (== `cap`):
+/// compute `new_cap = if cap == 0 { LIST_INITIAL_CAP } else { cap * 2 }`, `__alloc`
+/// a fresh block, copy the `len` live elements, write the new `cap` and preserved
+/// `len`, and update `lst` to the new pointer. `len` and `cap` locals are refreshed
+/// so the caller sees the post-grow capacity; the old block is orphaned.
+fn emit_list_grow(ctx: &mut LowerCtx, lst: u32, len: u32, cap: u32, out: &mut Vec<u8>) {
+    // new_cap = cap == 0 ? LIST_INITIAL_CAP : cap * 2
+    let new_cap = ctx.add_local(WasmValType::I32);
+    get_local(out, cap);
+    out.push(0x45); // i32.eqz
+    out.push(0x04); // if -> i32
+    out.push(0x7f); // result i32
+    out.push(0x41); // i32.const LIST_INITIAL_CAP
+    write_sleb(out, LIST_INITIAL_CAP as i64);
+    out.push(0x05); // else
+    get_local(out, cap);
+    out.push(0x41); // i32.const 2
+    write_sleb(out, 2);
+    out.push(0x6c); // i32.mul
+    out.push(0x0b); // end if
+    set_local(out, new_cap);
+    // dst = __alloc(LIST_DATA_OFF + new_cap * SLOT_SIZE)
+    emit_list_block_size(new_cap, out);
+    let dst = alloc_runtime(ctx, out);
+    // dst.len = len; dst.cap = new_cap
+    get_local(out, dst);
+    get_local(out, len);
+    emit_store_at(WasmValType::I32, LIST_LEN_OFF, out);
+    get_local(out, dst);
+    get_local(out, new_cap);
+    emit_store_at(WasmValType::I32, LIST_CAP_OFF, out);
+    // copy the `len` live elements from the old block (lst) to dst
+    emit_list_copy_elems(ctx, lst, dst, len, out);
+    // lst = dst; cap = new_cap (len is unchanged)
+    get_local(out, dst);
+    set_local(out, lst);
+    get_local(out, new_cap);
+    set_local(out, cap);
+}
+
+/// Lower `get(l, i) -> T`: load element `i` from `l + LIST_DATA_OFF + i*SLOT_SIZE`.
+/// The interpreters bounds-check and raise `L0413`; the WASM backend relies on
+/// linear-memory trapping for a truly out-of-range index, so in-bounds reads match
+/// the interpreters exactly and an OOB read traps (a consistent, documented
+/// behavior) instead of returning a poisoned value.
+fn lower_list_get(
+    ctx: &mut LowerCtx,
+    list: &IrExpr,
+    index: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let elem_ty = supported_list_element(&list.ty).ok_or_else(|| {
+        format!(
+            "get expects a scalar-element list but got `{}`",
+            list.ty.name
+        )
+    })?;
+    let slot_ty = scalar_val_type(&elem_ty)
+        .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
+    lower_expr(ctx, list, out)?; // base pointer
+    emit_list_elem_offset(ctx, index, out)?; // += LIST_DATA_OFF + index * SLOT_SIZE
+    emit_load(slot_ty, out);
+    Ok(())
+}
+
+/// Lower `set(l, i, x) -> list<T>` (value-semantic replace): deep-copy `l`, store
+/// `x` into element slot `i` of the copy, and leave the fresh list pointer on the
+/// stack. In-bounds writes match the interpreters; an OOB index traps on the
+/// linear-memory store, consistent with `get`.
+fn lower_list_set(
+    ctx: &mut LowerCtx,
+    list: &IrExpr,
+    index: &IrExpr,
+    value: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let elem_ty = supported_list_element(&list.ty).ok_or_else(|| {
+        format!(
+            "set expects a scalar-element list but got `{}`",
+            list.ty.name
+        )
+    })?;
+    let slot_ty = scalar_val_type(&elem_ty)
+        .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
+    lower_expr(ctx, list, out)?;
+    emit_list_deep_copy(ctx, out)?;
+    let lst = ctx.add_local(WasmValType::I32);
+    set_local(out, lst);
+    // element slot address in the copy
+    get_local(out, lst);
+    emit_list_elem_offset(ctx, index, out)?;
+    lower_expr(ctx, value, out)?;
+    emit_store(slot_ty, out);
+    get_local(out, lst);
+    Ok(())
+}
+
+/// Lower `pop(l) -> list<T>` (value-semantic remove-last): deep-copy `l`, decrement
+/// the copy's `len` (dropping the last element in place — the slot stays allocated,
+/// exactly like the interpreters' `Vec::pop` shrinks the length), and leave the
+/// fresh list pointer on the stack. Popping an empty list is `L0413` on the
+/// interpreters; the WASM path decrements to `-1` len, so the enclosing program is
+/// expected to keep the same non-empty precondition the interpreters require.
+fn lower_list_pop(ctx: &mut LowerCtx, list: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
+    supported_list_element(&list.ty).ok_or_else(|| {
+        format!(
+            "pop expects a scalar-element list but got `{}`",
+            list.ty.name
+        )
+    })?;
+    lower_expr(ctx, list, out)?;
+    emit_list_deep_copy(ctx, out)?;
+    let lst = ctx.add_local(WasmValType::I32);
+    set_local(out, lst);
+    // len -= 1
+    get_local(out, lst);
+    get_local(out, lst);
+    emit_load_at(WasmValType::I32, LIST_LEN_OFF, out);
+    out.push(0x41); // i32.const 1
+    write_sleb(out, 1);
+    out.push(0x6b); // i32.sub
+    emit_store_at(WasmValType::I32, LIST_LEN_OFF, out);
+    get_local(out, lst);
+    Ok(())
+}
+
+/// After a list base pointer is on the stack, add `LIST_DATA_OFF + index*SLOT_SIZE`
+/// so the top of stack is the element slot address. The `index` expression is an
+/// `i64`, truncated to `i32` (`i32.wrap_i64`) exactly like array indexing.
+fn emit_list_elem_offset(
+    ctx: &mut LowerCtx,
+    index: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_expr(ctx, index, out)?; // index (i64)
+    out.push(0xa7); // i32.wrap_i64
+    out.push(0x41); // i32.const SLOT_SIZE
+    write_sleb(out, SLOT_SIZE as i64);
+    out.push(0x6c); // i32.mul -> index * SLOT_SIZE
+    out.push(0x41); // i32.const LIST_DATA_OFF
+    write_sleb(out, LIST_DATA_OFF as i64);
+    out.push(0x6a); // i32.add -> LIST_DATA_OFF + index * SLOT_SIZE
+    out.push(0x6a); // i32.add base + that offset
     Ok(())
 }
 
@@ -3103,17 +3535,17 @@ mod tests {
 
     #[test]
     fn scalar_and_nonscalar_split() {
-        // `add` is scalar; `collect` returns `list<i64>`, still outside the WASM
-        // value set (strings/structs/arrays/enums are supported; `list`/`map` are
-        // not), so it is skipped.
+        // `add` is scalar; `tally` returns `map<i64, i64>`, still outside the WASM
+        // value set (strings/structs/arrays/enums and scalar-element `list`s are
+        // supported; `map` is not), so it is skipped.
         let source = concat!(
             "fn add a i64 b i64 -> i64\n    a + b\n\n",
-            "fn collect n i64 -> list<i64>\n    push(list_new(), n)\n",
+            "fn tally n i64 -> map<i64, i64>\n    map_set(map_new(), n, n)\n",
         );
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         assert_eq!(artifact.compiled, vec!["add".to_string()]);
         assert_eq!(artifact.skipped.len(), 1);
-        assert_eq!(artifact.skipped[0].name, "collect");
+        assert_eq!(artifact.skipped[0].name, "tally");
         assert!(artifact.skipped[0].reason.contains("supported"));
     }
 
@@ -3153,6 +3585,87 @@ mod tests {
         let source = "fn fib n i64 -> i64\n    if n < 2\n        return n\n    return fib(n - 1) + fib(n - 2)\n";
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         assert_eq!(artifact.compiled, vec!["fib".to_string()]);
+    }
+
+    // -- Growable `list<T>` (scalar element) -----------------------------------
+
+    #[test]
+    fn scalar_list_function_compiles_with_grow_and_copy_codegen() {
+        // A function that builds a growable `list<i64>` via `list_new`/`push`,
+        // reads it with `get`/`len`, replaces an element with `set`, and drops one
+        // with `pop` must COMPILE to WASM (not skip to the interpreters). The list
+        // is an `i32` pointer to a `[len][cap][slots]` block laid out in linear
+        // memory, so both the signature (returning `list<i64>`) and the body are
+        // eligible.
+        let source = concat!(
+            "fn build n i64 -> list<i64>\n",
+            "    let xs list<i64> = list_new()\n",
+            "    xs = push(xs, n)\n",
+            "    xs = push(xs, n + 1)\n",
+            "    let ys list<i64> = set(xs, 0, n + 2)\n",
+            "    let zs list<i64> = pop(ys)\n",
+            "    zs\n\n",
+            "fn probe n i64 -> i64\n",
+            "    let xs list<i64> = build(n)\n",
+            "    len(xs) + get(xs, 0)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"build".to_string())
+                && artifact.compiled.contains(&"probe".to_string()),
+            "list build/probe functions should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The grow decision `new_cap = cap == 0 ? LIST_INITIAL_CAP : cap * 2`
+        // lowers to `i32.eqz` (0x45), then `if` producing an `i32` (0x04 0x7f) —
+        // a signature unique to the list-grow path in this backend.
+        assert!(
+            find_subslice(&code, &[0x45, 0x04, 0x7f]).is_some(),
+            "list `push` emits the capacity-doubling grow decision"
+        );
+        // The element copy (in the deep-copy and grow paths) copies each slot with
+        // an `i64.load` (0x29) immediately followed by an `i64.store` (0x37) — the
+        // 8-byte word copy of a list element slot.
+        assert!(
+            find_subslice(&code, &[0x29, 0x03, 0x00, 0x37, 0x03, 0x00]).is_some(),
+            "list copy emits an 8-byte word load+store per element slot"
+        );
+    }
+
+    #[test]
+    fn list_new_allocates_len_cap_header() {
+        // `list_new()` allocates a `[len=0][cap=LIST_INITIAL_CAP][slots]` header:
+        // the body stores 0 at the len offset and LIST_INITIAL_CAP at the cap
+        // offset. The `i32.const LIST_INITIAL_CAP` (0x41 0x04) capacity literal must
+        // appear, and the function is eligible (returns a `list` pointer).
+        let source = "fn empty -> list<i64>\n    list_new()\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["empty".to_string()]);
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // i32.const 4 (LIST_INITIAL_CAP) then i32.store at the cap offset (4).
+        assert!(
+            find_subslice(&code, &[0x41, LIST_INITIAL_CAP as u8, 0x36, 0x02, 0x04]).is_some(),
+            "list_new stores the initial capacity into the cap header slot"
+        );
+    }
+
+    #[test]
+    fn list_of_heap_element_is_skipped() {
+        // A `list<string>` (heap element) is DEFERRED: `supported_list_element`
+        // rejects a non-scalar element, so the function's signature is ineligible
+        // and it is skipped (still runs on the interpreters), never miscompiled.
+        let source = concat!(
+            "fn names -> list<string>\n",
+            "    push(list_new(), \"a\")\n\n",
+            "fn ok n i64 -> i64\n    n + 1\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["ok".to_string()]);
+        assert_eq!(artifact.skipped.len(), 1);
+        assert_eq!(artifact.skipped[0].name, "names");
     }
 
     // -- Aggregates across call boundaries (params/returns) --------------------
@@ -3269,9 +3782,10 @@ mod tests {
 
     #[test]
     fn no_eligible_functions_errors() {
-        // `list<i64>` is not in the supported WASM value set, so nothing is
-        // eligible and the backend reports L0338.
-        let source = "fn collect n i64 -> list<i64>\n    push(list_new(), n)\n";
+        // `map<i64, i64>` is not in the supported WASM value set, so nothing is
+        // eligible and the backend reports L0338. (A scalar-element `list<i64>` IS
+        // supported now — see the growable-list tests below.)
+        let source = "fn tally n i64 -> map<i64, i64>\n    map_set(map_new(), n, n)\n";
         let err = emit_wasm_module(&module_for(source)).expect_err("no eligible");
         assert_eq!(err.code, "L0338");
         assert_eq!(err.skipped.len(), 1);

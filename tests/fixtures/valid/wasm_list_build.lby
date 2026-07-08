@@ -1,0 +1,19 @@
+fn build -> list<i64>
+    let xs list<i64> = list_new()
+    xs = push(xs, 10)
+    xs = push(xs, 20)
+    xs = push(xs, 30)
+    xs = push(xs, 40)
+    xs = push(xs, 50)
+    xs = push(xs, 60)
+    xs
+
+fn main -> i64
+    let xs list<i64> = build()
+    let n i64 = len(xs)
+    let updated list<i64> = set(xs, 2, 99)
+    let sum i64 = 0
+    for i from 0 to n - 1
+        sum += get(updated, i)
+    let shorter list<i64> = pop(updated)
+    sum + len(shorter) * 1000 + n * 100

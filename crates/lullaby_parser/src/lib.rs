@@ -242,6 +242,11 @@ impl TypeRef {
         self.generic_arg("array")
     }
 
+    /// The element type `T` of a growable `list<T>` spelling, if any.
+    pub fn list_element(&self) -> Option<TypeRef> {
+        self.generic_arg("list")
+    }
+
     /// The inner type of a `<ctor><T>` spelling, e.g. `generic_arg("rc")` on
     /// `rc<i64>` yields `i64`. For a multi-argument spelling this returns the
     /// full comma-separated argument text as one `TypeRef`; use `generic_args`

@@ -1,0 +1,16 @@
+fn mutate xs list<i64> -> i64
+    let ys list<i64> = push(xs, 999)
+    let a i64 = len(xs)
+    let b i64 = len(ys)
+    a * 10 + b
+
+fn main -> i64
+    let a list<i64> = list_new()
+    a = push(a, 1)
+    a = push(a, 2)
+    a = push(a, 3)
+    let b list<i64> = a
+    let c list<i64> = push(b, 4)
+    let d list<i64> = set(b, 0, 77)
+    let call_probe i64 = mutate(a)
+    len(a) * 100000 + len(b) * 10000 + len(c) * 1000 + get(b, 0) * 100 + get(d, 0) + call_probe

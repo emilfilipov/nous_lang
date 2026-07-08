@@ -153,12 +153,79 @@ needed on return. Fixtures `wasm_aggregate_args.lby` and
 probes (a callee mutates its parameter; the caller's copy is verified unchanged),
 node-gated against the interpreter.
 
-**Deferred:** aggregates containing heap values the backend does not lay out
-(`list`/`map`, or an enum with a heap payload); enums with a **heap** payload
-(`string`/`list`/`array`/`map` — notably `result<i64, string>`); the growable
-`list`/`map` collections; runtime string construction; and a free-list allocator
-(`__alloc` never frees this increment). Functions using any of these are skipped
-with a reason and still run on the interpreters.
+**Deferred:** aggregates containing heap values the backend does not lay out (a
+`list` with a heap element, or `map`, or an enum with a heap payload); enums with
+a **heap** payload (`string`/`list`/`array`/`map` — notably `result<i64,
+string>`); the `map` collection and lists of heap elements; runtime string
+construction; and a free-list allocator (`__alloc` never frees this increment).
+Functions using any of these are skipped with a reason and still run on the
+interpreters.
+
+### Growable `list<T>` — scalar elements (landed)
+
+The growable, value-semantic `list<T>` collection compiles to linear memory for
+**scalar element types** (`i64`, the fixed-width ints `i8`…`usize`, `f32`/`f64`,
+`bool`, `char`, `byte`). A `list<T>` is an **`i32` pointer** to a header
+`[len: i32][cap: i32][elem slots...]`: the live element count, the allocated
+capacity, then `cap` uniform 8-byte element slots (`SLOT_SIZE`, like struct/array
+elements, so a scalar element stays naturally aligned and element `i` lives at
+`LIST_DATA_OFF + i * SLOT_SIZE`). The `len` field shares offset 0 with the
+string/array length header, so `len(l)` reuses the array length path unchanged.
+
+- **`list_new() -> list<T>`** `__alloc`s an empty header `[len=0][cap=4][slots]`
+  (a small initial capacity so the first few pushes do not each realloc) and
+  leaves its pointer on the stack.
+- **`push(l, x) -> list<T>`** is **value-semantic** (it returns a NEW list): it
+  deep-copies `l` into a fresh `[len][cap][slots]` block, and if the copy is full
+  (`len == cap`) **grows** it — reallocating a block of doubled capacity (or the
+  initial capacity from an empty list), copying the live elements, and orphaning
+  the old block in the no-reclaim bump heap (exactly like existing
+  string/struct/array growth). It then stores `x` into slot `len`, bumps `len`,
+  and leaves the fresh list pointer. Because `push` always copies before
+  appending, `l = push(l, x)` matches the interpreters' `Value::clone`-then-append,
+  and no aliased binding can observe the append.
+- **`set(l, i, x) -> list<T>`** deep-copies `l`, stores `x` into element slot `i`
+  of the copy, and returns the fresh list — value-semantic like `push`.
+- **`pop(l) -> list<T>`** deep-copies `l` and decrements the copy's `len` (the last
+  element's slot stays allocated, exactly like the interpreters' `Vec::pop`
+  shrinks the length), returning the fresh list.
+- **`get(l, i) -> T`** loads element `i` directly from
+  `l + LIST_DATA_OFF + i * SLOT_SIZE` (index `i64` truncated to `i32` with
+  `i32.wrap_i64`, like array indexing). **`len(l) -> i64`** loads the leading
+  `i32` and sign-extends to `i64`.
+
+**Value semantics.** A `list<T>` (scalar element) is classified as a **mutable
+aggregate**, so it is deep-copied when it crosses a call boundary — a callee
+pushing to its parameter cannot alter the caller's list. Combined with the
+copy-on-`push`/`set`/`pop` discipline, `let b = a` (which shares the `i32`
+pointer) is safe: any later `push`/`set`/`pop` on either binding produces a fresh
+block and reassigns that binding, so the other still points at the untouched
+original. This mirrors the interpreters' `Value::clone` bit-for-bit. The
+`emit_list_deep_copy` helper duplicates the `[len][cap][slots]` block; a list
+nested inside a struct field or array element is deep-copied recursively by the
+existing aggregate copy paths.
+
+**Bounds behavior.** The interpreters bounds-check `get`/`set` and raise `L0413`
+on an out-of-range index. The WASM backend performs an in-bounds `get`/`set`
+identically to the interpreters; a truly out-of-range index **traps** on the
+linear-memory access (a consistent, documented behavior) rather than returning a
+poisoned value. In-bounds programs — the common case, and what every parity
+fixture exercises — agree bit-for-bit.
+
+**Out of scope (deferred):** lists of **heap** elements
+(`list<string>`/`list<struct>`/`list<list<…>>`/`list<map<…>>`) — the element must
+be scalar this increment, so `supported_list_element` rejects a heap element and
+the enclosing function is skipped (still runs on the interpreters) rather than
+miscompiled — and the `map<K, V>` collection. `__alloc` still never frees, so a
+grown or copied list orphans its old block (a free-list allocator is future work).
+
+Fixtures `wasm_list_build.lby` (build via `push` crossing the initial capacity to
+trigger a grow+copy, then `get`/`len`/`set`/`pop`, `main` = 5879) and
+`wasm_list_value_semantics.lby` (an aliased binding, a push-derived list, a
+set-derived list, and a callee that pushes to its parameter, `main` = 334211) run
+on all interpreters and, under node, their exported `main` matches the interpreter
+(`crates/lullaby_cli/tests/cli.rs::wasm_list_build_execution_parity_with_node` and
+`wasm_list_value_semantics_execution_parity_with_node`).
 
 ## First increment — the scalar subset
 
@@ -180,16 +247,19 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
-- A function that uses `list`/`map`, an enum with a heap payload, a runtime
-  string builder, or any type still outside the supported set is **rejected for
-  WASM** with a clear diagnostic (it still runs on the interpreters). Note: a
-  later increment added enum values and `match` for scalar-payload enums
-  (`option`/`result`/user enums) — see the linear-memory section above. The
+- A function that uses `map`, a `list` with a heap element, an enum with a heap
+  payload, a runtime string builder, or any type still outside the supported set
+  is **rejected for WASM** with a clear diagnostic (it still runs on the
+  interpreters). Note: later increments added enum values and `match` for
+  scalar-payload enums (`option`/`result`/user enums) and the growable `list<T>`
+  collection for scalar element types — see the linear-memory sections above. The
   allowed builtins are `wasm_log(x i64) -> void` (the host log import above),
   `console_log(s string) -> void` and `dom_set_text(id string, text string) ->
-  void` (the JS/DOM host imports above), and `len(string|array) -> i64`; every
-  other builtin is still rejected. Strings, structs, and fixed arrays are now
-  supported — see **Heap types (landed)** above.
+  void` (the JS/DOM host imports above), `len(string|array|list) -> i64`, and the
+  scalar-element `list` builtins `list_new`/`push`/`get`/`set`/`pop`; every other
+  builtin is still rejected. Strings, structs, fixed arrays, and scalar-element
+  lists are now supported — see **Heap types (landed)** and **Growable `list<T>`
+  (landed)** above.
 
 ## From IR to WASM
 
@@ -269,10 +339,15 @@ Enum values and `match` for scalar-payload enums (`option`/`result`/user enums,
 tag+payload linear-memory records, branch-on-tag dispatch) now compile and are
 node-parity-tested
 (`crates/lullaby_cli/tests/cli.rs::wasm_enum_match_execution_parity_with_node`,
-fixture `tests/fixtures/valid/wasm_enum_match.lby`). Deferred: enums with a heap
-payload (`string`/`list`/`array`/`map`, e.g. `result<i64, string>`), growable
-`list`/`map`, runtime string construction, a free-list allocator, and a richer
-DOM interop surface (reading DOM values, events) that builds on these imports.
+fixture `tests/fixtures/valid/wasm_enum_match.lby`). Growable `list<T>` for
+**scalar element types** (`[len][cap][slots]` linear-memory blocks with
+value-semantic `list_new`/`push`/`get`/`set`/`len`/`pop` and capacity-doubling
+grow+copy) now compiles and is node-parity-tested — see **Growable `list<T>`
+(landed)** below (fixtures `wasm_list_build.lby`, `wasm_list_value_semantics.lby`).
+Deferred: enums with a heap payload (`string`/`list`/`array`/`map`, e.g.
+`result<i64, string>`), lists of heap elements and the `map` collection, runtime
+string construction, a free-list allocator, and a richer DOM interop surface
+(reading DOM values, events) that builds on these imports.
 
 ## Why these choices
 
