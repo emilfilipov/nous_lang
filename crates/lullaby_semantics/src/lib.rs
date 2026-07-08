@@ -1914,7 +1914,7 @@ impl<'a> Checker<'a> {
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0307",
-                                "operands of `+` must both be i64, both be f64, or both be string",
+                                "operands of `+` must both be the same numeric type (i64, f64, i32, or u32) or both be string",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -1927,7 +1927,7 @@ impl<'a> Checker<'a> {
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0307",
-                                "arithmetic operands must both be i64 or both be f64",
+                                "arithmetic operands must both be the same numeric type (i64, f64, i32, or u32)",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -1951,15 +1951,16 @@ impl<'a> Checker<'a> {
                     | BinaryOp::LessEqual
                     | BinaryOp::Greater
                     | BinaryOp::GreaterEqual => {
-                        // Ordering compares two i64s, two f64s, two chars (by code
-                        // point), or two bytes (numerically).
+                        // Ordering compares two values of the same numeric type
+                        // (i64, f64, i32, u32), two chars (by code point), or two
+                        // bytes (numerically).
                         if same_numeric.is_some() || same_orderable_scalar(&left_type, &right_type)
                         {
                             Some(TypeRef::new("bool"))
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0327",
-                                "ordering comparison operands must both be i64, both be f64, both be char, or both be byte",
+                                "ordering comparison operands must both be the same numeric type (i64, f64, i32, or u32), both be char, or both be byte",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -3402,6 +3403,37 @@ impl<'a> Checker<'a> {
             "byte_val" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 self.expect_scalar_builtin_arg(name, 1, &args[0], "byte", scope, function)?;
+                Some(TypeRef::new("i64"))
+            }
+            // Fixed-width integer conversions. `to_i32`/`to_u32` reinterpret an
+            // `i64` into the narrower width (wrapping); `to_i64` widens an
+            // `i32`/`u32` back to `i64`. No implicit coercion exists, so these
+            // explicit conversions are the only bridge between widths.
+            "to_i32" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_scalar_builtin_arg(name, 1, &args[0], "i64", scope, function)?;
+                Some(TypeRef::new("i32"))
+            }
+            "to_u32" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_scalar_builtin_arg(name, 1, &args[0], "i64", scope, function)?;
+                Some(TypeRef::new("u32"))
+            }
+            "to_i64" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let arg_type = self.check_expr(&args[0], scope, function)?;
+                if !matches!(arg_type.name.as_str(), "i32" | "u32") {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0307",
+                        format!(
+                            "to_i64 expects an i32 or u32 argument but got `{}`",
+                            arg_type.name
+                        ),
+                        Some(function.name.clone()),
+                        call_span,
+                    ));
+                    return None;
+                }
                 Some(TypeRef::new("i64"))
             }
             "env" => {
@@ -5030,9 +5062,16 @@ fn future_inner(ty: &TypeRef) -> Option<TypeRef> {
 /// If both operand types are the same numeric type (`i64` or `f64`), return it.
 fn same_numeric_type(left: &Option<TypeRef>, right: &Option<TypeRef>) -> Option<TypeRef> {
     match (left, right) {
-        (Some(l), Some(r)) if l == r && matches!(l.name.as_str(), "i64" | "f64") => Some(l.clone()),
+        (Some(l), Some(r)) if l == r && is_numeric_type_name(&l.name) => Some(l.clone()),
         _ => None,
     }
+}
+
+/// True for every scalar numeric type: the default `i64`/`f64` plus the
+/// fixed-width integer lattice. Arithmetic and ordering require both operands to
+/// share one of these (no implicit width mixing); the shared type is the result.
+fn is_numeric_type_name(name: &str) -> bool {
+    matches!(name, "i64" | "f64" | "i32" | "u32")
 }
 
 /// True when both operands are the same orderable scalar type beyond the numeric
@@ -7489,6 +7528,66 @@ mod tests {
         let diagnostics = validate_source(source).expect_err("wrong proc_spawn arg type");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0335"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn fixed_width_integer_arithmetic_and_conversions_type_check() {
+        // i32/u32 values arithmetic and compare among themselves and convert to
+        // and from i64 through the explicit `to_*` builtins.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a u32 = to_u32(10)\n",
+            "    let b u32 = to_u32(3)\n",
+            "    let c i32 = to_i32(0 - 1)\n",
+            "    if c < to_i32(0)\n",
+            "        return to_i64(a - b)\n",
+            "    to_i64(a + b)\n",
+        );
+        validate_source(source).expect("i32/u32 arithmetic and conversions type-check");
+    }
+
+    #[test]
+    fn rejects_mixed_width_integer_operands_with_l0307() {
+        // No implicit width mixing: `u32 + i32` has no common numeric type.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a u32 = to_u32(1)\n",
+            "    let b i32 = to_i32(1)\n",
+            "    let c u32 = a + b\n",
+            "    to_i64(c)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("u32 + i32 must be rejected");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0307"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_fixed_width_mixed_with_i64_with_l0307() {
+        // A fixed-width integer does not silently mix with the default `i64`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a i32 = to_i32(1)\n",
+            "    let total i32 = a + 5\n",
+            "    to_i64(total)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("i32 + i64 must be rejected");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0307"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_to_i64_on_plain_i64_with_l0307() {
+        // `to_i64` widens an i32/u32; a plain i64 argument is a type error.
+        let source = concat!("fn main -> i64\n", "    to_i64(5)\n");
+        let diagnostics = validate_source(source).expect_err("to_i64 needs an i32/u32 argument");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0307"),
             "{diagnostics:?}"
         );
     }

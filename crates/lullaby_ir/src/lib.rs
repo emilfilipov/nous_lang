@@ -11,7 +11,7 @@ use lullaby_parser::{
     TypeRef, UnaryOp, function_type, generic_type,
 };
 use lullaby_runtime::{
-    Future, ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex,
+    Future, IntKind, ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex,
     SocketResource, Task, Value, apply_compound, asm_interpreter_error, await_future, char_find,
     expect_atomic, expect_chan, expect_future, expect_i64, expect_list, expect_map, expect_mutex,
     expect_string, expect_task, extern_call_error, get_place, http_exchange, join_task,
@@ -3774,6 +3774,9 @@ impl<'a> IrRuntime<'a> {
             "is_lower" => Self::builtin_is_lower(args),
             "byte" => Self::builtin_byte(args),
             "byte_val" => Self::builtin_byte_val(args),
+            "to_i32" => Self::builtin_to_i32(args),
+            "to_u32" => Self::builtin_to_u32(args),
+            "to_i64" => Self::builtin_to_i64(args),
             "len" => Self::builtin_len(args),
             "list_new" => Self::builtin_list_new(args),
             "push" => Self::builtin_push(args),
@@ -4329,6 +4332,41 @@ impl<'a> IrRuntime<'a> {
                     unreachable!("bitwise ops require i64 operands (rejected by semantics)")
                 }
             });
+        }
+        // Fixed-width integer arithmetic/comparison, identical to the AST runtime:
+        // same-tag operands, wrap-normalized result, plain `i64` ordering of the
+        // normalized cells. Kept byte-for-byte in step with the other backends.
+        if let (Value::Int { value: l, ty }, Value::Int { value: r, ty: rk }) = (&left, &right) {
+            debug_assert_eq!(ty, rk, "mixed-width integer operands reached eval_binary");
+            let (l, r, ty) = (*l, *r, *ty);
+            return match op {
+                BinaryOp::Add => Ok(Value::int(l.wrapping_add(r), ty)),
+                BinaryOp::Subtract => Ok(Value::int(l.wrapping_sub(r), ty)),
+                BinaryOp::Multiply => Ok(Value::int(l.wrapping_mul(r), ty)),
+                BinaryOp::Divide => {
+                    if r == 0 {
+                        Err(RuntimeError::new("L0404", "division by zero"))
+                    } else {
+                        Ok(Value::int(l.wrapping_div(r), ty))
+                    }
+                }
+                BinaryOp::Equal => Ok(Value::Bool(l == r)),
+                BinaryOp::NotEqual => Ok(Value::Bool(l != r)),
+                BinaryOp::Less => Ok(Value::Bool(l < r)),
+                BinaryOp::LessEqual => Ok(Value::Bool(l <= r)),
+                BinaryOp::Greater => Ok(Value::Bool(l > r)),
+                BinaryOp::GreaterEqual => Ok(Value::Bool(l >= r)),
+                BinaryOp::And | BinaryOp::Or => {
+                    unreachable!("logical ops short-circuit in eval_expr")
+                }
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    unreachable!("bitwise ops on i32/u32 are rejected by semantics")
+                }
+            };
         }
         match op {
             BinaryOp::Add if matches!((&left, &right), (Value::String(_), Value::String(_))) => {
@@ -4944,6 +4982,37 @@ impl<'a> IrRuntime<'a> {
             other => Err(RuntimeError::new(
                 "L0417",
                 format!("byte_val expects a byte but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `to_i32(x i64) -> i32`: wrapping reinterpret of an `i64` into `i32`.
+    fn builtin_to_i32(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("to_i32", 1, args.len()))?;
+        Ok(Value::int(expect_i64("to_i32", value)?, IntKind::I32))
+    }
+
+    /// `to_u32(x i64) -> u32`: wrapping reinterpret of an `i64` into `u32`.
+    fn builtin_to_u32(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("to_u32", 1, args.len()))?;
+        Ok(Value::int(expect_i64("to_u32", value)?, IntKind::U32))
+    }
+
+    /// `to_i64(x) -> i64`: widen an `i32`/`u32` into `i64` (identity on the
+    /// already-normalized cell).
+    fn builtin_to_i64(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("to_i64", 1, args.len()))?;
+        match value {
+            Value::Int { value, .. } => Ok(Value::I64(value)),
+            other => Err(RuntimeError::new(
+                "L0407",
+                format!("to_i64 expects a fixed-width integer but got `{other}`"),
             )),
         }
     }
@@ -7842,7 +7911,11 @@ impl<'a> Lowerer<'a> {
             | "map_has" | "is_digit" | "is_alpha" | "is_alnum" | "is_whitespace" | "is_upper"
             | "is_lower" | "list_contains" => TypeRef::new("bool"),
             "sys_status" | "file_size" | "len" | "find" | "map_len" | "char_code" | "byte_val"
-            | "byte_len" | "mono_now" | "wall_now" | "list_index_of" => TypeRef::new("i64"),
+            | "byte_len" | "mono_now" | "wall_now" | "list_index_of" | "to_i64" => {
+                TypeRef::new("i64")
+            }
+            "to_i32" => TypeRef::new("i32"),
+            "to_u32" => TypeRef::new("u32"),
             "char_from" => TypeRef::new("char"),
             "byte" => TypeRef::new("byte"),
             // `push`/`set`/`pop`/`reverse`/`concat`/`slice` return a new `list<T>`

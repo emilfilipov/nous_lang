@@ -19,6 +19,7 @@ use lullaby_parser::{
 pub fn value_type_name(value: &Value) -> String {
     match value {
         Value::I64(_) => "i64".to_string(),
+        Value::Int { ty, .. } => ty.type_name().to_string(),
         Value::F64(_) => "f64".to_string(),
         Value::Bool(_) => "bool".to_string(),
         Value::String(_) => "string".to_string(),
@@ -132,10 +133,55 @@ impl PartialEq for SharedAtomic {
     }
 }
 
+/// Width/signedness tag for the fixed-width integer lattice carried by
+/// [`Value::Int`]. The stored `i64` cell is always kept normalized to the kind's
+/// range (truncate to width, then sign- or zero-extend), so equality and
+/// ordering of two same-kind values reduce to plain `i64` comparison of the
+/// cells: an `i32` cell sits in `[i32::MIN, i32::MAX]` (signed-correct) and a
+/// `u32` cell in `[0, u32::MAX]` (unsigned-correct). Every dynamic backend
+/// (AST runtime, IR interpreter, bytecode VM) normalizes at the same points so
+/// results agree bit-for-bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntKind {
+    /// Signed 32-bit.
+    I32,
+    /// Unsigned 32-bit.
+    U32,
+}
+
+impl IntKind {
+    /// The canonical Lullaby type name for this integer kind.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            IntKind::I32 => "i32",
+            IntKind::U32 => "u32",
+        }
+    }
+
+    /// Normalize a mathematical `i64` result into this kind's range: truncate to
+    /// the kind's width, then sign-extend (signed kinds) or zero-extend
+    /// (unsigned kinds) back into the `i64` cell. Total and deterministic — this
+    /// is the wrapping default shared by every backend.
+    pub fn normalize(self, value: i64) -> i64 {
+        match self {
+            IntKind::I32 => value as i32 as i64,
+            IntKind::U32 => i64::from(value as u32),
+        }
+    }
+}
+
 // `Eq` is intentionally omitted: `Value::F64` holds an `f64`, which is not `Eq`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     I64(i64),
+    /// A fixed-width integer (`i32`/`u32`) carrying its width/signedness tag. The
+    /// `value` cell is always normalized to `ty`'s range via [`Value::int`], so
+    /// the derived `PartialEq` and plain `i64` ordering are exact. `i64` itself
+    /// stays [`Value::I64`] (its own full-width cell), never an `Int`.
+    Int {
+        value: i64,
+        ty: IntKind,
+    },
     F64(f64),
     Bool(bool),
     String(String),
@@ -190,6 +236,11 @@ impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::I64(value) => write!(formatter, "{value}"),
+            // The cell is normalized, so an unsigned kind prints its magnitude.
+            Self::Int { value, ty } => match ty {
+                IntKind::I32 => write!(formatter, "{value}"),
+                IntKind::U32 => write!(formatter, "{}", *value as u32),
+            },
             Self::F64(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::String(value) => write!(formatter, "{value}"),
@@ -1064,6 +1115,9 @@ impl<'a> Runtime<'a> {
             "is_lower" => Self::builtin_is_lower(args),
             "byte" => Self::builtin_byte(args),
             "byte_val" => Self::builtin_byte_val(args),
+            "to_i32" => Self::builtin_to_i32(args),
+            "to_u32" => Self::builtin_to_u32(args),
+            "to_i64" => Self::builtin_to_i64(args),
             "len" => Self::builtin_len(args),
             "list_new" => Self::builtin_list_new(args),
             "push" => Self::builtin_push(args),
@@ -2497,6 +2551,43 @@ impl<'a> Runtime<'a> {
                 }
             });
         }
+        // Fixed-width integer arithmetic/comparison. Both operands carry the same
+        // width/signedness tag (the type checker forbids mixing widths); the
+        // arithmetic result is wrap-normalized back into that width, and ordering
+        // reduces to plain `i64` comparison of the normalized cells (signed-
+        // correct for `i32`, unsigned-correct for `u32`).
+        if let (Value::Int { value: l, ty }, Value::Int { value: r, ty: rk }) = (&left, &right) {
+            debug_assert_eq!(ty, rk, "mixed-width integer operands reached eval_binary");
+            let (l, r, ty) = (*l, *r, *ty);
+            return match op {
+                BinaryOp::Add => Ok(Value::int(l.wrapping_add(r), ty)),
+                BinaryOp::Subtract => Ok(Value::int(l.wrapping_sub(r), ty)),
+                BinaryOp::Multiply => Ok(Value::int(l.wrapping_mul(r), ty)),
+                BinaryOp::Divide => {
+                    if r == 0 {
+                        Err(RuntimeError::new("L0404", "division by zero"))
+                    } else {
+                        Ok(Value::int(l.wrapping_div(r), ty))
+                    }
+                }
+                BinaryOp::Equal => Ok(Value::Bool(l == r)),
+                BinaryOp::NotEqual => Ok(Value::Bool(l != r)),
+                BinaryOp::Less => Ok(Value::Bool(l < r)),
+                BinaryOp::LessEqual => Ok(Value::Bool(l <= r)),
+                BinaryOp::Greater => Ok(Value::Bool(l > r)),
+                BinaryOp::GreaterEqual => Ok(Value::Bool(l >= r)),
+                BinaryOp::And | BinaryOp::Or => {
+                    unreachable!("logical ops short-circuit in eval_expr")
+                }
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    unreachable!("bitwise ops on i32/u32 are rejected by semantics")
+                }
+            };
+        }
         match op {
             // `+` concatenates when both operands are strings; otherwise it adds i64s.
             BinaryOp::Add if matches!((&left, &right), (Value::String(_), Value::String(_))) => {
@@ -3103,6 +3194,40 @@ impl<'a> Runtime<'a> {
                 format!("byte got `{number}`, which is outside the 0-255 range"),
             )
         })
+    }
+
+    /// `to_i32(x i64) -> i32`: reinterpret an `i64` into `i32`, truncating to
+    /// the low 32 bits and sign-extending (the wrapping conversion).
+    fn builtin_to_i32(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("to_i32", 1, args.len()))?;
+        Ok(Value::int(expect_i64("to_i32", value)?, IntKind::I32))
+    }
+
+    /// `to_u32(x i64) -> u32`: reinterpret an `i64` into `u32`, truncating to
+    /// the low 32 bits (the wrapping conversion).
+    fn builtin_to_u32(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("to_u32", 1, args.len()))?;
+        Ok(Value::int(expect_i64("to_u32", value)?, IntKind::U32))
+    }
+
+    /// `to_i64(x) -> i64`: widen an `i32`/`u32` into `i64`. The cell is already
+    /// normalized (`i32` sign-extended, `u32` zero-extended), so widening is the
+    /// identity on the stored value.
+    fn builtin_to_i64(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("to_i64", 1, args.len()))?;
+        match value {
+            Value::Int { value, .. } => Ok(Value::I64(value)),
+            other => Err(RuntimeError::new(
+                "L0407",
+                format!("to_i64 expects a fixed-width integer but got `{other}`"),
+            )),
+        }
     }
 
     /// `byte_val(b byte) -> i64`: the numeric value of a byte.
@@ -4145,6 +4270,15 @@ impl Env {
 }
 
 impl Value {
+    /// Build a fixed-width integer value, normalizing the cell to `ty`'s range so
+    /// the stored representation is always canonical (see [`IntKind`]).
+    pub fn int(value: i64, ty: IntKind) -> Value {
+        Value::Int {
+            value: ty.normalize(value),
+            ty,
+        }
+    }
+
     pub fn as_i64(&self) -> Result<i64, RuntimeError> {
         match self {
             Self::I64(value) => Ok(*value),

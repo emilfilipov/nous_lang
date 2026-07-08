@@ -459,8 +459,46 @@ fn main -> i64
           <li><code>char_code(c char)</code> returns the Unicode scalar value as <code>i64</code>; <code>char_from(i i64)</code> returns the <code>char</code> for a scalar value (runtime error on an invalid scalar).</li>
           <li>Character classification predicates return <code>bool</code>: <code>is_digit</code> (ASCII <code>0</code>&ndash;<code>9</code>), <code>is_alpha</code>, <code>is_alnum</code>, <code>is_whitespace</code>, <code>is_upper</code>, and <code>is_lower</code> — useful for writing tokenizers and parsers in Lullaby.</li>
           <li><code>byte(i i64)</code> returns a <code>byte</code> (runtime error outside 0&ndash;255); <code>byte_val(b byte)</code> returns its <code>i64</code> value.</li>
-          <li><code>to_string(x)</code> also accepts a <code>char</code> or a <code>byte</code>. Wrong argument types or arities to these builtins report <code>L0389</code>. Byte arithmetic is not implemented yet, and other sized integer types (<code>i32</code>, <code>u32</code>, &hellip;) remain planned.</li>
+          <li><code>to_string(x)</code> also accepts a <code>char</code> or a <code>byte</code>. Wrong argument types or arities to these builtins report <code>L0389</code>.</li>
         </ul>
+        <h3>Fixed-width integers</h3>
+        <p>Beyond the default <code>i64</code>, Lullaby has the fixed-width integer types <code>i32</code> and <code>u32</code>. There is <strong>no implicit numeric coercion</strong>: an <code>i32</code> never mixes with an <code>i64</code> or a <code>u32</code> in one arithmetic or comparison expression (mixing widths is an <code>L0307</code> type error). Convert explicitly:</p>
+        <ul>
+          <li><code>to_i32(x i64)</code> and <code>to_u32(x i64)</code> reinterpret an <code>i64</code> into the 32-bit width, truncating to the low 32 bits (the wrapping conversion).</li>
+          <li><code>to_i64(x)</code> widens an <code>i32</code>/<code>u32</code> back to <code>i64</code> (<code>i32</code> sign-extends, <code>u32</code> zero-extends).</li>
+        </ul>
+        <p>Arithmetic (<code>+ - * /</code>) on a fixed-width integer <strong>wraps</strong> modulo the type width — total and deterministic, never a trap — and comparisons respect signedness. The same bit pattern reads as a large magnitude for <code>u32</code> but a negative value for <code>i32</code>: <code>to_u32(0 - 1)</code> is <code>4294967295</code>, while <code>to_i32(0 - 1)</code> is <code>-1</code>. Every backend normalizes at the same points, so results agree bit-for-bit.</p>
+        <pre data-fixture="tests/fixtures/valid/run_int_widths.lby" data-mode="run"><code># Fixed-width integer lattice (i32/u32): wrapping arithmetic, signed vs
+# unsigned comparison, and conversions to/from i64. Every operation is
+# width-normalized identically on the AST, IR, and bytecode backends, so this
+# returns a fixed i64.
+fn main -> i64
+    # u32 subtraction wraps: 0 - 1 => 4294967295
+    let a u32 = to_u32(0)
+    let b u32 = to_u32(1)
+    let wrapped i64 = to_i64(a - b)
+
+    # i32 addition wraps at its max: 2147483647 + 1 => -2147483648
+    let big i32 = to_i32(2147483647)
+    let one i32 = to_i32(1)
+    let overflow i64 = to_i64(big + one)
+
+    # u32 multiplication wraps: 65536 * 65536 = 2^32 => 0
+    let m u32 = to_u32(65536)
+    let squared i64 = to_i64(m * m)
+
+    # Same bit pattern (-1) reads as a huge u32 but a signed i32.
+    let u_neg u32 = to_u32(0 - 1)
+    let s_neg i32 = to_i32(0 - 1)
+    let unsigned_big i64 = 0
+    if u_neg &gt; to_u32(5)
+        unsigned_big = 1
+    let signed_small i64 = 0
+    if s_neg &lt; to_i32(5)
+        signed_small = 1
+
+    # 4294967295 + (-2147483648) + 0 + 1 + 1 => 2147483649
+    wrapped + overflow + squared + unsigned_big + signed_small</code></pre>
         <pre data-fixture="tests/fixtures/valid/run_char_byte.lby" data-mode="run"><code>fn main -> i64
     let a char = 'A'
     let b char = char_from(char_code(a) + 1)
@@ -1066,7 +1104,7 @@ Suggested fix:
             <tr><td><code>L0301+</code></td><td>Semantic errors such as unknown names, type mismatch, invalid returns, or invalid loop control.</td></tr>
             <tr><td><code>L0324</code></td><td>Array literal values do not all have the same type.</td></tr>
             <tr><td><code>L0326</code></td><td>Array index expression is not <code>i64</code>.</td></tr>
-            <tr><td><code>L0327</code></td><td>Ordering comparison operands are not both the same orderable scalar (<code>i64</code>, <code>f64</code>, <code>char</code>, or <code>byte</code>).</td></tr>
+            <tr><td><code>L0327</code></td><td>Ordering comparison operands are not both the same orderable scalar (<code>i64</code>, <code>f64</code>, <code>i32</code>, <code>u32</code>, <code>char</code>, or <code>byte</code>).</td></tr>
             <tr><td><code>L0328</code></td><td><code>store</code> value type does not match the pointer element type.</td></tr>
             <tr><td><code>L0329</code></td><td>Executable source passed to <code>compile</code>, <code>build</code>, or source <code>run</code> is missing zero-argument <code>main</code>.</td></tr>
             <tr><td><code>L0332</code></td><td>Process builtin argument type or arity mismatch: <code>env</code> needs one <code>string</code> and <code>args()</code> takes no arguments.</td></tr>

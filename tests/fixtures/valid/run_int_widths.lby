@@ -1,0 +1,31 @@
+# Fixed-width integer lattice (i32/u32): wrapping arithmetic, signed vs
+# unsigned comparison, and conversions to/from i64. Every operation is
+# width-normalized identically on the AST, IR, and bytecode backends, so this
+# returns a fixed i64.
+fn main -> i64
+    # u32 subtraction wraps: 0 - 1 => 4294967295
+    let a u32 = to_u32(0)
+    let b u32 = to_u32(1)
+    let wrapped i64 = to_i64(a - b)
+
+    # i32 addition wraps at its max: 2147483647 + 1 => -2147483648
+    let big i32 = to_i32(2147483647)
+    let one i32 = to_i32(1)
+    let overflow i64 = to_i64(big + one)
+
+    # u32 multiplication wraps: 65536 * 65536 = 2^32 => 0
+    let m u32 = to_u32(65536)
+    let squared i64 = to_i64(m * m)
+
+    # Same bit pattern (-1) reads as a huge u32 but a signed i32.
+    let u_neg u32 = to_u32(0 - 1)
+    let s_neg i32 = to_i32(0 - 1)
+    let unsigned_big i64 = 0
+    if u_neg > to_u32(5)
+        unsigned_big = 1
+    let signed_small i64 = 0
+    if s_neg < to_i32(5)
+        signed_small = 1
+
+    # 4294967295 + (-2147483648) + 0 + 1 + 1 => 2147483649
+    wrapped + overflow + squared + unsigned_big + signed_small

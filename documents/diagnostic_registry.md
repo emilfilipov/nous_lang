@@ -73,7 +73,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `L0304` | semantic | Return type mismatch. | Return expression differs from function return type. | Return the declared type or change the signature. |
 | `L0305` | semantic | Condition is not bool. | `if` or `while` condition has non-bool type. | Use a bool expression. |
 | `L0306` | semantic | Unknown variable. | Name is not visible in current scope. | Add a `let`, parameter, or fix the name. |
-| `L0307` | semantic | Arithmetic operands are not both `i64`. | Arithmetic used with non-numeric values. | Use `i64` operands. |
+| `L0307` | semantic | Arithmetic operands are not both the same numeric type (`i64`, `f64`, `i32`, or `u32`). | Mixed numeric widths, or arithmetic on non-numeric values. | Convert to a common width (`to_i32`/`to_u32`/`to_i64`) so both operands share one numeric type. |
 | `L0308` | semantic | Equality operands have different types. | `==` or `!=` compares mismatched types. | Compare values of the same type. |
 | `L0309` | semantic | Unknown function. | Called function is not declared or builtin. | Define the function or fix the name. |
 | `L0310` | semantic | Pointer builtin expected pointer. | `load` or `store` got a non-pointer. | Pass a `ptr_*` value. |
@@ -93,7 +93,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `L0324` | semantic | Array literal type mismatch. | Array values are not homogeneous. | Use values of one type. |
 | `L0325` | semantic | Index target is not an array. | Index syntax used on a non-array value. | Index only `array<T>` values. |
 | `L0326` | semantic | Array index is not `i64`. | Index expression has wrong type. | Use an `i64` index. |
-| `L0327` | semantic | Ordering operands are not both `i64`. | `<`, `<=`, `>`, or `>=` used on non-`i64`. | Use `i64` operands. |
+| `L0327` | semantic | Ordering operands are not both the same orderable scalar (`i64`, `f64`, `i32`, `u32`, `char`, or `byte`). | `<`, `<=`, `>`, or `>=` used on mismatched or non-orderable operands. | Use two operands of the same orderable scalar type. |
 | `L0328` | semantic | `store` value type mismatch. | Stored value does not match pointer element type. | Store a value matching the pointer type. |
 | `L0329` | semantic | Executable entry point is missing or has parameters. | Source passed to `compile`, `build`, or source `run` lacks a zero-argument `main`. | Add `fn main -> Type` with no parameters and call helpers from there. |
 | `L0330` | semantic | Raw pointer operation used outside `unsafe`. | `ptr_read`/`ptr_write` were called outside an `unsafe` block. | Wrap the operation in `unsafe`, or use safe `rc<T>`/`ref<T>` references. |

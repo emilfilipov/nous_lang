@@ -15,7 +15,9 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 
 | Type | Meaning |
 |------|---------|
-| `i64` | 64-bit signed integer |
+| `i64` | 64-bit signed integer (the default for integer literals) |
+| `i32` | 32-bit signed integer (wrapping arithmetic; from `to_i32`) |
+| `u32` | 32-bit unsigned integer (wrapping arithmetic; from `to_u32`) |
 | `f64` | 64-bit IEEE-754 float (literals contain a `.`) |
 | `bool` | `true` / `false` |
 | `string` | UTF-8 text |
@@ -41,6 +43,22 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 | `char_from` | `char_from(i i64) -> char` | runtime error on an invalid scalar |
 | `byte` | `byte(i i64) -> byte` | runtime error outside 0–255 |
 | `byte_val` | `byte_val(b byte) -> i64` | |
+| `to_i32` | `to_i32(x i64) -> i32` | wrapping reinterpret into 32-bit signed |
+| `to_u32` | `to_u32(x i64) -> u32` | wrapping reinterpret into 32-bit unsigned |
+| `to_i64` | `to_i64(x) -> i64` | widen an `i32`/`u32` back to `i64` |
+
+### Fixed-width integers
+
+`i32` and `u32` are fixed-width integer types alongside the default `i64`. There
+is **no implicit numeric coercion**: an `i32` never mixes with an `i64` or a
+`u32` in an arithmetic or comparison expression (mixing widths is an `L0307`
+type error). Move between widths explicitly with `to_i32`/`to_u32` (wrapping,
+`i64 → i32`/`u32`) and `to_i64` (widening, `i32`/`u32 → i64`).
+
+Arithmetic (`+ - * /`) on a fixed-width integer **wraps** modulo the type width —
+total and deterministic, never a trap. Comparisons respect signedness: the same
+bit pattern reads as a large magnitude for `u32` but as a negative value for
+`i32`. `to_u32(0 - 1)` is `4294967295`; `to_i32(0 - 1)` is `-1`.
 
 ## Character classification
 
