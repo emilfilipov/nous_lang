@@ -16,9 +16,14 @@ Add the complete fixed-width scalar set alongside the existing `i64`/`f64`:
 - Pointer-sized: `usize`, `isize` (target-width; 64-bit on the current targets).
 - Floats: `f32`, `f64`.
 
-`byte` becomes a documented alias of `u8` (its existing 0–255 semantics are exactly `u8`), and
-`char` remains a distinct Unicode-scalar type (not an integer). This keeps existing programs
-valid while unifying byte handling with the integer lattice.
+`u8` is the 8-bit unsigned **arithmetic** type, and `byte` remains a **distinct** raw-I/O octet
+type rather than a bare alias. The two share the 0–255 range but differ deliberately in behaviour:
+`u8` arithmetic *wraps* like every other width, whereas `byte()` construction *errors* outside
+0–255, which is the right guarantee for the element type of binary I/O (`read_bytes`, `to_bytes`,
+`os_random`). They bridge explicitly through `byte_val`/`byte` and `to_u8`/`to_i64`. (An earlier
+draft proposed making `byte` a pure alias of `u8`; the distinct-types design was chosen so binary
+data keeps its erroring constructor while arithmetic code keeps wrapping semantics.) `char` remains
+a distinct Unicode-scalar type (not an integer). Existing programs stay valid.
 
 ## Runtime representation (parity strategy)
 

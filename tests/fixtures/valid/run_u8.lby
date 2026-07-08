@@ -1,0 +1,22 @@
+# u8: the 8-bit unsigned arithmetic type (distinct from `byte`, the raw-I/O
+# octet). Wrapping arithmetic, a typed suffix, and the shared overflow builtins
+# all apply. Deterministic i64 (235) on the AST, IR, and bytecode backends.
+fn main -> i64
+    let total i64 = 0
+
+    # u8 addition wraps: 255 + 1 => 0
+    if to_u8(255) + to_u8(1) == to_u8(0)
+        total = total + 1
+
+    # a typed u8 literal suffix
+    let x u8 = 200u8
+    if x > to_u8(100)
+        total = total + 1
+
+    # saturating_add clamps to u8::MAX (200 + 100 -> 255)
+    let s u8 = saturating_add(to_u8(200), to_u8(100))
+    if to_i64(s) == 255
+        total = total + 1
+
+    # to_u8 wraps a wide value: 1000 mod 256 = 232
+    total + to_i64(to_u8(1000))

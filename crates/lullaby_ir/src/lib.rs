@@ -3776,6 +3776,7 @@ impl<'a> IrRuntime<'a> {
             "byte" => Self::builtin_byte(args),
             "byte_val" => Self::builtin_byte_val(args),
             "to_i8" => Self::builtin_to_int("to_i8", args, IntKind::I8),
+            "to_u8" => Self::builtin_to_int("to_u8", args, IntKind::U8),
             "to_i16" => Self::builtin_to_int("to_i16", args, IntKind::I16),
             "to_i32" => Self::builtin_to_int("to_i32", args, IntKind::I32),
             "to_u16" => Self::builtin_to_int("to_u16", args, IntKind::U16),
@@ -7981,6 +7982,7 @@ impl<'a> Lowerer<'a> {
                 TypeRef::new("i64")
             }
             "to_i8" => TypeRef::new("i8"),
+            "to_u8" => TypeRef::new("u8"),
             "to_i16" => TypeRef::new("i16"),
             "to_i32" => TypeRef::new("i32"),
             "to_u16" => TypeRef::new("u16"),

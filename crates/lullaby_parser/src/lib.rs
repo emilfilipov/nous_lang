@@ -747,7 +747,7 @@ fn parse_radix_literal(value: &str) -> Option<i64> {
 /// are matched before any shorter candidate. `i64`/`f64` are the defaults; the
 /// rest desugar to the corresponding `to_<T>` conversion builtin.
 const NUMBER_SUFFIXES: &[&str] = &[
-    "usize", "isize", "i16", "i32", "i64", "u16", "u32", "u64", "f32", "f64", "i8",
+    "usize", "isize", "i16", "i32", "i64", "u16", "u32", "u64", "f32", "f64", "i8", "u8",
 ];
 
 /// True when `s` carries a `0x`/`0b`/`0o` base prefix.
@@ -765,6 +765,7 @@ fn is_radix_prefixed(s: &str) -> bool {
 fn int_suffix_range(suffix: &str) -> Option<(i128, i128)> {
     Some(match suffix {
         "i8" => (i128::from(i8::MIN), i128::from(i8::MAX)),
+        "u8" => (0, i128::from(u8::MAX)),
         "i16" => (i128::from(i16::MIN), i128::from(i16::MAX)),
         "i32" => (i128::from(i32::MIN), i128::from(i32::MAX)),
         "i64" | "isize" => (i128::from(i64::MIN), i128::from(i64::MAX)),

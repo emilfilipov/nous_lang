@@ -152,6 +152,9 @@ pub enum IntKind {
     I16,
     /// Signed 32-bit.
     I32,
+    /// Unsigned 8-bit. Distinct from `byte` (the raw-I/O octet): `u8` arithmetic
+    /// wraps, whereas `byte()` construction errors outside 0-255.
+    U8,
     /// Unsigned 16-bit.
     U16,
     /// Unsigned 32-bit.
@@ -171,6 +174,7 @@ impl IntKind {
             IntKind::I8 => "i8",
             IntKind::I16 => "i16",
             IntKind::I32 => "i32",
+            IntKind::U8 => "u8",
             IntKind::U16 => "u16",
             IntKind::U32 => "u32",
             IntKind::U64 => "u64",
@@ -184,7 +188,7 @@ impl IntKind {
     pub fn is_unsigned(self) -> bool {
         matches!(
             self,
-            IntKind::U16 | IntKind::U32 | IntKind::U64 | IntKind::Usize
+            IntKind::U8 | IntKind::U16 | IntKind::U32 | IntKind::U64 | IntKind::Usize
         )
     }
 
@@ -198,6 +202,7 @@ impl IntKind {
             IntKind::I8 => i64::from(value as i8),
             IntKind::I16 => i64::from(value as i16),
             IntKind::I32 => i64::from(value as i32),
+            IntKind::U8 => i64::from(value as u8),
             IntKind::U16 => i64::from(value as u16),
             IntKind::U32 => i64::from(value as u32),
             IntKind::U64 | IntKind::Usize | IntKind::Isize => value,
@@ -213,6 +218,7 @@ impl IntKind {
             IntKind::I16 => (i128::from(i16::MIN), i128::from(i16::MAX)),
             IntKind::I32 => (i128::from(i32::MIN), i128::from(i32::MAX)),
             IntKind::Isize => (i128::from(i64::MIN), i128::from(i64::MAX)),
+            IntKind::U8 => (0, i128::from(u8::MAX)),
             IntKind::U16 => (0, i128::from(u16::MAX)),
             IntKind::U32 => (0, i128::from(u32::MAX)),
             IntKind::U64 | IntKind::Usize => (0, i128::from(u64::MAX)),
@@ -1303,6 +1309,7 @@ impl<'a> Runtime<'a> {
             "byte" => Self::builtin_byte(args),
             "byte_val" => Self::builtin_byte_val(args),
             "to_i8" => Self::builtin_to_int("to_i8", args, IntKind::I8),
+            "to_u8" => Self::builtin_to_int("to_u8", args, IntKind::U8),
             "to_i16" => Self::builtin_to_int("to_i16", args, IntKind::I16),
             "to_i32" => Self::builtin_to_int("to_i32", args, IntKind::I32),
             "to_u16" => Self::builtin_to_int("to_u16", args, IntKind::U16),

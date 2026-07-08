@@ -3410,8 +3410,8 @@ impl<'a> Checker<'a> {
             // `i64` into width `T` (wrapping); `to_i64` widens a fixed-width
             // integer back to `i64`. No implicit coercion exists, so these
             // explicit conversions are the only bridge between widths.
-            "to_i8" | "to_i16" | "to_i32" | "to_u16" | "to_u32" | "to_u64" | "to_isize"
-            | "to_usize" => {
+            "to_i8" | "to_i16" | "to_i32" | "to_u8" | "to_u16" | "to_u32" | "to_u64"
+            | "to_isize" | "to_usize" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 self.expect_scalar_builtin_arg(name, 1, &args[0], "i64", scope, function)?;
                 // The target width is the builtin name with the `to_` prefix removed.
@@ -5107,7 +5107,18 @@ fn same_numeric_type(left: &Option<TypeRef>, right: &Option<TypeRef>) -> Option<
 fn is_numeric_type_name(name: &str) -> bool {
     matches!(
         name,
-        "i64" | "f64" | "f32" | "i8" | "i16" | "i32" | "u16" | "u32" | "u64" | "isize" | "usize"
+        "i64"
+            | "f64"
+            | "f32"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "isize"
+            | "usize"
     )
 }
 
@@ -5117,7 +5128,7 @@ fn is_numeric_type_name(name: &str) -> bool {
 fn is_fixed_width_int_name(name: &str) -> bool {
     matches!(
         name,
-        "i8" | "i16" | "i32" | "u16" | "u32" | "u64" | "isize" | "usize"
+        "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize"
     )
 }
 

@@ -17,7 +17,7 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 |------|---------|
 | `i64` | 64-bit signed integer (the default for integer literals) |
 | `i8` / `i16` / `i32` | signed fixed-width integers (wrapping; from `to_i8`/`to_i16`/`to_i32`) |
-| `u16` / `u32` / `u64` | unsigned fixed-width integers (wrapping; from `to_u16`/`to_u32`/`to_u64`) |
+| `u8` / `u16` / `u32` / `u64` | unsigned fixed-width integers (wrapping; from `to_u8`/`to_u16`/`to_u32`/`to_u64`) |
 | `isize` / `usize` | pointer-sized integers (64-bit on current targets; from `to_isize`/`to_usize`) |
 | `f64` | 64-bit IEEE-754 float (literals contain a `.`) |
 | `f32` | 32-bit IEEE-754 float (rounds each op to single precision; from `to_f32`) |
@@ -46,7 +46,7 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 | `byte` | `byte(i i64) -> byte` | runtime error outside 0–255 |
 | `byte_val` | `byte_val(b byte) -> i64` | |
 | `to_i8` / `to_i16` / `to_i32` | `to_i<N>(x i64) -> i<N>` | wrapping reinterpret into signed width |
-| `to_u16` / `to_u32` / `to_u64` | `to_u<N>(x i64) -> u<N>` | wrapping reinterpret into unsigned width |
+| `to_u8` / `to_u16` / `to_u32` / `to_u64` | `to_u<N>(x i64) -> u<N>` | wrapping reinterpret into unsigned width |
 | `to_isize` / `to_usize` | `to_isize/to_usize(x i64) -> isize/usize` | pointer-sized (64-bit) reinterpret |
 | `to_i64` | `to_i64(x) -> i64` | widen any fixed-width integer back to `i64` |
 | `to_f32` | `to_f32(x f64) -> f32` | round an `f64` to single precision |
@@ -55,8 +55,12 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 ### Fixed-width integers
 
 Alongside the default `i64`, Lullaby has the fixed-width integer types `i8`,
-`i16`, `i32`, `u16`, `u32`, `u64`, and the pointer-sized `isize`/`usize`
-(64-bit on the current targets). There is **no implicit numeric coercion**: a
+`i16`, `i32`, `u8`, `u16`, `u32`, `u64`, and the pointer-sized `isize`/`usize`
+(64-bit on the current targets). `u8` is the 8-bit unsigned **arithmetic** type
+(wrapping, like every width); it is distinct from `byte`, the raw-I/O octet
+(the element type of `read_bytes`/`to_bytes`, constructed with `byte()`, which
+*errors* outside 0–255 rather than wrapping). Bridge them with
+`byte_val`/`byte` and `to_u8`/`to_i64`. There is **no implicit numeric coercion**: a
 fixed-width integer never mixes with an `i64` or a different width in one
 arithmetic or comparison expression (mixing widths is an `L0307` type error).
 Move between widths explicitly with the `to_<T>` conversions (wrapping,
