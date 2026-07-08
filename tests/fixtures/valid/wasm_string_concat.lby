@@ -1,0 +1,31 @@
+fn concat_two a string b string -> string
+    a + b
+
+fn concat_three a string b string c string -> string
+    a + b + c
+
+fn simple_len -> i64
+    let a string = "foo"
+    let b string = "bar"
+    len(a + b)
+
+fn chained_len -> i64
+    let a string = "ab"
+    let b string = "cde"
+    let c string = "f"
+    len(a + b + c)
+
+fn helper_len -> i64
+    let a string = "hello"
+    let b string = "world"
+    let joined string = concat_two(a, b)
+    len(joined)
+
+fn deep_len -> i64
+    let a string = "one"
+    let b string = "two"
+    let c string = "three"
+    len(concat_three(a, b, c))
+
+fn main -> i64
+    simple_len() + chained_len() + helper_len() + deep_len()

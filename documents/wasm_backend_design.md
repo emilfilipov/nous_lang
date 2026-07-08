@@ -65,17 +65,19 @@ a browser (or any WASM host) supplies the imports, and WASM-compiled Lullaby cal
 them to talk to JavaScript and the DOM.
 
 - `console_log(s string) -> void` lowers to `env.console_log(ptr i32, len i32)`:
-  it pushes the string's linear-memory pointer and its length header, then calls
-  the import. A browser host implements it as `console.log`.
+  it pushes a pointer to the string's first UTF-8 byte and its UTF-8 byte length,
+  then calls the import. A browser host implements it as `console.log`.
 - `dom_set_text(id string, text string) -> void` lowers to
   `env.dom_set_text(id_ptr i32, id_len i32, text_ptr i32, text_len i32)`: it
-  pushes each string's pointer and length in order, then calls the import. A
-  browser host implements it as
+  pushes each string's data pointer and byte length in order, then calls the
+  import. A browser host implements it as
   `document.getElementById(id).textContent = text`.
-- Each string operand is evaluated once into a scratch `i32` local, then pushed as
-  `(ptr, len)` where `len` is the `i32` length header of the interned
-  `[len i32][utf8 bytes]` layout (the char count, equal to the byte length for
-  ASCII). The host decodes the bytes out of `memory` starting at `ptr + 4`.
+- Each string operand's record pointer is evaluated once into a scratch `i32`
+  local, then pushed as `(ptr, len)` where `ptr` is `record + STR_DATA_OFF` (the
+  address of the first UTF-8 byte, past the two `i32` headers) and `len` is the
+  record's `byte_len` header (the UTF-8 byte length, NOT the char count, so
+  multi-byte text decodes correctly). The host slices `[ptr, ptr + len)` of
+  `memory` directly — no header offset to add.
 - On the interpreters, `console_log` prints the string as a stdout line and
   `dom_set_text` prints `id=text`, so all backends observe the same side effect
   and the parity harness stays green. Functions calling these builtins are
@@ -88,12 +90,30 @@ them to talk to JavaScript and the DOM.
 memory. Their WASM slot type is the scalar's own type for a scalar, or `i32` for
 a pointer (nested strings/structs/arrays).
 
-- **Strings:** a `string` is a pointer to `[len: i32 char-count][utf8 bytes]`.
-  Each distinct string literal is interned ONCE into the Data section (a constant
-  static offset is its value). `len(s)` lowers to `i32.load` of the header then
+- **Strings:** a `string` is a pointer to
+  `[char_len: i32][byte_len: i32][utf8 bytes]` — the Unicode scalar (char) count
+  at offset 0 (shared with the array/list length header), the UTF-8 byte length at
+  offset 4, then the encoded bytes at `STR_DATA_OFF` (8). Each distinct string
+  literal is interned ONCE into the Data section (a constant static offset is its
+  value). `len(s)` lowers to `i32.load` of the char-count header (offset 0) then
   `i64.extend_i32_s` (the builtin returns `i64`, char count to match the
-  interpreters). Runtime string building (`+` concat, `to_string`, `substring`,
-  …) is not yet lowered — a function using it is skipped.
+  interpreters). Storing the byte length explicitly (rather than assuming one byte
+  per char) is what lets concatenation and the host imports handle multi-byte
+  UTF-8 correctly.
+  - **Runtime concatenation** (`a + b` on two `string` values) is lowered: it reads
+    each operand's char-count and byte-count headers, `__alloc`s a fresh record of
+    `STR_DATA_OFF + byte_a + byte_b` bytes, writes the summed headers (char count
+    `char_a + char_b`, byte count `byte_a + byte_b`), and `memory.copy`s (the
+    bulk-memory opcode `0xfc 0x0a 0x00 0x00`) each operand's UTF-8 byte range into
+    place. Strings are immutable, so the result is always a NEW record with no
+    aliasing; `len` of the result equals `len(a) + len(b)`, matching the
+    interpreters bit-for-bit. Chained `a + b + c` nests naturally (the inner `+`
+    yields a normal record consumed by the outer). The constant folder collapses a
+    literal-only `"foo" + "bar"` to a single interned literal before codegen, so the
+    runtime path is exercised only when at least one operand is computed at runtime.
+  - Other runtime string builders (`to_string`, `substring`, `find`, `replace`,
+    `upper`/`lower`, `split`/`join`) are not yet lowered — a function using one is
+    skipped and still runs on the interpreters.
 - **Structs:** a `struct` is a pointer to a contiguous run of one 8-byte slot per
   field in declared order (uniform 8-byte slots keep `i64`/`f64` naturally
   aligned and make offsets a simple `slot_index * 8`). Positional construction (a
@@ -157,7 +177,9 @@ node-gated against the interpreter.
 `list` with a heap element, or `map`, or an enum with a heap payload); enums with
 a **heap** payload (`string`/`list`/`array`/`map` — notably `result<i64,
 string>`); the `map` collection and lists of heap elements; runtime string
-construction; and a free-list allocator (`__alloc` never frees this increment).
+builders other than `+` concat (`to_string`, `substring`, `find`, `replace`,
+`upper`/`lower`, `split`/`join`); and a free-list allocator (`__alloc` never frees
+this increment).
 Functions using any of these are skipped with a reason and still run on the
 interpreters.
 
@@ -324,12 +346,13 @@ second phase. So the first increment compiles the **scalar subset** only:
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
 - A function that uses a `list` or `map` with a heap element/key/value, an enum
-  with a heap payload, a runtime string builder, or any type still outside the
-  supported set is **rejected for WASM** with a clear diagnostic (it still runs on
-  the interpreters). Note: later increments added enum values and `match` for
-  scalar-payload enums (`option`/`result`/user enums), the growable `list<T>`
-  collection for scalar element types, and the `map<K, V>` collection for scalar
-  key/value types — see the linear-memory sections above. The allowed builtins are
+  with a heap payload, a runtime string builder other than `+` concat, or any type
+  still outside the supported set is **rejected for WASM** with a clear diagnostic
+  (it still runs on the interpreters). Note: later increments added enum values and
+  `match` for scalar-payload enums (`option`/`result`/user enums), the growable
+  `list<T>` collection for scalar element types, the `map<K, V>` collection for
+  scalar key/value types, and runtime `string` `+` concatenation — see the
+  linear-memory sections above. The allowed builtins are
   `wasm_log(x i64) -> void` (the host log import above), `console_log(s string) ->
   void` and `dom_set_text(id string, text string) -> void` (the JS/DOM host imports
   above), `len(string|array|list) -> i64`, the scalar-element `list` builtins
@@ -427,12 +450,19 @@ linear-memory blocks — an insertion-ordered association list with value-semant
 `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, in-place key updates, and
 capacity-doubling grow+copy, mirroring the interpreters' `Value::Map`) now compiles
 and is node-parity-tested — see **Growable `map<K, V>` (landed)** above (fixtures
-`wasm_map_build.lby`, `wasm_map_value_semantics.lby`). Deferred: enums with a heap
-payload (`string`/`list`/`array`/`map`, e.g. `result<i64, string>`), lists of heap
-elements, maps with a heap key or value (including string keys), `map_keys`/
-`map_values`/`map_del`, runtime string construction, a free-list allocator, and a
-richer DOM interop surface (reading DOM values, events) that builds on these
-imports.
+`wasm_map_build.lby`, `wasm_map_value_semantics.lby`). Runtime `string` `+`
+concatenation now compiles: the string record gained a second `byte_len` header
+(`[char_len][byte_len][utf8]`) so a fresh record can be `__alloc`'d and the two
+operands' UTF-8 byte ranges `memory.copy`'d in, handling multi-byte text — see
+**Heap types (landed) → Strings** above. It is node-parity-tested
+(`crates/lullaby_cli/tests/cli.rs::wasm_string_concat_execution_parity_with_node`,
+fixture `tests/fixtures/valid/wasm_string_concat.lby`, `main` = 33). Deferred:
+enums with a heap payload (`string`/`list`/`array`/`map`, e.g. `result<i64,
+string>`), lists of heap elements, maps with a heap key or value (including string
+keys), `map_keys`/`map_values`/`map_del`, runtime string builders other than `+`
+concat (`to_string`, `substring`, `find`, `replace`, `upper`/`lower`,
+`split`/`join`), a free-list allocator, and a richer DOM interop surface (reading
+DOM values, events) that builds on these imports.
 
 ## Why these choices
 
