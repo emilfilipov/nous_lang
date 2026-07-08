@@ -1,0 +1,42 @@
+enum Shape
+    Circle i64
+    Rect i64 i64
+    Empty
+
+fn unwrap_or o option<i64> fallback i64 -> i64
+    match o
+        some(v) -> v
+        none -> fallback
+
+fn divide n i64 d i64 -> result<i64, i64>
+    if d == 0
+        return err(0 - 1)
+    ok(n / d)
+
+fn describe r result<i64, i64> -> i64
+    match r
+        ok(v) -> v
+        err(e) -> e
+
+fn area s Shape -> i64
+    match s
+        Circle(r) -> r * r
+        Rect(w, h) -> w * h
+        _ -> 0
+
+fn pick flag bool -> option<i64>
+    if flag
+        return some(7)
+    none
+
+fn main -> i64
+    let a option<i64> = some(3)
+    let b option<i64> = none
+    let opt_sum i64 = unwrap_or(a, 0) + unwrap_or(b, 100)
+    let res_sum i64 = describe(divide(20, 4)) + describe(divide(1, 0))
+    let circle Shape = Circle(3)
+    let rect Shape = Rect(4, 5)
+    let hole Shape = Empty
+    let shape_sum i64 = area(circle) + area(rect) + area(hole)
+    let called i64 = unwrap_or(pick(true), 0) + unwrap_or(pick(false), 1)
+    opt_sum + res_sum + shape_sum + called

@@ -110,11 +110,25 @@ a pointer (nested strings/structs/arrays).
   address; non-final hops load the nested pointer, the final hop leaves the slot
   address for the store (or a load-op-store for compound assignment).
 
-**Deferred:** enums/tagged unions and `match` lowering (the tag+payload memory
-representation and branch-on-tag); the built-in generic enums `option`/`result`;
-the growable `list`/`map` collections; runtime string construction; and a
-free-list allocator (`__alloc` never frees this increment). Functions using any
-of these are skipped with a reason and still run on the interpreters.
+- **Enums (scalar payloads):** an enum value is a pointer to
+  `[tag: i32 (padded to 8)][slot0][slot1]...]`: an `i32` discriminant (the
+  variant's index in declaration order, matching the interpreters) plus one
+  8-byte payload slot per position, sized for the widest variant. Construction
+  (`some(x)`/`none`/`ok(x)`/`err(e)` and user `Variant(payload...)`, all emitted
+  by the IR lowerer as positional `Call`s) `__alloc`s the record, stores the tag
+  at offset 0, and stores each payload value into its slot. `match` loads the tag
+  (`i32.load` at offset 0) and dispatches with a chain of `i32.eq` + typed
+  `if`/`else` blocks — a `Wildcard` arm is the final `else`, and with
+  exhaustiveness guaranteed the last variant arm is emitted unconditionally so a
+  value match always leaves a value — binding each arm's payload slots into locals
+  before its body. This covers the built-in `option<T>`/`result<T, E>` when
+  `T`/`E` are scalar and user enums whose every variant payload is scalar.
+
+**Deferred:** enums with a **heap** payload (`string`/`list`/`array`/`map` —
+notably `result<i64, string>`); the growable `list`/`map` collections; runtime
+string construction; and a free-list allocator (`__alloc` never frees this
+increment). Functions using any of these are skipped with a reason and still run
+on the interpreters.
 
 ## First increment — the scalar subset
 
@@ -136,10 +150,12 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
-- A function that uses an enum/`match`, `option`/`result`/`list`/`map`, a runtime
+- A function that uses `list`/`map`, an enum with a heap payload, a runtime
   string builder, or any type still outside the supported set is **rejected for
-  WASM** with a clear diagnostic (it still runs on the interpreters). The allowed
-  builtins are `wasm_log(x i64) -> void` (the host log import above),
+  WASM** with a clear diagnostic (it still runs on the interpreters). Note: a
+  later increment added enum values and `match` for scalar-payload enums
+  (`option`/`result`/user enums) — see the linear-memory section above. The
+  allowed builtins are `wasm_log(x i64) -> void` (the host log import above),
   `console_log(s string) -> void` and `dom_set_text(id string, text string) ->
   void` (the JS/DOM host imports above), and `len(string|array) -> i64`; every
   other builtin is still rejected. Strings, structs, and fixed arrays are now
@@ -219,10 +235,14 @@ on `/classify`. It reuses the delivered imports without any backend change; the
 CLI tests `fullstack_frontend_wasm_matches_shared_logic` (WASM emit + node-gated
 render/score parity, `main` = 4) and `fullstack_shared_logic_round_trip` (real
 HTTP client on all three backends) prove both sides agree with the interpreter.
-Deferred: enum/tagged-union + `match` lowering (tag+payload memory, branch on
-tag), `option`/`result`, growable `list`/`map`, runtime string construction, a
-free-list allocator, and a richer DOM interop surface (reading DOM values,
-events) that builds on these imports.
+Enum values and `match` for scalar-payload enums (`option`/`result`/user enums,
+tag+payload linear-memory records, branch-on-tag dispatch) now compile and are
+node-parity-tested
+(`crates/lullaby_cli/tests/cli.rs::wasm_enum_match_execution_parity_with_node`,
+fixture `tests/fixtures/valid/wasm_enum_match.lby`). Deferred: enums with a heap
+payload (`string`/`list`/`array`/`map`, e.g. `result<i64, string>`), growable
+`list`/`map`, runtime string construction, a free-list allocator, and a richer
+DOM interop surface (reading DOM values, events) that builds on these imports.
 
 ## Why these choices
 

@@ -2306,12 +2306,12 @@ fn wasm_emits_module_and_lists_functions() {
 #[test]
 fn wasm_reports_no_eligible_functions() {
     // A file whose only function uses a type outside the supported WASM value set
-    // (strings/structs/arrays are now supported, `option`/enums are not): nothing
-    // is eligible, so the WASM backend reports L0338.
+    // (strings/structs/arrays/enums are now supported, `list`/`map` are not):
+    // nothing is eligible, so the WASM backend reports L0338.
     // `wasm` reuses the executable pipeline, which requires `main`; make `main`
-    // itself return `option<i64>` so nothing is eligible and the emitter reports
+    // itself return `list<i64>` so nothing is eligible and the emitter reports
     // L0338 rather than compiling anything.
-    let source = "fn main -> option<i64>\n    some(1)\n";
+    let source = "fn main -> list<i64>\n    push(list_new(), 1)\n";
     let tmp = std::env::temp_dir().join("lullaby_wasm_none.lby");
     std::fs::write(&tmp, source).expect("write temp");
     let output = lullaby()
@@ -2758,6 +2758,82 @@ fn wasm_float_execution_parity_with_node() {
             "{name}: WASM `main` must equal the interpreter ({expected}), got: {out_text}"
         );
     }
+}
+
+#[test]
+fn wasm_enum_match_execution_parity_with_node() {
+    // The enum + match step: a program whose `main` returns `i64` but whose body
+    // exercises enum construction and `match` over the built-in `option<i64>`,
+    // `result<i64, i64>` (scalar payloads), and a small user enum with a scalar
+    // payload plus a wildcard arm, including a call returning `option<i64>` that
+    // the caller matches. Each function compiles to WASM now (tag-based enum
+    // records in linear memory), and the exported `main` must equal the
+    // interpreter's ground truth bit-for-bit.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_enum_match.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_enum_match.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // Every function (including the enum-payload matchers and constructors) must
+    // COMPILE to WASM, not skip to the interpreters.
+    let verbose = stdout(&emit);
+    for func in ["unwrap_or", "divide", "describe", "area", "pick", "main"] {
+        assert!(
+            verbose.contains(&format!("compiled {func}")),
+            "`{func}` should compile to WASM (not skip), got: {verbose}"
+        );
+    }
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "144");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM enum-match execution parity");
+        return;
+    }
+
+    // Instantiate the module (no-op host imports) and call the exported `main`,
+    // which threads every enum construction and match through linear memory.
+    let runner = std::env::temp_dir().join("lullaby_wasm_enum_match_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           process.stdout.write('main='+r.instance.exports.main().toString());\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "WASM enum+match `main` must equal the interpreter ({interp_main}), got: {out_text}"
+    );
 }
 
 #[test]

@@ -36,10 +36,22 @@
 //!   memory access); `a[i] = v` stores one; `len(a)` loads the leading `i32`.
 //!   Element/field values may themselves be scalars or pointers (nested
 //!   strings/structs/arrays), stored by their WASM slot type.
+//! - An `enum` value with SCALAR payloads is a pointer to
+//!   `[tag: i32 (padded to 8)][slot0][slot1]...]`: an `i32` discriminant (the
+//!   variant's index in declaration order, matching the interpreters) plus one
+//!   8-byte slot per payload position, sized for the widest variant. Construction
+//!   (`some(x)`/`none`/`ok(x)`/`err(e)` and user `Variant(payload...)`) `__alloc`s
+//!   the record, stores the tag, and stores each payload; `match` loads the tag,
+//!   dispatches on it with an `if`/`else` chain (a `Wildcard` arm is the final
+//!   `else`), binds each arm's payload slots into locals, and yields the arm value
+//!   (a value match) or nothing (a void match). This covers the built-in
+//!   `option<T>`/`result<T, E>` when `T`/`E` are scalar, and user enums whose every
+//!   variant payload is scalar.
 //!
-//! A function that uses `match`/enums, a different builtin, `option`/`result`/
-//! `list`/`map`, or any type still outside this set is SKIPPED with a reason (it
-//! still runs on the interpreters).
+//! A function that uses a different builtin, `list`/`map`, an enum with a HEAP
+//! payload (`string`/`list`/`array`/`map` — notably `result<i64, string>`), or any
+//! type still outside this set is SKIPPED with a reason (it still runs on the
+//! interpreters).
 //!
 //! Linear-memory infrastructure: the module exports a `"memory"` (min 1 page),
 //! imports the host functions `env.log_i64 (func (param i64))` (surfaced as
@@ -52,15 +64,15 @@
 //! at runtime. Imported functions occupy the LOW function indices, so every
 //! internally-defined function's index is shifted by the import count; call
 //! targets and exports are fixed up accordingly. The string host imports take a
-//! `(ptr, len)` pair per string decoded out of `memory`. Enums/`match` remain
-//! deferred.
+//! `(ptr, len)` pair per string decoded out of `memory`. Enums with heap payloads
+//! and `list`/`map` remain deferred.
 
 use std::collections::HashMap;
 
 use lullaby_parser::{BinaryOp, TypeRef, UnaryOp};
 use lullaby_runtime::IntKind;
 
-use crate::{IrExpr, IrExprKind, IrFunction, IrModule, IrStmt, IrStructDef};
+use crate::{IrEnumDef, IrExpr, IrExprKind, IrFunction, IrModule, IrStmt, IrStructDef};
 
 /// The fixed-width integer kind named by a Lullaby type name (`i8`/`u32`/…), or
 /// `None` for `i64` and every non-fixed-width type. Like the native backend, the
@@ -175,6 +187,105 @@ const LEN_HEADER: i32 = 4;
 /// The builtin that reads a string's or array's length header.
 const LEN_BUILTIN: &str = "len";
 
+/// Byte offset of an enum's first payload slot. The leading discriminant tag is
+/// an `i32` at offset 0; the first payload slot starts at `SLOT_SIZE` so every
+/// 8-byte payload slot stays naturally aligned for `i64`/`f64` loads and stores,
+/// exactly like struct/array slots.
+const ENUM_PAYLOAD_BASE: i32 = SLOT_SIZE;
+
+// -- Enum layout -------------------------------------------------------------
+
+/// The linear-memory layout of an enum-typed value: an ordered variant table
+/// (the discriminant index of a variant is its position here, matching the
+/// interpreters' declaration order) plus the payload slot count (the maximum
+/// payload arity across variants). An enum value is a pointer to
+/// `[tag i32 (padded to SLOT_SIZE)][slot0][slot1]...]`, one 8-byte slot per
+/// payload position; a variant stores its payload into the leading slots and
+/// leaves the rest unused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnumLayout {
+    /// Variants in discriminant order; each is `(name, payload scalar types)`.
+    variants: Vec<(String, Vec<TypeRef>)>,
+    /// Maximum payload arity across variants — the number of payload slots.
+    slot_count: usize,
+}
+
+impl EnumLayout {
+    /// Total byte size: the padded tag plus one 8-byte slot per payload position.
+    fn size_bytes(&self) -> i32 {
+        ENUM_PAYLOAD_BASE + self.slot_count as i32 * SLOT_SIZE
+    }
+
+    /// The discriminant index (tag) of a variant by name.
+    fn tag_of(&self, variant: &str) -> Option<i32> {
+        self.variants
+            .iter()
+            .position(|(name, _)| name == variant)
+            .map(|position| position as i32)
+    }
+
+    /// The payload types of a variant by name.
+    fn payload_of(&self, variant: &str) -> Option<&[TypeRef]> {
+        self.variants
+            .iter()
+            .find(|(name, _)| name == variant)
+            .map(|(_, payload)| payload.as_slice())
+    }
+}
+
+/// Resolve the [`EnumLayout`] of an enum-typed `TypeRef`, or `None` if `ty` is
+/// not an enum the WASM backend can lay out. The supported enums are the
+/// built-in `option<T>` (variants `some(T)`, `none`) and `result<T, E>`
+/// (variants `ok(T)`, `err(E)`) with scalar `T`/`E`, and any user enum whose
+/// every variant payload is a scalar. An enum with a heap payload
+/// (`string`/`list`/`array`/`map`) — notably `result<i64, string>` — is NOT
+/// supported and yields `None` so the enclosing function is skipped.
+fn enum_layout(ty: &TypeRef, enums: &HashMap<String, IrEnumDef>) -> Option<EnumLayout> {
+    // Built-in `option<T>`: variants `some(T)`, `none`, in that order. `?` bails
+    // (unsupported enum) when `T` is not a scalar (e.g. a heap payload).
+    if let Some(inner) = ty.option_element() {
+        scalar_val_type(&inner)?;
+        return Some(build_layout(vec![
+            ("some".to_string(), vec![inner]),
+            ("none".to_string(), Vec::new()),
+        ]));
+    }
+    // Built-in `result<T, E>`: variants `ok(T)`, `err(E)`, in that order. Both
+    // payload types must be scalar; `?` bails on a heap payload.
+    if let Some((ok, err)) = ty.result_args() {
+        scalar_val_type(&ok)?;
+        scalar_val_type(&err)?;
+        return Some(build_layout(vec![
+            ("ok".to_string(), vec![ok]),
+            ("err".to_string(), vec![err]),
+        ]));
+    }
+    // A user enum: every variant payload must be a scalar (`?` bails otherwise).
+    let def = enums.get(&ty.name)?;
+    let mut variants = Vec::with_capacity(def.variants.len());
+    for variant in &def.variants {
+        for payload_ty in &variant.payload {
+            scalar_val_type(payload_ty)?;
+        }
+        variants.push((variant.name.clone(), variant.payload.clone()));
+    }
+    Some(build_layout(variants))
+}
+
+/// Build an [`EnumLayout`] from an ordered variant table, computing the payload
+/// slot count as the maximum payload arity across variants.
+fn build_layout(variants: Vec<(String, Vec<TypeRef>)>) -> EnumLayout {
+    let slot_count = variants
+        .iter()
+        .map(|(_, payload)| payload.len())
+        .max()
+        .unwrap_or(0);
+    EnumLayout {
+        variants,
+        slot_count,
+    }
+}
+
 /// A compiled `.wasm` module plus the record of which functions compiled and
 /// which were skipped (with a reason).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,46 +355,57 @@ fn scalar_val_type(ty: &TypeRef) -> Option<WasmValType> {
     }
 }
 
-/// Whether a type is a heap type represented as an `i32` pointer into linear
-/// memory: `string`, a named struct (resolved via `structs`), or a fixed
-/// `array<T>` whose element is itself a supported slot type.
-fn is_pointer_type(ty: &TypeRef, structs: &HashMap<String, Vec<(String, TypeRef)>>) -> bool {
+/// Whether a type is a heap/aggregate type represented as an `i32` pointer into
+/// linear memory: `string`, a named struct (resolved via `structs`), a fixed
+/// `array<T>` whose element is itself a supported slot type, or a supported enum
+/// (`option`/`result`/user enum with scalar payloads — see [`enum_layout`]).
+fn is_pointer_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+) -> bool {
     if ty.name == "string" {
         return true;
     }
     if structs.contains_key(&ty.name) {
         return true;
     }
+    if enum_layout(ty, enums).is_some() {
+        return true;
+    }
     if let Some(elem) = ty.array_element() {
-        return slot_val_type(&elem, structs).is_some();
+        return slot_val_type(&elem, structs, enums).is_some();
     }
     false
 }
 
-/// The WASM value type an aggregate slot (struct field / array element) holds:
-/// the scalar type for a scalar, or `i32` for any pointer (string/struct/array).
-/// `None` for a type the WASM backend cannot lay out (e.g. enums, `option`,
-/// `list`, `map`), which makes the enclosing aggregate ineligible.
+/// The WASM value type an aggregate slot (struct field / array element / enum
+/// payload) holds: the scalar type for a scalar, or `i32` for any pointer
+/// (string/struct/array/enum). `None` for a type the WASM backend cannot lay out
+/// (e.g. `list`, `map`, or an enum with a heap payload), which makes the
+/// enclosing aggregate ineligible.
 fn slot_val_type(
     ty: &TypeRef,
     structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
 ) -> Option<WasmValType> {
     if let Some(vt) = scalar_val_type(ty) {
         return Some(vt);
     }
-    if is_pointer_type(ty, structs) {
+    if is_pointer_type(ty, structs, enums) {
         return Some(WasmValType::I32);
     }
     None
 }
 
 /// The WASM value type used for a first-class value of `ty`: a scalar's own type,
-/// or `i32` for a pointer (string/struct/array). `None` for anything else.
+/// or `i32` for a pointer (string/struct/array/enum). `None` for anything else.
 fn value_val_type(
     ty: &TypeRef,
     structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
 ) -> Option<WasmValType> {
-    slot_val_type(ty, structs)
+    slot_val_type(ty, structs, enums)
 }
 
 /// The result type for a function: empty for `void`, else one value type.
@@ -291,11 +413,12 @@ fn value_val_type(
 fn return_val_type(
     ty: &TypeRef,
     structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
 ) -> Result<Option<WasmValType>, ()> {
     if ty.is_void() {
         return Ok(None);
     }
-    value_val_type(ty, structs).map(Some).ok_or(())
+    value_val_type(ty, structs, enums).map(Some).ok_or(())
 }
 
 /// A resolved local: its WASM index and value type.
@@ -316,6 +439,11 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     // A struct name -> ordered `(field, type)` map, used everywhere we classify a
     // type (pointer vs scalar) or compute a struct's field layout.
     let structs = struct_table(&module.structs);
+    // A user-enum name -> its IR definition, used to classify an enum type and to
+    // resolve its variant table / payload layout (see `enum_layout`). Built-in
+    // `option`/`result` are resolved structurally from the type spelling, so they
+    // are not in this map.
+    let enums = enum_table(&module.enums);
 
     // First pass: decide signature eligibility and assign WASM function indices
     // to the functions we will compile. Calls between compiled functions resolve
@@ -326,7 +454,7 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     let mut eligible: Vec<&IrFunction> = Vec::new();
 
     for function in &module.functions {
-        match eligibility(function, &structs) {
+        match eligibility(function, &structs, &enums) {
             Ok(()) => {
                 // Imports occupy the low indices, so internal functions are
                 // numbered from `IMPORT_FUNC_COUNT` up.
@@ -366,7 +494,7 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     let mut pool = StringPool::new();
     let mut lowered: Vec<LoweredFunction> = Vec::new();
     for function in &eligible {
-        match lower_function(function, &func_index, &structs, &mut pool) {
+        match lower_function(function, &func_index, &structs, &enums, &mut pool) {
             Ok(l) => lowered.push(l),
             Err(reason) => {
                 let demoted = SkippedFunction {
@@ -409,6 +537,13 @@ fn struct_table(defs: &[IrStructDef]) -> HashMap<String, Vec<(String, TypeRef)>>
     defs.iter()
         .map(|d| (d.name.clone(), d.fields.clone()))
         .collect()
+}
+
+/// Build the user-enum name -> IR definition map from the IR enum defs. Built-in
+/// `option`/`result` are not user enums and are resolved structurally in
+/// [`enum_layout`], so they never appear here.
+fn enum_table(defs: &[IrEnumDef]) -> HashMap<String, IrEnumDef> {
+    defs.iter().map(|d| (d.name.clone(), d.clone())).collect()
 }
 
 /// The static data pool for string literals. Each distinct literal is laid out
@@ -463,16 +598,17 @@ fn merge_skip(skips: &mut Vec<SkippedFunction>, skip: SkippedFunction) {
 fn eligibility(
     function: &IrFunction,
     structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
 ) -> Result<(), String> {
     for param in &function.params {
-        if value_val_type(&param.ty, structs).is_none() {
+        if value_val_type(&param.ty, structs, enums).is_none() {
             return Err(format!(
                 "parameter `{}` has unsupported type `{}`",
                 param.name, param.ty.name
             ));
         }
     }
-    if return_val_type(&function.return_type, structs).is_err() {
+    if return_val_type(&function.return_type, structs, enums).is_err() {
         return Err(format!(
             "return type `{}` is not a supported WASM value type",
             function.return_type.name
@@ -508,6 +644,8 @@ struct LowerCtx<'a> {
     func_index: &'a HashMap<String, u32>,
     /// Struct name -> ordered `(field, type)` fields, for aggregate layout.
     structs: &'a HashMap<String, Vec<(String, TypeRef)>>,
+    /// User-enum name -> IR definition, for enum classification and layout.
+    enums: &'a HashMap<String, IrEnumDef>,
     /// name -> IR type for every param and `let`/`for` local, so path assignment
     /// can walk aggregate field/element types (the `Local` map only keeps the
     /// WASM value type).
@@ -521,12 +659,13 @@ impl<'a> LowerCtx<'a> {
         function: &IrFunction,
         func_index: &'a HashMap<String, u32>,
         structs: &'a HashMap<String, Vec<(String, TypeRef)>>,
+        enums: &'a HashMap<String, IrEnumDef>,
         pool: &'a mut StringPool,
     ) -> Result<Self, String> {
         let mut locals = HashMap::new();
         let mut local_ir_types = HashMap::new();
         for (i, param) in function.params.iter().enumerate() {
-            let ty = value_val_type(&param.ty, structs)
+            let ty = value_val_type(&param.ty, structs, enums)
                 .ok_or_else(|| format!("parameter `{}` has an unsupported type", param.name))?;
             locals.insert(
                 param.name.clone(),
@@ -543,9 +682,15 @@ impl<'a> LowerCtx<'a> {
             param_count: function.params.len() as u32,
             func_index,
             structs,
+            enums,
             local_ir_types,
             pool,
         })
+    }
+
+    /// Resolve the [`EnumLayout`] of an enum-typed `TypeRef` in this context.
+    fn enum_layout(&self, ty: &TypeRef) -> Option<EnumLayout> {
+        enum_layout(ty, self.enums)
     }
 
     /// Allocate a fresh non-parameter local of the given type; return its index.
@@ -565,19 +710,20 @@ fn lower_function(
     function: &IrFunction,
     func_index: &HashMap<String, u32>,
     structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
     pool: &mut StringPool,
 ) -> Result<LoweredFunction, String> {
-    let result = match return_val_type(&function.return_type, structs) {
+    let result = match return_val_type(&function.return_type, structs, enums) {
         Ok(result) => result,
         Err(()) => return Err("return type is not a supported WASM value type".to_string()),
     };
     let params = function
         .params
         .iter()
-        .map(|p| value_val_type(&p.ty, structs).expect("checked eligible"))
+        .map(|p| value_val_type(&p.ty, structs, enums).expect("checked eligible"))
         .collect();
 
-    let mut ctx = LowerCtx::new(function, func_index, structs, pool)?;
+    let mut ctx = LowerCtx::new(function, func_index, structs, enums, pool)?;
 
     let mut body = Vec::new();
     lower_stmts(&mut ctx, &function.body, &mut body, &LoopCtx::none())?;
@@ -652,7 +798,7 @@ fn lower_stmt(
         IrStmt::Let {
             name, ty, value, ..
         } => {
-            let vty = value_val_type(ty, ctx.structs)
+            let vty = value_val_type(ty, ctx.structs, ctx.enums)
                 .ok_or_else(|| format!("`let {name}` has an unsupported type `{}`", ty.name))?;
             lower_expr(ctx, value, out)?;
             let index = ctx.add_local(vty);
@@ -737,9 +883,9 @@ fn lower_stmt(
         IrStmt::Asm { .. } => {
             Err("inline `asm` is native-only and not supported by the WASM backend".to_string())
         }
-        IrStmt::Match { .. } => {
-            Err("match/enums are not yet supported by the WASM backend".to_string())
-        }
+        IrStmt::Match {
+            scrutinee, arms, ..
+        } => lower_match(ctx, scrutinee, arms, out, loops),
     }
 }
 
@@ -815,7 +961,7 @@ fn lower_path_assign(
     for (i, place) in path.iter().enumerate() {
         cur_ty = lower_place_address(ctx, &cur_ty, place, out)?;
         if i + 1 < path.len() {
-            let slot_ty = slot_val_type(&cur_ty, ctx.structs)
+            let slot_ty = slot_val_type(&cur_ty, ctx.structs, ctx.enums)
                 .ok_or_else(|| "intermediate path slot has unsupported type".to_string())?;
             emit_load(slot_ty, out);
         }
@@ -825,7 +971,7 @@ fn lower_path_assign(
     let addr = ctx.add_local(WasmValType::I32);
     set_local(out, addr);
 
-    let slot_ty = slot_val_type(&cur_ty, ctx.structs)
+    let slot_ty = slot_val_type(&cur_ty, ctx.structs, ctx.enums)
         .ok_or_else(|| format!("assignment target has unsupported type `{}`", cur_ty.name))?;
 
     match op {
@@ -902,6 +1048,194 @@ fn lower_if_from(
     }
     out.push(0x0b); // end
     Ok(())
+}
+
+/// Lower a `match` over a supported enum. The scrutinee is evaluated once to an
+/// enum pointer stashed in a scratch local; its `i32` discriminant tag is loaded
+/// into another scratch local, and the arms are dispatched by a chain of nested
+/// WASM `if`/`else` blocks comparing the tag against each variant's discriminant.
+/// A `Variant` arm binds its payload slots into fresh locals before its body; a
+/// `Wildcard` arm becomes the chain's final `else`. If no wildcard is present the
+/// last variant arm is emitted as the final `else` unconditionally (exhaustiveness
+/// is enforced by semantics, so every remaining tag is that arm's variant), which
+/// keeps every path value-producing for a value match without an `unreachable`.
+///
+/// A value-producing match (every arm's tail is a value expression of the same
+/// scalar type) yields that value via each `if`'s typed block; a void match (arms
+/// are statement blocks) uses void `if` blocks and yields nothing. All arm bodies
+/// see `loops` re-based for the extra `if` nesting so `break`/`continue` inside an
+/// arm still target the enclosing loop correctly.
+fn lower_match(
+    ctx: &mut LowerCtx,
+    scrutinee: &IrExpr,
+    arms: &[crate::IrMatchArm],
+    out: &mut Vec<u8>,
+    loops: &LoopCtx,
+) -> Result<(), String> {
+    let layout = ctx.enum_layout(&scrutinee.ty).ok_or_else(|| {
+        format!(
+            "match scrutinee type `{}` is not a supported WASM enum",
+            scrutinee.ty.name
+        )
+    })?;
+    if arms.is_empty() {
+        return Err("match with no arms is unsupported".to_string());
+    }
+
+    // The match's result type: a value match has every arm ending in a
+    // value-producing tail expression of the same type; a void match's arms are
+    // statement blocks. Derive it from the first arm and trust semantics for the
+    // agreement of the rest (exhaustiveness and arm-type uniformity are enforced
+    // there). The block-type byte is the value type, or void (0x40).
+    let result_ty = match_result_type(ctx, arms)?;
+    let block_type = match result_ty {
+        Some(vt) => vt.byte(),
+        None => 0x40,
+    };
+
+    // Evaluate the scrutinee once to an enum pointer, stash it, and load the tag.
+    lower_expr(ctx, scrutinee, out)?; // enum pointer (i32)
+    let scrut = ctx.add_local(WasmValType::I32);
+    set_local(out, scrut);
+    let tag = ctx.add_local(WasmValType::I32);
+    get_local(out, scrut);
+    emit_load_at(WasmValType::I32, 0, out); // i32.load [scrut + 0] -> tag
+    set_local(out, tag);
+
+    lower_match_arms(ctx, &layout, scrut, tag, arms, 0, block_type, out, loops)
+}
+
+/// Emit the nested `if`/`else` dispatch chain for match arms starting at `idx`.
+/// `scrut` holds the enum pointer, `tag` its loaded discriminant; `block_type` is
+/// the WASM block-type byte for the value each arm yields (or `0x40` for void).
+#[allow(clippy::too_many_arguments)]
+fn lower_match_arms(
+    ctx: &mut LowerCtx,
+    layout: &EnumLayout,
+    scrut: u32,
+    tag: u32,
+    arms: &[crate::IrMatchArm],
+    idx: usize,
+    block_type: u8,
+    out: &mut Vec<u8>,
+    loops: &LoopCtx,
+) -> Result<(), String> {
+    let arm = &arms[idx];
+    let is_last = idx + 1 == arms.len();
+
+    // The last arm — a wildcard, or (with exhaustiveness guaranteed) the final
+    // variant — is emitted unconditionally so every tag reaches an arm body and a
+    // value match always leaves a value. Earlier arms guard on `tag == disc`.
+    match &arm.pattern {
+        crate::IrMatchPattern::Wildcard => {
+            // A wildcard binds nothing; evaluate its body directly.
+            debug_assert!(is_last, "wildcard is always the final arm");
+            lower_match_arm_body(ctx, layout, scrut, None, &arm.body, out, loops)
+        }
+        crate::IrMatchPattern::Variant { name, bindings } if is_last => lower_match_arm_body(
+            ctx,
+            layout,
+            scrut,
+            Some((name, bindings)),
+            &arm.body,
+            out,
+            loops,
+        ),
+        crate::IrMatchPattern::Variant { name, bindings } => {
+            let disc = layout.tag_of(name).ok_or_else(|| {
+                format!("match arm variant `{name}` is not a variant of the enum")
+            })?;
+            // tag == disc ?
+            get_local(out, tag);
+            out.push(0x41); // i32.const disc
+            write_sleb(out, disc as i64);
+            out.push(0x46); // i32.eq
+            out.push(0x04); // if
+            out.push(block_type);
+            let inner = loops.nest();
+            lower_match_arm_body(
+                ctx,
+                layout,
+                scrut,
+                Some((name, bindings)),
+                &arm.body,
+                out,
+                &inner,
+            )?;
+            out.push(0x05); // else
+            lower_match_arms(
+                ctx,
+                layout,
+                scrut,
+                tag,
+                arms,
+                idx + 1,
+                block_type,
+                out,
+                &inner,
+            )?;
+            out.push(0x0b); // end
+            Ok(())
+        }
+    }
+}
+
+/// Bind a variant arm's payload slots into fresh locals (loading each from the
+/// scrutinee record), then lower the arm body. A `None` binding (wildcard) binds
+/// nothing. A value arm leaves its tail value on the stack (handled by the tail
+/// `IrStmt::Expr` lowering); a void arm leaves nothing.
+fn lower_match_arm_body(
+    ctx: &mut LowerCtx,
+    layout: &EnumLayout,
+    scrut: u32,
+    binding: Option<(&str, &[String])>,
+    body: &[IrStmt],
+    out: &mut Vec<u8>,
+    loops: &LoopCtx,
+) -> Result<(), String> {
+    if let Some((variant, bindings)) = binding {
+        let payload = layout
+            .payload_of(variant)
+            .ok_or_else(|| format!("variant `{variant}` is not a variant of the enum"))?
+            .to_vec();
+        // Bind each named payload position to a fresh local loaded from its slot.
+        // Extra payload positions without a binding name are simply ignored, and a
+        // binding without a payload slot is a lowering error (semantics forbids it).
+        for (i, bind_name) in bindings.iter().enumerate() {
+            let payload_ty = payload.get(i).ok_or_else(|| {
+                format!("variant `{variant}` binding `{bind_name}` has no payload slot")
+            })?;
+            let slot_ty = slot_val_type(payload_ty, ctx.structs, ctx.enums)
+                .ok_or_else(|| format!("variant `{variant}` payload has unsupported type"))?;
+            get_local(out, scrut);
+            emit_load_at(slot_ty, ENUM_PAYLOAD_BASE + i as i32 * SLOT_SIZE, out);
+            let index = ctx.add_local(slot_ty);
+            set_local(out, index);
+            ctx.locals
+                .insert(bind_name.clone(), Local { index, ty: slot_ty });
+            ctx.local_ir_types
+                .insert(bind_name.clone(), payload_ty.clone());
+        }
+    }
+    lower_stmts(ctx, body, out, loops)
+}
+
+/// The WASM value type a `match` yields, or `None` for a void match. Derived from
+/// the first arm whose body has a value-producing tail expression; when no arm
+/// does, the match is void. Semantics guarantees every arm agrees, so the first
+/// value-producing arm fixes the type for the whole match.
+fn match_result_type(
+    ctx: &LowerCtx,
+    arms: &[crate::IrMatchArm],
+) -> Result<Option<WasmValType>, String> {
+    for arm in arms {
+        if let Some(IrStmt::Expr(tail)) = arm.body.last()
+            && !tail.ty.is_void()
+        {
+            return expr_val_type(ctx, tail);
+        }
+    }
+    Ok(None)
 }
 
 /// Lower a `while`: `block { loop { br_if(!cond) end; body; br loop } }`.
@@ -1216,6 +1550,16 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             if ctx.structs.contains_key(name) {
                 return lower_struct_construction(ctx, name, args, out);
             }
+            // A call whose result type is a supported enum and whose name is one of
+            // its variants is enum construction: `some(x)`/`ok(x)`/`err(e)`/`none`
+            // (the built-ins) or a user `Variant(payload...)`. The IR lowerer emits
+            // these as positional `Call`s (with empty `args` for a unit variant),
+            // carrying the constructed enum type as `expr.ty`.
+            if let Some(layout) = ctx.enum_layout(&expr.ty)
+                && layout.tag_of(name).is_some()
+            {
+                return lower_enum_construction(ctx, &layout, name, args, out);
+            }
             let index = *ctx.func_index.get(name).ok_or_else(|| {
                 format!("call to unsupported builtin or unknown function `{name}`")
             })?;
@@ -1243,7 +1587,9 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
 /// `[len i32][utf8 bytes]` layout (the char count, equal to the byte length for
 /// ASCII, which is what the host decodes out of `memory`).
 fn lower_string_ptr_len(ctx: &mut LowerCtx, arg: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
-    if value_val_type(&arg.ty, ctx.structs) != Some(WasmValType::I32) || arg.ty.name != "string" {
+    if value_val_type(&arg.ty, ctx.structs, ctx.enums) != Some(WasmValType::I32)
+        || arg.ty.name != "string"
+    {
         return Err(format!(
             "console_log/dom_set_text expect a string but got `{}`",
             arg.ty.name
@@ -1268,7 +1614,7 @@ fn lower_len(ctx: &mut LowerCtx, args: &[IrExpr], out: &mut Vec<u8>) -> Result<(
         return Err(format!("len expects 1 argument, got {}", args.len()));
     }
     let arg = &args[0];
-    if value_val_type(&arg.ty, ctx.structs) != Some(WasmValType::I32) {
+    if value_val_type(&arg.ty, ctx.structs, ctx.enums) != Some(WasmValType::I32) {
         return Err(format!(
             "len expects a string or array but got `{}`",
             arg.ty.name
@@ -1306,11 +1652,57 @@ fn lower_struct_construction(
     }
     let ptr = alloc_bytes(ctx, fields.len() as i32 * SLOT_SIZE, out);
     for (slot, ((_, field_ty), arg)) in fields.iter().zip(args).enumerate() {
-        let slot_ty = slot_val_type(field_ty, ctx.structs)
+        let slot_ty = slot_val_type(field_ty, ctx.structs, ctx.enums)
             .ok_or_else(|| format!("struct `{name}` field has unsupported type"))?;
         get_local(out, ptr); // base pointer
         lower_expr(ctx, arg, out)?; // field value
         emit_store_at(slot_ty, slot as i32 * SLOT_SIZE, out);
+    }
+    get_local(out, ptr);
+    Ok(())
+}
+
+/// Lower an enum construction (`some(x)`/`none`/`ok(x)`/`err(e)` or a user
+/// `Variant(payload...)`): `__alloc` a `[tag i32 (padded)][slot0][slot1]...]`
+/// record sized for the enum's widest variant, store the variant's discriminant
+/// tag at offset 0, store each payload value into its leading slot, and leave the
+/// base pointer (the enum value) on the stack. The discriminant is the variant's
+/// index in the enum's declaration order, matching the interpreters (which
+/// dispatch `match` by variant name against this same ordered layout).
+fn lower_enum_construction(
+    ctx: &mut LowerCtx,
+    layout: &EnumLayout,
+    variant: &str,
+    args: &[IrExpr],
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let tag = layout
+        .tag_of(variant)
+        .ok_or_else(|| format!("`{variant}` is not a variant of the enum"))?;
+    let payload = layout
+        .payload_of(variant)
+        .ok_or_else(|| format!("`{variant}` is not a variant of the enum"))?
+        .to_vec();
+    if args.len() != payload.len() {
+        return Err(format!(
+            "enum variant `{variant}` expects {} payload value(s), got {}",
+            payload.len(),
+            args.len()
+        ));
+    }
+    let ptr = alloc_bytes(ctx, layout.size_bytes(), out);
+    // Tag at offset 0 (i32 discriminant).
+    get_local(out, ptr);
+    out.push(0x41); // i32.const tag
+    write_sleb(out, tag as i64);
+    emit_store_at(WasmValType::I32, 0, out);
+    // Payload values into the leading slots (offset ENUM_PAYLOAD_BASE + i*SLOT).
+    for (slot, (payload_ty, arg)) in payload.iter().zip(args).enumerate() {
+        let slot_ty = slot_val_type(payload_ty, ctx.structs, ctx.enums)
+            .ok_or_else(|| format!("enum variant `{variant}` payload has unsupported type"))?;
+        get_local(out, ptr); // base pointer
+        lower_expr(ctx, arg, out)?; // payload value
+        emit_store_at(slot_ty, ENUM_PAYLOAD_BASE + slot as i32 * SLOT_SIZE, out);
     }
     get_local(out, ptr);
     Ok(())
@@ -1329,7 +1721,7 @@ fn lower_array_literal(
         .ty
         .array_element()
         .ok_or_else(|| format!("array literal has non-array type `{}`", expr.ty.name))?;
-    let slot_ty = slot_val_type(&elem_ty, ctx.structs)
+    let slot_ty = slot_val_type(&elem_ty, ctx.structs, ctx.enums)
         .ok_or_else(|| format!("array element type `{}` is unsupported", elem_ty.name))?;
     let total = LEN_HEADER + elements.len() as i32 * SLOT_SIZE;
     let ptr = alloc_bytes(ctx, total, out);
@@ -1376,7 +1768,7 @@ fn lower_index_read(
         .ty
         .array_element()
         .ok_or_else(|| format!("indexing a non-array type `{}`", target.ty.name))?;
-    let slot_ty = slot_val_type(&elem_ty, ctx.structs)
+    let slot_ty = slot_val_type(&elem_ty, ctx.structs, ctx.enums)
         .ok_or_else(|| format!("array element type `{}` is unsupported", elem_ty.name))?;
     lower_expr(ctx, target, out)?; // base pointer (i32)
     lower_array_slot_offset(ctx, index, out)?; // += header + index*SLOT_SIZE
@@ -1636,7 +2028,7 @@ fn struct_field_slot(
         .iter()
         .position(|(name, _)| name == field)
         .ok_or_else(|| format!("unknown field `{field}` on `{}`", struct_ty.name))?;
-    let slot_ty = slot_val_type(&fields[position].1, ctx.structs)
+    let slot_ty = slot_val_type(&fields[position].1, ctx.structs, ctx.enums)
         .ok_or_else(|| format!("field `{field}` has an unsupported type"))?;
     Ok((position as i32 * SLOT_SIZE, slot_ty))
 }
@@ -1904,7 +2296,7 @@ fn expr_val_type(ctx: &LowerCtx, expr: &IrExpr) -> Result<Option<WasmValType>, S
     if expr.ty.is_void() {
         return Ok(None);
     }
-    if let Some(vt) = value_val_type(&expr.ty, ctx.structs) {
+    if let Some(vt) = value_val_type(&expr.ty, ctx.structs, ctx.enums) {
         return Ok(Some(vt));
     }
     Err(format!(
@@ -1915,8 +2307,9 @@ fn expr_val_type(ctx: &LowerCtx, expr: &IrExpr) -> Result<Option<WasmValType>, S
 
 /// Whether a non-void function body always leaves a value / returns on every
 /// path. Conservative: accept a trailing `Return(Some)`, a value-producing tail
-/// `Expr`, an exhaustive `If` whose branches all guarantee a value, or a `loop`
-/// whose body contains a `Return`.
+/// `Expr`, an exhaustive `If` whose branches all guarantee a value, an exhaustive
+/// `Match` whose arms all guarantee a value, or a `loop` whose body contains a
+/// `Return`.
 fn body_guarantees_value(body: &[IrStmt]) -> bool {
     match body.last() {
         Some(IrStmt::Return(Some(_))) => true,
@@ -1929,6 +2322,12 @@ fn body_guarantees_value(body: &[IrStmt]) -> bool {
             !else_body.is_empty()
                 && body_guarantees_value(else_body)
                 && branches.iter().all(|b| body_guarantees_value(&b.body))
+        }
+        // A `match` is exhaustive (semantics enforces it), so it guarantees a
+        // value iff every arm body does. This is what makes a `match`-tail
+        // function like `fn count o option<i64> -> i64` eligible.
+        Some(IrStmt::Match { arms, .. }) => {
+            !arms.is_empty() && arms.iter().all(|arm| body_guarantees_value(&arm.body))
         }
         Some(IrStmt::Loop { body, .. }) => stmts_contain_return(body),
         _ => false,
@@ -1946,6 +2345,7 @@ fn stmts_contain_return(stmts: &[IrStmt]) -> bool {
             branches.iter().any(|b| stmts_contain_return(&b.body))
                 || stmts_contain_return(else_body)
         }
+        IrStmt::Match { arms, .. } => arms.iter().any(|arm| stmts_contain_return(&arm.body)),
         IrStmt::While { body, .. } | IrStmt::Loop { body, .. } | IrStmt::For { body, .. } => {
             stmts_contain_return(body)
         }
@@ -2269,7 +2669,7 @@ fn push_section(module: &mut Vec<u8>, id: u8, contents: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower;
+    use crate::{IrEnumVariant, lower};
     use lullaby_lexer::lex;
     use lullaby_parser::parse;
     use lullaby_semantics::validate;
@@ -2417,15 +2817,17 @@ mod tests {
 
     #[test]
     fn scalar_and_nonscalar_split() {
-        // `add` is scalar; `wrap` returns `option<i64>`, still outside the WASM
-        // value set (strings/structs/arrays are now supported, enums/option are
+        // `add` is scalar; `collect` returns `list<i64>`, still outside the WASM
+        // value set (strings/structs/arrays/enums are supported; `list`/`map` are
         // not), so it is skipped.
-        let source =
-            "fn add a i64 b i64 -> i64\n    a + b\n\nfn wrap n i64 -> option<i64>\n    some(n)\n";
+        let source = concat!(
+            "fn add a i64 b i64 -> i64\n    a + b\n\n",
+            "fn collect n i64 -> list<i64>\n    push(list_new(), n)\n",
+        );
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         assert_eq!(artifact.compiled, vec!["add".to_string()]);
         assert_eq!(artifact.skipped.len(), 1);
-        assert_eq!(artifact.skipped[0].name, "wrap");
+        assert_eq!(artifact.skipped[0].name, "collect");
         assert!(artifact.skipped[0].reason.contains("supported"));
     }
 
@@ -2476,9 +2878,9 @@ mod tests {
 
     #[test]
     fn no_eligible_functions_errors() {
-        // `option<i64>` is not in the supported WASM value set, so nothing is
+        // `list<i64>` is not in the supported WASM value set, so nothing is
         // eligible and the backend reports L0338.
-        let source = "fn wrap n i64 -> option<i64>\n    some(n)\n";
+        let source = "fn collect n i64 -> list<i64>\n    push(list_new(), n)\n";
         let err = emit_wasm_module(&module_for(source)).expect_err("no eligible");
         assert_eq!(err.code, "L0338");
         assert_eq!(err.skipped.len(), 1);
@@ -2774,5 +3176,173 @@ mod tests {
             return None;
         }
         (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+    }
+
+    // -- Enum + match ---------------------------------------------------------
+
+    #[test]
+    fn option_match_compiles_with_tag_load_and_branch() {
+        // A function matching `option<i64>` compiles to WASM. Its body loads the
+        // enum's discriminant tag (`i32.load` at offset 0) and dispatches with an
+        // `i32.eq` + `if` on the tag.
+        let source = concat!(
+            "fn unwrap_or o option<i64> fallback i64 -> i64\n",
+            "    match o\n",
+            "        some(v) -> v\n",
+            "        none -> fallback\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"unwrap_or".to_string()),
+            "option match should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // Tag load: `i32.load` (0x28) align 2 (0x02) offset 0 (0x00).
+        assert!(
+            find_subslice(&code, &[0x28, 0x02, 0x00]).is_some(),
+            "match loads the enum discriminant tag"
+        );
+        // Dispatch: `i32.eq` (0x46) then `if` (0x04) with the value result type
+        // `i64` (0x7e) — the arms yield `i64`.
+        assert!(
+            find_subslice(&code, &[0x46, 0x04, 0x7e]).is_some(),
+            "match dispatches on the tag with a typed `if`"
+        );
+    }
+
+    #[test]
+    fn result_scalar_match_and_construction_compile() {
+        // A `result<i64, i64>` (scalar ok/err payloads) is a supported WASM enum:
+        // both constructing it and matching it compile.
+        let source = concat!(
+            "fn divide n i64 d i64 -> result<i64, i64>\n",
+            "    if d == 0\n",
+            "        return err(0 - 1)\n",
+            "    ok(n / d)\n\n",
+            "fn describe r result<i64, i64> -> i64\n",
+            "    match r\n",
+            "        ok(v) -> v\n",
+            "        err(e) -> e\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"divide".to_string())
+                && artifact.compiled.contains(&"describe".to_string()),
+            "result<i64,i64> construction and match should compile, skipped: {:?}",
+            artifact.skipped
+        );
+    }
+
+    #[test]
+    fn user_enum_match_with_wildcard_compiles() {
+        // A small user enum with a scalar payload and a wildcard arm compiles.
+        let source = concat!(
+            "enum Shape\n",
+            "    Circle i64\n",
+            "    Rect i64 i64\n",
+            "    Empty\n\n",
+            "fn area s Shape -> i64\n",
+            "    match s\n",
+            "        Circle(r) -> r * r\n",
+            "        Rect(w, h) -> w * h\n",
+            "        _ -> 0\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"area".to_string()),
+            "user enum match with wildcard should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // Tag load and typed-`if` dispatch present.
+        assert!(
+            find_subslice(&code, &[0x28, 0x02, 0x00]).is_some(),
+            "user-enum match loads the discriminant tag"
+        );
+    }
+
+    #[test]
+    fn enum_construction_stores_the_discriminant_tag() {
+        // Constructing `some(x)` allocates a record and stores the variant's tag
+        // (an `i32.const` + `i32.store` at offset 0). `some` is discriminant 0.
+        let source = concat!("fn wrap x i64 -> option<i64>\n", "    some(x)\n",);
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"wrap".to_string()),
+            "option construction should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // `i32.const 0` (tag) then `i32.store` (0x36) align 2 offset 0.
+        assert!(
+            find_subslice(&code, &[0x41, 0x00, 0x36, 0x02, 0x00]).is_some(),
+            "construction stores the `some` discriminant tag (0) at offset 0"
+        );
+    }
+
+    #[test]
+    fn enum_with_heap_payload_is_skipped() {
+        // `result<i64, string>` has a heap (`string`) payload, which the WASM
+        // backend defers: the function is skipped (runs on the interpreters), never
+        // miscompiled. With no other eligible function, emission reports L0338.
+        let source = concat!(
+            "fn describe r result<i64, string> -> i64\n",
+            "    match r\n",
+            "        ok(v) -> v\n",
+            "        err(m) -> len(m)\n",
+        );
+        let error = emit_wasm_module(&module_for(source)).expect_err("no eligible functions");
+        assert_eq!(error.code, "L0338");
+        assert!(
+            error.skipped.iter().any(|s| s.name == "describe"),
+            "the heap-payload enum function is recorded as skipped: {:?}",
+            error.skipped
+        );
+    }
+
+    #[test]
+    fn enum_layout_orders_builtin_and_user_variants() {
+        // The discriminant ordering matches the interpreters: `option` is
+        // `[some, none]`, `result` is `[ok, err]`, and a user enum follows its
+        // declaration order. The payload slot count is the max payload arity.
+        let enums = enum_table(&[IrEnumDef {
+            name: "Shape".to_string(),
+            variants: vec![
+                IrEnumVariant {
+                    name: "Circle".to_string(),
+                    payload: vec![TypeRef::new("i64")],
+                },
+                IrEnumVariant {
+                    name: "Rect".to_string(),
+                    payload: vec![TypeRef::new("i64"), TypeRef::new("i64")],
+                },
+                IrEnumVariant {
+                    name: "Empty".to_string(),
+                    payload: Vec::new(),
+                },
+            ],
+        }]);
+
+        let option = enum_layout(&TypeRef::new("option<i64>"), &enums).expect("option layout");
+        assert_eq!(option.tag_of("some"), Some(0));
+        assert_eq!(option.tag_of("none"), Some(1));
+        assert_eq!(option.slot_count, 1);
+
+        let result = enum_layout(&TypeRef::new("result<i64, i64>"), &enums).expect("result layout");
+        assert_eq!(result.tag_of("ok"), Some(0));
+        assert_eq!(result.tag_of("err"), Some(1));
+
+        let shape = enum_layout(&TypeRef::new("Shape"), &enums).expect("user layout");
+        assert_eq!(shape.tag_of("Circle"), Some(0));
+        assert_eq!(shape.tag_of("Rect"), Some(1));
+        assert_eq!(shape.tag_of("Empty"), Some(2));
+        assert_eq!(shape.slot_count, 2, "widest variant `Rect` has two slots");
+
+        // A heap payload makes the enum unsupported for WASM.
+        assert!(
+            enum_layout(&TypeRef::new("result<i64, string>"), &enums).is_none(),
+            "heap-payload result is not a supported WASM enum"
+        );
     }
 }
