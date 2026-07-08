@@ -102,6 +102,29 @@ semantics (`NaN`/`inf`) and are bit-identical across the AST, IR, and bytecode
 backends. A wrong argument type or arity reports `L0374` (semantic) or `L0417`
 (runtime).
 
+### Bitwise intrinsics
+
+Six deterministic bit-manipulation builtins operate on `i64` (treating it as a
+64-bit pattern) and return `i64`:
+
+| Function | Signature | Notes |
+|----------|-----------|-------|
+| `rotate_left` | `rotate_left(x i64, n i64) -> i64` | rotate the 64 bits of `x` left by `(n & 63)` positions |
+| `rotate_right` | `rotate_right(x i64, n i64) -> i64` | rotate the 64 bits of `x` right by `(n & 63)` positions |
+| `count_ones` | `count_ones(x i64) -> i64` | population count (number of set bits), `0..=64` |
+| `leading_zeros` | `leading_zeros(x i64) -> i64` | count of leading zero bits, `0..=64` |
+| `trailing_zeros` | `trailing_zeros(x i64) -> i64` | count of trailing zero bits, `0..=64` |
+| `reverse_bytes` | `reverse_bytes(x i64) -> i64` | byte swap (reverse the 8 bytes of `x`) |
+
+The rotate builtins mask the shift amount with `& 63`, so any `n` — including
+large or negative values — is total (e.g. `rotate_left(1, 68)` equals
+`rotate_left(1, 4)`). For example `count_ones(255)` is `8`, `rotate_left(1, 4)`
+is `16`, `trailing_zeros(16)` is `4`, `leading_zeros(1)` is `63`, and
+`reverse_bytes(reverse_bytes(x))` round-trips back to `x`. These are pure and
+deterministic and produce identical results on the AST, IR, and bytecode
+backends. A wrong argument type or arity reports `L0374` (semantic) or `L0417`
+(runtime).
+
 ## Standard streams and I/O
 
 - Streams: `print(text)`, `println(text)`, `warn(text)` (stderr), `flush()` — each `-> void`.

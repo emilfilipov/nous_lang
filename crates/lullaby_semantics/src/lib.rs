@@ -3114,6 +3114,45 @@ impl<'a> Checker<'a> {
                     None
                 }
             }
+            "rotate_left" | "rotate_right" => {
+                // Bit rotation: `rotate_left(x, n)` / `rotate_right(x, n)` rotate
+                // the 64 bits of `x` by `(n & 63)` positions; both args are i64
+                // and the result is i64.
+                self.expect_arg_count(name, args, 2, function)?;
+                let x = self.check_expr(&args[0], scope, function)?;
+                let n = self.check_expr(&args[1], scope, function)?;
+                if x.name == "i64" && n.name == "i64" {
+                    Some(TypeRef::new("i64"))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!(
+                            "{name} expects two i64 values but got `{}` and `{}`",
+                            x.name, n.name
+                        ),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
+            "count_ones" | "leading_zeros" | "trailing_zeros" | "reverse_bytes" => {
+                // Unary bit intrinsics on i64: population count, leading/trailing
+                // zero count, and byte swap. Each takes and returns i64.
+                self.expect_arg_count(name, args, 1, function)?;
+                let arg_type = self.check_expr(&args[0], scope, function)?;
+                if arg_type.name == "i64" {
+                    Some(TypeRef::new("i64"))
+                } else {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0374",
+                        format!("{name} expects an i64 value but got `{}`", arg_type.name),
+                        Some(function.name.clone()),
+                        args[0].span,
+                    ));
+                    None
+                }
+            }
             "rc_new" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let value_type = self.check_expr(&args[0], scope, function)?;
@@ -5120,6 +5159,36 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0375")
+        );
+    }
+
+    #[test]
+    fn accepts_bit_intrinsics() {
+        let source = "fn main -> i64\n    let a i64 = rotate_left(1, 4)\n    let b i64 = rotate_right(a, 4)\n    let c i64 = count_ones(255)\n    let d i64 = leading_zeros(1)\n    let e i64 = trailing_zeros(16)\n    let f i64 = reverse_bytes(b)\n    a + b + c + d + e + f\n";
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_rotate_left_with_non_i64_argument() {
+        let diagnostics =
+            validate_source("fn main -> i64\n    let x i64 = rotate_left(1, 2.0)\n    x\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0374")
+        );
+    }
+
+    #[test]
+    fn rejects_count_ones_with_non_i64_argument() {
+        let diagnostics =
+            validate_source("fn main -> i64\n    let x i64 = count_ones(1.0)\n    x\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0374")
         );
     }
 

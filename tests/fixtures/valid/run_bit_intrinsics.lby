@@ -1,0 +1,22 @@
+fn check got i64 want i64 -> i64
+    if got == want
+        1
+    else
+        0
+
+fn main -> i64
+    let rl i64 = rotate_left(1, 4)
+    let rr i64 = rotate_right(rl, 4)
+    let co i64 = count_ones(255)
+    let lz i64 = leading_zeros(1)
+    let tz i64 = trailing_zeros(16)
+    let rb i64 = reverse_bytes(reverse_bytes(255))
+
+    let masked_pos i64 = rotate_left(1, 68)
+    let masked_neg i64 = rotate_left(1, 0 - 60)
+
+    let c1 i64 = check(rl, 16) + check(rr, 1) + check(co, 8) + check(lz, 63)
+    let c2 i64 = check(tz, 4) + check(rb, 255) + check(masked_pos, 16) + check(masked_neg, 16)
+    let checks i64 = c1 + c2
+
+    rl + rr + co + lz + tz + checks

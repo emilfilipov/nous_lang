@@ -3805,6 +3805,12 @@ impl<'a> IrRuntime<'a> {
             "ln" => Self::builtin_unary_f64("ln", args, f64::ln),
             "log10" => Self::builtin_unary_f64("log10", args, f64::log10),
             "atan2" => Self::builtin_atan2(args),
+            "rotate_left" => Self::builtin_rotate_left(args),
+            "rotate_right" => Self::builtin_rotate_right(args),
+            "count_ones" => Self::builtin_count_ones(args),
+            "leading_zeros" => Self::builtin_leading_zeros(args),
+            "trailing_zeros" => Self::builtin_trailing_zeros(args),
+            "reverse_bytes" => Self::builtin_reverse_bytes(args),
             "floor" => Self::builtin_floor(args),
             "ceil" => Self::builtin_ceil(args),
             "round" => Self::builtin_round(args),
@@ -5831,6 +5837,96 @@ impl<'a> IrRuntime<'a> {
         }
     }
 
+    /// `rotate_left(x, n)`: rotate the 64 bits of `x` left by `(n & 63)`
+    /// positions, matching the AST runtime so every backend agrees.
+    fn builtin_rotate_left(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [x, n]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("rotate_left", 2, args.len()))?;
+        match (x, n) {
+            (Value::I64(x), Value::I64(n)) => {
+                Ok(Value::I64(x.rotate_left(((n as u64) & 63) as u32)))
+            }
+            (x, n) => Err(RuntimeError::new(
+                "L0417",
+                format!("rotate_left expects two i64 values but got `{x}` and `{n}`"),
+            )),
+        }
+    }
+
+    /// `rotate_right(x, n)`: rotate the 64 bits of `x` right by `(n & 63)`
+    /// positions, matching the AST runtime.
+    fn builtin_rotate_right(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [x, n]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("rotate_right", 2, args.len()))?;
+        match (x, n) {
+            (Value::I64(x), Value::I64(n)) => {
+                Ok(Value::I64(x.rotate_right(((n as u64) & 63) as u32)))
+            }
+            (x, n) => Err(RuntimeError::new(
+                "L0417",
+                format!("rotate_right expects two i64 values but got `{x}` and `{n}`"),
+            )),
+        }
+    }
+
+    /// `count_ones(x)`: population count of the 64-bit value `x` (0..=64).
+    fn builtin_count_ones(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("count_ones", 1, args.len()))?;
+        match value {
+            Value::I64(x) => Ok(Value::I64(x.count_ones() as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("count_ones expects an i64 but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `leading_zeros(x)`: number of leading zero bits in `x` (0..=64).
+    fn builtin_leading_zeros(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("leading_zeros", 1, args.len()))?;
+        match value {
+            Value::I64(x) => Ok(Value::I64(x.leading_zeros() as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("leading_zeros expects an i64 but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `trailing_zeros(x)`: number of trailing zero bits in `x` (0..=64).
+    fn builtin_trailing_zeros(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("trailing_zeros", 1, args.len()))?;
+        match value {
+            Value::I64(x) => Ok(Value::I64(x.trailing_zeros() as i64)),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("trailing_zeros expects an i64 but got `{other}`"),
+            )),
+        }
+    }
+
+    /// `reverse_bytes(x)`: reverse the byte order of the 64-bit value `x`.
+    fn builtin_reverse_bytes(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("reverse_bytes", 1, args.len()))?;
+        match value {
+            Value::I64(x) => Ok(Value::I64(x.swap_bytes())),
+            other => Err(RuntimeError::new(
+                "L0417",
+                format!("reverse_bytes expects an i64 but got `{other}`"),
+            )),
+        }
+    }
+
     fn builtin_floor(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [value]: [Value; 1] = args
             .try_into()
@@ -7145,6 +7241,10 @@ impl<'a> Lowerer<'a> {
             "send" | "task_join" | "mutex_set" => TypeRef::new("void"),
             "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "atan" | "exp" | "ln"
             | "log10" | "atan2" => TypeRef::new("f64"),
+            // Bit intrinsics on i64: rotations, popcount, leading/trailing zero
+            // counts, and byte swap all return i64.
+            "rotate_left" | "rotate_right" | "count_ones" | "leading_zeros" | "trailing_zeros"
+            | "reverse_bytes" => TypeRef::new("i64"),
             "abs" | "min" | "max" | "pow" => {
                 let value = args.first().ok_or_else(|| {
                     IrLoweringError::new(format!("{name} call missing argument"), Some(span))
