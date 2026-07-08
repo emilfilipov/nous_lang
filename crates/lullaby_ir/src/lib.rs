@@ -7667,8 +7667,15 @@ impl<'a> Lowerer<'a> {
                     {
                         TypeRef::new("string")
                     }
+                    // Arithmetic preserves the operand's numeric type. Semantics
+                    // guarantees both operands share one numeric type (i64/f64/f32
+                    // or a fixed-width integer), so the result is that type; the
+                    // two-string `+` concatenation is handled by the arm above.
+                    // (The backends still derive float width/int kind structurally
+                    // from leaf operands, so this only improves the node's recorded
+                    // type — it does not change codegen eligibility or results.)
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
-                        TypeRef::new("i64")
+                        left.ty.clone()
                     }
                     // Integer bitwise ops preserve the operand's integer type
                     // (`i64` or any fixed-width kind; both operands share it).
