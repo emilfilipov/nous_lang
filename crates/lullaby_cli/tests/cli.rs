@@ -2597,6 +2597,89 @@ fn wasm_heap_types_execution_parity_with_node() {
 }
 
 #[test]
+fn wasm_fixed_width_integers_execution_parity_with_node() {
+    // The fixed-width integer step: three fixtures whose `main` returns `i64` but
+    // whose bodies exercise the width-normalized operations (wrapping arithmetic,
+    // signedness-correct comparison/division, bitwise/shift, `~`, and the
+    // `to_<T>`/`to_i64` conversions). Each compiles to WASM now, and each exported
+    // `main` must equal the interpreter's ground truth bit-for-bit.
+    let cases: [(&str, &str); 3] = [
+        ("run_int_widths", "2147483649"),
+        ("run_int_widths_wide", "7"),
+        ("run_bitwise_widths", "410"),
+    ];
+
+    // Emit each module and confirm `main` compiled (not skipped).
+    let mut wasm_paths: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+    for (name, expected) in cases {
+        let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
+        let out = std::env::temp_dir().join(format!("lullaby_wasm_{name}.wasm"));
+        let emit = lullaby()
+            .args([
+                "wasm",
+                "--verbose",
+                "-o",
+                out.to_str().expect("out path"),
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(emit.status.success(), "{}: {}", name, stderr(&emit));
+        assert!(
+            stdout(&emit).contains("compiled main"),
+            "{name}: `main` should compile to WASM, got: {}",
+            stdout(&emit)
+        );
+
+        // Interpreter ground truth.
+        let run = lullaby()
+            .args(["run", fixture.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{}: {}", name, stderr(&run));
+        assert_eq!(stdout(&run).trim(), expected, "{name} interpreter result");
+
+        wasm_paths.push((name.to_string(), out, expected.to_string()));
+    }
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM fixed-width execution parity");
+        return;
+    }
+
+    // A runner that instantiates each module and prints `name=main()`. `main`
+    // returns `i64`, which is a BigInt in JS.
+    for (name, out, expected) in &wasm_paths {
+        let runner = std::env::temp_dir().join(format!("lullaby_wasm_{name}_runner.js"));
+        let js = format!(
+            "const fs=require('fs');\
+             const bytes=fs.readFileSync({wasm:?});\
+             const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+             WebAssembly.instantiate(bytes,imports).then(r=>{{\
+               process.stdout.write('main='+r.instance.exports.main().toString());\
+             }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+            wasm = out.to_str().expect("out path")
+        );
+        std::fs::write(&runner, js).expect("write runner");
+
+        let node = Command::new("node")
+            .arg(runner.to_str().expect("runner path"))
+            .output()
+            .expect("run node");
+        assert!(
+            node.status.success(),
+            "{name} node failed: {}",
+            String::from_utf8_lossy(&node.stderr)
+        );
+        let out_text = String::from_utf8_lossy(&node.stdout);
+        assert!(
+            out_text.contains(&format!("main={expected}")),
+            "{name}: WASM `main` must equal the interpreter ({expected}), got: {out_text}"
+        );
+    }
+}
+
+#[test]
 fn wasm_js_dom_interop_execution_parity_with_node() {
     // The JS/DOM interop step: a program whose exported function calls the
     // `console_log(s)` and `dom_set_text(id, text)` host imports with computed

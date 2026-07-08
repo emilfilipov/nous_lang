@@ -52,8 +52,76 @@
 use std::collections::HashMap;
 
 use lullaby_parser::{BinaryOp, TypeRef, UnaryOp};
+use lullaby_runtime::IntKind;
 
 use crate::{IrExpr, IrExprKind, IrFunction, IrModule, IrStmt, IrStructDef};
+
+/// The fixed-width integer kind named by a Lullaby type name (`i8`/`u32`/…), or
+/// `None` for `i64` and every non-fixed-width type. Like the native backend, the
+/// WASM backend keeps a fixed-width value in a 64-bit `i64` local holding the
+/// same normalized cell the interpreters use (see [`IntKind::normalize`]): signed
+/// kinds sign-extended, unsigned kinds zero-extended, 64-bit kinds filling the
+/// whole cell.
+fn fixed_int_kind(type_name: &str) -> Option<IntKind> {
+    match type_name {
+        "i8" => Some(IntKind::I8),
+        "i16" => Some(IntKind::I16),
+        "i32" => Some(IntKind::I32),
+        "u8" => Some(IntKind::U8),
+        "u16" => Some(IntKind::U16),
+        "u32" => Some(IntKind::U32),
+        "u64" => Some(IntKind::U64),
+        "isize" => Some(IntKind::Isize),
+        "usize" => Some(IntKind::Usize),
+        _ => None,
+    }
+}
+
+/// The target [`IntKind`] of a `to_<T>` conversion builtin (`to_i8`/`to_u32`/…),
+/// or `None` for any other name. `to_i64` and same-width conversions are handled
+/// separately (they are the identity on the normalized cell).
+fn to_int_conversion_kind(name: &str) -> Option<IntKind> {
+    match name {
+        "to_i8" => Some(IntKind::I8),
+        "to_i16" => Some(IntKind::I16),
+        "to_i32" => Some(IntKind::I32),
+        "to_u8" => Some(IntKind::U8),
+        "to_u16" => Some(IntKind::U16),
+        "to_u32" => Some(IntKind::U32),
+        "to_u64" => Some(IntKind::U64),
+        "to_isize" => Some(IntKind::Isize),
+        "to_usize" => Some(IntKind::Usize),
+        _ => None,
+    }
+}
+
+/// Emit the WASM instructions that normalize the `i64` value on top of the stack
+/// into `kind`'s width, matching [`IntKind::normalize`] exactly. Signed 8/16/32
+/// kinds use the dedicated sign-extension opcodes; unsigned 8/16/32 kinds mask
+/// to the width; the 64-bit kinds (`u64`/`usize`/`isize`) already fill the cell,
+/// so normalization is a no-op.
+fn emit_normalize_i64(kind: IntKind, out: &mut Vec<u8>) {
+    match kind {
+        // i64.extend8_s / extend16_s / extend32_s: sign-extend the low bits.
+        IntKind::I8 => out.push(0xc2),
+        IntKind::I16 => out.push(0xc3),
+        IntKind::I32 => out.push(0xc4),
+        // Unsigned 8/16/32: mask to the width (zero-extend).
+        IntKind::U8 | IntKind::U16 | IntKind::U32 => {
+            let mask: i64 = match kind {
+                IntKind::U8 => 0xff,
+                IntKind::U16 => 0xffff,
+                IntKind::U32 => 0xffff_ffff,
+                _ => unreachable!(),
+            };
+            out.push(0x42); // i64.const mask
+            write_sleb(out, mask);
+            out.push(0x83); // i64.and
+        }
+        // 64-bit kinds fill the whole cell: normalization is the identity.
+        IntKind::U64 | IntKind::Isize | IntKind::Usize => {}
+    }
+}
 
 /// The Lullaby builtin that lowers to the imported host log function.
 const WASM_LOG: &str = "wasm_log";
@@ -156,6 +224,9 @@ fn scalar_val_type(ty: &TypeRef) -> Option<WasmValType> {
         "i64" => Some(WasmValType::I64),
         "f64" => Some(WasmValType::F64),
         "bool" | "char" | "byte" => Some(WasmValType::I32),
+        // A fixed-width integer (`i8`…`usize`) is stored as its normalized `i64`
+        // cell, exactly like the interpreters and the native backend.
+        name if fixed_int_kind(name).is_some() => Some(WasmValType::I64),
         _ => None,
     }
 }
@@ -676,10 +747,17 @@ fn lower_local_assign(
             lower_expr(ctx, value, out)?;
         }
         other => {
-            // Compound assignment: local = local <op> value.
+            // Compound assignment: local = local <op> value. A fixed-width local
+            // uses the width-normalizing path so `+=`/`-=`/`*=`/`/=` wrap and
+            // divide exactly like the interpreters.
+            let ir_name = ctx.local_ir_type(name).map(|t| t.name);
             get_local(out, local.index);
             lower_expr(ctx, value, out)?;
-            emit_binary_op_typed(assign_binop(other), local.ty, out)?;
+            let bop = assign_binop(other);
+            match ir_name.as_deref().and_then(fixed_int_kind) {
+                Some(kind) => emit_fixed_binop(bop, kind, out)?,
+                None => emit_binary_op_typed(bop, local.ty, out)?,
+            }
         }
     }
     set_local(out, local.index);
@@ -739,12 +817,17 @@ fn lower_path_assign(
             emit_store(slot_ty, out);
         }
         other => {
-            // addr; load; value; op; then store at addr.
+            // addr; load; value; op; then store at addr. A fixed-width slot uses
+            // the width-normalizing path.
             get_local(out, addr);
             get_local(out, addr);
             emit_load(slot_ty, out);
             lower_expr(ctx, value, out)?;
-            emit_binary_op_typed(assign_binop(other), slot_ty, out)?;
+            let bop = assign_binop(other);
+            match fixed_int_kind(cur_ty.name.as_str()) {
+                Some(kind) => emit_fixed_binop(bop, kind, out)?,
+                None => emit_binary_op_typed(bop, slot_ty, out)?,
+            }
             emit_store(slot_ty, out);
         }
     }
@@ -968,9 +1051,29 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 out.push(0x45); // i32.eqz (bool not)
                 Ok(())
             }
-            // Integer bitwise NOT is deferred on the WASM backend; a function
-            // using it is skipped and still runs on the interpreters.
-            UnaryOp::BitNot => Err("bitwise `~` is not supported on the wasm backend".to_string()),
+            // Integer bitwise NOT (`~`): one's complement, implemented as
+            // `x xor -1` (WASM has no `i64.not`). On a fixed-width kind the result
+            // is re-normalized to the width, matching the interpreter's
+            // `Value::int(!v, ty)`; on plain `i64` the full-width complement is
+            // exact. Any other operand type is rejected (falls back to the
+            // interpreters).
+            UnaryOp::BitNot => {
+                let kind = fixed_int_kind(inner.ty.name.as_str());
+                if kind.is_none() && inner.ty.name != "i64" {
+                    return Err(format!(
+                        "bitwise `~` on unsupported type `{}` (wasm backend)",
+                        inner.ty.name
+                    ));
+                }
+                lower_expr(ctx, inner, out)?;
+                out.push(0x42); // i64.const -1
+                write_sleb(out, -1);
+                out.push(0x85); // i64.xor
+                if let Some(kind) = kind {
+                    emit_normalize_i64(kind, out);
+                }
+                Ok(())
+            }
         },
         IrExprKind::Binary { left, op, right } => lower_binary(ctx, left, *op, right, out),
         IrExprKind::String(text) => {
@@ -1027,6 +1130,28 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 lower_string_ptr_len(ctx, &args[1], out)?;
                 out.push(0x10); // call
                 write_uleb(out, DOM_SET_TEXT_FUNC_INDEX as u64);
+                return Ok(());
+            }
+            // Fixed-width integer conversions are inlined, not real calls.
+            // `to_<T>(x)` normalizes the argument's `i64` cell into `T`'s width
+            // (truncate + sign/zero-extend), matching the interpreter's
+            // `Value::int(x, T)`. This is the same encoding the native backend
+            // uses.
+            if let Some(kind) = to_int_conversion_kind(name) {
+                if args.len() != 1 {
+                    return Err(format!("`{name}` takes exactly one argument"));
+                }
+                lower_expr(ctx, &args[0], out)?;
+                emit_normalize_i64(kind, out);
+                return Ok(());
+            }
+            // `to_i64(x)` widens a fixed-width cell to `i64`; the source cell is
+            // already normalized, so this is the identity on the bits.
+            if name == "to_i64" {
+                if args.len() != 1 {
+                    return Err("`to_i64` takes exactly one argument".to_string());
+                }
+                lower_expr(ctx, &args[0], out)?;
                 return Ok(());
             }
             // `len(s)`/`len(a)` reads the leading i32 length header at the pointer.
@@ -1237,12 +1362,36 @@ fn lower_binary(
             out.push(0x0b); // end
             return Ok(());
         }
-        // Integer bitwise operators are deferred on the WASM backend; a function
-        // using them is skipped (unsupported) and still runs on the interpreters.
-        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
-            return Err("bitwise operators are not supported on the wasm backend".to_string());
-        }
         _ => {}
+    }
+
+    // A fixed-width operand kind (both operands share it; the type checker forbids
+    // mixing widths) selects width- and signedness-correct codegen that
+    // re-normalizes width-producing results, mirroring the interpreter free
+    // functions and the native backend.
+    if let Some(kind) = fixed_int_kind(left.ty.name.as_str()) {
+        lower_expr(ctx, left, out)?;
+        lower_expr(ctx, right, out)?;
+        return emit_fixed_binop(op, kind, out);
+    }
+
+    // Integer bitwise/shift operators on plain `i64` map directly to the WASM
+    // opcodes (no width normalization needed). f64/bool/char/byte cannot carry
+    // them, so a bitwise/shift op on a non-integer type is rejected (the function
+    // falls back to the interpreters).
+    if matches!(
+        op,
+        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr
+    ) {
+        if left.ty.name != "i64" {
+            return Err(format!(
+                "bitwise/shift operator on unsupported type `{}` (wasm backend)",
+                left.ty.name
+            ));
+        }
+        lower_expr(ctx, left, out)?;
+        lower_expr(ctx, right, out)?;
+        return emit_i64_bitwise_or_shift(op, out);
     }
 
     // The operand value type is that of the left operand.
@@ -1251,6 +1400,101 @@ fn lower_binary(
     lower_expr(ctx, left, out)?;
     lower_expr(ctx, right, out)?;
     emit_binary_op_typed(op, operand_ty, out)
+}
+
+/// Emit a fixed-width binary op whose operands (both normalized `i64` cells of
+/// `kind`) are already on the stack (left then right), leaving the result (a
+/// normalized cell for arithmetic/bitwise/shift, a canonical `0`/`1` for
+/// comparisons) on the stack. This mirrors the interpreter free functions
+/// exactly: arithmetic wraps then re-normalizes (`Value::int`), division and
+/// comparison are signedness-aware (`int_div`/`int_cmp`), and shifts mask the
+/// count to the width and honor signedness (`int_shl`/`int_shr`).
+fn emit_fixed_binop(op: BinaryOp, kind: IntKind, out: &mut Vec<u8>) -> Result<(), String> {
+    match op {
+        BinaryOp::Add => {
+            out.push(0x7c); // i64.add
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::Subtract => {
+            out.push(0x7d); // i64.sub
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::Multiply => {
+            out.push(0x7e); // i64.mul
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::Divide => {
+            // Divide on the full 64-bit cell (signedness-correct: signed cells are
+            // sign-extended, unsigned cells zero-extended), matching `int_div`.
+            // WASM `div_s`/`div_u` traps on a zero divisor, exactly like the
+            // existing `i64` divide path.
+            if kind.is_unsigned() {
+                out.push(0x80); // i64.div_u
+            } else {
+                out.push(0x7f); // i64.div_s
+            }
+            emit_normalize_i64(kind, out);
+        }
+        // Equality is width-agnostic on the normalized cells.
+        BinaryOp::Equal => out.push(0x51),    // i64.eq
+        BinaryOp::NotEqual => out.push(0x52), // i64.ne
+        // Ordering uses unsigned comparisons for unsigned kinds, signed for
+        // signed kinds, on the normalized cells.
+        BinaryOp::Less => out.push(if kind.is_unsigned() { 0x54 } else { 0x53 }), // lt_u/lt_s
+        BinaryOp::LessEqual => out.push(if kind.is_unsigned() { 0x58 } else { 0x57 }), // le_u/le_s
+        BinaryOp::Greater => out.push(if kind.is_unsigned() { 0x56 } else { 0x55 }), // gt_u/gt_s
+        BinaryOp::GreaterEqual => out.push(if kind.is_unsigned() { 0x5a } else { 0x59 }), // ge_u/ge_s
+        BinaryOp::BitAnd => {
+            out.push(0x83); // i64.and
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::BitOr => {
+            out.push(0x84); // i64.or
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::BitXor => {
+            out.push(0x85); // i64.xor
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::Shl | BinaryOp::Shr => {
+            // Mask the shift count to `width-1` (matching `int_shl`/`int_shr`):
+            // `right & (width-1)`. The count is already on the stack; AND it with
+            // the mask, then shift the left operand and re-normalize. `<<` is
+            // `shl`; `>>` is `shr_u` (logical) for unsigned kinds, `shr_s`
+            // (arithmetic) for signed kinds.
+            let mask = i64::from(kind.width_bits() - 1); // 7/15/31/63
+            out.push(0x42); // i64.const mask
+            write_sleb(out, mask);
+            out.push(0x83); // i64.and (masked count)
+            let shift_opcode = match (op, kind.is_unsigned()) {
+                (BinaryOp::Shl, _) => 0x86,     // i64.shl
+                (BinaryOp::Shr, true) => 0x88,  // i64.shr_u (logical)
+                (BinaryOp::Shr, false) => 0x87, // i64.shr_s (arithmetic)
+                _ => unreachable!("outer match restricts to shifts"),
+            };
+            out.push(shift_opcode);
+            emit_normalize_i64(kind, out);
+        }
+        BinaryOp::And | BinaryOp::Or => {
+            return Err("logical and/or must be short-circuited".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Emit a bitwise/shift binary op on plain `i64` operands already on the stack
+/// (left then right). No width normalization is needed: `i64` fills the cell.
+fn emit_i64_bitwise_or_shift(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
+    let opcode = match op {
+        BinaryOp::BitAnd => 0x83, // i64.and
+        BinaryOp::BitOr => 0x84,  // i64.or
+        BinaryOp::BitXor => 0x85, // i64.xor
+        BinaryOp::Shl => 0x86,    // i64.shl (WASM masks the count modulo 64)
+        BinaryOp::Shr => 0x87,    // i64.shr_s (arithmetic, matching the i64 shift)
+        _ => unreachable!("caller restricts to bitwise/shift"),
+    };
+    out.push(opcode);
+    Ok(())
 }
 
 // -- Linear-memory helpers ---------------------------------------------------
@@ -2062,6 +2306,112 @@ mod tests {
         let err = emit_wasm_module(&module_for(source)).expect_err("no eligible");
         assert_eq!(err.code, "L0338");
         assert_eq!(err.skipped.len(), 1);
+    }
+
+    #[test]
+    fn fixed_width_integer_function_compiles() {
+        // A function over `u8` (wrapping arithmetic + a fixed-width conversion) is
+        // now eligible: fixed-width integers are stored as their normalized `i64`
+        // cell and re-normalized after each width-producing op.
+        let source = concat!("fn mix a u8 b u8 -> u8\n", "    (a + b) & to_u8(15)\n",);
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["mix".to_string()]);
+        assert!(artifact.skipped.is_empty());
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The `+` re-normalizes to u8 by masking with 0xff (i64.const 0xff;
+        // i64.and) and the `& to_u8(15)` masks again — the 0xff mask literal must
+        // appear in the body.
+        assert!(
+            find_subslice(&code, &[0x42, 0xff, 0x01]).is_some(),
+            "u8 normalization masks with 0xff (i64.const 0xff, i64.and)"
+        );
+    }
+
+    #[test]
+    fn signed_conversion_uses_sign_extension_opcode() {
+        // `to_i8(x)` inlines to a normalize: for a signed 8-bit kind that is the
+        // dedicated `i64.extend8_s` (0xc2), not a mask.
+        let source = "fn narrow x i64 -> i8\n    to_i8(x)\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["narrow".to_string()]);
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0xc2]).is_some(),
+            "to_i8 emits i64.extend8_s"
+        );
+    }
+
+    #[test]
+    fn unsigned_comparison_and_shift_pick_unsigned_opcodes() {
+        // A `u32` comparison uses the unsigned opcode (`i64.gt_u`, 0x56) and a
+        // `u32` right shift uses the logical `i64.shr_u` (0x88) plus a width mask.
+        let source = concat!(
+            "fn f a u32 b u32 -> u32\n",
+            "    if a > b\n",
+            "        return a >> to_u32(1)\n",
+            "    b >> to_u32(1)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["f".to_string()]);
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0x56]).is_some(),
+            "unsigned `>` uses i64.gt_u"
+        );
+        assert!(
+            find_subslice(&code, &[0x88]).is_some(),
+            "unsigned `>>` uses logical i64.shr_u"
+        );
+    }
+
+    #[test]
+    fn signed_right_shift_is_arithmetic() {
+        // A signed `i32` right shift uses the arithmetic `i64.shr_s` (0x87).
+        let source = "fn sar s i32 -> i32\n    s >> to_i32(1)\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["sar".to_string()]);
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0x87]).is_some(),
+            "signed `>>` uses arithmetic i64.shr_s"
+        );
+    }
+
+    #[test]
+    fn float_using_function_skips_gracefully() {
+        // A function whose parameter is `f32` is outside the WASM value set: it is
+        // recorded as skipped (and still runs on the interpreters), never crashing.
+        let source = concat!(
+            "fn g x f32 -> i64\n",
+            "    to_i64(to_i32(5))\n\n",
+            "fn ok a u16 -> u16\n",
+            "    a + to_u16(1)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["ok".to_string()]);
+        assert_eq!(artifact.skipped.len(), 1);
+        assert_eq!(artifact.skipped[0].name, "g");
+        assert!(artifact.skipped[0].reason.contains("f32"));
+    }
+
+    #[test]
+    fn saturating_builtin_function_skips_gracefully() {
+        // `saturating_add` is out of scope (matches native, which skips it): the
+        // function is demoted to skipped, and the eligible companion still compiles.
+        let source = concat!(
+            "fn s a u8 b u8 -> u8\n",
+            "    saturating_add(a, b)\n\n",
+            "fn plain a u8 b u8 -> u8\n",
+            "    a + b\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["plain".to_string()]);
+        assert!(
+            artifact
+                .skipped
+                .iter()
+                .any(|s| s.name == "s" && s.reason.contains("saturating_add"))
+        );
     }
 
     #[test]
