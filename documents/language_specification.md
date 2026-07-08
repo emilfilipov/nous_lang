@@ -14,7 +14,7 @@ Lullaby is a next-generation compiled systems programming language designed with
 
 ## Status
 
-Lullaby is a real, working language in active development toward its 1.0 release. It is **not** a frozen prototype: the Rust toolchain compiles and runs a broad, cohesive language across multiple backends today, and the remaining work is a defined set of primitives on the road to 1.0. The plan and the definition of 1.0 are canonical in [post_alpha_roadmap.md](post_alpha_roadmap.md); the earliest installable surface is preserved for reference in [alpha1_language_surface.md](alpha1_language_surface.md).
+Lullaby is a real, working language in active development toward its 1.0 release. It is **not** a frozen prototype: the Rust toolchain compiles and runs a broad, cohesive language across multiple backends today, and the remaining work is a defined set of primitives on the road to 1.0. The plan and the definition of 1.0 are canonical in [roadmap_1_0.md](roadmap_1_0.md); the earliest installable surface is preserved for reference in [alpha1_language_surface.md](alpha1_language_surface.md).
 
 1.0 is not yet released. Lullaby 1.0 is defined as being technically capable of expressing any program (shipping the spanning set of low-level primitives) *and* being easy to install across Windows, Linux, and macOS. This document describes the language as it exists now, and marks genuinely-planned work as roadmap items.
 
@@ -38,7 +38,7 @@ The language today includes:
 
 ### On the roadmap to 1.0
 
-The following are designed and planned but not yet fully implemented (see [post_alpha_roadmap.md](post_alpha_roadmap.md) for scope and order):
+The following are designed and planned but not yet fully implemented (see [roadmap_1_0.md](roadmap_1_0.md) for scope and order):
 
 - Wider integer types (`i8`–`u64`, `usize`/`isize`) and `f32`, typed literal suffixes, and total conversion/cast rules.
 - Environment-capturing closures; generic user *types*, trait objects/`dyn`, associated types, and default trait bodies.
@@ -370,7 +370,7 @@ let out list<i64> = parallel_map(square, inputs)
 
 ## Implementation Roadmap
 
-The frontend (grammar, type system, semantic analysis), the runtime/VM, the standard-library builtins, the concurrency primitives, and the core data structures are already implemented and running across the backends described above. The remaining road to 1.0 — completing the spanning primitive set (wider numerics, FFI breadth, the WASM heap phase, raw-memory completeness) and making the toolchain easy to install everywhere — is planned in detail in [post_alpha_roadmap.md](post_alpha_roadmap.md). Granular tracking lives in the ClickUp `Lullaby` folder.
+The frontend (grammar, type system, semantic analysis), the runtime/VM, the standard-library builtins, the concurrency primitives, and the core data structures are already implemented and running across the backends described above. The remaining road to 1.0 — completing the spanning primitive set (wider numerics, FFI breadth, the WASM heap phase, raw-memory completeness) and making the toolchain easy to install everywhere — is planned in detail in [roadmap_1_0.md](roadmap_1_0.md). Granular tracking lives in the ClickUp `Lullaby` folder.
 
 ## Getting Started Examples
 
@@ -461,5 +461,5 @@ Lullaby represents a fresh approach to systems programming, combining the perfor
 This specification provides the foundation for both human developers building complex systems programs and AI models generating correct, optimized code. The minimalist design philosophy ensures that as LLM capabilities improve, Lullaby will continue to benefit from more sophisticated generation while maintaining its core advantages of simplicity and efficiency.
 
 ---
-**Status**: In active development toward 1.0 (1.0 not yet released). See [post_alpha_roadmap.md](post_alpha_roadmap.md) for scope and order.
+**Status**: In active development toward 1.0 (1.0 not yet released). See [roadmap_1_0.md](roadmap_1_0.md) for scope and order.
 **Design Goals**: Minimalism | Token Efficiency | LLM-Friendly | Type Safety | Memory Safety | Systems Programming
