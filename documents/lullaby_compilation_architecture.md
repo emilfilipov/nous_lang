@@ -55,6 +55,8 @@ The same otherwise-`i64` functions may now also compute with **floating-point va
 
 Heap values (strings, lists, maps, structs/enums with heap payloads, closures), `match` over variant scrutinees, the option-returning `checked_*` builtins, the `saturating_*`/`wrapping_*` builtins, and float-typed signatures remain deferred: functions touching them are skipped and still run on the interpreters.
 
+The **WebAssembly backend** (`lullaby_ir::wasm`, detailed in [wasm_backend_design.md](wasm_backend_design.md)) mirrors this float coverage on its own scalar subset. In addition to the existing `f64`, it now compiles `f32`: single-precision arithmetic `+ - * /` (`f32.add/sub/mul/div`, so f32 stays single precision and is bit-identical to the interpreter's real `f32`), IEEE-754 NaN-aware comparisons `< <= > >= == !=` (`f32.lt/le/gt/ge/eq/ne`), `f32.const` literals rounded to single precision, and the `to_f32` (`f32.demote_f64`, round) / `to_f64` (`f64.promote_f32`, widen) conversions recognized and inlined. `f32`/`f64` locals and aggregate slots use WASM's native `f32`/`f64` value types, so results agree with the interpreters bit-for-bit (verified by the node execution-parity tests). Float math builtins (`sqrt`/`sin`/…) and float-typed heap payloads remain deferred and skip gracefully.
+
 ### Stage 1: Lexical Analysis (Tokenizer)
 
 Converts raw source text into a stream of tokens optimized for compact representation.
