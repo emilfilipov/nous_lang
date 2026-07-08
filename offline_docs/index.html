@@ -926,6 +926,8 @@ fn main -> i64
             <tr><td><code>to_bytes(s)</code></td><td>Returns the UTF-8 encoding of <code>s</code> as a <code>list&lt;byte&gt;</code>.</td></tr>
             <tr><td><code>from_bytes(b)</code></td><td>Decodes a <code>list&lt;byte&gt;</code> as UTF-8, returning <code>result&lt;string, string&gt;</code> — <code>ok(s)</code> on success, <code>err(message)</code> on invalid UTF-8 (no lossy replacement).</td></tr>
             <tr><td><code>byte_len(s)</code></td><td>Returns the number of UTF-8 <em>bytes</em> in <code>s</code> as an <code>i64</code> (distinct from <code>len</code>, which counts characters).</td></tr>
+            <tr><td><code>parse_i64(s)</code></td><td>Parses <code>s</code> as a base-10 <code>i64</code>, returning <code>result&lt;i64, string&gt;</code> — <code>err</code> on an empty, non-numeric, out-of-range, or whitespace-padded string (no trim). Never panics.</td></tr>
+            <tr><td><code>parse_f64(s)</code></td><td>Parses <code>s</code> as an <code>f64</code>, returning <code>result&lt;f64, string&gt;</code> — <code>err</code> on failure.</td></tr>
           </tbody>
         </table>
         <pre data-fixture="tests/fixtures/valid/docs_string.lby" data-mode="run"><code>fn main -> string
