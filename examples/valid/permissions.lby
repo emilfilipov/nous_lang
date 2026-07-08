@@ -1,0 +1,32 @@
+# Unix-style permission bits built from the i64 bitwise operators.
+# Demonstrates shifts to define flags, `|` to combine, `&` to test,
+# `& ~flag` to clear, and `^` to toggle.
+
+fn rwx p i64 -> string
+    let r string = "-"
+    if p & 4 != 0
+        r = "r"
+    let w string = "-"
+    if p & 2 != 0
+        w = "w"
+    let x string = "-"
+    if p & 1 != 0
+        x = "x"
+    r + w + x
+
+fn main -> void
+    let read i64 = 1 << 2
+    let write i64 = 1 << 1
+    let exec i64 = 1 << 0
+
+    let rw i64 = read | write
+    println("rw-  = " + rwx(rw))
+
+    let all i64 = read | write | exec
+    println("rwx  = " + rwx(all))
+
+    let no_write i64 = all & ~write
+    println("r-x  = " + rwx(no_write))
+
+    let toggled i64 = no_write ^ exec
+    println("r--  = " + rwx(toggled))

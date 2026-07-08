@@ -32,6 +32,11 @@ From the portable package root:
   derives letter and longest-word stats with a loop.
 - `valid/inventory.lby`: a `map<string, i64>` stock ledger that adjusts a count
   and looks items up via `match` on the `option` returned by `map_get`.
+- `valid/permissions.lby`: Unix-style permission bits built with the `i64`
+  bitwise operators — shifts to define flags, `|` to combine, `&` to test,
+  `& ~flag` to clear, and `^` to toggle, rendered as an `rwx` string.
+- `valid/bits.lby`: bit tricks with the bitwise operators — population count,
+  power-of-two test (`n & (n - 1)`), and byte extraction (`(x >> 8) & 255`).
 - `invalid/int_float_mismatch.lby`: mixes `i64` and `f64` in one expression
   (`let x i64 = 1 + 2.0`); `lullaby check` reports diagnostic `L0307` (operands
   of `+` must share a type) and exits non-zero.

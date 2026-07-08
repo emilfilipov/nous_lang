@@ -1,0 +1,27 @@
+# Small bit tricks with the i64 bitwise operators: population count,
+# power-of-two test, and byte extraction. All values stay small so plain
+# i64 arithmetic never overflows.
+
+fn count_bits n i64 -> i64
+    let count i64 = 0
+    let v i64 = n
+    while v != 0
+        count = count + (v & 1)
+        v = v >> 1
+    count
+
+fn is_pow2 n i64 -> i64
+    if n <= 0
+        return 0
+    if n & (n - 1) == 0
+        1
+    else
+        0
+
+fn main -> void
+    println("bits set in 181 = " + to_string(count_bits(181)))
+    println("bits set in 255 = " + to_string(count_bits(255)))
+    println("16 power of two? " + to_string(is_pow2(16)))
+    println("18 power of two? " + to_string(is_pow2(18)))
+    let value i64 = 4660
+    println("second byte of 4660 = " + to_string((value >> 8) & 255))
