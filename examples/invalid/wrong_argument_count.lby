@@ -1,0 +1,7 @@
+# wrong_argument_count.lby — calling a function with the wrong arity.
+# `add` takes two arguments but is called with one.
+fn add x i64 y i64 -> i64
+    x + y
+
+fn main -> void
+    add(1)

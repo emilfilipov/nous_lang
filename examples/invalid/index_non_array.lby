@@ -1,0 +1,6 @@
+# index_non_array.lby — using index syntax on a value that is not an array.
+# `count` is an i64, so `count[0]` is a type error; only `array<T>`
+# values can be indexed.
+fn main -> void
+    let count i64 = 5
+    count[0]

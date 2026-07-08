@@ -1,0 +1,4 @@
+# unknown_function.lby — calling a function that was never declared.
+# `lullaby check` reports the missing target instead of building a binary.
+fn main -> void
+    compute(21)

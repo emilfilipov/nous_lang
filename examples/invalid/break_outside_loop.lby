@@ -1,0 +1,4 @@
+# break_outside_loop.lby — `break` used where there is no enclosing loop.
+# Loop control statements are only valid inside `for`/`while` bodies.
+fn main -> void
+    break
