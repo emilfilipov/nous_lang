@@ -6961,14 +6961,14 @@ impl<'a> Lowerer<'a> {
     ///
     /// ```text
     /// let __try_q_N = <operand>          # result<T, E>
-    /// let __try_v_N: T = __try_q_N       # placeholder; overwritten below
+    /// let __try_v_N: T = __try_q_N       # initial binding, overwritten below
     /// match __try_q_N
     ///     ok(__try_ok_N) -> __try_v_N = __try_ok_N
     ///     err(__try_err_N) -> return err(__try_err_N)
     /// ```
     ///
     /// and for an `option<T>` operand the analogous `some`/`none` shape. The
-    /// placeholder init is immediately overwritten by the `ok`/`some` arm before
+    /// initial binding is immediately overwritten by the `ok`/`some` arm before
     /// any read, and the failure arm `return`s first, so its value is never
     /// observed; the interpreters are dynamically typed and the native/WASM
     /// backends demote any function containing a `match` to the interpreter, so
@@ -7016,7 +7016,8 @@ impl<'a> Lowerer<'a> {
             span,
         };
 
-        // `let __try_v_N: T = __try_q_N` (placeholder init, overwritten below).
+        // `let __try_v_N: T = __try_q_N` (initial binding, overwritten by the
+        // success arm before any read).
         let v_let = IrStmt::Let {
             name: v_name.clone(),
             ty: payload_ty.clone(),
