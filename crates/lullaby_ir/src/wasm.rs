@@ -7,13 +7,17 @@
 //! sections, LEB128, and the stack-machine opcodes it needs) from scratch.
 //!
 //! Scalar subset: functions whose parameter and return types are all scalars in
-//! {`i64`, `f64`, `bool`, `char`, `byte`} compile to WASM. `i64` maps to wasm
-//! `i64`, `f64` to `f64`, and `bool`/`char`/`byte` to `i32`. `void` return means
-//! no result. Supported bodies: integer/float/bool literals, variables (params +
-//! `let` locals), arithmetic (`+ - * /`; integer `/` uses `i64.div_s` which traps
-//! on 0), comparisons, `and`/`or`/`not`, `if`/`elif`/`else`, `while`, `loop` with
-//! `break`/`continue`, range `for` (lowered to a loop), `return`, calls to other
-//! compiled functions (including recursion), and the host log builtin
+//! {`i64`, `f32`, `f64`, `bool`, `char`, `byte`} (plus the fixed-width integer
+//! kinds) compile to WASM. `i64` maps to wasm `i64`, `f32` to `f32`, `f64` to
+//! `f64`, and `bool`/`char`/`byte` to `i32`. `void` return means no result.
+//! Supported bodies: integer/float/bool literals, variables (params + `let`
+//! locals), arithmetic (`+ - * /`; integer `/` uses `i64.div_s` which traps on 0;
+//! `f32`/`f64` use the single/double SSE-equivalent `f32.*`/`f64.*` ops, so f32
+//! stays single precision), comparisons (float compares are IEEE-754 NaN-aware),
+//! `and`/`or`/`not`, `if`/`elif`/`else`, `while`, `loop` with `break`/`continue`,
+//! range `for` (lowered to a loop), `return`, calls to other compiled functions
+//! (including recursion), the float conversions `to_f32` (`f32.demote_f64`) and
+//! `to_f64` (`f64.promote_f32`), and the host log builtin
 //! `wasm_log(x i64) -> void`.
 //!
 //! Heap types (this increment): `string`, `struct`, and fixed `array` values are
@@ -203,6 +207,7 @@ pub struct WasmError {
 enum WasmValType {
     I32,
     I64,
+    F32,
     F64,
 }
 
@@ -212,6 +217,7 @@ impl WasmValType {
         match self {
             WasmValType::I32 => 0x7f,
             WasmValType::I64 => 0x7e,
+            WasmValType::F32 => 0x7d,
             WasmValType::F64 => 0x7c,
         }
     }
@@ -222,6 +228,11 @@ impl WasmValType {
 fn scalar_val_type(ty: &TypeRef) -> Option<WasmValType> {
     match ty.name.as_str() {
         "i64" => Some(WasmValType::I64),
+        // `f32` maps to WASM's native single-precision `f32` type, so every
+        // arithmetic op rounds to single precision (`f32.add`/…) and stays
+        // bit-identical to the interpreter's real `f32`, exactly like the native
+        // backend keeps f32 in a `single`.
+        "f32" => Some(WasmValType::F32),
         "f64" => Some(WasmValType::F64),
         "bool" | "char" | "byte" => Some(WasmValType::I32),
         // A fixed-width integer (`i8`…`usize`) is stored as its normalized `i64`
@@ -1023,8 +1034,17 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             Ok(())
         }
         IrExprKind::Float(value) => {
-            out.push(0x44); // f64.const
-            out.extend_from_slice(&value.to_le_bytes());
+            // A float literal's static type pins it to `f32` or `f64` (the type
+            // checker resolves every literal to a concrete float type). An `f32`
+            // literal rounds `value` to single precision first so its bits match
+            // the interpreter's real `f32` store, then emits `f32.const`.
+            if expr.ty.name == "f32" {
+                out.push(0x43); // f32.const
+                out.extend_from_slice(&(*value as f32).to_le_bytes());
+            } else {
+                out.push(0x44); // f64.const
+                out.extend_from_slice(&value.to_le_bytes());
+            }
             Ok(())
         }
         IrExprKind::Bool(value) => {
@@ -1143,6 +1163,27 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 }
                 lower_expr(ctx, &args[0], out)?;
                 emit_normalize_i64(kind, out);
+                return Ok(());
+            }
+            // `to_f32(x f64) -> f32` rounds an f64 to single precision with
+            // `f32.demote_f64`; `to_f64(x f32) -> f64` widens an f32 with
+            // `f64.promote_f32` (exact). These builtins are inlined, not real
+            // calls — the same encoding the native backend uses (`cvtsd2ss` /
+            // `cvtss2sd`), so the WASM result is bit-identical to the interpreter.
+            if name == "to_f32" {
+                if args.len() != 1 {
+                    return Err("`to_f32` takes exactly one argument".to_string());
+                }
+                lower_expr(ctx, &args[0], out)?;
+                out.push(0xb6); // f32.demote_f64
+                return Ok(());
+            }
+            if name == "to_f64" {
+                if args.len() != 1 {
+                    return Err("`to_f64` takes exactly one argument".to_string());
+                }
+                lower_expr(ctx, &args[0], out)?;
+                out.push(0xbb); // f64.promote_f32
                 return Ok(());
             }
             // `to_i64(x)` widens a fixed-width cell to `i64`; the source cell is
@@ -1394,12 +1435,51 @@ fn lower_binary(
         return emit_i64_bitwise_or_shift(op, out);
     }
 
-    // The operand value type is that of the left operand.
-    let operand_ty = expr_val_type(ctx, left)?
-        .ok_or_else(|| "binary operand has no scalar value".to_string())?;
+    // The operand value type drives the opcode family. For a FLOAT operand this
+    // must be derived structurally: the IR annotates a float ARITHMETIC node with
+    // `i64` (see the IR binary lowerer), so `if a + b > c` would otherwise pick an
+    // integer compare over f32/f64 values. `float_val_type_of` looks through
+    // arithmetic to the reliably-typed leaves (float literals, float locals, and
+    // the `to_f32`/`to_f64` conversions); when neither operand is a float it falls
+    // back to the left operand's own value type (i64/i32).
+    let operand_ty = match float_val_type_of(ctx, left).or_else(|| float_val_type_of(ctx, right)) {
+        Some(ft) => ft,
+        None => expr_val_type(ctx, left)?
+            .ok_or_else(|| "binary operand has no scalar value".to_string())?,
+    };
     lower_expr(ctx, left, out)?;
     lower_expr(ctx, right, out)?;
     emit_binary_op_typed(op, operand_ty, out)
+}
+
+/// The WASM float value type (`F32`/`F64`) an expression evaluates to, or `None`
+/// if it is not a float. Mirrors the native backend's `float_width_of_expr`: it
+/// reads only the leaf nodes the IR types correctly — float literals, float
+/// locals/params, and the `to_f32`/`to_f64` conversions — and recurses through
+/// float arithmetic (`+ - * /`), whose own node type the IR annotates `i64`. A
+/// comparison yields a `bool` (not a float), so it reports `None`.
+fn float_val_type_of(ctx: &LowerCtx, expr: &IrExpr) -> Option<WasmValType> {
+    match &expr.kind {
+        IrExprKind::Float(_) => match scalar_val_type(&expr.ty) {
+            Some(ft @ (WasmValType::F32 | WasmValType::F64)) => Some(ft),
+            _ => None,
+        },
+        IrExprKind::Variable(name) => match ctx.locals.get(name)?.ty {
+            ft @ (WasmValType::F32 | WasmValType::F64) => Some(ft),
+            _ => None,
+        },
+        IrExprKind::Call { name, .. } => match name.as_str() {
+            "to_f32" => Some(WasmValType::F32),
+            "to_f64" => Some(WasmValType::F64),
+            _ => None,
+        },
+        IrExprKind::Binary {
+            left,
+            op: BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide,
+            right,
+        } => float_val_type_of(ctx, left).or_else(|| float_val_type_of(ctx, right)),
+        _ => None,
+    }
 }
 
 /// Emit a fixed-width binary op whose operands (both normalized `i64` cells of
@@ -1608,6 +1688,7 @@ fn emit_store_at(ty: WasmValType, offset: i32, out: &mut Vec<u8>) {
     let (opcode, align) = match ty {
         WasmValType::I32 => (0x36u8, 2u64), // i32.store
         WasmValType::I64 => (0x37, 3),      // i64.store
+        WasmValType::F32 => (0x38, 2),      // f32.store (4-byte)
         WasmValType::F64 => (0x39, 3),      // f64.store
     };
     out.push(opcode);
@@ -1625,6 +1706,7 @@ fn emit_load_at(ty: WasmValType, offset: i32, out: &mut Vec<u8>) {
     let (opcode, align) = match ty {
         WasmValType::I32 => (0x28u8, 2u64), // i32.load
         WasmValType::I64 => (0x29, 3),      // i64.load
+        WasmValType::F32 => (0x2a, 2),      // f32.load (4-byte)
         WasmValType::F64 => (0x2b, 3),      // f64.load
     };
     out.push(opcode);
@@ -1636,6 +1718,7 @@ fn emit_load_at(ty: WasmValType, offset: i32, out: &mut Vec<u8>) {
 fn emit_binary_op_typed(op: BinaryOp, ty: WasmValType, out: &mut Vec<u8>) -> Result<(), String> {
     match ty {
         WasmValType::I64 => emit_i64_binop(op, out),
+        WasmValType::F32 => emit_f32_binop(op, out),
         WasmValType::F64 => emit_f64_binop(op, out),
         WasmValType::I32 => emit_i32_binop(op, out),
     }
@@ -1679,6 +1762,37 @@ fn emit_f64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::LessEqual => 0x65,
         BinaryOp::Greater => 0x64,
         BinaryOp::GreaterEqual => 0x66,
+        // `and`/`or` short-circuit and the integer bitwise ops are deferred on
+        // this backend; both are routed away before reaching this opcode table.
+        BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::Shl
+        | BinaryOp::Shr => unreachable!("handled by caller"),
+    };
+    out.push(opcode);
+    Ok(())
+}
+
+/// Emit a single-precision `f32` binary op. Arithmetic (`f32.add/sub/mul/div`)
+/// keeps the result in single precision, so it is bit-identical to the
+/// interpreter's real `f32`. The comparison ops (`f32.eq/ne/lt/le/gt/ge`) are
+/// IEEE-754: relational compares and `==` are false when either operand is NaN,
+/// `!=` is true — exactly the interpreter's (Rust `f32`) semantics.
+fn emit_f32_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
+    let opcode = match op {
+        BinaryOp::Add => 0x92,
+        BinaryOp::Subtract => 0x93,
+        BinaryOp::Multiply => 0x94,
+        BinaryOp::Divide => 0x95,
+        BinaryOp::Equal => 0x5b,
+        BinaryOp::NotEqual => 0x5c,
+        BinaryOp::Less => 0x5d,
+        BinaryOp::Greater => 0x5e,
+        BinaryOp::LessEqual => 0x5f,
+        BinaryOp::GreaterEqual => 0x60,
         // `and`/`or` short-circuit and the integer bitwise ops are deferred on
         // this backend; both are routed away before reaching this opcode table.
         BinaryOp::And
@@ -2378,20 +2492,134 @@ mod tests {
     }
 
     #[test]
-    fn float_using_function_skips_gracefully() {
-        // A function whose parameter is `f32` is outside the WASM value set: it is
-        // recorded as skipped (and still runs on the interpreters), never crashing.
+    fn f32_arithmetic_and_conversions_compile() {
+        // An i64-returning function that computes with `f32` internally (the
+        // `to_f32`/`to_f64` conversions plus `f32` arithmetic and a comparison)
+        // now compiles: `f32` is a supported WASM scalar (single precision).
         let source = concat!(
-            "fn g x f32 -> i64\n",
-            "    to_i64(to_i32(5))\n\n",
+            "fn main -> i64\n",
+            "    let a f32 = to_f32(1.0)\n",
+            "    let b f32 = to_f32(2.0)\n",
+            "    let s f32 = a + b\n",
+            "    let d f32 = s / to_f32(2.0)\n",
+            "    if to_f64(d) < 2.0\n",
+            "        return 1\n",
+            "    0\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["main".to_string()]);
+        assert!(artifact.skipped.is_empty());
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // `f32.add` (0x92) and `f32.div` (0x95) for the single-precision arithmetic.
+        assert!(find_subslice(&code, &[0x92]).is_some(), "expected f32.add");
+        assert!(find_subslice(&code, &[0x95]).is_some(), "expected f32.div");
+        // `f32.demote_f64` (0xb6) for `to_f32` and `f64.promote_f32` (0xbb) for
+        // `to_f64` — the inlined conversions, not real calls.
+        assert!(
+            find_subslice(&code, &[0xb6]).is_some(),
+            "expected f32.demote_f64 for to_f32"
+        );
+        assert!(
+            find_subslice(&code, &[0xbb]).is_some(),
+            "expected f64.promote_f32 for to_f64"
+        );
+    }
+
+    #[test]
+    fn f32_field_slot_uses_single_precision_memory_ops() {
+        // An `f32` struct field is laid out as a single-precision slot: writing it
+        // uses `f32.store` (0x38) and reading it uses `f32.load` (0x2a), so a
+        // round-tripped f32 keeps its single-precision bits.
+        let source = concat!(
+            "struct Box\n",
+            "    v f32\n\n",
+            "fn main -> i64\n",
+            "    let box Box = Box(to_f32(1.5))\n",
+            "    if to_f64(box.v) < 2.0\n",
+            "        return 1\n",
+            "    0\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(artifact.compiled.contains(&"main".to_string()));
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0x38]).is_some(),
+            "expected f32.store for an f32 struct field"
+        );
+        assert!(
+            find_subslice(&code, &[0x2a]).is_some(),
+            "expected f32.load for reading an f32 struct field"
+        );
+    }
+
+    #[test]
+    fn f32_comparison_over_float_arithmetic_uses_f32_compare() {
+        // A comparison whose operand is a float ARITHMETIC subtree (annotated `i64`
+        // in the IR) must still pick the single-precision `f32.gt` (0x5e), driven
+        // by the structural float-width detection rather than the node's own `ty`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a f32 = to_f32(1.0)\n",
+            "    let b f32 = to_f32(2.0)\n",
+            "    if a + b > to_f32(2.0)\n",
+            "        return 1\n",
+            "    0\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["main".to_string()]);
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0x5e]).is_some(),
+            "float arithmetic compared with `>` must use f32.gt, not an integer compare"
+        );
+        // It must NOT fall back to the integer `i64.gt_s` (0x55) over f32 values.
+        assert!(
+            find_subslice(&code, &[0x55]).is_none(),
+            "the f32 comparison must not use i64.gt_s"
+        );
+    }
+
+    #[test]
+    fn f32_parameter_and_return_compile_like_f64() {
+        // `f32` is a first-class scalar, so a function taking and returning `f32`
+        // is eligible exactly like the existing `f64` support; a `u16` companion
+        // still compiles alongside it.
+        let source = concat!(
+            "fn scale x f32 -> f32\n",
+            "    x * to_f32(2.0)\n\n",
             "fn ok a u16 -> u16\n",
             "    a + to_u16(1)\n",
         );
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
-        assert_eq!(artifact.compiled, vec!["ok".to_string()]);
-        assert_eq!(artifact.skipped.len(), 1);
-        assert_eq!(artifact.skipped[0].name, "g");
-        assert!(artifact.skipped[0].reason.contains("f32"));
+        assert_eq!(
+            artifact.compiled,
+            vec!["scale".to_string(), "ok".to_string()]
+        );
+        assert!(artifact.skipped.is_empty());
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        assert!(
+            find_subslice(&code, &[0x94]).is_some(),
+            "expected f32.mul (0x94) in `scale`"
+        );
+    }
+
+    #[test]
+    fn float_math_builtin_skips_gracefully() {
+        // A float math builtin (`sqrt`) is out of scope for the WASM backend (as on
+        // native): the function is demoted to skipped and still runs on the
+        // interpreters, while an f32-arithmetic companion compiles.
+        let source = concat!(
+            "fn root x f64 -> f64\n",
+            "    sqrt(x)\n\n",
+            "fn plain a f32 b f32 -> f32\n",
+            "    a + b\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["plain".to_string()]);
+        assert!(
+            artifact.skipped.iter().any(|s| s.name == "root"),
+            "the `sqrt` math builtin must skip gracefully"
+        );
     }
 
     #[test]
