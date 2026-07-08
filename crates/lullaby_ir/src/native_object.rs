@@ -1022,13 +1022,14 @@ fn merge_native_skip(skips: &mut Vec<NativeSkippedFunction>, skip: NativeSkipped
 /// scalar-field struct, a fixed array of scalars, or a scalar-payload enum)
 /// passes/returns by pointer per the aggregate ABI.
 ///
-/// A top-level **float** (`f64`/`f32`) scalar parameter or return is deferred: the
-/// call path routes every argument and the return through the integer registers,
-/// so a float scalar boundary would need XMM argument routing (`xmm0..3`), which
-/// is not implemented. Such a function skips gracefully. (Float payloads *inside*
-/// a by-pointer aggregate are fine — they are copied as raw bit-preserving words.)
-/// A heap-containing aggregate (`string`/`list`/`map`, or an aggregate whose
-/// element/field is heap) is also not native and skips gracefully.
+/// A top-level **float** (`f64`/`f32`) scalar parameter or return is a register
+/// value: it passes/returns in the Win64 SSE registers (`xmm0..3` for arguments,
+/// `xmm0` for the return), positionally aligned with the integer registers — so a
+/// float at position N consumes `xmm N` while an integer at position N consumes
+/// integer register N (never both). Float payloads *inside* a by-pointer aggregate
+/// are copied as raw bit-preserving words. A heap-containing aggregate
+/// (`string`/`list`/`map`, or an aggregate whose element/field is heap) is not
+/// native and skips gracefully.
 ///
 /// Returns `Ok(true)` for an aggregate, `Ok(false)` for an integer scalar, and
 /// `Err` for a non-native / deferred type.
@@ -1047,12 +1048,11 @@ fn native_signature_type_is_aggregate(
     {
         return Ok(false);
     }
-    // A top-level float scalar boundary needs XMM argument routing (deferred).
+    // A top-level float scalar (`f64`/`f32`) is a register value routed through
+    // the Win64 SSE argument registers (`xmm0..3`), positionally aligned with the
+    // integer registers. It is a scalar, not an aggregate.
     if matches!(ty.name.as_str(), "f64" | "f32") {
-        return Err(format!(
-            "float scalar `{}` as a parameter/return needs XMM argument routing (deferred)",
-            ty.name
-        ));
+        return Ok(false);
     }
     // A fixed array parameter/return is an aggregate. Its element layout must be a
     // native (non-heap) type; the length is not needed for the signature check
@@ -2497,24 +2497,41 @@ fn lower_native_function(
     }
     for param in &function.params {
         let local = ctx.local(&param.name)?.clone();
-        if local.ty.is_aggregate() {
-            // The register holds a pointer to the caller's copy. Copy the aggregate
-            // words into the parameter's frame slots (value semantics: the callee
-            // owns an independent snapshot and never mutates the caller's copy).
-            // rax = source pointer (addresses word 0, the aggregate's highest
-            // stack address). Words descend in memory, so word k is at
-            // `[rax - 8*k]`, matching the caller's `[rbp - (base + 8*k)]` layout.
-            code.extend_from_slice(ARG_TO_RAX[reg]);
-            for word in 0..local.ty.words() as i32 {
-                // mov rcx, [rax - 8*word]
-                emit_mov_rcx_from_rax_disp(&mut code, -word * 8);
-                // mov [rbp - (slot + 8*word)], rcx
-                emit_mov_slot_from_rcx(&mut code, local.slot + word * 8);
+        match local.ty {
+            NativeType::F64 | NativeType::F32 => {
+                // A float parameter arrives in the SSE register at this position
+                // (`xmm N`, positionally aligned with the integer registers — a
+                // float at position N uses `xmm N` while an integer at position N
+                // uses integer register N). Spill it into the parameter's slot.
+                let width = match local.ty {
+                    NativeType::F64 => FloatWidth::F64,
+                    NativeType::F32 => FloatWidth::F32,
+                    _ => unreachable!("guarded by the match arm"),
+                };
+                emit_store_xmm_to_slot(&mut code, reg as u8, local.slot, width);
             }
-        } else {
-            // A scalar parameter spills its register directly into its slot.
-            code.extend_from_slice(PARAM_STORE[reg]);
-            code.extend_from_slice(&(-local.slot).to_le_bytes());
+            NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. } => {
+                // The register holds a pointer to the caller's copy. Copy the
+                // aggregate words into the parameter's frame slots (value
+                // semantics: the callee owns an independent snapshot and never
+                // mutates the caller's copy). rax = source pointer (addresses word
+                // 0, the aggregate's highest stack address). Words descend in
+                // memory, so word k is at `[rax - 8*k]`, matching the caller's
+                // `[rbp - (base + 8*k)]` layout.
+                code.extend_from_slice(ARG_TO_RAX[reg]);
+                for word in 0..local.ty.words() as i32 {
+                    // mov rcx, [rax - 8*word]
+                    emit_mov_rcx_from_rax_disp(&mut code, -word * 8);
+                    // mov [rbp - (slot + 8*word)], rcx
+                    emit_mov_slot_from_rcx(&mut code, local.slot + word * 8);
+                }
+            }
+            NativeType::I64 => {
+                // An integer/pointer scalar parameter spills its register directly
+                // into its slot.
+                code.extend_from_slice(PARAM_STORE[reg]);
+                code.extend_from_slice(&(-local.slot).to_le_bytes());
+            }
         }
         reg += 1;
     }
@@ -2555,10 +2572,13 @@ fn lower_native_function(
         lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
         if let BytecodeInstruction::Expr(expr) = &tail[0] {
             // An aggregate-valued tail expression is the function's by-pointer
-            // result: materialize it through the hidden return pointer. A scalar
-            // tail expression leaves its value in rax.
+            // result: materialize it through the hidden return pointer. A float
+            // tail expression leaves its value in `xmm0` (the Win64 SSE return
+            // register). A scalar tail expression leaves its value in rax.
             if ctx.sret_slot.is_some() {
                 lower_aggregate_return(&mut ctx, expr, &mut code)?;
+            } else if matches!(ctx.return_ty, NativeType::F64 | NativeType::F32) {
+                lower_native_float_expr(&mut ctx, expr, &mut code)?;
             } else {
                 lower_native_expr(&mut ctx, expr, &mut code)?;
             }
@@ -2780,6 +2800,10 @@ fn lower_native_stmt(
         BytecodeInstruction::Return(Some(expr)) => {
             if ctx.sret_slot.is_some() {
                 lower_aggregate_return(ctx, expr, code)?;
+            } else if matches!(ctx.return_ty, NativeType::F64 | NativeType::F32) {
+                // A float return leaves its value in `xmm0` (the Win64 SSE return
+                // register).
+                lower_native_float_expr(ctx, expr, code)?;
             } else {
                 lower_native_expr(ctx, expr, code)?;
             }
@@ -3760,39 +3784,43 @@ fn lower_native_expr(
                 ));
             }
             // If the target is an `extern fn` (a C symbol), marshal it across the
-            // Win64 C ABI: validate that every parameter and the return type is a
-            // marshallable integer scalar (the integer-register subset of §5.1 in
-            // ffi_design.md), then normalize a narrow C return in `rax`. Float
-            // (`f32`/`f64`) externs need XMM argument routing and are deferred:
-            // such a caller is demoted to the interpreters (which reject it with
-            // `L0423`). A non-extern call keeps the internal i64 convention.
-            let extern_return = if let Some(sig) = ctx.extern_sigs.get(name.as_str()) {
-                for param_ty in &sig.params {
-                    ffi_scalar_int_kind(&param_ty.name).ok_or_else(|| {
-                        format!(
-                            "extern `{name}` parameter type `{}` is not a native FFI \
-                             integer scalar (floats/pointers/aggregates are deferred)",
-                            param_ty.name
-                        )
-                    })?;
+            // Win64 C ABI via `emit_extern_call`: each argument is routed to the
+            // register selected by its position and type (integer/pointer →
+            // `rcx`/`rdx`/`r8`/`r9`; float → `xmm0..3`, §4.1). This scalar-
+            // expression position consumes the return in `rax`, so a float-
+            // returning extern here would be a value in `xmm0` we cannot use as an
+            // `rax` result — reject it (the type checker never routes a float
+            // return into an integer context, so this only guards a
+            // miscompile). A narrow integer return is re-normalized in `rax`. A
+            // non-extern call keeps the internal i64 convention below.
+            if let Some(sig) = ctx.extern_sigs.get(name.as_str()) {
+                let sig = *sig;
+                match emit_extern_call(ctx, name, sig, args, code)? {
+                    FfiScalarClass::Int(Some(fixed)) => {
+                        // The Win64 ABI leaves the upper bits of a narrow integer
+                        // return undefined, so a returned `i8`/`i16`/`i32`/`u8`/
+                        // `u16`/`u32` is re-normalized (sign/zero extended) so
+                        // downstream Lullaby code sees the same cell the
+                        // interpreters produce.
+                        emit_normalize_rax(code, fixed);
+                    }
+                    FfiScalarClass::Int(None) => {}
+                    FfiScalarClass::Float(_) => {
+                        return Err(format!(
+                            "float-returning extern `{name}` cannot be used in an \
+                             integer-scalar context on the native backend"
+                        ));
+                    }
                 }
-                Some(ffi_scalar_int_kind(&sig.return_type.name).ok_or_else(|| {
-                    format!(
-                        "extern `{name}` return type `{}` is not a native FFI integer \
-                         scalar (floats/pointers/aggregates are deferred)",
-                        sig.return_type.name
-                    )
-                })?)
-            } else {
-                None
-            };
-            // Evaluate/stage args left-to-right onto the stack, then pop into the
-            // Win64 argument registers. A scalar argument stages its value; an
-            // aggregate argument stages a *pointer* to a freshly materialized,
-            // caller-owned copy (by-pointer aggregate ABI, value semantics). An
-            // integer scalar already sits in the low bits of `rax` normalized to
-            // its width, exactly what Win64 passes in the low bits of the argument
-            // register.
+                return Ok(());
+            }
+            // A non-extern (compiled/builtin) call: evaluate/stage args left-to-
+            // right onto the stack, then pop into the Win64 argument registers. A
+            // scalar argument stages its value; an aggregate argument stages a
+            // *pointer* to a freshly materialized, caller-owned copy (by-pointer
+            // aggregate ABI, value semantics). An integer scalar already sits in
+            // the low bits of `rax` normalized to its width, exactly what Win64
+            // passes in the low bits of the argument register.
             emit_staged_call_args(ctx, name, args, code)?;
             // Pop in reverse so the first argument lands in rcx.
             for index in (0..args.len()).rev() {
@@ -3806,15 +3834,6 @@ fn lower_native_expr(
                 offset: site as u32,
                 symbol: name.clone(),
             });
-            // Normalize an extern's C return value into its canonical `i64` cell.
-            // The Win64 ABI leaves the upper bits of a narrow integer return
-            // undefined, so a returned `i8`/`i16`/`i32`/`u8`/`u16`/`u32` is
-            // re-normalized (sign/zero extended) so downstream Lullaby code sees
-            // the same cell the interpreters produce. `i64`/64-bit kinds are a
-            // no-op.
-            if let Some(Some(fixed)) = extern_return {
-                emit_normalize_rax(code, fixed);
-            }
             Ok(())
         }
         BytecodeExprKind::Field { .. } | BytecodeExprKind::Index { .. } => {
@@ -3893,6 +3912,143 @@ fn emit_staged_call_args(
     }
     ctx.scratch_next = saved_scratch;
     Ok(())
+}
+
+/// The marshalling class of one C-ABI scalar crossing the FFI boundary: an
+/// integer/pointer value (Win64 GPR `rcx`/`rdx`/`r8`/`r9`, an optional
+/// re-normalization on a narrow return) or a float value (`f64`/`f32` in the SSE
+/// registers `xmm0..3`, returned in `xmm0`). Positional routing (§4.1) chooses
+/// the register for argument N by N's *position and type*: a float at position N
+/// consumes `xmm N`, an integer at position N consumes integer register N, and
+/// each position consumes exactly one slot in exactly one sequence.
+#[derive(Clone, Copy)]
+enum FfiScalarClass {
+    /// An integer/pointer scalar; `Some(kind)` needs a narrow-return normalization
+    /// in `rax`, `None` already fills the 64-bit cell (`i64`/`u64`/`isize`/`usize`).
+    Int(Option<IntKind>),
+    /// An `f64`/`f32` float scalar routed through the SSE registers.
+    Float(FloatWidth),
+}
+
+/// Classify a Lullaby type name as a marshallable FFI scalar (integer/pointer or
+/// float), or `None` for a type outside the scalar marshalling set
+/// (pointers-to-aggregate, `string`/`list`/`map`, non-`repr(C)` structs), which
+/// demotes the extern caller so it runs on the interpreters.
+fn ffi_scalar_class(type_name: &str) -> Option<FfiScalarClass> {
+    if let Some(kind) = ffi_scalar_int_kind(type_name) {
+        return Some(FfiScalarClass::Int(kind));
+    }
+    FloatWidth::from_type_name(type_name).map(FfiScalarClass::Float)
+}
+
+/// Marshal and emit a call to an `extern fn` C symbol across the Win64 C ABI.
+/// Validates that every parameter and the return type is a marshallable scalar
+/// (integer/pointer or `f64`/`f32`); stages each argument's value on the machine
+/// stack; loads each argument into the register selected by its **position and
+/// type** (integer/pointer → `rcx`/`rdx`/`r8`/`r9` at that position; float →
+/// `xmm0..3` at that position, §4.1); then emits the `call rel32` relocation. An
+/// integer return is left in `rax` (the caller re-normalizes a narrow width); a
+/// float return is left in `xmm0`. Returns the return-value class so the caller
+/// can finish the return normalization for its result context.
+///
+/// At most four arguments are supported (the four positional register slots);
+/// more, or any non-scalar parameter/return, demotes the caller gracefully.
+fn emit_extern_call(
+    ctx: &mut NativeCtx,
+    name: &str,
+    sig: &crate::IrExternSignature,
+    args: &[BytecodeExpr],
+    code: &mut Vec<u8>,
+) -> Result<FfiScalarClass, String> {
+    if args.len() != sig.params.len() {
+        return Err(format!(
+            "extern `{name}` expects {} argument(s) but got {}",
+            sig.params.len(),
+            args.len()
+        ));
+    }
+    if args.len() > 4 {
+        return Err(format!(
+            "extern `{name}` has {} arguments; the native FFI supports at most four \
+             (stack/XMM spill for >4 is deferred)",
+            args.len()
+        ));
+    }
+    // Classify each parameter and the return type. Any non-scalar demotes the
+    // caller to the interpreters (which reject the extern call with `L0423`).
+    let param_classes: Vec<FfiScalarClass> = sig
+        .params
+        .iter()
+        .map(|param_ty| {
+            ffi_scalar_class(&param_ty.name).ok_or_else(|| {
+                format!(
+                    "extern `{name}` parameter type `{}` is not a native FFI scalar \
+                     (pointers/aggregates/strings are deferred)",
+                    param_ty.name
+                )
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let return_class = ffi_scalar_class(&sig.return_type.name).ok_or_else(|| {
+        format!(
+            "extern `{name}` return type `{}` is not a native FFI scalar \
+             (pointers/aggregates/strings are deferred)",
+            sig.return_type.name
+        )
+    })?;
+
+    // Stage each argument onto the machine stack as one 8-byte word, left to
+    // right. An integer argument evaluates into `rax` and is `push`ed; a float
+    // argument evaluates into `xmm0` and is spilled into a reserved 8-byte word.
+    // After the loop, argument at position i sits at `[rsp + 8*(n-1-i)]` (the
+    // first-pushed argument is deepest). Staging first, then loading registers,
+    // avoids one argument's evaluation clobbering an already-loaded register.
+    for (arg, class) in args.iter().zip(param_classes.iter()) {
+        match class {
+            FfiScalarClass::Int(_) => {
+                lower_native_expr(ctx, arg, code)?;
+                code.push(0x50); // push rax
+            }
+            FfiScalarClass::Float(_) => {
+                lower_native_float_expr(ctx, arg, code)?;
+                // sub rsp, 8 ; movsd [rsp], xmm0  (spill one 8-byte float word).
+                code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]);
+                code.extend_from_slice(&[0xF2, 0x0F, 0x11, 0x04, 0x24]);
+            }
+        }
+    }
+    let n = args.len();
+    // Load each staged word into the register chosen by its position and class.
+    for (i, class) in param_classes.iter().enumerate() {
+        let disp = 8 * (n - 1 - i) as i32;
+        match class {
+            FfiScalarClass::Int(_) => emit_load_gpr_from_rsp_disp(code, i as u8, disp),
+            FfiScalarClass::Float(_) => emit_load_xmm_from_rsp_disp(code, i as u8, disp),
+        }
+    }
+    // Discard the staged words: add rsp, 8*n.
+    if n > 0 {
+        emit_add_rsp(code, 8 * n as i32);
+    }
+    // call rel32 -> relocation against the (undefined external) C symbol.
+    code.push(0xE8);
+    let site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    ctx.relocations.push(CodeRelocation {
+        offset: site as u32,
+        symbol: name.to_string(),
+    });
+    Ok(return_class)
+}
+
+/// Emit `add rsp, imm` (imm > 0). Uses the imm8 form when it fits, else imm32.
+fn emit_add_rsp(code: &mut Vec<u8>, amount: i32) {
+    if (0..=127).contains(&amount) {
+        code.extend_from_slice(&[0x48, 0x83, 0xC4, amount as u8]);
+    } else {
+        code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+        code.extend_from_slice(&amount.to_le_bytes());
+    }
 }
 
 /// Lower a call to a compiled function that returns an aggregate, writing the
@@ -4158,8 +4314,21 @@ fn lower_native_float_expr(
                 code.extend_from_slice(&[0xF3, 0x0F, 0x5A, 0xC0]);
                 return Ok(FloatWidth::F64);
             }
+            // A float-returning `extern fn` C call: marshal the arguments across
+            // the Win64 C ABI (integer/pointer → GPRs, float → `xmm0..3`, §4.1)
+            // and read the `f64`/`f32` return from `xmm0`.
+            if let Some(sig) = ctx.extern_sigs.get(name.as_str()) {
+                let sig = *sig;
+                return match emit_extern_call(ctx, name, sig, args, code)? {
+                    FfiScalarClass::Float(width) => Ok(width),
+                    FfiScalarClass::Int(_) => Err(format!(
+                        "extern `{name}` returns an integer, not a float, so it \
+                         cannot be used in a float context"
+                    )),
+                };
+            }
             Err(format!(
-                "float call `{name}` is not in the native subset (float-returning functions and math builtins are deferred)"
+                "float call `{name}` is not in the native subset (non-extern float-returning functions and math builtins are deferred)"
             ))
         }
         BytecodeExprKind::Binary { left, op, right } => {
@@ -4406,6 +4575,73 @@ fn pop_xmm1(code: &mut Vec<u8>) {
 fn move_xmm0_to_xmm1(code: &mut Vec<u8>) {
     // movsd xmm1, xmm0  (F2 0F 10 C8)
     code.extend_from_slice(&[0xF2, 0x0F, 0x10, 0xC8]);
+}
+
+/// `movs{d,s} [rbp - slot], xmm{n}` — store one of the low four XMM registers
+/// (`xmm0..3`, the Win64 SSE argument registers) into a frame slot. Used by the
+/// prologue to spill a float parameter that arrived in its positional XMM
+/// register. `movsd` (`F2`) stores an f64 word; `movss` (`F3`) an f32 word.
+fn emit_store_xmm_to_slot(code: &mut Vec<u8>, xmm: u8, slot: i32, width: FloatWidth) {
+    debug_assert!(xmm < 4, "only xmm0..3 are Win64 argument registers");
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    // ModRM 0x85 = [rbp + disp32], reg field selects the XMM source.
+    let modrm = 0x85 | (xmm << 3);
+    code.extend_from_slice(&[prefix, 0x0F, 0x11, modrm]);
+    code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// `movsd xmm{n}, [rsp + disp]` — load a raw 8-byte word from a stack offset into
+/// one of the low four XMM registers (`xmm0..3`). Used to move a staged float
+/// argument into its positional SSE argument register before an extern call. A
+/// full 8-byte `movsd` load preserves an f32's low four bytes too, so one loader
+/// serves both widths.
+fn emit_load_xmm_from_rsp_disp(code: &mut Vec<u8>, xmm: u8, disp: i32) {
+    debug_assert!(xmm < 4, "only xmm0..3 are Win64 argument registers");
+    // movsd xmm{n}, [rsp + disp8/disp32]. Base rsp needs a SIB byte (0x24).
+    // ModRM.reg = xmm; ModRM.rm = 100b (SIB). disp8 when it fits, else disp32.
+    code.extend_from_slice(&[0xF2, 0x0F, 0x10]);
+    emit_rsp_mem_operand(code, xmm, disp);
+}
+
+/// `mov reg64, [rsp + disp]` — load a raw 8-byte word from a stack offset into one
+/// of the first four Win64 integer argument registers (`rcx`/`rdx`/`r8`/`r9`, by
+/// index). Used to move a staged integer argument into its positional GPR before
+/// an extern call.
+fn emit_load_gpr_from_rsp_disp(code: &mut Vec<u8>, index: u8, disp: i32) {
+    // rcx/rdx are in the base encoding (REX.W); r8/r9 need REX.B. Reg field:
+    // rcx=1, rdx=2, r8/r9=0/1 with REX.B.
+    let (rex, reg): (u8, u8) = match index {
+        0 => (0x48, 1), // rcx
+        1 => (0x48, 2), // rdx
+        2 => (0x4C, 0), // r8
+        3 => (0x4C, 1), // r9
+        _ => unreachable!("only four Win64 integer argument registers"),
+    };
+    code.push(rex);
+    code.push(0x8B); // mov r64, r/m64
+    emit_rsp_mem_operand(code, reg, disp);
+}
+
+/// Emit the ModRM+SIB(+disp) bytes for an `[rsp + disp]` memory operand with the
+/// given ModRM.reg field. `rsp` as a base always requires the SIB byte `0x24`
+/// (base=rsp, index=none). A zero displacement still needs an explicit `disp8`
+/// because `[rsp]` with mod=00 is the SIB form without a displacement — encode
+/// `disp8` for values in `i8` range, otherwise `disp32`.
+fn emit_rsp_mem_operand(code: &mut Vec<u8>, reg: u8, disp: i32) {
+    if let Ok(d) = i8::try_from(disp) {
+        // mod=01 (disp8), rm=100 (SIB), SIB=0x24 (base=rsp, no index).
+        code.push(0x40 | (reg << 3) | 0x04);
+        code.push(0x24);
+        code.push(d as u8);
+    } else {
+        // mod=10 (disp32), rm=100 (SIB), SIB=0x24.
+        code.push(0x80 | (reg << 3) | 0x04);
+        code.push(0x24);
+        code.extend_from_slice(&disp.to_le_bytes());
+    }
 }
 
 /// Combine a fixed-width binary op whose left operand is on the stack and whose
@@ -6374,12 +6610,13 @@ mod native_program_tests {
     }
 
     #[test]
-    fn skips_float_extern_caller_gracefully() {
-        // A float (`f64`/`f32`) extern needs XMM argument/return routing, which is
-        // deferred. A caller of such an extern must skip gracefully (demoted to the
-        // interpreters, which reject the extern call with `L0423`) rather than
-        // miscompiling — leaving nothing eligible here.
-        let err = emit_alpha1_native_program(&module_for(concat!(
+    fn float_extern_arg_and_return_route_through_xmm0() {
+        // A `f64`-taking/returning C extern now marshals across the Win64 C ABI:
+        // its single float argument is loaded into `xmm0` (the position-0 SSE
+        // register) — `movsd xmm0, [rsp+0]` = `F2 0F 10 44 24 00` — and the `f64`
+        // return is consumed from `xmm0`. The caller compiles natively instead of
+        // being demoted.
+        let program = emit_alpha1_native_program(&module_for(concat!(
             "extern fn cfloor x f64 -> f64\n\n",
             "fn main -> i64\n",
             "    let r f64 = cfloor(3.7)\n",
@@ -6388,14 +6625,106 @@ mod native_program_tests {
             "        flag = 1\n",
             "    flag\n",
         )))
-        .expect_err("float extern is deferred on native");
-        assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+        .expect("float extern now marshals natively");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        let text = text_bytes(&program);
         assert!(
-            err.skipped
-                .iter()
-                .any(|s| s.name == "main" && s.reason.contains("cfloor")),
-            "skip reason should name the deferred float extern: {:?}",
-            err.skipped
+            text.windows(6)
+                .any(|w| w == [0xF2, 0x0F, 0x10, 0x44, 0x24, 0x00]),
+            "expected the float argument loaded into xmm0 (`movsd xmm0, [rsp]`)"
+        );
+    }
+
+    #[test]
+    fn mixed_float_then_int_extern_routes_xmm0_and_rdx() {
+        // Win64 positional routing: for `f(double a, int b)` the float at position
+        // 0 goes to `xmm0` and the integer at position 1 goes to integer register 1
+        // (`rdx`), never both sequences for one argument. `ldexp(double, int)`
+        // exercises exactly this mixed signature.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "extern fn ldexp x f64 e i32 -> f64\n\n",
+            "fn main -> i64\n",
+            "    let r f64 = ldexp(1.5, to_i32(3))\n",
+            "    let flag i64 = 0\n",
+            "    if r > 11.0\n",
+            "        flag = 1\n",
+            "    flag\n",
+        )))
+        .expect("mixed float/int extern marshals natively");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        let text = text_bytes(&program);
+        // Position 0 float -> xmm0: `movsd xmm0, [rsp + disp]` (`F2 0F 10 /r` with
+        // an rsp SIB and reg 0). Match the fixed opcode+SIB prefix, any disp8.
+        assert!(
+            text.windows(5)
+                .any(|w| w[..3] == [0xF2, 0x0F, 0x10] && w[3] == 0x44 && w[4] == 0x24),
+            "expected the position-0 float argument loaded into xmm0"
+        );
+        // Position 1 integer -> rdx: `mov rdx, [rsp + disp]` (`48 8B /r`, reg=rdx=2,
+        // rsp SIB). ModRM for disp8 with reg=2 = 0x54, SIB 0x24.
+        assert!(
+            text.windows(5)
+                .any(|w| w[..2] == [0x48, 0x8B] && w[2] == 0x54 && w[3] == 0x24),
+            "expected the position-1 integer argument loaded into rdx"
+        );
+    }
+
+    #[test]
+    fn int_then_float_extern_routes_rcx_and_xmm1() {
+        // The mirror case: `f(int a, double b)` puts the integer at position 0 in
+        // `rcx` and the float at position 1 in `xmm1` — each position consumes its
+        // slot in exactly one register sequence.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "extern fn scalbn_like a i32 b f64 -> f64\n\n",
+            "fn main -> i64\n",
+            "    let r f64 = scalbn_like(to_i32(2), 4.0)\n",
+            "    let flag i64 = 0\n",
+            "    if r > 3.0\n",
+            "        flag = 1\n",
+            "    flag\n",
+        )))
+        .expect("int/float extern marshals natively");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        let text = text_bytes(&program);
+        // Position 0 integer -> rcx: `mov rcx, [rsp + disp]` (48 8B, reg=rcx=1,
+        // ModRM disp8 = 0x4C, SIB 0x24).
+        assert!(
+            text.windows(4)
+                .any(|w| w[..2] == [0x48, 0x8B] && w[2] == 0x4C && w[3] == 0x24),
+            "expected the position-0 integer argument loaded into rcx"
+        );
+        // Position 1 float -> xmm1: `movsd xmm1, [rsp + disp]` (F2 0F 10, reg=1,
+        // ModRM disp8 = 0x4C, SIB 0x24).
+        assert!(
+            text.windows(5)
+                .any(|w| w[..3] == [0xF2, 0x0F, 0x10] && w[3] == 0x4C && w[4] == 0x24),
+            "expected the position-1 float argument loaded into xmm1"
+        );
+    }
+
+    #[test]
+    fn export_fn_with_float_params_spills_from_xmm() {
+        // An `export fn` with a float parameter receives it in the positional SSE
+        // register and spills it into the parameter slot with `movsd [rbp-slot],
+        // xmm0` (`F2 0F 11 85 <disp32>` for xmm0 at position 0). The exported
+        // symbol compiles natively as a library object.
+        let program = emit_alpha1_native_program(&library_module_for(
+            "export fn scale x f64 -> f64\n    x * x\n",
+        ))
+        .expect("float export compiles natively");
+        assert!(
+            program.compiled.contains(&"scale".to_string()),
+            "expected `scale` compiled: {:?}",
+            program.compiled
+        );
+        let text = text_bytes(&program);
+        // Prologue spill of the xmm0 float parameter: `movsd [rbp+disp32], xmm0`.
+        assert!(
+            text.windows(4).any(|w| w == [0xF2, 0x0F, 0x11, 0x85]),
+            "expected the float parameter spilled from xmm0 (`movsd [rbp-slot], xmm0`)"
         );
     }
 
@@ -6767,10 +7096,11 @@ mod native_program_tests {
     }
 
     #[test]
-    fn function_with_float_signature_still_skips_gracefully() {
-        // The signature constraint is unchanged: a function with a float parameter
-        // or float return type is still recorded in `skipped` and falls back to
-        // the interpreters. `main` (all-i64) still compiles.
+    fn function_with_float_signature_compiles_natively() {
+        // A function with a float parameter and float return is now a register
+        // scalar routed through the SSE registers: it compiles natively (its float
+        // parameter is spilled from `xmm0` and its float return is left in `xmm0`)
+        // rather than being demoted to the interpreters.
         let program = emit_alpha1_native_program(&module_for(concat!(
             "fn scale x f64 -> f64\n",
             "    x * 2.0\n\n",
@@ -6779,13 +7109,18 @@ mod native_program_tests {
             "    n\n",
         )))
         .expect("emit native program");
-        assert_eq!(program.compiled, vec!["main".to_string()]);
-        assert_eq!(program.skipped.len(), 1, "{:?}", program.skipped);
-        assert_eq!(program.skipped[0].name, "scale");
         assert!(
-            program.skipped[0].reason.contains("f64"),
-            "skip reason should name the float signature: {}",
-            program.skipped[0].reason
+            program.compiled.contains(&"scale".to_string()),
+            "expected `scale` to compile natively: {:?}",
+            program.compiled
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        let text = text_bytes(&program);
+        // `scale`'s prologue spills its `f64` parameter from xmm0: `movsd
+        // [rbp+disp32], xmm0` = F2 0F 11 85 ...
+        assert!(
+            text.windows(4).any(|w| w == [0xF2, 0x0F, 0x11, 0x85]),
+            "expected the float parameter spilled from xmm0"
         );
     }
 

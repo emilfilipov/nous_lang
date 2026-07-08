@@ -4235,6 +4235,115 @@ fn ucrt_available() -> bool {
     })
 }
 
+/// Best-effort: if the MSVC `LIB` environment variable is not already set (so a
+/// native link would skip), construct it from the installed MSVC toolset and
+/// Windows SDK x64 library directories and set it in this test process's
+/// environment. The child `lullaby native` invocation inherits the environment,
+/// so it can then discover `kernel32.lib`/`ucrt.lib` and actually link + run. A
+/// no-op when `LIB` is already set or no MSVC/SDK install is found — the link+run
+/// step then skips gracefully as before. Windows-only.
+///
+/// The directories are located directly on the filesystem (rather than by sourcing
+/// `vcvars64.bat`) so the setup is independent of any shell quoting: `LIB` is the
+/// concatenation of the MSVC toolset `lib\x64`, the Windows SDK `ucrt\x64`, and the
+/// Windows SDK `um\x64` directories — exactly the three vcvars adds for a link.
+fn ensure_msvc_env() {
+    if std::env::var_os("LIB").is_some() {
+        return;
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(msvc_lib) = latest_msvc_lib_x64() {
+        dirs.push(msvc_lib);
+    }
+    let (ucrt, um) = latest_sdk_lib_x64();
+    dirs.extend(ucrt);
+    dirs.extend(um);
+    // Only set `LIB` if we actually found the two the linker needs (kernel32.lib
+    // lives in `um\x64`, ucrt.lib in `ucrt\x64`); otherwise leave it unset so the
+    // gated tests skip cleanly.
+    let has_kernel32 = dirs.iter().any(|d| d.join("kernel32.lib").is_file());
+    let has_ucrt = dirs.iter().any(|d| d.join("ucrt.lib").is_file());
+    if !has_kernel32 || !has_ucrt {
+        return;
+    }
+    let joined = dirs
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(";");
+    // SAFETY: called from single-threaded test setup, before spawning any child.
+    unsafe { std::env::set_var("LIB", joined) };
+}
+
+/// The newest MSVC toolset `lib\x64` directory across the known VS 2022 install
+/// roots (Enterprise/Professional/Community/BuildTools), or `None` if none exist.
+fn latest_msvc_lib_x64() -> Option<PathBuf> {
+    let mut best: Option<(String, PathBuf)> = None;
+    for base in vs_2022_roots() {
+        let tools = base.join("VC\\Tools\\MSVC");
+        let Ok(entries) = std::fs::read_dir(&tools) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let lib = entry.path().join("lib\\x64");
+            if lib.join("libcmt.lib").is_file() || lib.is_dir() {
+                let version = entry.file_name().to_string_lossy().into_owned();
+                if best.as_ref().is_none_or(|(v, _)| version > *v) {
+                    best = Some((version, lib));
+                }
+            }
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+/// The newest Windows SDK `ucrt\x64` and `um\x64` library directories (each as a
+/// single-element vec, or empty if absent).
+fn latest_sdk_lib_x64() -> (Vec<PathBuf>, Vec<PathBuf>) {
+    for program_files in [
+        std::env::var_os("ProgramFiles(x86)"),
+        std::env::var_os("ProgramFiles"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let lib_root = PathBuf::from(&program_files).join("Windows Kits\\10\\Lib");
+        let Ok(entries) = std::fs::read_dir(&lib_root) else {
+            continue;
+        };
+        let mut best: Option<(String, PathBuf)> = None;
+        for entry in entries.flatten() {
+            let version = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().join("um\\x64\\kernel32.lib").is_file()
+                && best.as_ref().is_none_or(|(v, _)| version > *v)
+            {
+                best = Some((version, entry.path()));
+            }
+        }
+        if let Some((_, sdk)) = best {
+            return (vec![sdk.join("ucrt\\x64")], vec![sdk.join("um\\x64")]);
+        }
+    }
+    (Vec::new(), Vec::new())
+}
+
+/// The known Visual Studio 2022 install roots (per edition) on this machine.
+fn vs_2022_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for base in [
+        "C:\\Program Files\\Microsoft Visual Studio\\2022",
+        "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022",
+    ] {
+        for edition in ["Enterprise", "Professional", "Community", "BuildTools"] {
+            let root = PathBuf::from(base).join(edition);
+            if root.is_dir() {
+                roots.push(root);
+            }
+        }
+    }
+    roots
+}
+
 /// C-ABI FFI: a program that declares `extern fn llabs x i64 -> i64` and returns
 /// `llabs(-7)`. On the interpreters the extern call is rejected with `L0423`
 /// (they cannot execute C). Native-compiled and linked against the C runtime
@@ -4379,6 +4488,162 @@ fn ffi_calls_c_toupper_i32_when_linkable() {
     let exe = Command::new(&out).output().expect("run native exe");
     let exit = exe.status.code().expect("native exit code");
     assert_eq!(exit, 65, "toupper('a') via C FFI must exit 65 ('A')");
+}
+
+/// C-ABI FFI (float scalar): a program that declares `extern fn sqrt x f64 -> f64`
+/// and computes `sqrt(16.0)` (== 4.0), then derives a deterministic `i64` via two
+/// float comparisons (`> 3.9` gives 3, `< 4.1` adds 4) so the `.exe` exits 7. This
+/// exercises the Win64 float marshalling: the `f64` argument is passed in `xmm0`
+/// and the `f64` return is read from `xmm0`. On the interpreters the extern call is
+/// rejected with `L0423`. Native-compiled and linked against `ucrt.lib` (which
+/// provides `sqrt`), the `.exe` calls the real C `sqrt`. Gated on `rust-lld` +
+/// `kernel32.lib` + `ucrt.lib`; skips gracefully otherwise.
+#[test]
+fn ffi_calls_c_sqrt_f64_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/native_only/ffi_sqrt.lby");
+
+    // `check` validates the extern declaration and its call site.
+    let check = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(check.status.success(), "{}", stderr(&check));
+
+    // Every interpreter backend rejects the extern call with L0423.
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(
+            !run.status.success(),
+            "extern call must fail on the {backend} interpreter"
+        );
+        let rendered = format!("{}{}", stdout(&run), stderr(&run));
+        assert!(
+            rendered.contains("L0423"),
+            "expected L0423 on {backend}: {rendered}"
+        );
+    }
+
+    // Make MSVC's `LIB` available (source vcvars64 if it is not already set) so the
+    // link+run step actually executes rather than skipping.
+    ensure_msvc_env();
+
+    // Native codegen: emit + link + run.
+    let out = std::env::temp_dir().join("lullaby_ffi_sqrt.exe");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() || !ucrt_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib/ucrt.lib (via the LIB env var) not available; \
+             skipping f64 C-ABI FFI link+run"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(exit, 7, "sqrt(16.0)==4.0 via C FFI must exit 7");
+}
+
+/// C-ABI FFI (mixed float + int scalars): a program that declares
+/// `extern fn ldexp x f64 e i32 -> f64` and computes `ldexp(1.5, 3)` (== 12.0),
+/// then derives a deterministic `i64` via two float comparisons so the `.exe`
+/// exits 12. This exercises Win64 positional register routing: the `f64` at
+/// position 0 goes to `xmm0`, the `i32` at position 1 goes to integer register 1
+/// (`rdx`), and the `f64` return comes back in `xmm0` — each position consuming its
+/// slot in exactly one register sequence. On the interpreters the extern call is
+/// rejected with `L0423`. Native-compiled and linked against `ucrt.lib` (which
+/// provides `ldexp`), the `.exe` calls the real C `ldexp`. Gated on `rust-lld` +
+/// `kernel32.lib` + `ucrt.lib`; skips gracefully otherwise.
+#[test]
+fn ffi_calls_c_ldexp_mixed_scalars_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/native_only/ffi_ldexp.lby");
+
+    // `check` validates the extern declaration and its call site.
+    let check = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(check.status.success(), "{}", stderr(&check));
+
+    // Every interpreter backend rejects the extern call with L0423.
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(
+            !run.status.success(),
+            "extern call must fail on the {backend} interpreter"
+        );
+        let rendered = format!("{}{}", stdout(&run), stderr(&run));
+        assert!(
+            rendered.contains("L0423"),
+            "expected L0423 on {backend}: {rendered}"
+        );
+    }
+
+    ensure_msvc_env();
+
+    // Native codegen: emit + link + run.
+    let out = std::env::temp_dir().join("lullaby_ffi_ldexp.exe");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() || !ucrt_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib/ucrt.lib (via the LIB env var) not available; \
+             skipping mixed float/int C-ABI FFI link+run"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(exit, 12, "ldexp(1.5, 3)==12.0 via C FFI must exit 12");
 }
 
 /// Inline assembly: a `main` whose `unsafe` `asm` block emits the seven bytes of

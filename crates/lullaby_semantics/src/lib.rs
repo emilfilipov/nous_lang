@@ -762,16 +762,18 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Check that an `export fn` has an i64-scalar C-callable signature. The first
-    /// increment exposes exports across the Win64 integer convention only, so
-    /// every parameter and the return type must be `i64`; anything else is
-    /// `L0424`. Generic exports are also rejected (a C symbol is monomorphic).
+    /// Check that an `export fn` has a C-callable scalar signature. Exports cross
+    /// the Win64 C ABI in the delivered scalar set: `i64` (integer register) and
+    /// the `f64`/`f32` floats (SSE registers `xmm0..3`, positionally routed). Any
+    /// other parameter/return type — a wider marshalling case (pointers, structs,
+    /// strings) not yet exported — is `L0424`. Generic exports are also rejected
+    /// (a C symbol is monomorphic).
     fn check_export_signature(&mut self, function: &Function) {
         if !function.type_params.is_empty() {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0424",
                 format!(
-                    "`export fn {}` cannot be generic; the first increment exports only i64-scalar functions",
+                    "`export fn {}` cannot be generic; exports must be monomorphic scalar functions",
                     function.name
                 ),
                 Some(function.name.clone()),
@@ -779,11 +781,11 @@ impl<'a> Checker<'a> {
             ));
         }
         for param in &function.params {
-            if param.ty.name != "i64" {
+            if !Self::is_exportable_scalar(&param.ty.name) {
                 self.diagnostics.push(SemanticDiagnostic::at(
                     "L0424",
                     format!(
-                        "`export fn {}` parameter `{}` has type `{}`; the first increment exports only i64 parameters and return type",
+                        "`export fn {}` parameter `{}` has type `{}`; exports support the scalar set `i64`/`f64`/`f32` (pointers, structs, and strings are not yet exportable)",
                         function.name, param.name, param.ty.name
                     ),
                     Some(function.name.clone()),
@@ -791,17 +793,24 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
-        if function.return_type.name != "i64" {
+        if !Self::is_exportable_scalar(&function.return_type.name) {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0424",
                 format!(
-                    "`export fn {}` returns `{}`; the first increment exports only functions returning i64",
+                    "`export fn {}` returns `{}`; exports support the scalar set `i64`/`f64`/`f32` (pointers, structs, and strings are not yet exportable)",
                     function.name, function.return_type.name
                 ),
                 Some(function.name.clone()),
                 function.span,
             ));
         }
+    }
+
+    /// Whether a type name is in the delivered `export fn` C-ABI scalar set:
+    /// `i64` (integer register) or an `f64`/`f32` float (SSE register). Wider
+    /// scalar/aggregate marshalling for exports is deferred.
+    fn is_exportable_scalar(type_name: &str) -> bool {
+        matches!(type_name, "i64" | "f64" | "f32")
     }
 
     /// Collect trait declarations into the trait table and the trait-method
@@ -5312,14 +5321,39 @@ mod tests {
     }
 
     #[test]
-    fn rejects_export_with_non_i64_signature() {
-        // The first export increment supports only i64 params/return; a string
-        // return is `L0424`.
+    fn rejects_export_with_non_scalar_signature() {
+        // Exports support the `i64`/`f64`/`f32` scalar set; a `string` return is
+        // outside it and is `L0424`.
         let source = "export fn label x i64 -> string\n    to_string(x)\n";
-        let diagnostics = validate_source(source).expect_err("non-i64 export rejected");
+        let diagnostics = validate_source(source).expect_err("non-scalar export rejected");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0424"),
             "expected L0424: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn validates_export_float_scalar_function() {
+        // An `export fn` with `f64`/`f32` params and return is now in the exported
+        // scalar set (SSE-register marshalling), so it type-checks and keeps its
+        // `is_export` marker. A mixed float/int signature is also accepted.
+        let source = "export fn scale x f64 y f64 -> f64\n    x * y\n";
+        let checked = validate_source(source).expect("f64 export type-checks");
+        assert!(
+            checked
+                .program
+                .functions
+                .iter()
+                .find(|f| f.name == "scale")
+                .expect("export function present")
+                .is_export,
+            "scale is marked export"
+        );
+
+        let mixed = "export fn bias x f32 n i64 -> f32\n    x\n";
+        assert!(
+            validate_source(mixed).is_ok(),
+            "a mixed float/int export signature type-checks"
         );
     }
 
