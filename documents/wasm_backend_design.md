@@ -129,7 +129,9 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Functions: any top-level function whose parameter and return types are all in
   the scalar subset compiles to a WASM function and is exported by name.
 - Expressions: integer/float/bool literals, variables (params + `let` locals),
-  arithmetic (`+ - * /`, integer division traps on 0 like WASM `div_s`),
+  arithmetic (`+ - * /`; signed integer division still traps on a zero divisor
+  like WASM `div_s`, but the `i64::MIN / -1` overflow case is guarded so it wraps
+  to `i64::MIN` — matching the interpreters — instead of trapping),
   comparisons, `and`/`or`/`not`, and calls to other compiled functions.
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
