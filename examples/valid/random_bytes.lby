@@ -1,0 +1,11 @@
+# Draw cryptographically-secure random bytes from the OS and inspect them.
+# The byte values differ every run; the count is stable.
+
+fn report bytes list<byte> -> void
+    println("drew " + to_string(len(bytes)) + " random bytes")
+    println("first byte value (0-255) = " + to_string(byte_val(get(bytes, 0))))
+
+fn main -> void
+    match os_random(8)
+        ok(bytes) -> report(bytes)
+        err(m) -> println("random unavailable: " + m)

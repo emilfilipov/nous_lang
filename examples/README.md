@@ -43,6 +43,9 @@ From the portable package root:
 - `valid/stopwatch.lby`: times a small computation with the monotonic clock
   (`mono_now`), sleeps with `sleep_millis`, and reads the wall clock
   (`wall_now`).
+- `valid/random_bytes.lby`: draws cryptographically-secure random bytes from the
+  OS with `os_random`, matching on the `result` and inspecting the byte count
+  and first value.
 - `invalid/int_float_mismatch.lby`: mixes `i64` and `f64` in one expression
   (`let x i64 = 1 + 2.0`); `lullaby check` reports diagnostic `L0307` (operands
   of `+` must share a type) and exits non-zero.
