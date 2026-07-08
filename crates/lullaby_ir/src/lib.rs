@@ -14,8 +14,8 @@ use lullaby_runtime::{
     asm_interpreter_error, await_future, char_find, expect_chan, expect_future, expect_i64,
     expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error,
     get_place, http_exchange, join_task, monotonic_now_nanos, net_err, new_chan, option_value,
-    result_value, scalar_order_keys, set_place, shift_left, shift_right, sleep_millis,
-    value_type_name, wall_now_millis,
+    os_random_bytes, result_value, scalar_order_keys, set_place, shift_left, shift_right,
+    sleep_millis, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -3815,6 +3815,7 @@ impl<'a> IrRuntime<'a> {
             "rc_borrow" => self.builtin_rc_borrow(args),
             "ptr_write" => self.builtin_store(args),
             "env" => Self::builtin_env(args),
+            "os_random" => Self::builtin_os_random(args),
             "args" => self.builtin_args(args),
             "parallel_map" => self.builtin_parallel_map(args),
             "chan_new" => Self::builtin_chan_new(args),
@@ -4885,6 +4886,25 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("env", 1, args.len()))?;
         let name = expect_string("env", name)?;
         Ok(option_value(std::env::var(&name).ok().map(Value::String)))
+    }
+
+    /// `os_random(len i64) -> result<list<byte>, string>`: `len`
+    /// cryptographically-secure random bytes from the operating-system CSPRNG as
+    /// `ok(list<byte>)`, or `err(message)` if the OS RNG fails. `len == 0`
+    /// returns `ok([])`; `len < 0` returns `err("os_random length must be
+    /// non-negative")`. Never a seeded/deterministic PRNG and never a panic.
+    /// Routes through the shared [`os_random_bytes`] helper so the IR
+    /// interpreter, the bytecode VM (which runs on it), and the AST runtime all
+    /// agree on behavior.
+    fn builtin_os_random(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [len]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("os_random", 1, args.len()))?;
+        let len = expect_i64("os_random", len)?;
+        Ok(result_value(match os_random_bytes(len) {
+            Ok(bytes) => Ok(Value::Array(bytes.into_iter().map(Value::Byte).collect())),
+            Err(message) => Err(Value::String(message)),
+        }))
     }
 
     /// `args() -> list<string>`: the running program's CLI arguments (an empty
@@ -7105,6 +7125,14 @@ impl<'a> Lowerer<'a> {
             // `env(name)` yields `option<string>`; `args()` yields `list<string>`.
             "env" => generic_type("option", std::slice::from_ref(&TypeRef::new("string"))),
             "args" => generic_type("list", std::slice::from_ref(&TypeRef::new("string"))),
+            // `os_random(len)` yields `result<list<byte>, string>`.
+            "os_random" => generic_type(
+                "result",
+                &[
+                    generic_type("list", std::slice::from_ref(&TypeRef::new("byte"))),
+                    TypeRef::new("string"),
+                ],
+            ),
             // `parallel_map(f, list<i64>)` maps `fn(i64) -> i64` over the list,
             // yielding a `list<i64>` in input order.
             "parallel_map" => generic_type("list", std::slice::from_ref(&TypeRef::new("i64"))),
@@ -8171,6 +8199,38 @@ mod tests {
         let (ast, ir, bytecode, optimized_ir, optimized_bytecode) =
             run_all_backend_variants(source);
         assert_eq!(ast, Value::I64(1));
+        assert_eq!(ir, ast);
+        assert_eq!(bytecode, ast);
+        assert_eq!(optimized_ir, ast);
+        assert_eq!(optimized_bytecode, ast);
+    }
+
+    #[test]
+    fn os_random_structural_result_matches_across_backend_variants() {
+        // `os_random` bytes are non-deterministic, so this asserts only
+        // structural, backend-invariant facts: `os_random(16)` yields 16 bytes,
+        // `os_random(0)` yields an empty list, and `os_random(-1)` yields `err`
+        // (never a panic). Fixed total: 1 + 1 + 1 = 3 on every backend.
+        let source = concat!(
+            "fn ok_len n i64 -> i64\n",
+            "    match os_random(n)\n",
+            "        ok(bytes) -> len(bytes)\n",
+            "        err(_) -> 0 - 1\n\n",
+            "fn main -> i64\n",
+            "    let a i64 = 0\n",
+            "    if ok_len(16) == 16\n",
+            "        a = 1\n",
+            "    let b i64 = 0\n",
+            "    if ok_len(0) == 0\n",
+            "        b = 1\n",
+            "    let c i64 = 0\n",
+            "    if ok_len(0 - 1) == 0 - 1\n",
+            "        c = 1\n",
+            "    a + b + c\n",
+        );
+        let (ast, ir, bytecode, optimized_ir, optimized_bytecode) =
+            run_all_backend_variants(source);
+        assert_eq!(ast, Value::I64(3));
         assert_eq!(ir, ast);
         assert_eq!(bytecode, ast);
         assert_eq!(optimized_ir, ast);

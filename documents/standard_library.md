@@ -157,6 +157,22 @@ backends. A wrong argument type or arity reports `L0374` (semantic) or `L0417`
   - These are interpreter/runtime builtins; the native and WebAssembly backends
     are subsets that do not provide them. Wrong argument types or arities are
     compile-time semantic diagnostics (`L0312`/`L0313`).
+- OS randomness:
+  - `os_random(len i64) -> result<list<byte>, string>` — returns `len`
+    **cryptographically-secure random bytes** drawn directly from the operating
+    system's CSPRNG as `ok(list<byte>)`, or `err(message)` if the OS RNG fails.
+    This is a **real OS randomness source** (`getrandom`/`getentropy` on
+    Unix-likes, `BCryptGenRandom` on Windows, `/dev/urandom` as a fallback) — it
+    is **never** a seeded or deterministic PRNG, so it is suitable for keys,
+    nonces, tokens, and salts.
+  - `len == 0` returns `ok([])` (an empty list, no syscall). `len < 0` returns
+    `err("os_random length must be non-negative")` — it never panics.
+  - The returned bytes are non-deterministic, so results differ from run to run
+    and between two calls; only structural facts (such as the byte count) are
+    reproducible across the AST, IR, and bytecode backends.
+  - This is an interpreter/runtime builtin; the native and WebAssembly backends
+    are subsets that do not provide it. Wrong argument types or arities are
+    compile-time semantic diagnostics (`L0312`/`L0313`).
 
 ## Process and environment
 

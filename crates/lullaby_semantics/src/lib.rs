@@ -3205,6 +3205,18 @@ impl<'a> Checker<'a> {
                 self.expect_process_arg_count(name, args, 0, call_span, function)?;
                 Some(list_type(&TypeRef::new("string")))
             }
+            "os_random" => {
+                // `os_random(len i64) -> result<list<byte>, string>`: `len`
+                // cryptographically-secure random bytes from the OS RNG as
+                // `ok(list<byte>)`, or `err(message)` on RNG failure. `len < 0`
+                // yields `err` at runtime (not a compile error).
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_arg_type(name, 1, &args[0], "i64", scope, function)?;
+                Some(result_type(
+                    &list_type(&TypeRef::new("byte")),
+                    &TypeRef::new("string"),
+                ))
+            }
             "parallel_map" => {
                 // `parallel_map(f fn(i64) -> i64, args list<i64>) -> list<i64>`:
                 // apply `f` to each element on a separate OS thread, returning
@@ -5052,6 +5064,40 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0375")
+        );
+    }
+
+    #[test]
+    fn os_random_type_checks_and_yields_result_of_list_byte() {
+        // `os_random(len i64) -> result<list<byte>, string>`: an `i64` argument
+        // type-checks, and the `ok` payload is a `list<byte>` (so `len` on it is
+        // valid and the whole program is well-typed).
+        let source = concat!(
+            "fn count n i64 -> i64\n",
+            "    match os_random(n)\n",
+            "        ok(bytes) -> len(bytes)\n",
+            "        err(_) -> 0\n\n",
+            "fn main -> i64\n",
+            "    count(16)\n",
+        );
+        assert!(
+            validate_source(source).is_ok(),
+            "os_random should type-check with an i64 argument and a list<byte> ok payload"
+        );
+    }
+
+    #[test]
+    fn rejects_os_random_wrong_argument_type() {
+        // A `string` where `os_random` expects an `i64` is an argument-type
+        // error (`L0313`), never accepted.
+        let diagnostics =
+            validate_source("fn main -> i64\n    match os_random(\"16\")\n        ok(b) -> len(b)\n        err(_) -> 0\n")
+                .expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0313"),
+            "expected L0313 for a non-i64 os_random argument: {diagnostics:?}"
         );
     }
 

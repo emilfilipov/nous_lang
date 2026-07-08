@@ -4,6 +4,7 @@ version = "0.1.0-alpha.2"
 edition = "2024"
 
 [dependencies]
+getrandom = "0.4"
 lullaby_diagnostics = { path = "../lullaby_diagnostics" }
 lullaby_parser = { path = "../lullaby_parser" }
 

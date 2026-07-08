@@ -357,6 +357,34 @@ pub fn sleep_millis(ms: i64) {
     }
 }
 
+/// Fill a fresh buffer of `len` bytes with cryptographically-secure randomness
+/// straight from the operating-system CSPRNG (`getrandom`/`getentropy` on
+/// Unix-likes, `BCryptGenRandom` on Windows, `/dev/urandom` as a fallback).
+/// This is a real OS randomness source — never a seeded or deterministic PRNG,
+/// so callers may use it for keys, nonces, and tokens.
+///
+/// Backs the `os_random` builtin on every interpreter backend (AST runtime, IR
+/// interpreter, bytecode VM) so all three exhibit identical behavior:
+///
+/// - `len < 0` returns `Err("os_random length must be non-negative")` and never
+///   panics.
+/// - `len == 0` returns `Ok(Vec::new())` (no syscall, an empty buffer).
+/// - a genuine OS RNG failure is surfaced as `Err(message)` rather than a panic.
+pub fn os_random_bytes(len: i64) -> Result<Vec<u8>, String> {
+    if len < 0 {
+        return Err("os_random length must be non-negative".to_string());
+    }
+    let len = len as usize;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let mut buffer = vec![0u8; len];
+    match getrandom::fill(&mut buffer) {
+        Ok(()) => Ok(buffer),
+        Err(error) => Err(format!("os_random failed: {error}")),
+    }
+}
+
 pub fn expect_i64(name: &str, value: Value) -> Result<i64, RuntimeError> {
     match value {
         Value::I64(number) => Ok(number),
@@ -987,6 +1015,7 @@ impl<'a> Runtime<'a> {
             "rc_borrow" => self.builtin_rc_borrow(args),
             "ptr_write" => self.builtin_store(args),
             "env" => Self::builtin_env(args),
+            "os_random" => Self::builtin_os_random(args),
             "args" => self.builtin_args(args),
             "parallel_map" => self.builtin_parallel_map(args),
             "chan_new" => Self::builtin_chan_new(args),
@@ -1028,6 +1057,24 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("env", 1, args.len()))?;
         let name = expect_string("env", name)?;
         Ok(option_value(std::env::var(&name).ok().map(Value::String)))
+    }
+
+    /// `os_random(len i64) -> result<list<byte>, string>`: `len`
+    /// cryptographically-secure random bytes from the operating-system CSPRNG as
+    /// `ok(list<byte>)`, or `err(message)` if the OS RNG fails. `len == 0`
+    /// returns `ok([])`; `len < 0` returns `err("os_random length must be
+    /// non-negative")`. Never a seeded/deterministic PRNG and never a panic.
+    /// Routes through the shared [`os_random_bytes`] helper so every backend
+    /// agrees on behavior.
+    fn builtin_os_random(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [len]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("os_random", 1, args.len()))?;
+        let len = expect_i64("os_random", len)?;
+        Ok(result_value(match os_random_bytes(len) {
+            Ok(bytes) => Ok(Value::Array(bytes.into_iter().map(Value::Byte).collect())),
+            Err(message) => Err(Value::String(message)),
+        }))
     }
 
     /// `args() -> list<string>`: the running program's CLI arguments (an empty
@@ -4202,5 +4249,45 @@ mod tests {
             "        err(m) -> 1\n",
         );
         assert_eq!(run_source(source).expect("run"), Value::I64(1));
+    }
+
+    #[test]
+    fn os_random_bytes_len_and_bounds_behavior() {
+        // A positive length yields exactly that many bytes.
+        assert_eq!(os_random_bytes(16).expect("ok").len(), 16);
+        // Zero yields an empty buffer (no syscall, no error).
+        assert_eq!(os_random_bytes(0).expect("ok"), Vec::<u8>::new());
+        // A negative length is an error, not a panic.
+        assert_eq!(
+            os_random_bytes(-1),
+            Err("os_random length must be non-negative".to_string())
+        );
+    }
+
+    #[test]
+    fn os_random_returns_requested_length_and_empty_and_err() {
+        // `os_random(16)` yields `ok` with 16 bytes; `os_random(0)` yields `ok`
+        // with an empty list; `os_random(-1)` yields `err` (never a panic). The
+        // fixed total is 16 + 0 + (0 - 1) = 15.
+        let source = concat!(
+            "fn amount n i64 -> i64\n",
+            "    match os_random(n)\n",
+            "        ok(bytes) -> len(bytes)\n",
+            "        err(_) -> 0 - 1\n\n",
+            "fn main -> i64\n",
+            "    amount(16) + amount(0) + amount(0 - 1)\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(15));
+    }
+
+    #[test]
+    fn os_random_is_non_deterministic_across_calls() {
+        // A real OS CSPRNG (not a seeded PRNG) produces different 32-byte draws
+        // with overwhelming probability, so two draws must differ.
+        let first = os_random_bytes(32).expect("ok");
+        let second = os_random_bytes(32).expect("ok");
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert_ne!(first, second, "two OS-CSPRNG draws must not be identical");
     }
 }
