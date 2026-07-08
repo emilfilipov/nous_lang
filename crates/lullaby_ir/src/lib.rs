@@ -15,8 +15,8 @@ use lullaby_runtime::{
     SharedAtomic, SharedMutex, SocketResource, Task, Value, apply_compound, asm_interpreter_error,
     await_future, char_find, expect_atomic, expect_chan, expect_future, expect_i64, expect_list,
     expect_map, expect_mutex, expect_string, expect_task, extern_call_error, get_place,
-    http_exchange, int_cmp, int_div, join_task, monotonic_now_nanos, net_err, new_chan,
-    option_value, os_random_bytes, overflow_arith, process_exit_code, result_value,
+    http_exchange, int_cmp, int_div, int_shl, int_shr, join_task, monotonic_now_nanos, net_err,
+    new_chan, option_value, os_random_bytes, overflow_arith, process_exit_code, result_value,
     scalar_order_keys, set_place, shift_left, shift_right, sleep_millis, value_type_name,
     wall_now_millis,
 };
@@ -4258,8 +4258,12 @@ impl<'a> IrRuntime<'a> {
                 let value = self.eval_expr(expr, env)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
-                    // Bitwise NOT (one's complement) on an i64.
-                    UnaryOp::BitNot => Ok(Value::I64(!value.as_i64()?)),
+                    // Bitwise NOT (one's complement); a fixed-width integer is
+                    // re-normalized to its width.
+                    UnaryOp::BitNot => match value {
+                        Value::Int { value, ty } => Ok(Value::int(!value, ty)),
+                        other => Ok(Value::I64(!other.as_i64()?)),
+                    },
                 }
             }
             IrExprKind::Binary { left, op, right } => {
@@ -4402,15 +4406,14 @@ impl<'a> IrRuntime<'a> {
                 BinaryOp::LessEqual => Ok(Value::Bool(int_cmp(l, r, ty).is_le())),
                 BinaryOp::Greater => Ok(Value::Bool(int_cmp(l, r, ty).is_gt())),
                 BinaryOp::GreaterEqual => Ok(Value::Bool(int_cmp(l, r, ty).is_ge())),
+                // Bitwise ops mirror the AST runtime exactly.
+                BinaryOp::BitAnd => Ok(Value::int(l & r, ty)),
+                BinaryOp::BitOr => Ok(Value::int(l | r, ty)),
+                BinaryOp::BitXor => Ok(Value::int(l ^ r, ty)),
+                BinaryOp::Shl => Ok(Value::int(int_shl(l, r, ty), ty)),
+                BinaryOp::Shr => Ok(Value::int(int_shr(l, r, ty), ty)),
                 BinaryOp::And | BinaryOp::Or => {
                     unreachable!("logical ops short-circuit in eval_expr")
-                }
-                BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor
-                | BinaryOp::Shl
-                | BinaryOp::Shr => {
-                    unreachable!("bitwise ops on fixed-width integers are rejected by semantics")
                 }
             };
         }
@@ -7352,17 +7355,22 @@ impl<'a> Lowerer<'a> {
                     ty,
                 )
             }
-            ExprKind::Unary { op, expr } => (
-                IrExprKind::Unary {
-                    op: *op,
-                    expr: Box::new(self.lower_expr(expr, scope)?),
-                },
-                match op {
+            ExprKind::Unary { op, expr } => {
+                let inner = self.lower_expr(expr, scope)?;
+                // Bitwise NOT preserves the operand's integer type (`i64` or any
+                // fixed-width kind); logical NOT is `bool`.
+                let ty = match op {
                     UnaryOp::Not => TypeRef::new("bool"),
-                    // Bitwise NOT is `i64 -> i64`.
-                    UnaryOp::BitNot => TypeRef::new("i64"),
-                },
-            ),
+                    UnaryOp::BitNot => inner.ty.clone(),
+                };
+                (
+                    IrExprKind::Unary {
+                        op: *op,
+                        expr: Box::new(inner),
+                    },
+                    ty,
+                )
+            }
             ExprKind::Binary { left, op, right } => {
                 let left = self.lower_expr(left, scope)?;
                 let right = self.lower_expr(right, scope)?;
@@ -7377,12 +7385,13 @@ impl<'a> Lowerer<'a> {
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                         TypeRef::new("i64")
                     }
-                    // Integer bitwise ops are `i64 x i64 -> i64`.
+                    // Integer bitwise ops preserve the operand's integer type
+                    // (`i64` or any fixed-width kind; both operands share it).
                     BinaryOp::BitAnd
                     | BinaryOp::BitOr
                     | BinaryOp::BitXor
                     | BinaryOp::Shl
-                    | BinaryOp::Shr => TypeRef::new("i64"),
+                    | BinaryOp::Shr => left.ty.clone(),
                     BinaryOp::Equal
                     | BinaryOp::NotEqual
                     | BinaryOp::Less
