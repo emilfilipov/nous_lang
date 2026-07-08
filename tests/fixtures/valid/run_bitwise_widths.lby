@@ -1,0 +1,18 @@
+# Bitwise operators on the fixed-width integers: & | ^ ~ and shifts, with the
+# shift amount masked to each type's width and right shift honoring signedness
+# (logical for unsigned u8, arithmetic for signed i32). Deterministic i64 (410)
+# on the AST, IR, and bytecode backends.
+fn main -> i64
+    let a u8 = to_u8(200)
+    let b u8 = to_u8(15)
+    let band u8 = a & b
+    let bor u8 = a | b
+    # u8 shift wraps within the width: 200 << 1 = 400 -> 144
+    let shifted u8 = a << to_u8(1)
+    # ~200 in u8 is 55 (one's complement within the width)
+    let notv u8 = ~to_u8(200)
+    # signed i32 arithmetic right shift preserves the sign: -8 >> 1 = -4
+    let s i32 = to_i32(0 - 8)
+    let sar i32 = s >> to_i32(1)
+    # 8 + 207 + 144 + 55 + (-4) = 410
+    to_i64(band) + to_i64(bor) + to_i64(shifted) + to_i64(notv) + to_i64(sar)

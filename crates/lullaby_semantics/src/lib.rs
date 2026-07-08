@@ -1882,17 +1882,22 @@ impl<'a> Checker<'a> {
                         }
                     }
                     UnaryOp::BitNot => {
-                        // Bitwise NOT is `i64 -> i64` only.
-                        if expr_type.as_ref() == Some(&TypeRef::new("i64")) {
-                            Some(TypeRef::new("i64"))
-                        } else {
-                            self.diagnostics.push(SemanticDiagnostic::at(
-                                "L0307",
-                                "operand of `~` must be i64",
-                                Some(function.name.clone()),
-                                expr.span,
-                            ));
-                            None
+                        // Bitwise NOT applies to any integer type (`i64` or a
+                        // fixed-width kind) and preserves it. `f32`/`f64` are not
+                        // integers, so they are rejected.
+                        match &expr_type {
+                            Some(ty) if ty.name == "i64" || is_fixed_width_int_name(&ty.name) => {
+                                Some(ty.clone())
+                            }
+                            _ => {
+                                self.diagnostics.push(SemanticDiagnostic::at(
+                                    "L0307",
+                                    "operand of `~` must be an integer",
+                                    Some(function.name.clone()),
+                                    expr.span,
+                                ));
+                                None
+                            }
                         }
                     }
                 }
@@ -1987,17 +1992,25 @@ impl<'a> Checker<'a> {
                     | BinaryOp::BitXor
                     | BinaryOp::Shl
                     | BinaryOp::Shr => {
-                        // Integer bitwise ops are `i64 x i64 -> i64` only. Byte
-                        // and wider-integer bitwise is deferred to its own ticket.
-                        let i64_type = TypeRef::new("i64");
-                        if left_type.as_ref() == Some(&i64_type)
-                            && right_type.as_ref() == Some(&i64_type)
+                        // Bitwise ops require two operands of the same integer type
+                        // (`i64` or a fixed-width kind) and produce that type. The
+                        // shift amount shares the operand's type (no width mixing);
+                        // per-width masking and logical-vs-arithmetic right shift
+                        // happen at runtime.
+                        let is_integer = |ty: &Option<TypeRef>| {
+                            ty.as_ref().is_some_and(|t| {
+                                t.name == "i64" || is_fixed_width_int_name(&t.name)
+                            })
+                        };
+                        if left_type == right_type
+                            && is_integer(&left_type)
+                            && is_integer(&right_type)
                         {
-                            Some(i64_type)
+                            left_type
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0307",
-                                "bitwise operands (`& | ^ << >>`) must both be i64",
+                                "bitwise operands (`& | ^ << >>`) must both be the same integer type",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -5196,12 +5209,41 @@ mod tests {
     #[test]
     fn rejects_non_i64_bitwise_operand() {
         // A `bool` operand to a bitwise op reuses the arithmetic operand family
-        // (`L0307`); bitwise ops are strictly `i64`.
+        // (`L0307`); bitwise ops require two operands of the same integer type.
         let source = "fn main -> i64\n    let x bool = true\n    x & 1\n";
         let diagnostics = validate_source(source).expect_err("semantic");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0307"),
-            "expected L0307 for a non-i64 bitwise operand: {diagnostics:?}"
+            "expected L0307 for a non-integer bitwise operand: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_fixed_width_bitwise_operators() {
+        // Bitwise ops (& | ^ << >> ~) apply to any integer width and preserve it;
+        // both operands must share the type (no width mixing).
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a u8 = to_u8(200)\n",
+            "    let b u8 = (a & to_u8(15)) | (a << to_u8(1))\n",
+            "    let c i32 = ~to_i32(5)\n",
+            "    let d i32 = c >> to_i32(1)\n",
+            "    to_i64(b) + to_i64(d)\n",
+        );
+        validate_source(source).expect("fixed-width bitwise operators type-check");
+    }
+
+    #[test]
+    fn rejects_mixed_width_bitwise_operands() {
+        // A u8 and an i32 cannot share a bitwise op.
+        let source = "fn main -> i64\n    let x u8 = to_u8(1)\n    let y i32 = to_i32(1)\n    to_i64(x & to_u8(0)) + to_i64(y)\n";
+        // The valid form above must pass; the mixed form below must fail.
+        validate_source(source).expect("same-width bitwise is fine");
+        let bad = "fn main -> i64\n    let x u8 = to_u8(1)\n    let y i32 = to_i32(1)\n    to_i64(x & y)\n";
+        let diagnostics = validate_source(bad).expect_err("u8 & i32 must be rejected");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0307"),
+            "expected L0307 for mixed-width bitwise operands: {diagnostics:?}"
         );
     }
 

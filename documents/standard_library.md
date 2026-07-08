@@ -67,6 +67,11 @@ Move between widths explicitly with the `to_<T>` conversions (wrapping,
 `i64 → T`) and `to_i64` (widening any width back to `i64`; the bit pattern is
 reinterpreted, so a `u64` above `i64::MAX` reads as a negative `i64`).
 
+The **bitwise operators** (`& | ^ ~` and the `<< >>` shifts) also apply to every
+fixed-width integer and preserve its type. The shift amount is masked to the
+type's width (`amount & (width-1)`), and right shift is logical (zero-filling)
+for unsigned types but arithmetic (sign-preserving) for signed ones.
+
 Arithmetic (`+ - * /`) on a fixed-width integer **wraps** modulo the type width —
 total and deterministic, never a trap. Division and comparison respect
 signedness: the same bit pattern reads as a large magnitude for an unsigned type

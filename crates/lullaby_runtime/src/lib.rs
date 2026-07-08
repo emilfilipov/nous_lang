@@ -183,6 +183,17 @@ impl IntKind {
         }
     }
 
+    /// The bit width of this kind (8/16/32/64). `usize`/`isize` are 64-bit on the
+    /// current targets. Used for shift-amount masking.
+    pub fn width_bits(self) -> u32 {
+        match self {
+            IntKind::I8 | IntKind::U8 => 8,
+            IntKind::I16 | IntKind::U16 => 16,
+            IntKind::I32 | IntKind::U32 => 32,
+            IntKind::U64 | IntKind::Isize | IntKind::Usize => 64,
+        }
+    }
+
     /// Whether this kind is unsigned. Division and ordering of unsigned kinds use
     /// the `u64` reinterpretation of the normalized cell.
     pub fn is_unsigned(self) -> bool {
@@ -276,6 +287,27 @@ pub fn int_div(left: i64, right: i64, ty: IntKind) -> i64 {
     } else {
         left.wrapping_div(right)
     }
+}
+
+/// Left shift of a normalized fixed-width cell, with the shift amount masked to
+/// the kind's width (`amount & (width-1)` — total and deterministic, like the
+/// `i64` shift) and the result re-normalized to the width.
+pub fn int_shl(value: i64, amount: i64, ty: IntKind) -> i64 {
+    let masked = (amount as u64 & u64::from(ty.width_bits() - 1)) as u32;
+    ty.normalize(value.wrapping_shl(masked))
+}
+
+/// Right shift of a normalized fixed-width cell: logical (zero-filling) for
+/// unsigned kinds, arithmetic (sign-preserving) for signed kinds, with the same
+/// masked amount as [`int_shl`].
+pub fn int_shr(value: i64, amount: i64, ty: IntKind) -> i64 {
+    let masked = (amount as u64 & u64::from(ty.width_bits() - 1)) as u32;
+    let shifted = if ty.is_unsigned() {
+        (value as u64).wrapping_shr(masked) as i64
+    } else {
+        value.wrapping_shr(masked)
+    };
+    ty.normalize(shifted)
 }
 
 /// Signedness-aware ordering of two normalized `i64` cells tagged `ty`. Unsigned
@@ -2585,8 +2617,12 @@ impl<'a> Runtime<'a> {
                 let value = self.eval_expr(expr, env)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
-                    // Bitwise NOT (one's complement) on an i64.
-                    UnaryOp::BitNot => Ok(Value::I64(!value.as_i64()?)),
+                    // Bitwise NOT (one's complement). On a fixed-width integer the
+                    // complement is re-normalized to the width.
+                    UnaryOp::BitNot => match value {
+                        Value::Int { value, ty } => Ok(Value::int(!value, ty)),
+                        other => Ok(Value::I64(!other.as_i64()?)),
+                    },
                 }
             }
             ExprKind::Binary { left, op, right } => {
@@ -2814,15 +2850,15 @@ impl<'a> Runtime<'a> {
                 BinaryOp::LessEqual => Ok(Value::Bool(int_cmp(l, r, ty).is_le())),
                 BinaryOp::Greater => Ok(Value::Bool(int_cmp(l, r, ty).is_gt())),
                 BinaryOp::GreaterEqual => Ok(Value::Bool(int_cmp(l, r, ty).is_ge())),
+                // Bitwise ops operate on the normalized cell and re-normalize;
+                // shifts mask the amount to the width and honor signedness.
+                BinaryOp::BitAnd => Ok(Value::int(l & r, ty)),
+                BinaryOp::BitOr => Ok(Value::int(l | r, ty)),
+                BinaryOp::BitXor => Ok(Value::int(l ^ r, ty)),
+                BinaryOp::Shl => Ok(Value::int(int_shl(l, r, ty), ty)),
+                BinaryOp::Shr => Ok(Value::int(int_shr(l, r, ty), ty)),
                 BinaryOp::And | BinaryOp::Or => {
                     unreachable!("logical ops short-circuit in eval_expr")
-                }
-                BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor
-                | BinaryOp::Shl
-                | BinaryOp::Shr => {
-                    unreachable!("bitwise ops on fixed-width integers are rejected by semantics")
                 }
             };
         }
