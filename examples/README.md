@@ -40,6 +40,9 @@ From the portable package root:
 - `valid/utf8_bytes.lby`: encodes strings to UTF-8 bytes with `to_bytes`,
   round-trips them back with `from_bytes` (matching on the `result`), and shows
   the char-count vs `byte_len` distinction for non-ASCII text.
+- `valid/stopwatch.lby`: times a small computation with the monotonic clock
+  (`mono_now`), sleeps with `sleep_millis`, and reads the wall clock
+  (`wall_now`).
 - `invalid/int_float_mismatch.lby`: mixes `i64` and `f64` in one expression
   (`let x i64 = 1 + 2.0`); `lullaby check` reports diagnostic `L0307` (operands
   of `+` must share a type) and exits non-zero.

@@ -1,0 +1,17 @@
+# Measure elapsed time with the monotonic clock and read the wall clock.
+# The exact nanosecond count varies per run; that is expected for a timer.
+
+fn work n i64 -> i64
+    let sum i64 = 0
+    for i from 1 to n
+        sum = sum + i
+    sum
+
+fn main -> void
+    let start i64 = mono_now()
+    let total i64 = work(10000)
+    let elapsed i64 = mono_now() - start
+    println("sum 1..10000 = " + to_string(total))
+    println("elapsed nanoseconds (approx) = " + to_string(elapsed))
+    sleep_millis(1)
+    println("wall clock is positive: " + to_string(wall_now() > 0))
