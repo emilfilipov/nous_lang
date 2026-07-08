@@ -1,0 +1,9 @@
+fn main -> i64
+    let s string = "Lab"
+    let cs list<char> = chars(s)
+    let first i64 = char_code(get(cs, 0))
+    let same i64 = 0
+    if string_from_chars(cs) == s
+        same = 1
+    # char_code('L')=76 + len=3 + round-trip match=1 => 80
+    first + len(cs) + same

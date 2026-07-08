@@ -3798,6 +3798,8 @@ impl<'a> IrRuntime<'a> {
             "trim" => Self::builtin_trim(args),
             "replace" => Self::builtin_replace(args),
             "upper" => Self::builtin_upper(args),
+            "chars" => Self::builtin_chars(args),
+            "string_from_chars" => Self::builtin_string_from_chars(args),
             "lower" => Self::builtin_lower(args),
             "to_bytes" => Self::builtin_to_bytes(args),
             "from_bytes" => Self::builtin_from_bytes(args),
@@ -5910,6 +5912,36 @@ impl<'a> IrRuntime<'a> {
         Ok(Value::String(text.to_uppercase()))
     }
 
+    /// `chars(s) -> list<char>`: the characters of `s` in order.
+    fn builtin_chars(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [text]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("chars", 1, args.len()))?;
+        let text = expect_string("chars", text)?;
+        Ok(Value::Array(text.chars().map(Value::Char).collect()))
+    }
+
+    /// `string_from_chars(cs) -> string`: concatenate a `list<char>` into a string.
+    fn builtin_string_from_chars(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("string_from_chars", 1, args.len()))?;
+        let values = expect_list("string_from_chars", list)?;
+        let mut out = String::new();
+        for value in values {
+            match value {
+                Value::Char(c) => out.push(c),
+                other => {
+                    return Err(RuntimeError::new(
+                        "L0417",
+                        format!("string_from_chars expects a list<char> but found `{other}`"),
+                    ));
+                }
+            }
+        }
+        Ok(Value::String(out))
+    }
+
     fn builtin_lower(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [text]: [Value; 1] = args
             .try_into()
@@ -7703,6 +7735,8 @@ impl<'a> Lowerer<'a> {
                 generic_type("list", std::slice::from_ref(&element))
             }
             "split" => TypeRef::new("array<string>"),
+            "chars" => generic_type("list", std::slice::from_ref(&TypeRef::new("char"))),
+            "string_from_chars" => TypeRef::new("string"),
             // `env(name)` yields `option<string>`; `args()` yields `list<string>`.
             "env" => generic_type("option", std::slice::from_ref(&TypeRef::new("string"))),
             "args" => generic_type("list", std::slice::from_ref(&TypeRef::new("string"))),

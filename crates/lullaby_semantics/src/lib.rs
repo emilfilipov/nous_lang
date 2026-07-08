@@ -3108,6 +3108,18 @@ impl<'a> Checker<'a> {
                 self.expect_string_builtin_arg(name, 1, &args[0], "string", scope, function)?;
                 Some(TypeRef::new("string"))
             }
+            "chars" => {
+                // `chars(s string) -> list<char>`: the characters of `s` in order.
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_string_builtin_arg(name, 1, &args[0], "string", scope, function)?;
+                Some(list_type(&TypeRef::new("char")))
+            }
+            "string_from_chars" => {
+                // `string_from_chars(cs list<char>) -> string`: the inverse of `chars`.
+                self.expect_arg_count(name, args, 1, function)?;
+                self.expect_string_builtin_arg(name, 1, &args[0], "list<char>", scope, function)?;
+                Some(TypeRef::new("string"))
+            }
             "to_bytes" => {
                 // `to_bytes(s string) -> list<byte>`: the UTF-8 encoding of `s`.
                 self.expect_arg_count(name, args, 1, function)?;
@@ -5803,6 +5815,23 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0374")
         );
+    }
+
+    #[test]
+    fn accepts_chars_round_trip_and_rejects_wrong_types() {
+        let ok = concat!(
+            "fn main -> i64\n",
+            "    let cs list<char> = chars(\"hi\")\n",
+            "    len(string_from_chars(cs))\n",
+        );
+        assert!(validate_source(ok).is_ok(), "{:?}", validate_source(ok));
+
+        // `chars` needs a string; `string_from_chars` needs a list<char>.
+        let bad1 = validate_source("fn main -> i64\n    len(chars(5))\n").expect_err("semantic");
+        assert!(bad1.iter().any(|d| d.code == "L0375"), "{bad1:?}");
+        let bad2 = validate_source("fn main -> i64\n    len(string_from_chars(\"x\"))\n")
+            .expect_err("semantic");
+        assert!(bad2.iter().any(|d| d.code == "L0375"), "{bad2:?}");
     }
 
     #[test]

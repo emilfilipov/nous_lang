@@ -51,6 +51,9 @@ From the portable package root:
   flat.
 - `valid/parse_numbers.lby`: parses strings into numbers with `parse_i64` /
   `parse_f64`, matching on the `result` so invalid input is handled gracefully.
+- `valid/tokenize.lby`: a lexer-style walk over a string's characters (`chars`)
+  classifying each with the `char` predicates (`is_alpha`/`is_digit`/…) and
+  summing digit values — the toolkit for writing parsers in Lullaby.
 - `invalid/int_float_mismatch.lby`: mixes `i64` and `f64` in one expression
   (`let x i64 = 1 + 2.0`); `lullaby check` reports diagnostic `L0307` (operands
   of `+` must share a type) and exits non-zero.

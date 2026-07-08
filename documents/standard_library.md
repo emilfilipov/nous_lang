@@ -90,6 +90,11 @@ argument is a compile-time `L0389` type error.
 `repeat(s, count i64) -> string` (`count <= 0` yields `""`).
 Concatenate with `+` on two `string`s.
 
+`chars(s string) -> list<char>` decomposes a string into its characters (Unicode
+scalars) in order, and `string_from_chars(cs list<char>) -> string` recomposes
+them (the inverse). Together with the `char` classification predicates
+(`is_digit`/`is_alpha`/…) they let you write tokenizers and parsers in Lullaby.
+
 ### Bytes and UTF-8
 
 - `to_bytes(s string) -> list<byte>` — the UTF-8 encoding of `s` as a list of

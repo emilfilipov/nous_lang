@@ -1,0 +1,29 @@
+# A tiny lexer-style demo: walk a string character by character, classify each
+# with the char predicates, and sum the numeric digit values. Together, chars,
+# is_alpha/is_digit/is_whitespace, and char_code let you write parsers in Lullaby.
+
+fn digit_value c char -> i64
+    char_code(c) - char_code('0')
+
+fn main -> void
+    let text string = "a1 b22 c3"
+    let cs list<char> = chars(text)
+    let n i64 = len(cs)
+    let letters i64 = 0
+    let digits i64 = 0
+    let spaces i64 = 0
+    let digit_sum i64 = 0
+    for i from 0 to n - 1
+        let c char = get(cs, i)
+        if is_alpha(c)
+            letters = letters + 1
+        if is_digit(c)
+            digits = digits + 1
+            digit_sum = digit_sum + digit_value(c)
+        if is_whitespace(c)
+            spaces = spaces + 1
+    println("text: " + text)
+    println("letters = " + to_string(letters))
+    println("digits = " + to_string(digits))
+    println("spaces = " + to_string(spaces))
+    println("sum of digit values = " + to_string(digit_sum))
