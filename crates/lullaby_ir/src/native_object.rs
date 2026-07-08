@@ -2052,6 +2052,11 @@ fn lower_native_expr(
                 code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
                 Ok(())
             }
+            // Integer bitwise NOT is deferred on the native backend; a function
+            // using it is skipped and still runs on the interpreters.
+            lullaby_parser::UnaryOp::BitNot => {
+                Err("bitwise `~` is not supported on the native backend".to_string())
+            }
         },
         BytecodeExprKind::Binary { left, op, right } => {
             lower_native_binary(ctx, left, *op, right, code)
@@ -2266,6 +2271,11 @@ fn emit_i64_binop_from_stack(code: &mut Vec<u8>, op: BinaryOp) -> Result<(), Str
         }
         BinaryOp::And | BinaryOp::Or => {
             return Err("logical and/or must be short-circuited".to_string());
+        }
+        // Integer bitwise operators are deferred on the native backend; a
+        // function using them is skipped and still runs on the interpreters.
+        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
+            return Err("bitwise operators are not supported on the native backend".to_string());
         }
     }
     Ok(())

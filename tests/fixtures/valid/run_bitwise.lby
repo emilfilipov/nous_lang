@@ -1,0 +1,30 @@
+# Integer bitwise operators on i64, exercised across every backend.
+# Covers `& | ^ ~ << >>`, precedence interactions, and shift-amount masking
+# (large and negative shift amounts wrap to the low 6 bits, never panic).
+
+fn main -> i64
+    # Basic bitwise-logical operators.
+    let a i64 = 240 & 60     # 0xF0 & 0x3C = 0x30 = 48
+    let b i64 = 240 | 15     # 0xF0 | 0x0F = 255
+    let c i64 = 255 ^ 15     # 0xFF ^ 0x0F = 0xF0 = 240
+    let d i64 = ~0           # one's complement of 0 = -1
+
+    # Shifts, including arithmetic (sign-preserving) right shift.
+    let e i64 = 1 << 4       # 16
+    let f i64 = -8 >> 1      # arithmetic shift keeps the sign: -4
+
+    # Shift-amount masking: the amount is taken mod 64 (low 6 bits), so a
+    # large or negative shift is total and deterministic on every backend.
+    let big i64 = 1 << 65    # 65 & 63 = 1  -> 2
+    let neg i64 = 1 << -63   # (-63 & 63) = 1 -> 2
+
+    # Precedence interactions (C-like among the new ops):
+    #   shifts bind tighter than `&`, `&` tighter than `^`, `^` tighter than `|`.
+    #   additive binds tighter than shifts; bitwise binds tighter than comparison.
+    let prec i64 = 1 + 2 << 3          # (1 + 2) << 3 = 24
+    let chain i64 = 2 | 1 ^ 3 & 1      # 2 | (1 ^ (3 & 1)) = 2 | (1 ^ 1) = 2 | 0 = 2
+    let unary i64 = ~1 & 3             # (~1) & 3 = (-2) & 3 = 2
+
+    # Deterministic total across all the operators above.
+    #   48 + 255 + 240 + (-1) + 16 + (-4) + 2 + 2 + 24 + 2 + 2 = 586
+    a + b + c + d + e + f + big + neg + prec + chain + unary

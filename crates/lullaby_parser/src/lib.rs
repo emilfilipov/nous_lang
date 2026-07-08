@@ -636,6 +636,8 @@ pub enum ExprKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOp {
     Not,
+    /// Bitwise NOT (`~`, one's complement) on an `i64`.
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,6 +654,17 @@ pub enum BinaryOp {
     GreaterEqual,
     And,
     Or,
+    /// Bitwise AND (`&`) on two `i64`s.
+    BitAnd,
+    /// Bitwise OR (`|`) on two `i64`s.
+    BitOr,
+    /// Bitwise XOR (`^`) on two `i64`s.
+    BitXor,
+    /// Left shift (`<<`) of an `i64` by an `i64` amount (masked to 6 bits).
+    Shl,
+    /// Arithmetic (sign-preserving) right shift (`>>`) of an `i64` by an `i64`
+    /// amount (masked to 6 bits).
+    Shr,
 }
 
 /// Validate and remove `_` digit separators from a numeric literal. A separator
@@ -736,6 +749,12 @@ struct Parser<'a> {
     tokens: &'a [Token],
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
+    /// A count of `>` closers still owed from a `>>` token that was split while
+    /// closing a nested generic type (`option<array<i64>>` lexes the trailing
+    /// `>>` as one shift token). The type parser consumes these before advancing
+    /// the cursor, so nested generics close correctly even though `<<`/`>>` are
+    /// single tokens for the bitwise shift operators.
+    pending_generic_close: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -744,6 +763,32 @@ impl<'a> Parser<'a> {
             tokens,
             cursor: 0,
             diagnostics: Vec::new(),
+            pending_generic_close: 0,
+        }
+    }
+
+    /// Consume a single `>` that closes a generic type-argument list. A `>>`
+    /// token (the bitwise shift) is split so its second `>` remains available
+    /// for the enclosing generic. Returns `false` if the next token is neither a
+    /// pending split, a `>`, nor a `>>`.
+    fn eat_generic_close(&mut self) -> bool {
+        if self.pending_generic_close > 0 {
+            self.pending_generic_close -= 1;
+            return true;
+        }
+        match &self.peek().kind {
+            TokenKind::Symbol(symbol) if symbol == ">" => {
+                self.advance();
+                true
+            }
+            TokenKind::Symbol(symbol) if symbol == ">>" => {
+                // Split `>>` into two generic closers: consume the token now and
+                // owe one more `>` to the enclosing generic.
+                self.advance();
+                self.pending_generic_close += 1;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1826,7 +1871,7 @@ impl<'a> Parser<'a> {
                             args.push(self.expect_type("expected generic type argument")?);
                         }
                     }
-                    if !self.eat_symbol(">") {
+                    if !self.eat_generic_close() {
                         self.error(
                             "L0203",
                             "expected `>` after generic type argument",
@@ -2194,6 +2239,19 @@ impl<'a> ExprParser<'a> {
                     span: token.span,
                 })
             }
+            // Unary bitwise NOT (`~`) binds like `not`: as a prefix operator over
+            // a unary expression, so `~a & b` parses as `(~a) & b`.
+            TokenKind::Symbol(ref symbol) if symbol == "~" => {
+                self.cursor += 1;
+                let expr = self.parse_unary()?;
+                Ok(Expr {
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::BitNot,
+                        expr: Box::new(expr),
+                    },
+                    span: token.span,
+                })
+            }
             TokenKind::Symbol(symbol) if symbol == "-" => {
                 self.cursor += 1;
                 let value = self.parse_unary()?;
@@ -2413,10 +2471,19 @@ impl<'a> ExprParser<'a> {
                 "<=" => (BinaryOp::LessEqual, 3),
                 ">" => (BinaryOp::Greater, 3),
                 ">=" => (BinaryOp::GreaterEqual, 3),
-                "+" => (BinaryOp::Add, 4),
-                "-" => (BinaryOp::Subtract, 4),
-                "*" => (BinaryOp::Multiply, 5),
-                "/" => (BinaryOp::Divide, 5),
+                // Bitwise-logical operators bind tighter than comparison and
+                // looser than the shifts. C-like ordering among themselves:
+                // `|` (loosest) < `^` < `&` (tightest).
+                "|" => (BinaryOp::BitOr, 4),
+                "^" => (BinaryOp::BitXor, 5),
+                "&" => (BinaryOp::BitAnd, 6),
+                // Shifts bind just below additive.
+                "<<" => (BinaryOp::Shl, 7),
+                ">>" => (BinaryOp::Shr, 7),
+                "+" => (BinaryOp::Add, 8),
+                "-" => (BinaryOp::Subtract, 8),
+                "*" => (BinaryOp::Multiply, 9),
+                "/" => (BinaryOp::Divide, 9),
                 _ => return None,
             }),
             _ => None,
@@ -2494,6 +2561,106 @@ mod tests {
         assert_eq!(program.functions[0].return_type.name, "i64");
     }
 
+    /// Extract the single expression that is the body of a one-line
+    /// `fn main -> i64` (used to inspect parsed operator structure).
+    fn body_expr(source: &str) -> Expr {
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        match &program.functions[0].body[0] {
+            Stmt::Expr(expr) => expr.clone(),
+            other => panic!("expected an expression statement, got {other:?}"),
+        }
+    }
+
+    fn as_binary(expr: &Expr) -> (BinaryOp, &Expr, &Expr) {
+        match &expr.kind {
+            ExprKind::Binary { left, op, right } => (*op, left, right),
+            other => panic!("expected a binary expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bitwise_operators() {
+        let expr = body_expr("fn main -> i64\n    5 & 3\n");
+        let (op, _, _) = as_binary(&expr);
+        assert_eq!(op, BinaryOp::BitAnd);
+
+        let expr = body_expr("fn main -> i64\n    ~5\n");
+        assert!(matches!(
+            expr.kind,
+            ExprKind::Unary {
+                op: UnaryOp::BitNot,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bitwise_precedence_matches_c_like_ordering() {
+        // Shifts bind tighter than `&`, which binds tighter than `^`, which
+        // binds tighter than `|`. `a | b ^ c & d << e` == `a | (b ^ (c & (d << e)))`.
+        let expr = body_expr("fn main -> i64\n    1 | 2 ^ 3 & 4 << 5\n");
+        let (top, _, or_right) = as_binary(&expr);
+        assert_eq!(top, BinaryOp::BitOr, "top of tree is `|`");
+        let (xor_op, _, xor_right) = as_binary(or_right);
+        assert_eq!(xor_op, BinaryOp::BitXor, "right of `|` is `^`");
+        let (and_op, _, and_right) = as_binary(xor_right);
+        assert_eq!(and_op, BinaryOp::BitAnd, "right of `^` is `&`");
+        let (shl_op, _, _) = as_binary(and_right);
+        assert_eq!(shl_op, BinaryOp::Shl, "right of `&` is `<<`");
+    }
+
+    #[test]
+    fn shift_binds_below_additive_and_bitwise_below_comparison() {
+        // `a + b << c` == `(a + b) << c` (additive tighter than shift).
+        let expr = body_expr("fn main -> i64\n    1 + 2 << 3\n");
+        let (top, left, _) = as_binary(&expr);
+        assert_eq!(top, BinaryOp::Shl);
+        assert_eq!(as_binary(left).0, BinaryOp::Add);
+
+        // `a & b == c` == `(a & b) == c` (bitwise tighter than comparison).
+        let expr = body_expr("fn main -> i64\n    1 & 2 == 3\n");
+        let (top, left, _) = as_binary(&expr);
+        assert_eq!(top, BinaryOp::Equal);
+        assert_eq!(as_binary(left).0, BinaryOp::BitAnd);
+
+        // Unary `~` binds tighter than `&`: `~a & b` == `(~a) & b`.
+        let expr = body_expr("fn main -> i64\n    ~1 & 2\n");
+        let (top, left, _) = as_binary(&expr);
+        assert_eq!(top, BinaryOp::BitAnd);
+        assert!(matches!(
+            left.kind,
+            ExprKind::Unary {
+                op: UnaryOp::BitNot,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bitwise_operators_format_idempotently() {
+        // The formatter must render the new operators and re-parse to the same
+        // canonical text (idempotency), parenthesizing only where precedence
+        // requires it.
+        let source = "fn main -> i64\n    1 | 2 ^ 3 & 4 << 5 >> 6\n";
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let once = format_program(&program);
+        let reparsed = parse(&lex(&once).expect("lex")).expect("parse");
+        let twice = format_program(&reparsed);
+        assert_eq!(once, twice, "formatter is idempotent");
+        assert!(
+            once.contains("1 | 2 ^ 3 & 4 << 5 >> 6"),
+            "no spurious parens for right-descending precedence chain: {once}"
+        );
+
+        // `~` renders with no space and parenthesizes a binary operand.
+        let source = "fn main -> i64\n    ~5 & 3\n";
+        let program = parse(&lex(source).expect("lex")).expect("parse");
+        let out = format_program(&program);
+        assert!(out.contains("~5 & 3"), "renders unary bitwise not: {out}");
+    }
+
     #[test]
     fn parses_void_function() {
         let tokens = lex("fn main -> void\n    return\n").expect("lex");
@@ -2564,6 +2731,21 @@ mod tests {
         assert!(program.structs[0].is_public);
         assert!(program.functions[0].is_public);
         assert!(!program.functions[1].is_public);
+    }
+
+    #[test]
+    fn nested_generic_type_closes_across_shift_token() {
+        // `option<array<i64>>` and deeper nesting lex the trailing `>>`/`>>>` as
+        // shift tokens; the type parser must split them to close each generic.
+        let source = concat!(
+            "fn f a option<array<i64>> b option<option<option<i64>>> -> void\n",
+            "    return\n",
+        );
+        let tokens = lex(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        let params = &program.functions[0].params;
+        assert_eq!(params[0].ty.name, "option<array<i64>>");
+        assert_eq!(params[1].ty.name, "option<option<option<i64>>>");
     }
 
     #[test]

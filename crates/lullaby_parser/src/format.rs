@@ -434,10 +434,11 @@ fn render_expr(expr: &Expr) -> String {
         ExprKind::Field { target, field } => {
             format!("{}.{field}", render_postfix_target(target))
         }
-        ExprKind::Unary { op, expr } => {
-            let UnaryOp::Not = op;
-            format!("not {}", render_unary_operand(expr))
-        }
+        ExprKind::Unary { op, expr } => match op {
+            UnaryOp::Not => format!("not {}", render_unary_operand(expr)),
+            // Bitwise NOT prints with no space, like the source spelling `~a`.
+            UnaryOp::BitNot => format!("~{}", render_unary_operand(expr)),
+        },
         ExprKind::Binary { left, op, right } => {
             let prec = binary_precedence(op);
             format!(
@@ -510,6 +511,8 @@ fn render_postfix_target(target: &Expr) -> String {
     }
 }
 
+/// Must mirror the parser's `peek_binary_op` precedence so the formatter
+/// parenthesizes exactly where the grammar disambiguates.
 fn binary_precedence(op: &BinaryOp) -> u8 {
     match op {
         BinaryOp::Or => 1,
@@ -520,8 +523,12 @@ fn binary_precedence(op: &BinaryOp) -> u8 {
         | BinaryOp::LessEqual
         | BinaryOp::Greater
         | BinaryOp::GreaterEqual => 3,
-        BinaryOp::Add | BinaryOp::Subtract => 4,
-        BinaryOp::Multiply | BinaryOp::Divide => 5,
+        BinaryOp::BitOr => 4,
+        BinaryOp::BitXor => 5,
+        BinaryOp::BitAnd => 6,
+        BinaryOp::Shl | BinaryOp::Shr => 7,
+        BinaryOp::Add | BinaryOp::Subtract => 8,
+        BinaryOp::Multiply | BinaryOp::Divide => 9,
     }
 }
 
@@ -539,6 +546,11 @@ fn render_binary_op(op: &BinaryOp) -> &'static str {
         BinaryOp::GreaterEqual => ">=",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
     }
 }
 

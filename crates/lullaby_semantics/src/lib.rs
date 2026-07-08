@@ -1880,6 +1880,20 @@ impl<'a> Checker<'a> {
                             None
                         }
                     }
+                    UnaryOp::BitNot => {
+                        // Bitwise NOT is `i64 -> i64` only.
+                        if expr_type.as_ref() == Some(&TypeRef::new("i64")) {
+                            Some(TypeRef::new("i64"))
+                        } else {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0307",
+                                "operand of `~` must be i64",
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                            None
+                        }
+                    }
                 }
             }
             ExprKind::Binary { left, op, right } => {
@@ -1960,6 +1974,28 @@ impl<'a> Checker<'a> {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0320",
                                 "logical operands must both be bool",
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                            None
+                        }
+                    }
+                    BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => {
+                        // Integer bitwise ops are `i64 x i64 -> i64` only. Byte
+                        // and wider-integer bitwise is deferred to its own ticket.
+                        let i64_type = TypeRef::new("i64");
+                        if left_type.as_ref() == Some(&i64_type)
+                            && right_type.as_ref() == Some(&i64_type)
+                        {
+                            Some(i64_type)
+                        } else {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0307",
+                                "bitwise operands (`& | ^ << >>`) must both be i64",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));
@@ -4707,6 +4743,44 @@ mod tests {
     #[test]
     fn non_void_function_may_return_last_expression() {
         assert!(validate_source("fn add x i64 y i64 -> i64\n    x + y\n").is_ok());
+    }
+
+    #[test]
+    fn accepts_i64_bitwise_operators() {
+        // `& | ^ << >>` and unary `~` are all `i64 -> i64`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a i64 = 6 & 3\n",
+            "    let b i64 = 6 | 1\n",
+            "    let c i64 = 6 ^ 3\n",
+            "    let d i64 = 1 << 4\n",
+            "    let e i64 = 64 >> 2\n",
+            "    let f i64 = ~0\n",
+            "    a + b + c + d + e + f\n",
+        );
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_non_i64_bitwise_operand() {
+        // A `bool` operand to a bitwise op reuses the arithmetic operand family
+        // (`L0307`); bitwise ops are strictly `i64`.
+        let source = "fn main -> i64\n    let x bool = true\n    x & 1\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0307"),
+            "expected L0307 for a non-i64 bitwise operand: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_i64_bitwise_not_operand() {
+        let source = "fn main -> i64\n    let x f64 = 1.0\n    ~x\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0307"),
+            "expected L0307 for a non-i64 `~` operand: {diagnostics:?}"
+        );
     }
 
     #[test]

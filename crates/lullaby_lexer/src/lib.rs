@@ -298,9 +298,12 @@ impl<'a> Lexer<'a> {
             let mut symbol = ch.to_string();
             if let Some(next) = chars.get(index + 1) {
                 let pair = format!("{ch}{next}");
+                // `<<`/`>>` are the bitwise shift operators; they must be lexed
+                // as single two-char tokens so they never collide with the `<`/`>`
+                // comparison symbols.
                 if matches!(
                     pair.as_str(),
-                    "==" | "!=" | "<=" | ">=" | "+=" | "-=" | "*=" | "/="
+                    "==" | "!=" | "<=" | ">=" | "+=" | "-=" | "*=" | "/=" | "<<" | ">>"
                 ) {
                     symbol = pair;
                     index += 2;
@@ -516,6 +519,40 @@ mod tests {
                 .iter()
                 .any(|token| token.kind == TokenKind::Number("1_000_000".to_string())),
             "expected a single `1_000_000` number token, got {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn lexes_bitwise_operator_tokens() {
+        // `<<`/`>>` must lex as single two-char symbols, while `& | ^ ~` are
+        // single-char symbols. `>>` must not be split into two `>` comparisons.
+        let tokens = lex("fn main -> i64\n    1 & 2 | 3 ^ 4 << 5 >> 6\n").expect("lex");
+        let symbols: Vec<&str> = tokens
+            .iter()
+            .filter_map(|token| match &token.kind {
+                TokenKind::Symbol(sym) => Some(sym.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(symbols.contains(&"&"), "missing & token in {symbols:?}");
+        assert!(symbols.contains(&"|"), "missing | token in {symbols:?}");
+        assert!(symbols.contains(&"^"), "missing ^ token in {symbols:?}");
+        assert!(symbols.contains(&"<<"), "missing << token in {symbols:?}");
+        assert!(symbols.contains(&">>"), "missing >> token in {symbols:?}");
+        assert!(
+            !symbols.contains(&">"),
+            "`>>` must not be split into `>` tokens: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn lexes_bitwise_not_token() {
+        let tokens = lex("fn main -> i64\n    ~5\n").expect("lex");
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Symbol("~".to_string())),
+            "expected a `~` symbol token, got {tokens:?}"
         );
     }
 

@@ -14,7 +14,7 @@ use lullaby_runtime::{
     asm_interpreter_error, await_future, char_find, expect_chan, expect_future, expect_i64,
     expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error,
     get_place, http_exchange, join_task, net_err, new_chan, option_value, result_value,
-    scalar_order_keys, set_place, value_type_name,
+    scalar_order_keys, set_place, shift_left, shift_right, value_type_name,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -2106,6 +2106,10 @@ impl ConstantFolder {
                     (UnaryOp::Not, IrExprKind::Bool(value)) => {
                         self.literal(expr, IrExprKind::Bool(!value))
                     }
+                    // Fold `~` over an integer literal (one's complement).
+                    (UnaryOp::BitNot, IrExprKind::Integer(value)) => {
+                        self.literal(expr, IrExprKind::Integer(!value))
+                    }
                     _ => IrExpr {
                         kind: IrExprKind::Unary {
                             op: *op,
@@ -2235,6 +2239,23 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
         }
         (IrExprKind::String(left), BinaryOp::NotEqual, IrExprKind::String(right)) => {
             Some(IrExprKind::Bool(left != right))
+        }
+        // Integer bitwise folds. Shifts reuse the shared masked-shift helpers so
+        // a folded constant is bit-identical to the interpreted result.
+        (IrExprKind::Integer(left), BinaryOp::BitAnd, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left & right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::BitOr, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left | right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::BitXor, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(left ^ right))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Shl, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(shift_left(*left, *right)))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Shr, IrExprKind::Integer(right)) => {
+            Some(IrExprKind::Integer(shift_right(*left, *right)))
         }
         _ => None,
     }
@@ -4165,6 +4186,8 @@ impl<'a> IrRuntime<'a> {
                 let value = self.eval_expr(expr, env)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
+                    // Bitwise NOT (one's complement) on an i64.
+                    UnaryOp::BitNot => Ok(Value::I64(!value.as_i64()?)),
                 }
             }
             IrExprKind::Binary { left, op, right } => {
@@ -4248,6 +4271,13 @@ impl<'a> IrRuntime<'a> {
                 BinaryOp::And | BinaryOp::Or => {
                     unreachable!("logical ops short-circuit in eval_expr")
                 }
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    unreachable!("bitwise ops require i64 operands (rejected by semantics)")
+                }
             });
         }
         match op {
@@ -4286,6 +4316,13 @@ impl<'a> IrRuntime<'a> {
             BinaryOp::LessEqual => Ok(Value::Bool(left.as_i64()? <= right.as_i64()?)),
             BinaryOp::Greater => Ok(Value::Bool(left.as_i64()? > right.as_i64()?)),
             BinaryOp::GreaterEqual => Ok(Value::Bool(left.as_i64()? >= right.as_i64()?)),
+            // Integer bitwise ops on two i64s, using the shared masked-shift
+            // helpers so the AST, IR, and bytecode backends are bit-identical.
+            BinaryOp::BitAnd => Ok(Value::I64(left.as_i64()? & right.as_i64()?)),
+            BinaryOp::BitOr => Ok(Value::I64(left.as_i64()? | right.as_i64()?)),
+            BinaryOp::BitXor => Ok(Value::I64(left.as_i64()? ^ right.as_i64()?)),
+            BinaryOp::Shl => Ok(Value::I64(shift_left(left.as_i64()?, right.as_i64()?))),
+            BinaryOp::Shr => Ok(Value::I64(shift_right(left.as_i64()?, right.as_i64()?))),
             BinaryOp::And | BinaryOp::Or => unreachable!("logical ops short-circuit in eval_expr"),
         }
     }
@@ -6506,7 +6543,11 @@ impl<'a> Lowerer<'a> {
                     op: *op,
                     expr: Box::new(self.lower_expr(expr, scope)?),
                 },
-                TypeRef::new("bool"),
+                match op {
+                    UnaryOp::Not => TypeRef::new("bool"),
+                    // Bitwise NOT is `i64 -> i64`.
+                    UnaryOp::BitNot => TypeRef::new("i64"),
+                },
             ),
             ExprKind::Binary { left, op, right } => {
                 let left = self.lower_expr(left, scope)?;
@@ -6522,6 +6563,12 @@ impl<'a> Lowerer<'a> {
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                         TypeRef::new("i64")
                     }
+                    // Integer bitwise ops are `i64 x i64 -> i64`.
+                    BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr => TypeRef::new("i64"),
                     BinaryOp::Equal
                     | BinaryOp::NotEqual
                     | BinaryOp::Less

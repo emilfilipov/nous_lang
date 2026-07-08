@@ -968,6 +968,9 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 out.push(0x45); // i32.eqz (bool not)
                 Ok(())
             }
+            // Integer bitwise NOT is deferred on the WASM backend; a function
+            // using it is skipped and still runs on the interpreters.
+            UnaryOp::BitNot => Err("bitwise `~` is not supported on the wasm backend".to_string()),
         },
         IrExprKind::Binary { left, op, right } => lower_binary(ctx, left, *op, right, out),
         IrExprKind::String(text) => {
@@ -1228,6 +1231,11 @@ fn lower_binary(
             out.push(0x0b); // end
             return Ok(());
         }
+        // Integer bitwise operators are deferred on the WASM backend; a function
+        // using them is skipped (unsupported) and still runs on the interpreters.
+        BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
+            return Err("bitwise operators are not supported on the wasm backend".to_string());
+        }
         _ => {}
     }
 
@@ -1395,7 +1403,15 @@ fn emit_i64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::LessEqual => 0x57,    // le_s
         BinaryOp::Greater => 0x55,      // gt_s
         BinaryOp::GreaterEqual => 0x59, // ge_s
-        BinaryOp::And | BinaryOp::Or => unreachable!("handled by caller"),
+        // `and`/`or` short-circuit and the integer bitwise ops are deferred on
+        // this backend; both are routed away before reaching this opcode table.
+        BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::Shl
+        | BinaryOp::Shr => unreachable!("handled by caller"),
     };
     out.push(opcode);
     Ok(())
@@ -1413,7 +1429,15 @@ fn emit_f64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::LessEqual => 0x65,
         BinaryOp::Greater => 0x64,
         BinaryOp::GreaterEqual => 0x66,
-        BinaryOp::And | BinaryOp::Or => unreachable!("handled by caller"),
+        // `and`/`or` short-circuit and the integer bitwise ops are deferred on
+        // this backend; both are routed away before reaching this opcode table.
+        BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::Shl
+        | BinaryOp::Shr => unreachable!("handled by caller"),
     };
     out.push(opcode);
     Ok(())
@@ -1433,7 +1457,15 @@ fn emit_i32_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::LessEqual => 0x4c,    // le_s
         BinaryOp::Greater => 0x4a,      // gt_s
         BinaryOp::GreaterEqual => 0x4e, // ge_s
-        BinaryOp::And | BinaryOp::Or => unreachable!("handled by caller"),
+        // `and`/`or` short-circuit and the integer bitwise ops are deferred on
+        // this backend; both are routed away before reaching this opcode table.
+        BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::Shl
+        | BinaryOp::Shr => unreachable!("handled by caller"),
     };
     out.push(opcode);
     Ok(())

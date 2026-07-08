@@ -344,6 +344,20 @@ pub fn scalar_order_keys(left: &Value, right: &Value) -> Option<(u32, u32)> {
     }
 }
 
+/// Left shift of an `i64` with a total, deterministic shift amount: the amount
+/// is masked to its low 6 bits (`amount & 63`), matching x86/Java `long`
+/// semantics, so a large or negative amount never panics or errors. Every
+/// backend (AST, IR interpreter, bytecode VM) must use this exact rule.
+pub fn shift_left(value: i64, amount: i64) -> i64 {
+    value.wrapping_shl(((amount as u64) & 63) as u32)
+}
+
+/// Arithmetic (sign-preserving) right shift of an `i64` with the same masked,
+/// deterministic shift amount as [`shift_left`].
+pub fn shift_right(value: i64, amount: i64) -> i64 {
+    value.wrapping_shr(((amount as u64) & 63) as u32)
+}
+
 /// Unwrap a runtime `Value` expected to be a list (an array), reporting `L0417`
 /// otherwise. A `list<T>` is represented at runtime as a `Value::Array`.
 pub fn expect_list(name: &str, value: Value) -> Result<Vec<Value>, RuntimeError> {
@@ -1812,6 +1826,8 @@ impl<'a> Runtime<'a> {
                 let value = self.eval_expr(expr, env)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
+                    // Bitwise NOT (one's complement) on an i64.
+                    UnaryOp::BitNot => Ok(Value::I64(!value.as_i64()?)),
                 }
             }
             ExprKind::Binary { left, op, right } => {
@@ -1937,6 +1953,13 @@ impl<'a> Runtime<'a> {
                 BinaryOp::And | BinaryOp::Or => {
                     unreachable!("logical ops short-circuit in eval_expr")
                 }
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    unreachable!("bitwise ops require i64 operands (rejected by semantics)")
+                }
             });
         }
         match op {
@@ -1976,6 +1999,15 @@ impl<'a> Runtime<'a> {
             BinaryOp::LessEqual => Ok(Value::Bool(left.as_i64()? <= right.as_i64()?)),
             BinaryOp::Greater => Ok(Value::Bool(left.as_i64()? > right.as_i64()?)),
             BinaryOp::GreaterEqual => Ok(Value::Bool(left.as_i64()? >= right.as_i64()?)),
+            // Integer bitwise ops on two i64s. Shift amounts are masked to the
+            // low 6 bits (`amount & 63`), so large/negative shifts are total and
+            // deterministic (x86/Java `long` semantics) — never a runtime error.
+            // `>>` is an arithmetic (sign-preserving) shift on the signed i64.
+            BinaryOp::BitAnd => Ok(Value::I64(left.as_i64()? & right.as_i64()?)),
+            BinaryOp::BitOr => Ok(Value::I64(left.as_i64()? | right.as_i64()?)),
+            BinaryOp::BitXor => Ok(Value::I64(left.as_i64()? ^ right.as_i64()?)),
+            BinaryOp::Shl => Ok(Value::I64(shift_left(left.as_i64()?, right.as_i64()?))),
+            BinaryOp::Shr => Ok(Value::I64(shift_right(left.as_i64()?, right.as_i64()?))),
             BinaryOp::And | BinaryOp::Or => unreachable!("logical ops short-circuit in eval_expr"),
         }
     }
