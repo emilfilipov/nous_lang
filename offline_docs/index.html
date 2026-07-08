@@ -875,6 +875,9 @@ fn main -> i64
             <tr><td><code>sys_output(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns stdout.</td></tr>
             <tr><td><code>env(name)</code></td><td>Reads an environment variable, returning <code>option&lt;string&gt;</code> (<code>some(value)</code> when set, <code>none</code> otherwise).</td></tr>
             <tr><td><code>args()</code></td><td>Returns the running program's CLI arguments as a <code>list&lt;string&gt;</code> (empty when none were passed). <code>lullaby run &lt;file.lby&gt; [args...]</code> supplies trailing tokens after the source path.</td></tr>
+            <tr><td><code>mono_now()</code></td><td>A monotonic clock in nanoseconds (<code>i64</code>) since a fixed per-process baseline — non-decreasing, for measuring durations.</td></tr>
+            <tr><td><code>wall_now()</code></td><td>Wall-clock time as milliseconds since the Unix epoch (<code>i64</code>).</td></tr>
+            <tr><td><code>sleep_millis(ms)</code></td><td>Sleeps the current thread for <code>ms</code> (<code>i64</code>) milliseconds; a negative value sleeps zero.</td></tr>
           </tbody>
         </table>
         <pre data-fixture="tests/fixtures/valid/run_file_io.lby" data-mode="run"><code>fn main -> string
