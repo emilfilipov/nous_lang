@@ -371,6 +371,59 @@ fn runs_list_higher_order_fixture_on_all_backends() {
 }
 
 #[test]
+fn runs_sort_by_fixture_on_all_backends() {
+    // `sort_by` orders [3,1,2,1] descending (closure `b - a`) -> [3,2,1,1] and
+    // ascending (named `ascending`) -> [1,1,2,3]. top=3, bottom=1, mid=1, so the
+    // deterministic total is 311 on the AST, IR, and bytecode interpreters. The
+    // duplicated `1`s exercise the stable-sort guarantee.
+    let fixture = workspace_root().join("tests/fixtures/valid/run_sort_by.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "311",
+            "{backend} result"
+        );
+    }
+}
+
+#[test]
+fn runs_sort_types_fixture_on_all_backends() {
+    // `sort` orders a `list<i64>` (smallest 2), a `list<f64>` (2.5 lands at
+    // index 1), and a `list<string>` (apple index 0, cherry index 2). The
+    // deterministic total is 212 on the AST, IR, and bytecode interpreters.
+    let fixture = workspace_root().join("tests/fixtures/valid/run_sort_types.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "212",
+            "{backend} result"
+        );
+    }
+}
+
+#[test]
 fn runs_spawn_channel_mutex_fixture_on_all_backends() {
     // Four detached `spawn`ed workers each `send(ch, v * v)`; `main` joins them
     // and sums the four received squares (order-independent â†’ 30), then a mutex

@@ -145,7 +145,8 @@ argument is a compile-time `L0389` type error.
 | `reverse` | `reverse(l list<T>) -> list<T>` | elements reversed (returns a new list) |
 | `concat` | `concat(a list<T>, b list<T>) -> list<T>` | `b`'s elements appended to `a` (both lists must have the same element type; returns a new list) |
 | `slice` | `slice(l list<T>, start i64, end i64) -> list<T>` | half-open range `[start, end)`; `start`/`end` are clamped into `[0, len]` and `start >= end` yields an empty list (returns a new list) |
-| `sort` | `sort(l list<i64>) -> list<i64>` | elements sorted ascending (returns a new list; `list<i64>` only) |
+| `sort` | `sort(l list<T>) -> list<T>` | elements sorted ascending (returns a new list); `T` is `i64`, `f64` (total order via `total_cmp`, so `NaN` sorts deterministically), or `string` (lexicographic by Unicode scalar order); the sort is stable |
+| `sort_by` | `sort_by(l list<T>, cmp fn(T, T) -> i64) -> list<T>` | stable sort ordered by the comparator: `cmp(a, b)` returns negative if `a` precedes `b`, `0` if equal, positive if after; equal elements keep their input order, and a comparator error propagates (interpreter-level; the native/WASM backends fall back to the interpreter) |
 | `list_index_of` | `list_index_of(l list<T>, x T) -> i64` | index of the first element equal to `x`, or `-1` if absent (`x` must match the element type `T`) |
 | `list_contains` | `list_contains(l list<T>, x T) -> bool` | whether any element equals `x` (`x` must match the element type `T`) |
 | `list_sum` | `list_sum(l list<T>) -> T` | sum of a numeric list (`T` is `i64` or `f64`); `i64` sums **wrap** (matching `+`), `f64` sums as `f64`; an empty list yields `0`/`0.0` |

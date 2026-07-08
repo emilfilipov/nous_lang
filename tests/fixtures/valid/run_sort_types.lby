@@ -1,0 +1,24 @@
+fn main -> i64
+    let ints list<i64> = list_new()
+    ints = push(ints, 5)
+    ints = push(ints, 2)
+    ints = push(ints, 8)
+    let sorted_ints list<i64> = sort(ints)
+    let smallest i64 = get(sorted_ints, 0)
+
+    let floats list<f64> = list_new()
+    floats = push(floats, 3.5)
+    floats = push(floats, 1.5)
+    floats = push(floats, 2.5)
+    let sorted_floats list<f64> = sort(floats)
+    let mid_float_pos i64 = list_index_of(sorted_floats, 2.5)
+
+    let words list<string> = list_new()
+    words = push(words, "cherry")
+    words = push(words, "apple")
+    words = push(words, "banana")
+    let sorted_words list<string> = sort(words)
+    let apple_pos i64 = list_index_of(sorted_words, "apple")
+    let cherry_pos i64 = list_index_of(sorted_words, "cherry")
+
+    smallest * 100 + mid_float_pos * 10 + apple_pos + cherry_pos

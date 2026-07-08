@@ -2947,14 +2947,17 @@ impl<'a> Checker<'a> {
                 Some(list_type(&element))
             }
             "sort" => {
+                // `sort(l list<T>) -> list<T>`: ascending sort over a scalar list.
+                // Accepts `i64`, `f64` (total order via `total_cmp`), and `string`
+                // (lexicographic); other element types are rejected with `L0387`.
                 self.expect_arg_count(name, args, 1, function)?;
                 let list_ty = self.check_expr_expected(&args[0], expected, scope, function)?;
                 let element = self.expect_list_arg(name, &list_ty, args[0].span, function)?;
-                if element.name != "i64" {
+                if !matches!(element.name.as_str(), "i64" | "f64" | "string") {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0387",
                         format!(
-                            "`sort` expects a `list<i64>` but got `list<{}>`",
+                            "`sort` expects a `list<i64>`, `list<f64>`, or `list<string>` but got `list<{}>`",
                             element.name
                         ),
                         Some(function.name.clone()),
@@ -2962,6 +2965,27 @@ impl<'a> Checker<'a> {
                     ));
                     return None;
                 }
+                Some(list_type(&element))
+            }
+            "sort_by" => {
+                // `sort_by(l list<T>, cmp fn(T, T) -> i64) -> list<T>`: a stable
+                // sort ordered by the comparator (`cmp(a, b)` negative if `a`
+                // precedes `b`, zero if equal, positive if after). `T` is the
+                // element type and the comparator must be `fn(T, T) -> i64`.
+                self.expect_arg_count(name, args, 2, function)?;
+                let list_ty = self.check_expr(&args[0], scope, function)?;
+                let element = self.expect_list_arg(name, &list_ty, args[0].span, function)?;
+                self.expect_fn_arg(
+                    name,
+                    2,
+                    &args[1],
+                    (
+                        &[element.clone(), element.clone()],
+                        Some(&TypeRef::new("i64")),
+                    ),
+                    scope,
+                    function,
+                )?;
                 Some(list_type(&element))
             }
             "concat" => {
@@ -6874,6 +6898,66 @@ mod tests {
         // `list_reduce`'s folder must be `fn(U, T) -> U`; a single-argument
         // function is the wrong arity and reports `L0387`.
         let source = "fn inc x i64 -> i64\n    x + 1\n\nfn main -> i64\n    let base list<i64> = list_new()\n    base = push(base, 2)\n    list_reduce(base, 0, inc)\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0387")
+        );
+    }
+
+    #[test]
+    fn accepts_sort_by_with_named_and_closure_comparators() {
+        // `sort_by(list<T>, fn(T, T) -> i64)` yields `list<T>`; a named
+        // comparator and a closure literal are both accepted.
+        let named = "fn cmp a i64 b i64 -> i64\n    a - b\n\nfn main -> list<i64>\n    let base list<i64> = list_new()\n    base = push(base, 2)\n    sort_by(base, cmp)\n";
+        validate_source(named).expect("sort_by with named comparator");
+        let closure = "fn main -> list<i64>\n    let base list<i64> = list_new()\n    base = push(base, 2)\n    sort_by(base, fn a i64 b i64 -> b - a)\n";
+        validate_source(closure).expect("sort_by with closure comparator");
+    }
+
+    #[test]
+    fn accepts_sort_over_i64_f64_and_string_lists() {
+        // `sort` accepts `list<i64>`, `list<f64>`, and `list<string>`.
+        let ints = "fn main -> list<i64>\n    let base list<i64> = list_new()\n    base = push(base, 2)\n    sort(base)\n";
+        validate_source(ints).expect("sort over list<i64>");
+        let floats = "fn main -> list<f64>\n    let base list<f64> = list_new()\n    base = push(base, 2.0)\n    sort(base)\n";
+        validate_source(floats).expect("sort over list<f64>");
+        let strings = "fn main -> list<string>\n    let base list<string> = list_new()\n    base = push(base, \"a\")\n    sort(base)\n";
+        validate_source(strings).expect("sort over list<string>");
+    }
+
+    #[test]
+    fn rejects_sort_by_non_function_comparator() {
+        // The second argument must be a function value; a plain list reports the
+        // general `L0387` list-builtin diagnostic.
+        let source = "fn main -> list<i64>\n    let base list<i64> = list_new()\n    base = push(base, 2)\n    sort_by(base, base)\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0387")
+        );
+    }
+
+    #[test]
+    fn rejects_sort_by_wrong_arity_comparator() {
+        // `sort_by`'s comparator must be `fn(T, T) -> i64`; a single-argument
+        // function is the wrong arity and reports `L0387`.
+        let source = "fn inc x i64 -> i64\n    x + 1\n\nfn main -> list<i64>\n    let base list<i64> = list_new()\n    base = push(base, 2)\n    sort_by(base, inc)\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0387")
+        );
+    }
+
+    #[test]
+    fn rejects_sort_on_unsupported_element_type() {
+        // `sort` only orders `i64`/`f64`/`string` scalar lists; a `list<bool>`
+        // is rejected with `L0387`.
+        let source = "fn main -> list<bool>\n    let base list<bool> = list_new()\n    base = push(base, true)\n    sort(base)\n";
         let diagnostics = validate_source(source).expect_err("semantic");
         assert!(
             diagnostics

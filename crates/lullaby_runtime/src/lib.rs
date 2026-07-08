@@ -959,6 +959,55 @@ pub fn list_extreme(
     }
 }
 
+/// Sort a scalar list ascending, dispatching on the element type. Supports
+/// `i64`, `f64` (total order via `total_cmp`, so `NaN` sorts deterministically),
+/// and `string` (lexicographic by Rust `str` ordering). The list must be
+/// homogeneous; a mixed or unsupported element type yields `L0417`.
+pub fn sort_scalar_list(name: &str, values: Vec<Value>) -> Result<Value, RuntimeError> {
+    let Some(first) = values.first() else {
+        return Ok(Value::Array(Vec::new()));
+    };
+    match first {
+        Value::I64(_) => {
+            let mut nums: Vec<i64> = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    Value::I64(n) => nums.push(n),
+                    other => return Err(mixed_numeric_list_error(name, &other)),
+                }
+            }
+            nums.sort();
+            Ok(Value::Array(nums.into_iter().map(Value::I64).collect()))
+        }
+        Value::F64(_) => {
+            let mut nums: Vec<f64> = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    Value::F64(n) => nums.push(n),
+                    other => return Err(mixed_numeric_list_error(name, &other)),
+                }
+            }
+            nums.sort_by(|a, b| a.total_cmp(b));
+            Ok(Value::Array(nums.into_iter().map(Value::F64).collect()))
+        }
+        Value::String(_) => {
+            let mut strs: Vec<String> = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    Value::String(s) => strs.push(s),
+                    other => return Err(mixed_numeric_list_error(name, &other)),
+                }
+            }
+            strs.sort();
+            Ok(Value::Array(strs.into_iter().map(Value::String).collect()))
+        }
+        other => Err(RuntimeError::new(
+            "L0417",
+            format!("{name} expects a list<i64>, list<f64>, or list<string> but found `{other}`"),
+        )),
+    }
+}
+
 fn mixed_numeric_list_error(name: &str, value: &Value) -> RuntimeError {
     RuntimeError::new(
         "L0417",
@@ -1662,6 +1711,7 @@ impl<'a> Runtime<'a> {
             "list_contains" => Self::builtin_list_contains(args),
             "reverse" => Self::builtin_reverse(args),
             "sort" => Self::builtin_sort(args),
+            "sort_by" => self.builtin_sort_by(args),
             "concat" => Self::builtin_concat(args),
             "slice" => Self::builtin_slice(args),
             "list_map" => self.builtin_list_map(args),
@@ -4033,20 +4083,44 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("sort", 1, args.len()))?;
         let values = expect_list("sort", list)?;
-        let mut nums: Vec<i64> = Vec::with_capacity(values.len());
-        for value in values {
-            match value {
-                Value::I64(n) => nums.push(n),
-                other => {
-                    return Err(RuntimeError::new(
+        sort_scalar_list("sort", values)
+    }
+
+    /// `sort_by(l list<T>, cmp fn(T, T) -> i64) -> list<T>`: return a new list
+    /// sorted by the comparator (`cmp(a, b)` negative if `a` precedes `b`, zero
+    /// if equal, positive if after). Uses a stable sort, so equal elements keep
+    /// their input order. The comparator's error, if any, is propagated.
+    fn builtin_sort_by(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, callee]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("sort_by", 2, args.len()))?;
+        let mut values = expect_list("sort_by", list)?;
+        // A comparator error must abort the whole sort, so capture the first
+        // error out of band; `sort_by` itself cannot propagate `Result`.
+        let mut error: Option<RuntimeError> = None;
+        values.sort_by(|a, b| {
+            if error.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            match self.invoke_callable("sort_by", callee.clone(), vec![a.clone(), b.clone()]) {
+                Ok(Value::I64(n)) => n.cmp(&0),
+                Ok(other) => {
+                    error = Some(RuntimeError::new(
                         "L0417",
-                        format!("sort expects a list<i64> but found `{other}`"),
+                        format!("sort_by comparator must return i64 but returned `{other}`"),
                     ));
+                    std::cmp::Ordering::Equal
+                }
+                Err(err) => {
+                    error = Some(err);
+                    std::cmp::Ordering::Equal
                 }
             }
+        });
+        if let Some(err) = error {
+            return Err(err);
         }
-        nums.sort();
-        Ok(Value::Array(nums.into_iter().map(Value::I64).collect()))
+        Ok(Value::Array(values))
     }
 
     /// `concat(a, b) -> list<T>`: a new list with `b`'s elements appended to `a`.

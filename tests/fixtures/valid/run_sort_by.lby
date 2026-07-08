@@ -1,0 +1,15 @@
+fn ascending a i64 b i64 -> i64
+    a - b
+
+fn main -> i64
+    let base list<i64> = list_new()
+    base = push(base, 3)
+    base = push(base, 1)
+    base = push(base, 2)
+    base = push(base, 1)
+    let descending list<i64> = sort_by(base, fn a i64 b i64 -> b - a)
+    let ascending_list list<i64> = sort_by(base, ascending)
+    let top i64 = get(descending, 0)
+    let bottom i64 = get(ascending_list, 0)
+    let mid i64 = get(descending, 2)
+    top * 100 + bottom * 10 + mid

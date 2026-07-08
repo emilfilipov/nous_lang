@@ -18,7 +18,7 @@ use lullaby_runtime::{
     http_exchange, int_cmp, int_div, int_shl, int_shr, join_task, list_extreme, list_sum_values,
     monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes, overflow_arith,
     process_exit_code, result_value, scalar_order_keys, set_place, shift_left, shift_right,
-    sleep_millis, value_type_name, wall_now_millis,
+    sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -3979,6 +3979,7 @@ impl<'a> IrRuntime<'a> {
             "list_contains" => Self::builtin_list_contains(args),
             "reverse" => Self::builtin_reverse(args),
             "sort" => Self::builtin_sort(args),
+            "sort_by" => self.builtin_sort_by(args),
             "concat" => Self::builtin_concat(args),
             "slice" => Self::builtin_slice(args),
             "list_map" => self.builtin_list_map(args),
@@ -6205,20 +6206,45 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("sort", 1, args.len()))?;
         let values = expect_list("sort", list)?;
-        let mut nums: Vec<i64> = Vec::with_capacity(values.len());
-        for value in values {
-            match value {
-                Value::I64(n) => nums.push(n),
-                other => {
-                    return Err(RuntimeError::new(
+        sort_scalar_list("sort", values)
+    }
+
+    /// `sort_by(l list<T>, cmp fn(T, T) -> i64) -> list<T>`: return a new list
+    /// sorted by the comparator (`cmp(a, b)` negative if `a` precedes `b`, zero
+    /// if equal, positive if after). Uses a stable sort, so equal elements keep
+    /// their input order. The comparator's error, if any, is propagated. Mirrors
+    /// the AST runtime.
+    fn builtin_sort_by(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [list, callee]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("sort_by", 2, args.len()))?;
+        let mut values = expect_list("sort_by", list)?;
+        // A comparator error must abort the whole sort, so capture the first
+        // error out of band; `sort_by` itself cannot propagate `Result`.
+        let mut error: Option<RuntimeError> = None;
+        values.sort_by(|a, b| {
+            if error.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            match self.invoke_callable("sort_by", callee.clone(), vec![a.clone(), b.clone()]) {
+                Ok(Value::I64(n)) => n.cmp(&0),
+                Ok(other) => {
+                    error = Some(RuntimeError::new(
                         "L0417",
-                        format!("sort expects a list<i64> but found `{other}`"),
+                        format!("sort_by comparator must return i64 but returned `{other}`"),
                     ));
+                    std::cmp::Ordering::Equal
+                }
+                Err(err) => {
+                    error = Some(err);
+                    std::cmp::Ordering::Equal
                 }
             }
+        });
+        if let Some(err) = error {
+            return Err(err);
         }
-        nums.sort();
-        Ok(Value::Array(nums.into_iter().map(Value::I64).collect()))
+        Ok(Value::Array(values))
     }
 
     /// `concat(a, b) -> list<T>`: a new list with `b`'s elements appended to `a`.
@@ -8502,7 +8528,7 @@ impl<'a> Lowerer<'a> {
             "byte" => TypeRef::new("byte"),
             // `push`/`set`/`pop`/`reverse`/`concat`/`slice` return a new `list<T>`
             // of the same type as their (first) list argument (spelled `list<T>`).
-            "push" | "set" | "pop" | "reverse" | "sort" | "concat" | "slice" => {
+            "push" | "set" | "pop" | "reverse" | "sort" | "sort_by" | "concat" | "slice" => {
                 args.first().map(|list| list.ty.clone()).ok_or_else(|| {
                     IrLoweringError::new(format!("{name} call missing list argument"), Some(span))
                 })?
