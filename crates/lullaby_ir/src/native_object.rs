@@ -978,6 +978,13 @@ fn native_signature_eligibility(function: &BytecodeFunction) -> Result<(), Strin
 enum NativeType {
     /// A single 8-byte integer word.
     I64,
+    /// A single 8-byte word holding an IEEE-754 `f64` (double). Lives in an XMM
+    /// register as a `double` while live; spilled to its stack word as 8 bytes.
+    F64,
+    /// A single 8-byte word holding an IEEE-754 `f32` (single). Only the low four
+    /// bytes are meaningful; the value is kept rounded to single precision after
+    /// every operation, matching the interpreter's real `f32` storage.
+    F32,
     /// A named struct whose fields are all supported native types, in order.
     Struct {
         name: String,
@@ -991,9 +998,30 @@ impl NativeType {
     /// The number of 8-byte words this value occupies on the stack.
     fn words(&self) -> usize {
         match self {
-            NativeType::I64 => 1,
+            NativeType::I64 | NativeType::F64 | NativeType::F32 => 1,
             NativeType::Struct { fields, .. } => fields.iter().map(|(_, t)| t.words()).sum(),
             NativeType::Array { elem, len } => elem.words() * len,
+        }
+    }
+}
+
+/// The precision of a float value kept in an XMM register: an f64 `double` or an
+/// f32 `single`. Selects the scalar SSE opcode family (`*sd` vs `*ss`) and drives
+/// f32 single-precision rounding after each op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloatWidth {
+    F64,
+    F32,
+}
+
+impl FloatWidth {
+    /// The `FloatWidth` named by a Lullaby type name, or `None` for a non-float
+    /// type. `f64`/`f32` are the only float types in the language.
+    fn from_type_name(name: &str) -> Option<FloatWidth> {
+        match name {
+            "f64" => Some(FloatWidth::F64),
+            "f32" => Some(FloatWidth::F32),
+            _ => None,
         }
     }
 }
@@ -1008,6 +1036,10 @@ fn resolve_native_type(ty: &TypeRef, structs: &[IrStructDef]) -> Result<NativeTy
         // A fixed-width integer (`i8`…`usize`) is stored as its normalized `i64`
         // cell, so it occupies exactly one 8-byte word like `i64`.
         name if fixed_int_kind(name).is_some() => Ok(NativeType::I64),
+        // `f64`/`f32` each occupy one 8-byte word. An f32 keeps only its low four
+        // bytes meaningful but is stored in a full word for uniform layout.
+        "f64" => Ok(NativeType::F64),
+        "f32" => Ok(NativeType::F32),
         name if name.starts_with("array<") => Err(format!(
             "array length for `{name}` is unknown from its type"
         )),
@@ -1021,6 +1053,15 @@ fn resolve_native_type(ty: &TypeRef, structs: &[IrStructDef]) -> Result<NativeTy
                 let native = resolve_native_type(field_ty, structs).map_err(|_| {
                     format!("struct `{name}` field `{field_name}` is not an all-i64 native type")
                 })?;
+                // Float fields inside aggregates are out of scope: the aggregate
+                // load/store paths move whole 8-byte words through a GPR, which
+                // would not keep an f32 field rounded. Reject so the function
+                // skips gracefully rather than miscompiling.
+                if matches!(native, NativeType::F64 | NativeType::F32) {
+                    return Err(format!(
+                        "struct `{name}` field `{field_name}` is a float; float struct fields are not in the native subset"
+                    ));
+                }
                 fields.push((field_name.clone(), native));
             }
             Ok(NativeType::Struct {
@@ -1481,16 +1522,25 @@ fn lower_native_stmt(
 ) -> Result<(), String> {
     match stmt {
         BytecodeInstruction::Let { name, value, .. } => {
-            // A scalar `let` uses the register path; an aggregate `let`
-            // materializes each flattened scalar word directly into its slots.
-            if matches!(ctx.local(name)?.ty, NativeType::I64) {
-                lower_native_expr(ctx, value, code)?;
-                let slot = ctx.local_slot(name)?;
-                store_local(code, slot); // mov [rbp - slot], rax
-            } else {
-                let base = ctx.local(name)?.slot;
-                let ty = ctx.local(name)?.ty.clone();
-                lower_aggregate_init(ctx, base, &ty, value, code)?;
+            // A scalar `let` uses the register path; a float `let` evaluates into
+            // xmm0 and stores the whole word; an aggregate `let` materializes each
+            // flattened scalar word directly into its slots.
+            match ctx.local(name)?.ty {
+                NativeType::I64 => {
+                    lower_native_expr(ctx, value, code)?;
+                    let slot = ctx.local_slot(name)?;
+                    store_local(code, slot); // mov [rbp - slot], rax
+                }
+                NativeType::F64 | NativeType::F32 => {
+                    let slot = ctx.local_slot(name)?;
+                    let width = lower_native_float_expr(ctx, value, code)?;
+                    store_float_local(code, slot, width); // movs[sd] [rbp - slot], xmm0
+                }
+                NativeType::Struct { .. } | NativeType::Array { .. } => {
+                    let base = ctx.local(name)?.slot;
+                    let ty = ctx.local(name)?.ty.clone();
+                    lower_aggregate_init(ctx, base, &ty, value, code)?;
+                }
             }
             Ok(())
         }
@@ -1501,6 +1551,49 @@ fn lower_native_stmt(
             value,
             ..
         } => {
+            // A float local assigned through no path (a plain `f = ...`) uses the
+            // XMM path. A float target reached through a struct/array path is out
+            // of scope (float aggregate members are rejected at layout time), so
+            // only the pathless case can be a float here.
+            if path.is_empty()
+                && let NativeType::F64 | NativeType::F32 = ctx.local(name)?.ty
+            {
+                let slot = ctx.local_slot(name)?;
+                let store_width = match ctx.local(name)?.ty {
+                    NativeType::F64 => FloatWidth::F64,
+                    NativeType::F32 => FloatWidth::F32,
+                    _ => unreachable!("guarded above"),
+                };
+                match op {
+                    AssignOp::Replace => {
+                        let width = lower_native_float_expr(ctx, value, code)?;
+                        debug_assert_eq!(width, store_width, "float assign width mismatch");
+                        store_float_local(code, slot, store_width);
+                    }
+                    AssignOp::Add | AssignOp::Subtract | AssignOp::Multiply | AssignOp::Divide => {
+                        // `f op= rhs`: load current into xmm0, rhs into xmm1, apply
+                        // the scalar op, re-store. `op` maps to the same arithmetic
+                        // as the binary form.
+                        let bin = match op {
+                            AssignOp::Add => BinaryOp::Add,
+                            AssignOp::Subtract => BinaryOp::Subtract,
+                            AssignOp::Multiply => BinaryOp::Multiply,
+                            AssignOp::Divide => BinaryOp::Divide,
+                            AssignOp::Replace => unreachable!(),
+                        };
+                        // Compute the RHS into xmm0, spill it, load current into
+                        // xmm0, restore RHS into xmm1, then apply left <op> right.
+                        let rhs_width = lower_native_float_expr(ctx, value, code)?;
+                        debug_assert_eq!(rhs_width, store_width, "float assign width mismatch");
+                        push_xmm0(code); // save RHS
+                        load_float_local(code, slot, store_width); // xmm0 = current (left)
+                        pop_xmm1(code); // xmm1 = RHS (right)
+                        emit_float_arith(code, bin, store_width);
+                        store_float_local(code, slot, store_width);
+                    }
+                }
+                return Ok(());
+            }
             let place = resolve_scalar_place(ctx, name, path)?;
             match op {
                 AssignOp::Replace => {
@@ -2304,6 +2397,22 @@ fn lower_native_binary(
             Ok(())
         }
         _ => {
+            // A float comparison (`f64`/`f32` operands, ordered relational or
+            // equality op) produces an `i64`/`bool` result in rax via SSE compare
+            // + set. Float *arithmetic* never reaches here in an i64-return
+            // function (it flows through the float-expr lowerer), so only
+            // comparisons need handling on this i64-producing path.
+            //
+            // Detect float-ness from the operands' structure rather than the
+            // comparison node's own `ty`: the IR annotates an arithmetic float
+            // node (e.g. `a + b`) with `i64`, so the leaf-derived width is the
+            // reliable signal (float literals, float locals, and `to_f32`/`to_f64`
+            // conversions all carry a correct concrete float type).
+            if let Some(width) =
+                float_width_of_expr(ctx, left).or_else(|| float_width_of_expr(ctx, right))
+            {
+                return lower_native_float_compare(ctx, left, op, right, width, code);
+            }
             lower_native_expr(ctx, left, code)?;
             code.push(0x50); // push rax (left)
             lower_native_expr(ctx, right, code)?; // right in rax
@@ -2316,6 +2425,328 @@ fn lower_native_binary(
             }
         }
     }
+}
+
+// -- Floating-point lowering (SSE scalar, XMM0/XMM1) -------------------------
+//
+// Float values live in XMM registers: `f64` as a `double`, `f32` as a `single`
+// kept rounded to single precision after every operation (matching the
+// interpreter's real `f32` storage). The float lowerer is a small stack machine
+// over `xmm0`, spilling the left operand of a binary op to the machine stack
+// (`sub rsp,16; movsd [rsp],xmm0`) so `xmm0` is free to evaluate the right.
+//
+// Float literals are materialized without any `.rdata` constant: the IEEE-754
+// bit pattern is loaded into a GPR (`mov rax, imm64` for f64, `mov eax, imm32`
+// for f32) and moved into an XMM register (`movq`/`movd`). This keeps every
+// float function self-contained (no new relocations or data symbols).
+
+/// Lower a float-valued expression, leaving its value in `xmm0` and returning
+/// the [`FloatWidth`] of the result (`f64` as a double, `f32` rounded to single).
+/// Handles float literals, float locals, the `to_f32`/`to_f64` conversions, and
+/// `f64`/`f32` arithmetic (`+ - * /`). Anything else (e.g. a float-returning
+/// call, a math builtin) is rejected so the enclosing function skips gracefully.
+fn lower_native_float_expr(
+    ctx: &mut NativeCtx,
+    expr: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<FloatWidth, String> {
+    match &expr.kind {
+        BytecodeExprKind::Float(value) => {
+            // A bare float literal's static type says whether it is f64 or f32.
+            // The type checker pins every float literal to a concrete type.
+            let width = FloatWidth::from_type_name(expr.ty.name.as_str())
+                .ok_or_else(|| format!("float literal has non-float type `{}`", expr.ty.name))?;
+            emit_float_immediate(code, *value, width);
+            Ok(width)
+        }
+        BytecodeExprKind::Variable(name) => {
+            let local = ctx.local(name)?;
+            let width = match local.ty {
+                NativeType::F64 => FloatWidth::F64,
+                NativeType::F32 => FloatWidth::F32,
+                _ => return Err(format!("`{name}` is not a float local")),
+            };
+            let slot = local.slot;
+            load_float_local(code, slot, width);
+            Ok(width)
+        }
+        BytecodeExprKind::Call { name, args } => {
+            // `to_f32(x f64) -> f32`: evaluate the f64 argument, then round it to
+            // single precision with `cvtsd2ss`.
+            if name == "to_f32" {
+                if args.len() != 1 {
+                    return Err("`to_f32` takes exactly one argument".to_string());
+                }
+                let arg_width = lower_native_float_expr(ctx, &args[0], code)?;
+                if arg_width != FloatWidth::F64 {
+                    return Err("`to_f32` expects an f64 argument".to_string());
+                }
+                // cvtsd2ss xmm0, xmm0  (F2 0F 5A C0)
+                code.extend_from_slice(&[0xF2, 0x0F, 0x5A, 0xC0]);
+                return Ok(FloatWidth::F32);
+            }
+            // `to_f64(x f32) -> f64`: evaluate the f32 argument, then widen it with
+            // `cvtss2sd` (exact).
+            if name == "to_f64" {
+                if args.len() != 1 {
+                    return Err("`to_f64` takes exactly one argument".to_string());
+                }
+                let arg_width = lower_native_float_expr(ctx, &args[0], code)?;
+                if arg_width != FloatWidth::F32 {
+                    return Err("`to_f64` expects an f32 argument".to_string());
+                }
+                // cvtss2sd xmm0, xmm0  (F3 0F 5A C0)
+                code.extend_from_slice(&[0xF3, 0x0F, 0x5A, 0xC0]);
+                return Ok(FloatWidth::F64);
+            }
+            Err(format!(
+                "float call `{name}` is not in the native subset (float-returning functions and math builtins are deferred)"
+            ))
+        }
+        BytecodeExprKind::Binary { left, op, right } => {
+            // Derive the width from the operands' structure (an arithmetic float
+            // node is annotated `i64` in the IR, so its own `ty` is unreliable).
+            let width = float_width_of_expr(ctx, left)
+                .or_else(|| float_width_of_expr(ctx, right))
+                .ok_or_else(|| "float binary op on non-float operands".to_string())?;
+            match op {
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                    // Evaluate left into xmm0 and spill it; evaluate right into
+                    // xmm0; restore left into xmm1; apply left <op> right.
+                    let left_width = lower_native_float_expr(ctx, left, code)?;
+                    push_xmm0(code); // save left
+                    let right_width = lower_native_float_expr(ctx, right, code)?;
+                    debug_assert_eq!(left_width, width);
+                    debug_assert_eq!(right_width, width);
+                    // xmm1 = right, xmm0 = left.
+                    move_xmm0_to_xmm1(code); // xmm1 = right
+                    pop_xmm0(code); // xmm0 = left
+                    emit_float_arith(code, *op, width);
+                    Ok(width)
+                }
+                _ => Err(
+                    "float comparison does not produce a float value (handled on the i64 path)"
+                        .to_string(),
+                ),
+            }
+        }
+        _ => Err("expression is not in the native float subset".to_string()),
+    }
+}
+
+/// Emit `left <op> right` where `left` is in `xmm0` and `right` is in `xmm1`,
+/// leaving the result in `xmm0`. `op` is one of `+ - * /`. Uses the double
+/// (`*sd`) or single (`*ss`) opcode family per `width`; an `*ss` op inherently
+/// rounds its result to single precision, matching the interpreter's f32 store.
+fn emit_float_arith(code: &mut Vec<u8>, op: BinaryOp, width: FloatWidth) {
+    // Opcode second byte selects add/mul/sub/div: 58/59/5C/5E.
+    let arith = match op {
+        BinaryOp::Add => 0x58,
+        BinaryOp::Subtract => 0x5C,
+        BinaryOp::Multiply => 0x59,
+        BinaryOp::Divide => 0x5E,
+        _ => unreachable!("emit_float_arith only handles + - * /"),
+    };
+    // Prefix: F2 for scalar-double (*sd), F3 for scalar-single (*ss).
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    // <op>s{d,s} xmm0, xmm1  ->  prefix 0F <arith> C1
+    code.extend_from_slice(&[prefix, 0x0F, arith, 0xC1]);
+}
+
+/// Lower a float comparison (`< <= > >= == !=`) whose operands are `f64`/`f32`,
+/// leaving a canonical `0`/`1` in `rax`. Uses ordered SSE compares (`ucomisd`/
+/// `ucomiss`) with the unordered-aware condition codes so a NaN operand yields
+/// exactly the interpreter's result: every relational compare is false on NaN,
+/// `==` is false on NaN, and `!=` is true on NaN (Rust/IEEE-754 semantics).
+fn lower_native_float_compare(
+    ctx: &mut NativeCtx,
+    left: &BytecodeExpr,
+    op: BinaryOp,
+    right: &BytecodeExpr,
+    width: FloatWidth,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    // Evaluate left into xmm0, spill it; evaluate right into xmm0, move to xmm1;
+    // restore left into xmm0. Result: xmm0 = left, xmm1 = right.
+    lower_native_float_expr(ctx, left, code)?;
+    push_xmm0(code);
+    lower_native_float_expr(ctx, right, code)?;
+    move_xmm0_to_xmm1(code); // xmm1 = right
+    pop_xmm0(code); // xmm0 = left
+
+    // `ucomis{d,s}` sets CF/ZF/PF as an unsigned-style compare of xmm0 vs xmm1:
+    //   xmm0 <  xmm1 -> CF=1, ZF=0
+    //   xmm0 == xmm1 -> CF=0, ZF=1
+    //   xmm0 >  xmm1 -> CF=0, ZF=0
+    //   unordered    -> CF=1, ZF=1, PF=1
+    // `seta` (CF=0 & ZF=0) is strict-greater-ordered; `setae` (CF=0) is
+    // greater-or-equal-ordered — both false when unordered. So we realize `<`
+    // and `<=` by swapping the compare operands (compare right vs left).
+    let cmp_prefixed = |code: &mut Vec<u8>, swap: bool| {
+        // ucomis{d,s} first, second.  prefix(0x66 for sd, none for ss) 0F 2E /r
+        // For F64 use `ucomisd` (66 0F 2E), for F32 `ucomiss` (0F 2E).
+        let (a, b) = if swap { (1u8, 0u8) } else { (0u8, 1u8) }; // xmm regs
+        let modrm = 0xC0 | (a << 3) | b; // ucomis <xmm a>, <xmm b>
+        match width {
+            FloatWidth::F64 => code.extend_from_slice(&[0x66, 0x0F, 0x2E, modrm]),
+            FloatWidth::F32 => code.extend_from_slice(&[0x0F, 0x2E, modrm]),
+        }
+    };
+
+    match op {
+        BinaryOp::Greater => {
+            cmp_prefixed(code, false); // ucomis xmm0, xmm1
+            code.extend_from_slice(&[0x0F, 0x97, 0xC0]); // seta al
+            movzx_al_to_rax(code);
+        }
+        BinaryOp::GreaterEqual => {
+            cmp_prefixed(code, false);
+            code.extend_from_slice(&[0x0F, 0x93, 0xC0]); // setae al
+            movzx_al_to_rax(code);
+        }
+        BinaryOp::Less => {
+            // left < right  <=>  right > left. Compare xmm1 vs xmm0.
+            cmp_prefixed(code, true); // ucomis xmm1, xmm0
+            code.extend_from_slice(&[0x0F, 0x97, 0xC0]); // seta al
+            movzx_al_to_rax(code);
+        }
+        BinaryOp::LessEqual => {
+            cmp_prefixed(code, true); // ucomis xmm1, xmm0
+            code.extend_from_slice(&[0x0F, 0x93, 0xC0]); // setae al
+            movzx_al_to_rax(code);
+        }
+        BinaryOp::Equal => {
+            // Ordered equality: ZF=1 (equal) AND not unordered (PF=0).
+            cmp_prefixed(code, false); // ucomis xmm0, xmm1
+            code.extend_from_slice(&[0x0F, 0x94, 0xC0]); // sete al
+            code.extend_from_slice(&[0x0F, 0x9B, 0xC1]); // setnp cl
+            code.extend_from_slice(&[0x20, 0xC8]); // and al, cl
+            movzx_al_to_rax(code);
+        }
+        BinaryOp::NotEqual => {
+            // Inequality including unordered: ZF=0 (not equal) OR unordered (PF=1).
+            cmp_prefixed(code, false); // ucomis xmm0, xmm1
+            code.extend_from_slice(&[0x0F, 0x95, 0xC0]); // setne al
+            code.extend_from_slice(&[0x0F, 0x9A, 0xC1]); // setp cl
+            code.extend_from_slice(&[0x08, 0xC8]); // or al, cl
+            movzx_al_to_rax(code);
+        }
+        _ => return Err("unsupported float comparison operator".to_string()),
+    }
+    Ok(())
+}
+
+/// Determine the [`FloatWidth`] of `expr` if it is a float value, using leaf
+/// types that the IR annotates correctly (float literals, float locals, and the
+/// `to_f32`/`to_f64` conversions) and recursing through float arithmetic. Returns
+/// `None` for a non-float expression. This is more reliable than reading a
+/// `Binary` node's own `ty`, which the IR annotates `i64` for float arithmetic.
+fn float_width_of_expr(ctx: &NativeCtx, expr: &BytecodeExpr) -> Option<FloatWidth> {
+    match &expr.kind {
+        BytecodeExprKind::Float(_) => FloatWidth::from_type_name(expr.ty.name.as_str()),
+        BytecodeExprKind::Variable(name) => match ctx.locals.get(name)?.ty {
+            NativeType::F64 => Some(FloatWidth::F64),
+            NativeType::F32 => Some(FloatWidth::F32),
+            _ => None,
+        },
+        BytecodeExprKind::Call { name, .. } => match name.as_str() {
+            "to_f32" => Some(FloatWidth::F32),
+            "to_f64" => Some(FloatWidth::F64),
+            _ => None,
+        },
+        // Float arithmetic propagates its operands' width; a comparison yields a
+        // bool (not a float), so those and all other ops report `None`.
+        BytecodeExprKind::Binary {
+            left,
+            op: BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide,
+            right,
+        } => float_width_of_expr(ctx, left).or_else(|| float_width_of_expr(ctx, right)),
+        _ => None,
+    }
+}
+
+/// `movzx rax, al` — zero-extend the boolean in `al` into the full `rax`.
+fn movzx_al_to_rax(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]);
+}
+
+/// Materialize a float immediate into `xmm0`: the IEEE-754 bit pattern is loaded
+/// into a GPR and moved into `xmm0` (`movq` for f64, `movd` for f32). The f32
+/// path rounds `value` to `f32` first so the stored bits match the interpreter.
+fn emit_float_immediate(code: &mut Vec<u8>, value: f64, width: FloatWidth) {
+    match width {
+        FloatWidth::F64 => {
+            emit_mov_rax_imm(code, value.to_bits() as i64);
+            // movq xmm0, rax  (66 48 0F 6E C0)
+            code.extend_from_slice(&[0x66, 0x48, 0x0F, 0x6E, 0xC0]);
+        }
+        FloatWidth::F32 => {
+            let bits = (value as f32).to_bits();
+            // mov eax, imm32  (B8 imm32) — zero-extends into rax.
+            code.push(0xB8);
+            code.extend_from_slice(&bits.to_le_bytes());
+            // movd xmm0, eax  (66 0F 6E C0)
+            code.extend_from_slice(&[0x66, 0x0F, 0x6E, 0xC0]);
+        }
+    }
+}
+
+/// `movs{d,s} xmm0, [rbp - slot]` — load a float local into `xmm0`.
+fn load_float_local(code: &mut Vec<u8>, slot: i32, width: FloatWidth) {
+    // movsd: F2 0F 10 /r ; movss: F3 0F 10 /r. ModRM 0x85 = [rbp + disp32], reg 0.
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    code.extend_from_slice(&[prefix, 0x0F, 0x10, 0x85]);
+    code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// `movs{d,s} [rbp - slot], xmm0` — store `xmm0` into a float local.
+fn store_float_local(code: &mut Vec<u8>, slot: i32, width: FloatWidth) {
+    // movsd: F2 0F 11 /r ; movss: F3 0F 11 /r.
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    code.extend_from_slice(&[prefix, 0x0F, 0x11, 0x85]);
+    code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// Spill `xmm0` onto the machine stack (16 bytes, keeping 16-byte rsp alignment).
+/// Paired with [`pop_xmm0`]/[`pop_xmm1`]. The full 8-byte `movsd` store preserves
+/// an f32's low bits too, so one spill primitive serves both widths.
+fn push_xmm0(code: &mut Vec<u8>) {
+    // sub rsp, 16
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x10]);
+    // movsd [rsp], xmm0  (F2 0F 11 04 24)
+    code.extend_from_slice(&[0xF2, 0x0F, 0x11, 0x04, 0x24]);
+}
+
+/// Restore a spilled float from the machine stack into `xmm0`.
+fn pop_xmm0(code: &mut Vec<u8>) {
+    // movsd xmm0, [rsp]  (F2 0F 10 04 24)
+    code.extend_from_slice(&[0xF2, 0x0F, 0x10, 0x04, 0x24]);
+    // add rsp, 16
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x10]);
+}
+
+/// Restore a spilled float from the machine stack into `xmm1`.
+fn pop_xmm1(code: &mut Vec<u8>) {
+    // movsd xmm1, [rsp]  (F2 0F 10 0C 24)
+    code.extend_from_slice(&[0xF2, 0x0F, 0x10, 0x0C, 0x24]);
+    // add rsp, 16
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x10]);
+}
+
+/// `movsd xmm1, xmm0` — copy `xmm0` into `xmm1` (full 8-byte move; preserves an
+/// f32's low bits as well).
+fn move_xmm0_to_xmm1(code: &mut Vec<u8>) {
+    // movsd xmm1, xmm0  (F2 0F 10 C8)
+    code.extend_from_slice(&[0xF2, 0x0F, 0x10, 0xC8]);
 }
 
 /// Combine a fixed-width binary op whose left operand is on the stack and whose
@@ -3961,19 +4392,20 @@ mod native_program_tests {
     }
 
     #[test]
-    fn skips_float_using_function_gracefully() {
-        // A `-> i64` function that touches an `f32` value is not in the native
-        // subset (float codegen is deferred); it must skip gracefully and report
-        // why, leaving nothing eligible.
+    fn skips_float_math_builtin_gracefully() {
+        // f64/f32 arithmetic, comparison, and `to_f32`/`to_f64` are now native,
+        // but the transcendental/math builtins (`sqrt`, `sin`, `floor`, …) remain
+        // deferred. A `-> i64` function that calls one must skip gracefully and
+        // report why, leaving nothing eligible.
         let err = emit_alpha1_native_program(&module_for(concat!(
             "fn main -> i64\n",
-            "    let e f32 = to_f32(2.0)\n",
+            "    let r f64 = sqrt(16.0)\n",
             "    let flag i64 = 0\n",
-            "    if e > to_f32(1.0)\n",
+            "    if r > 3.0\n",
             "        flag = 1\n",
             "    flag\n",
         )))
-        .expect_err("float function is not native-eligible");
+        .expect_err("float math builtin is deferred");
         assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
         assert!(err.skipped.iter().any(|s| s.name == "main"));
     }
@@ -4291,6 +4723,159 @@ mod native_program_tests {
         assert!(
             found,
             "expected the raw `mov rax, 42` asm bytes verbatim in the emitted object"
+        );
+    }
+
+    /// The `.text` bytes of an emitted program (the single `.text` section's
+    /// raw data range).
+    fn text_bytes(program: &NativeProgram) -> &[u8] {
+        let sec = COFF_HEADER_SIZE as usize;
+        let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+        let text_size = read_u32(&program.bytes, sec + 16) as usize;
+        &program.bytes[text_offset..text_offset + text_size]
+    }
+
+    #[test]
+    fn compiles_float_arithmetic_function_natively() {
+        // A `main` whose signature is `-> i64` but which computes with `f64`/`f32`
+        // internals (arithmetic, comparison, and the `to_f32`/`to_f64`
+        // conversions) now compiles natively instead of being skipped.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let a f64 = 1.5\n",
+            "    let b f64 = 2.0\n",
+            "    let s f64 = a + b\n",
+            "    let half f32 = to_f32(1.0) / to_f32(2.0)\n",
+            "    let flag i64 = 0\n",
+            "    if s > 3.0\n",
+            "        flag = 1\n",
+            "    if to_f64(half) < 1.0\n",
+            "        flag = flag + 1\n",
+            "    flag\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(
+            program.skipped.is_empty(),
+            "no function should be skipped: {:?}",
+            program.skipped
+        );
+
+        let text = text_bytes(&program);
+        // `addsd xmm0, xmm1` (F2 0F 58 C1) — the f64 addition.
+        assert!(
+            text.windows(4).any(|w| w == [0xF2, 0x0F, 0x58, 0xC1]),
+            "expected an `addsd xmm0, xmm1`"
+        );
+        // `divss xmm0, xmm1` (F3 0F 5E C1) — the f32 division (single precision).
+        assert!(
+            text.windows(4).any(|w| w == [0xF3, 0x0F, 0x5E, 0xC1]),
+            "expected a single-precision `divss xmm0, xmm1`"
+        );
+        // `ucomisd xmm0, xmm1` (66 0F 2E C1) — the f64 `>` compare.
+        assert!(
+            text.windows(4).any(|w| w == [0x66, 0x0F, 0x2E, 0xC1]),
+            "expected a `ucomisd` for the f64 comparison"
+        );
+        // `cvtsd2ss xmm0, xmm0` (F2 0F 5A C0) — the `to_f32` rounding.
+        assert!(
+            text.windows(4).any(|w| w == [0xF2, 0x0F, 0x5A, 0xC0]),
+            "expected a `cvtsd2ss` for `to_f32`"
+        );
+        // `cvtss2sd xmm0, xmm0` (F3 0F 5A C0) — the `to_f64` widening.
+        assert!(
+            text.windows(4).any(|w| w == [0xF3, 0x0F, 0x5A, 0xC0]),
+            "expected a `cvtss2sd` for `to_f64`"
+        );
+    }
+
+    #[test]
+    fn f32_operations_round_to_single_precision() {
+        // An f32 add must use `addss` (single precision), not `addsd`. This is the
+        // rounding guarantee that keeps native f32 bit-identical to the
+        // interpreter's real `f32` storage.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let a f32 = to_f32(1.0)\n",
+            "    let b f32 = to_f32(2.0)\n",
+            "    let s f32 = a + b\n",
+            "    let flag i64 = 0\n",
+            "    if s > to_f32(2.0)\n",
+            "        flag = 1\n",
+            "    flag\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+
+        let text = text_bytes(&program);
+        // `addss xmm0, xmm1` (F3 0F 58 C1) — single-precision add.
+        assert!(
+            text.windows(4).any(|w| w == [0xF3, 0x0F, 0x58, 0xC1]),
+            "f32 add must be single-precision `addss`"
+        );
+        // No `addsd` (F2 0F 58 C1) — the f32 path must never widen to double.
+        assert!(
+            !text.windows(4).any(|w| w == [0xF2, 0x0F, 0x58, 0xC1]),
+            "f32 add must not use the double-precision `addsd`"
+        );
+        // `ucomiss xmm0, xmm1` (0F 2E C1) — single-precision compare for `>`.
+        assert!(
+            text.windows(3).any(|w| w == [0x0F, 0x2E, 0xC1]),
+            "f32 comparison must use `ucomiss`"
+        );
+    }
+
+    #[test]
+    fn function_with_float_signature_still_skips_gracefully() {
+        // The signature constraint is unchanged: a function with a float parameter
+        // or float return type is still recorded in `skipped` and falls back to
+        // the interpreters. `main` (all-i64) still compiles.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn scale x f64 -> f64\n",
+            "    x * 2.0\n\n",
+            "fn main -> i64\n",
+            "    let n i64 = 7\n",
+            "    n\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert_eq!(program.skipped.len(), 1, "{:?}", program.skipped);
+        assert_eq!(program.skipped[0].name, "scale");
+        assert!(
+            program.skipped[0].reason.contains("f64"),
+            "skip reason should name the float signature: {}",
+            program.skipped[0].reason
+        );
+    }
+
+    #[test]
+    fn f32_precision_loss_matches_interpreter_semantics() {
+        // The `run_f32.lby` scenario in miniature: 2^24 + 1 rounds back to 2^24 in
+        // f32 (single precision cannot represent the extra bit), so the equality
+        // holds and the function compiles natively. This is the exact case that
+        // would fail if the f32 add were done in double precision.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let big f32 = to_f32(16777216.0)\n",
+            "    let bumped f32 = big + to_f32(1.0)\n",
+            "    let same i64 = 0\n",
+            "    if bumped == big\n",
+            "        same = 1\n",
+            "    same\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+
+        let text = text_bytes(&program);
+        // The equality compare emits `sete al` + `setnp cl` + `and al, cl` so a
+        // NaN operand yields the interpreter's `false`; here it also proves the
+        // ordered-equality lowering is present.
+        assert!(
+            text.windows(3).any(|w| w == [0x0F, 0x94, 0xC0])
+                && text.windows(3).any(|w| w == [0x0F, 0x9B, 0xC1]),
+            "expected ordered f32 equality lowering (sete + setnp)"
         );
     }
 

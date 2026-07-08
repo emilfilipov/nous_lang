@@ -3388,6 +3388,116 @@ fn native_strings_execution_parity_when_linkable() {
     );
 }
 
+/// Best-effort execution parity for the native float subset: native-compile a
+/// program whose `main` uses `f64`/`f32` arithmetic, all six comparisons, and the
+/// `to_f32`/`to_f64` conversions (but keeps an all-i64 signature), then assert the
+/// linked `.exe`'s exit code equals the interpreter's `main` result (mod 256).
+/// This proves SSE scalar float codegen — including single-precision f32 rounding
+/// and the NaN-aware ordered compares — agrees bit-for-bit with the interpreter.
+/// Gated on `rust-lld` + `kernel32.lib` like the other native parity tests.
+#[test]
+fn native_floats_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_floats.lby");
+    let out = std::env::temp_dir().join("lullaby_native_floats_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // `main` keeps an all-i64 signature and uses only float locals, so it is
+    // eligible for native codegen despite the f64/f32 internals.
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 9, "floats fixture main computes 9");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native floats link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// Best-effort execution parity for the `run_f32.lby` fixture specifically: it
+/// exercises f32 precision loss (2^24 + 1 rounding back to 2^24) alongside f64,
+/// which only agrees with the interpreter if the native f32 ops are done in
+/// single precision. Gated like the other native parity tests.
+#[test]
+fn native_f32_precision_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_f32.lby");
+    let out = std::env::temp_dir().join("lullaby_native_f32_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 3, "run_f32 fixture main computes 3");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native f32 precision link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "native f32 exit code must equal the interpreter result (mod 256)"
+    );
+}
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 fn ucrt_available() -> bool {
