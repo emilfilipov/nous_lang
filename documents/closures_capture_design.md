@@ -183,16 +183,15 @@ unchanged.** Add a new value alongside `Func`, mirroring how
 `Chan`/`Task`/`Future`/`Mutex` are each their own variant:
 
 ```rust
-// crates/lullaby_runtime/src/lib.rs  (mirrored in crates/lullaby_ir)
+// crates/lullaby_runtime/src/lib.rs  (backend-neutral: no body node)
 Value::Closure(Closure),
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Closure {
-    /// Parameter names in order (bound fresh on each call).
-    params: Vec<String>,
-    /// The single body expression (Arc so cloning the closure value is cheap
-    /// and does not deep-copy the AST/IR body).
-    body: Arc<ExprKind>,
+    /// Stable index of this closure's body in each backend's own closure table
+    /// (assigned once, on the AST, so the AST runtime and the IR interpreter use
+    /// the same id). The body itself is NOT stored in the value.
+    id: usize,
     /// The captured environment: one (name, value) per free variable, snapshotted
     /// by value at literal-evaluation time. Cloning the closure clones this Vec,
     /// which — per each Value's own clone — snapshots value-semantic collections
@@ -200,6 +199,21 @@ pub struct Closure {
     captured: Vec<(String, Value)>,
 }
 ```
+
+**Backend-neutral refinement (implemented).** The original draft stored
+`body: Arc<ExprKind>` in the value. That cannot work: `Value` is a *single* enum
+shared by the AST runtime (which evaluates parser `ExprKind`) and the IR
+interpreter (which evaluates `IrExprKind`), and `lullaby_runtime` cannot depend on
+`lullaby_ir`. So the closure value carries only a **stable `id` plus the captured
+snapshot**, and the *body lives in a per-backend closure table* keyed by that id:
+the parser assigns each `fn … -> expr` literal an id on the AST; the AST runtime
+builds an `id -> (params, ExprKind body)` table, and IR lowering builds an
+`id -> (params, IrExprKind body)` table from the same nodes, so the ids line up.
+Invoking `Value::Closure { id, captured }` looks the body up in the current
+backend's table, pushes a scope, binds the captured snapshot then the parameters,
+and evaluates the body — identical semantics on every interpreter. This is
+lambda-lifting by id: the code is shared/immutable per backend, the value is
+backend-agnostic, and no `ExprKind`/`IrExprKind` ever crosses into `Value`.
 
 - The captured `Value`s are stored directly, so **cloning a `Value::Closure`
   clones its captured `Vec<(String, Value)>`**, and each element clones by its
