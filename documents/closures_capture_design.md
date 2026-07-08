@@ -157,7 +157,7 @@ snapshot.
   the closure's captured copy, and calling the closure does **not** mutate the
   enclosing local. There is no shared mutable cell in this increment.
 - Inside the body, a captured variable is **read-only**: the first increment
-  forbids assigning to a captured name (see `L0428`). Assigning to the closure's
+  forbids assigning to a captured name (see `L0441`). Assigning to the closure's
   own *parameters* is allowed (they are ordinary locals of the closure call).
   This keeps the value model trivial (a snapshot, never written back) and defers
   the harder "mutable capture with write-back" question to a later increment that
@@ -311,7 +311,7 @@ reconstructs an equivalent (2)+captured scope on each call.
 
 **Read-only capture enforcement.** An assignment whose target is a captured name
 (resolved to an enclosing local, inside a closure body) is rejected — capture is
-a snapshot, never written back in this increment (`L0428`). Assigning to a
+a snapshot, never written back in this increment (`L0441`). Assigning to a
 closure parameter is fine.
 
 **Interaction with `parallel_map`/`spawn`.** `parallel_map(f, xs)` currently
@@ -332,18 +332,18 @@ behavior and stays deterministic (results still collected in input order). See
 Proposed new codes (semantic family; **do not edit the registry in this
 increment** — reserve on delivery):
 
-- **`L0427`** — *Closure captures an unsupported value.* Reserved for the case
+- **`L0440`** — *Closure captures an unsupported value.* Reserved for the case
   where a captured free variable's type is one the increment forbids from
   crossing into a closure (e.g. a `Socket`, whose per-interpreter integer handle
   is not portable across the runtime boundary the closure may be invoked in — the
   same limitation [[concurrency_design]] notes for sockets across `spawn`). Emit
   when the closure could be moved to another interpreter/thread (e.g. into
   `parallel_map`/`spawn`) and the capture set contains a non-portable handle.
-- **`L0428`** — *Assignment to a captured variable inside a closure.* Capture is
+- **`L0441`** — *Assignment to a captured variable inside a closure.* Capture is
   by value (a read-only snapshot) in this increment; the enclosing local cannot
   be mutated through the closure. Fix: compute the new value and return it, or
   rebind a closure-local `let`.
-- **`L0429`** — *Closure literal used where a non-function type is expected*, or
+- **`L0442`** — *Closure literal used where a non-function type is expected*, or
   a captured free variable could not be resolved / a body whose type cannot be
   determined. Parallels `L0390` (the first-class-function mismatch code) for the
   lambda form: a closure whose inferred `fn(...) -> R` does not match the expected
@@ -424,7 +424,7 @@ address, and one that they do not:
 - **Sockets across threads remain deferred.** A `Socket` is a per-interpreter
   integer index into a runtime-local table, so it cannot cross into a spawned
   worker even inside a closure. Capturing a `Socket` into a closure that is then
-  handed to `spawn`/`parallel_map` is exactly the `L0427` case above. Capturing a
+  handed to `spawn`/`parallel_map` is exactly the `L0440` case above. Capturing a
   `Socket` into a closure that is invoked in the *same* interpreter is fine;
   only cross-interpreter movement is rejected. Cross-thread socket sharing stays
   a separate follow-up, unchanged by this increment.
@@ -462,8 +462,8 @@ their optimized variants, via the auto-discovering cross-backend parity harness 
 the same bar every prior value-carrying feature (`Value::Func`, `Chan`, `Task`,
 `Future`, `Mutex`) had to clear. A capture-then-`parallel_map` fixture and a
 capture-then-`spawn` fixture (result-deterministic) extend coverage into the
-concurrency paths. Invalid fixtures cover `L0428` (write to a captured name) and
-`L0429` (function-type mismatch of a lambda).
+concurrency paths. Invalid fixtures cover `L0441` (write to a captured name) and
+`L0442` (function-type mismatch of a lambda).
 
 ## Scope and sequencing
 
@@ -479,7 +479,7 @@ concurrency paths. Invalid fixtures cover `L0428` (write to a captured name) and
   variants.
 - Semantics: closure typing to `fn(...) -> R`, free-variable resolution, the
   captured-variable list on the node, read-only-capture checking, and diagnostics
-  `L0427`/`L0428`/`L0429`.
+  `L0440`/`L0441`/`L0442`.
 - `parallel_map` and `spawn` accept a `Value::Closure`.
 - Native/WASM: closures are a **skipped** subset (interpreter-only), documented.
 - Docs: this file, the offline docs closure section, `documents/repository_map.md`,
@@ -491,7 +491,7 @@ concurrency paths. Invalid fixtures cover `L0428` (write to a captured name) and
   (`let f fn(i64)->i64 = fn x -> x + 1`).
 - **Multi-statement closure bodies** (an indented block after `->`).
 - **Mutable / shared-cell capture** (a closure that writes back to an enclosing
-  local via an explicit shared cell), which lifts the `L0428` restriction.
+  local via an explicit shared cell), which lifts the `L0441` restriction.
 - **Native/WASM closure codegen** via closure conversion (lambda lifting +
   environment structs + `call_indirect`/code-pointer indirect calls).
 - **Closures as first-class *typed* struct fields / generic closure types** beyond
