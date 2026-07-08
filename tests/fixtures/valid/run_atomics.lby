@@ -1,0 +1,13 @@
+fn main -> i64
+    let a atomic_i64 = atomic_new(10)
+    let p0 i64 = atomic_add(a, 5)
+    let l0 i64 = atomic_load(a)
+    let c0 i64 = atomic_cas(a, 15, 99)
+    let l1 i64 = atomic_load(a)
+    let s0 i64 = atomic_swap(a, 7)
+    let sub0 i64 = atomic_sub(a, 2)
+    let and0 i64 = atomic_and(a, 6)
+    let or0 i64 = atomic_or(a, 1)
+    let xor0 i64 = atomic_xor(a, 7)
+    let last i64 = atomic_load(a)
+    p0 + l0 + c0 + l1 + s0 + sub0 + and0 + or0 + xor0 + last

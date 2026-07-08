@@ -3489,6 +3489,49 @@ impl<'a> Checker<'a> {
                 self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
                 Some(TypeRef::new("i64"))
             }
+            "atomic_new" => {
+                // `atomic_new(v i64) -> atomic_i64`: a shared atomic cell.
+                self.expect_concurrency_arity(name, args, 1, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "i64", scope, function)?;
+                Some(TypeRef::new("atomic_i64"))
+            }
+            "atomic_load" => {
+                // `atomic_load(a atomic_i64) -> i64`.
+                self.expect_concurrency_arity(name, args, 1, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                Some(TypeRef::new("i64"))
+            }
+            "atomic_store" => {
+                // `atomic_store(a atomic_i64, v i64) -> void`.
+                self.expect_concurrency_arity(name, args, 2, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                Some(TypeRef::new("void"))
+            }
+            "atomic_swap" => {
+                // `atomic_swap(a atomic_i64, v i64) -> i64` (returns previous).
+                self.expect_concurrency_arity(name, args, 2, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                Some(TypeRef::new("i64"))
+            }
+            "atomic_cas" => {
+                // `atomic_cas(a atomic_i64, expected i64, new i64) -> i64`
+                // (strong CAS; returns the observed value).
+                self.expect_concurrency_arity(name, args, 3, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                self.expect_concurrency_arg(name, 3, &args[2], "i64", scope, function)?;
+                Some(TypeRef::new("i64"))
+            }
+            "atomic_add" | "atomic_sub" | "atomic_and" | "atomic_or" | "atomic_xor" => {
+                // Fetch-and-op: `atomic_<op>(a atomic_i64, v i64) -> i64`
+                // (returns the previous value).
+                self.expect_concurrency_arity(name, args, 2, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                Some(TypeRef::new("i64"))
+            }
             "tcp_connect" | "tcp_listen" | "udp_bind" => {
                 // `(host string, port i64) -> result<Socket, string>`.
                 self.expect_socket_arg_count(name, args, 2, function)?;
@@ -6125,6 +6168,55 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0337")
+        );
+    }
+
+    #[test]
+    fn accepts_atomic_builtins_with_matching_types() {
+        // The full `atomic_i64` surface type-checks: construct, load/store,
+        // swap, strong CAS, and every fetch-and-op. Each op takes the
+        // `atomic_i64` handle first and returns the documented type.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(10)\n",
+            "    let p i64 = atomic_add(a, 5)\n",
+            "    atomic_sub(a, 1)\n",
+            "    atomic_and(a, 15)\n",
+            "    atomic_or(a, 1)\n",
+            "    atomic_xor(a, 2)\n",
+            "    atomic_store(a, 42)\n",
+            "    let s i64 = atomic_swap(a, 7)\n",
+            "    let c i64 = atomic_cas(a, 7, 99)\n",
+            "    p + s + c + atomic_load(a)\n",
+        );
+        assert!(validate_source(source).is_ok());
+    }
+
+    #[test]
+    fn rejects_atomic_load_non_atomic_first_argument() {
+        // `atomic_load` requires an `atomic_i64` handle as its first argument;
+        // a bare `i64` is rejected with the concurrency-builtin code L0337.
+        let source = "fn main -> i64\n    atomic_load(5)\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0337"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_atomic_add_wrong_operand_type() {
+        // The `v` operand of a fetch-and-op must be an `i64`, not a string.
+        let source =
+            "fn main -> i64\n    let a atomic_i64 = atomic_new(0)\n    atomic_add(a, \"x\")\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0337"),
+            "{diagnostics:?}"
         );
     }
 

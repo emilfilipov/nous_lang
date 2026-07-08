@@ -242,6 +242,44 @@ Detached threads, channels, and a shared mutex (message passing):
   worker, and cross-thread socket sharing remain deferred; see
   [concurrency_design.md](concurrency_design.md).
 
+Lock-free shared atomics:
+
+- `atomic_i64` is a shared, lock-free `i64` cell — a distinct nominal handle
+  type (not the same as `i64`; you cannot do arithmetic on it directly). Like
+  `Chan`/`Mutex` it has reference semantics: cloning the value shares the same
+  underlying cell, so two threads holding copies see each other's writes. It is
+  backed by `std::sync::atomic::AtomicI64`, so cross-thread updates are wait-free
+  with no lost increments. Every operation below uses **sequentially consistent
+  (`SeqCst`) ordering** — the always-correct default; weaker orderings
+  (`relaxed`/`acquire`/`release`/`acqrel`) are a documented future optimization
+  and are not part of this increment (see
+  [concurrency_design.md](concurrency_design.md)).
+- `atomic_new(v i64) -> atomic_i64` allocates a fresh atomic cell initialized to
+  `v`.
+- `atomic_load(a atomic_i64) -> i64` reads the current value.
+- `atomic_store(a atomic_i64, v i64) -> void` overwrites the value.
+- `atomic_swap(a atomic_i64, v i64) -> i64` stores `v` and returns the previous
+  value.
+- `atomic_cas(a atomic_i64, expected i64, new i64) -> i64` is a strong
+  compare-and-swap: if the cell equals `expected` it stores `new`; either way it
+  returns the value that was in the cell (so `returned == expected` means it
+  succeeded). Lullaby has no out-parameters, so the observed value is returned
+  rather than a `bool`.
+- `atomic_add`, `atomic_sub`, `atomic_and`, `atomic_or`, and `atomic_xor`, each
+  `(a atomic_i64, v i64) -> i64`, are fetch-and-op: they atomically apply the
+  operation to the cell and return the **previous** value (the new value is a
+  local op away). `add`/`sub` wrap on overflow.
+- Wrong arity or a wrong-typed argument (a non-`atomic_i64` handle, or a
+  non-`i64` operand) to any atomic builtin reports `L0337`.
+- Atomics run identically on the AST, IR, and bytecode backends. Because the
+  fixed `spawn(Chan, i64)` worker shape cannot yet hand an atomic to a Lullaby
+  worker, cross-thread atomicity is exercised through runtime tests that share
+  one cell across OS threads (proving no lost updates); passing an atomic into a
+  worker waits on capturing closures, like `Mutex`. Weaker memory orderings,
+  fences, the other atomic widths (`atomic_i32`/`atomic_u64`/…), `atomic_bool`,
+  and weak CAS remain deferred; see
+  [concurrency_design.md](concurrency_design.md).
+
 ## Networking
 
 A `Socket` is an opaque handle to an OS network resource (TCP listener, TCP

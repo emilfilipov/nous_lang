@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::Command;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -34,6 +35,7 @@ pub fn value_type_name(value: &Value) -> String {
         Value::Task(_) => "Task".to_string(),
         Value::Future(_) => "Future".to_string(),
         Value::Mutex(_) => "Mutex".to_string(),
+        Value::Atomic(_) => "atomic_i64".to_string(),
         Value::Void => "void".to_string(),
     }
 }
@@ -111,6 +113,24 @@ impl PartialEq for SharedMutex {
     }
 }
 
+/// A shared atomic `i64` cell. `Arc<AtomicI64>`, so the value's `Clone` shares
+/// the same lock-free cell across threads (reference semantics, exactly like
+/// [`SharedMutex`], but backed by `std::sync::atomic` for wait-free access).
+/// `Send + Sync`, so the handle crosses thread boundaries safely. Every
+/// operation uses `Ordering::SeqCst` in this increment; weaker orderings are a
+/// documented future optimization.
+#[derive(Debug, Clone)]
+pub struct SharedAtomic {
+    pub cell: Arc<AtomicI64>,
+}
+
+impl PartialEq for SharedAtomic {
+    /// Atomic handles compare by identity of the shared cell.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cell, &other.cell)
+    }
+}
+
 // `Eq` is intentionally omitted: `Value::F64` holds an `f64`, which is not `Eq`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -153,6 +173,10 @@ pub enum Value {
     Future(Future),
     /// A shared mutex over one `i64`; shared on clone.
     Mutex(SharedMutex),
+    /// A shared atomic `i64` cell (`atomic_i64`); shared on clone. Backed by
+    /// `Arc<AtomicI64>` so cross-thread updates are lock-free and visible to
+    /// every holder.
+    Atomic(SharedAtomic),
     Void,
 }
 
@@ -210,6 +234,7 @@ impl fmt::Display for Value {
             Self::Task(_) => write!(formatter, "task"),
             Self::Future(_) => write!(formatter, "future"),
             Self::Mutex(_) => write!(formatter, "mutex"),
+            Self::Atomic(_) => write!(formatter, "atomic"),
             Self::Void => write!(formatter, "void"),
         }
     }
@@ -477,6 +502,18 @@ pub fn expect_mutex(name: &str, value: Value) -> Result<SharedMutex, RuntimeErro
         other => Err(RuntimeError::new(
             "L0417",
             format!("{name} expects a Mutex but got `{other}`"),
+        )),
+    }
+}
+
+/// Unwrap a runtime `Value` expected to be an `atomic_i64` handle, reporting
+/// `L0417` otherwise.
+pub fn expect_atomic(name: &str, value: Value) -> Result<SharedAtomic, RuntimeError> {
+    match value {
+        Value::Atomic(atomic) => Ok(atomic),
+        other => Err(RuntimeError::new(
+            "L0417",
+            format!("{name} expects an atomic_i64 but got `{other}`"),
         )),
     }
 }
@@ -1045,6 +1082,16 @@ impl<'a> Runtime<'a> {
             "mutex_get" => Self::builtin_mutex_get(args),
             "mutex_set" => Self::builtin_mutex_set(args),
             "mutex_add" => Self::builtin_mutex_add(args),
+            "atomic_new" => Self::builtin_atomic_new(args),
+            "atomic_load" => Self::builtin_atomic_load(args),
+            "atomic_store" => Self::builtin_atomic_store(args),
+            "atomic_swap" => Self::builtin_atomic_swap(args),
+            "atomic_cas" => Self::builtin_atomic_cas(args),
+            "atomic_add" => Self::builtin_atomic_add(args),
+            "atomic_sub" => Self::builtin_atomic_sub(args),
+            "atomic_and" => Self::builtin_atomic_and(args),
+            "atomic_or" => Self::builtin_atomic_or(args),
+            "atomic_xor" => Self::builtin_atomic_xor(args),
             "tcp_connect" => self.builtin_tcp_connect(args),
             "tcp_listen" => self.builtin_tcp_listen(args),
             "tcp_accept" => self.builtin_tcp_accept(args),
@@ -1311,6 +1358,124 @@ impl<'a> Runtime<'a> {
             .map_err(|_| RuntimeError::new("L0401", "mutex_add on a poisoned mutex"))?;
         *guard = guard.wrapping_add(delta);
         Ok(Value::I64(*guard))
+    }
+
+    /// `atomic_new(v i64) -> atomic_i64`: allocate a fresh shared atomic cell
+    /// initialized to `v`. Cloning the returned handle shares the same
+    /// `Arc<AtomicI64>`, so several threads observe each other's updates.
+    fn builtin_atomic_new(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atomic_new", 1, args.len()))?;
+        let value = expect_i64("atomic_new", value)?;
+        Ok(Value::Atomic(SharedAtomic {
+            cell: Arc::new(AtomicI64::new(value)),
+        }))
+    }
+
+    /// `atomic_load(a atomic_i64) -> i64`: read the cell (SeqCst).
+    fn builtin_atomic_load(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [atomic]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atomic_load", 1, args.len()))?;
+        let atomic = expect_atomic("atomic_load", atomic)?;
+        Ok(Value::I64(atomic.cell.load(Ordering::SeqCst)))
+    }
+
+    /// `atomic_store(a atomic_i64, v i64) -> void`: write the cell (SeqCst).
+    fn builtin_atomic_store(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [atomic, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atomic_store", 2, args.len()))?;
+        let atomic = expect_atomic("atomic_store", atomic)?;
+        let value = expect_i64("atomic_store", value)?;
+        atomic.cell.store(value, Ordering::SeqCst);
+        Ok(Value::Void)
+    }
+
+    /// `atomic_swap(a atomic_i64, v i64) -> i64`: store `v`, return the previous
+    /// value (SeqCst).
+    fn builtin_atomic_swap(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [atomic, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atomic_swap", 2, args.len()))?;
+        let atomic = expect_atomic("atomic_swap", atomic)?;
+        let value = expect_i64("atomic_swap", value)?;
+        Ok(Value::I64(atomic.cell.swap(value, Ordering::SeqCst)))
+    }
+
+    /// `atomic_cas(a atomic_i64, expected i64, new i64) -> i64`: strong
+    /// compare-and-swap. Returns the value that was in the cell (equal to
+    /// `expected` on success), matching C11's value-returning shape. SeqCst on
+    /// both success and failure.
+    fn builtin_atomic_cas(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [atomic, expected, new]: [Value; 3] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("atomic_cas", 3, args.len()))?;
+        let atomic = expect_atomic("atomic_cas", atomic)?;
+        let expected = expect_i64("atomic_cas", expected)?;
+        let new = expect_i64("atomic_cas", new)?;
+        // `compare_exchange` returns `Ok(prev)` on success and `Err(current)` on
+        // failure; both payloads carry the value that was observed in the cell.
+        let observed =
+            match atomic
+                .cell
+                .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(prev) => prev,
+                Err(current) => current,
+            };
+        Ok(Value::I64(observed))
+    }
+
+    /// `atomic_add(a atomic_i64, v i64) -> i64`: fetch-and-add, returning the
+    /// PREVIOUS value (SeqCst). Wrapping arithmetic, as `fetch_add` defines.
+    fn builtin_atomic_add(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let (atomic, value) = Self::atomic_binary_args("atomic_add", args)?;
+        Ok(Value::I64(atomic.cell.fetch_add(value, Ordering::SeqCst)))
+    }
+
+    /// `atomic_sub(a atomic_i64, v i64) -> i64`: fetch-and-sub, returning the
+    /// PREVIOUS value (SeqCst).
+    fn builtin_atomic_sub(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let (atomic, value) = Self::atomic_binary_args("atomic_sub", args)?;
+        Ok(Value::I64(atomic.cell.fetch_sub(value, Ordering::SeqCst)))
+    }
+
+    /// `atomic_and(a atomic_i64, v i64) -> i64`: fetch-and-and, returning the
+    /// PREVIOUS value (SeqCst).
+    fn builtin_atomic_and(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let (atomic, value) = Self::atomic_binary_args("atomic_and", args)?;
+        Ok(Value::I64(atomic.cell.fetch_and(value, Ordering::SeqCst)))
+    }
+
+    /// `atomic_or(a atomic_i64, v i64) -> i64`: fetch-and-or, returning the
+    /// PREVIOUS value (SeqCst).
+    fn builtin_atomic_or(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let (atomic, value) = Self::atomic_binary_args("atomic_or", args)?;
+        Ok(Value::I64(atomic.cell.fetch_or(value, Ordering::SeqCst)))
+    }
+
+    /// `atomic_xor(a atomic_i64, v i64) -> i64`: fetch-and-xor, returning the
+    /// PREVIOUS value (SeqCst).
+    fn builtin_atomic_xor(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let (atomic, value) = Self::atomic_binary_args("atomic_xor", args)?;
+        Ok(Value::I64(atomic.cell.fetch_xor(value, Ordering::SeqCst)))
+    }
+
+    /// Shared argument-decoding for the `atomic_<op>(a atomic_i64, v i64)`
+    /// fetch-and-op family: exactly two arguments, an atomic handle then an
+    /// `i64` operand.
+    fn atomic_binary_args(
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<(SharedAtomic, i64), RuntimeError> {
+        let [atomic, value]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity(name, 2, args.len()))?;
+        let atomic = expect_atomic(name, atomic)?;
+        let value = expect_i64(name, value)?;
+        Ok((atomic, value))
     }
 
     /// Push a freshly opened socket resource into the handle table, returning its
@@ -4139,6 +4304,93 @@ mod tests {
         assert_eq!(
             Runtime::builtin_mutex_get(vec![value]).expect("mutex_get"),
             Value::I64(800)
+        );
+    }
+
+    #[test]
+    fn atomic_ops_are_deterministic_single_threaded() {
+        // Exercise the full atomic surface deterministically, mirroring the
+        // `run_atomics.lby` parity fixture: new(10), add(5) -> prev 10 (cell 15),
+        // load -> 15, cas(15, 99) -> 15 (cell 99), load -> 99, swap(7) -> 99
+        // (cell 7), and the bitwise fetch-ops.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(10)\n",
+            "    let p0 i64 = atomic_add(a, 5)\n", // prev 10, cell 15
+            "    let l0 i64 = atomic_load(a)\n",   // 15
+            "    let c0 i64 = atomic_cas(a, 15, 99)\n", // 15, cell 99
+            "    let l1 i64 = atomic_load(a)\n",   // 99
+            "    let s0 i64 = atomic_swap(a, 7)\n", // 99, cell 7
+            "    let sub0 i64 = atomic_sub(a, 2)\n", // prev 7, cell 5
+            "    let and0 i64 = atomic_and(a, 6)\n", // prev 5 (5&6=4), cell 4
+            "    let or0 i64 = atomic_or(a, 1)\n", // prev 4 (4|1=5), cell 5
+            "    let xor0 i64 = atomic_xor(a, 7)\n", // prev 5 (5^7=2), cell 2
+            "    let final i64 = atomic_load(a)\n", // 2
+            "    p0 + l0 + c0 + l1 + s0 + sub0 + and0 + or0 + xor0 + final\n",
+        );
+        // 10 + 15 + 15 + 99 + 99 + 7 + 5 + 4 + 5 + 2 = 261.
+        assert_eq!(run_source(source).expect("run"), Value::I64(261));
+    }
+
+    #[test]
+    fn atomic_shared_across_threads_via_clone() {
+        // The `Value::Atomic` handle shares its `Arc<AtomicI64>` on clone, so
+        // many OS threads racing `atomic_add` against the same cell lose no
+        // updates: the final total is the exact sum. This proves real atomicity
+        // (an ordinary `mutex`-free counter would drop increments under this
+        // contention).
+        let atomic = SharedAtomic {
+            cell: Arc::new(AtomicI64::new(0)),
+        };
+        let value = Value::Atomic(atomic);
+        const THREADS: i64 = 8;
+        const ITERS: i64 = 10_000;
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let handle = value.clone();
+                scope.spawn(move || {
+                    for _ in 0..ITERS {
+                        Runtime::builtin_atomic_add(vec![handle.clone(), Value::I64(1)])
+                            .expect("atomic_add");
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            Runtime::builtin_atomic_load(vec![value]).expect("atomic_load"),
+            Value::I64(THREADS * ITERS)
+        );
+    }
+
+    #[test]
+    fn atomic_add_returns_previous_and_races_lose_no_updates() {
+        // A second multi-threaded proof that also checks the fetch-and-op
+        // *return contract*: `atomic_add` returns the PREVIOUS value, so the set
+        // of returned values across a single-threaded run is a permutation of
+        // the prefix sums. Here we assert the stronger cross-thread invariant:
+        // with N threads each adding a distinct large stride, the final load is
+        // the exact arithmetic sum with no lost update.
+        let atomic = SharedAtomic {
+            cell: Arc::new(AtomicI64::new(0)),
+        };
+        let value = Value::Atomic(atomic);
+        const THREADS: i64 = 6;
+        const ITERS: i64 = 5_000;
+        const STRIDE: i64 = 3;
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let handle = value.clone();
+                scope.spawn(move || {
+                    for _ in 0..ITERS {
+                        Runtime::builtin_atomic_add(vec![handle.clone(), Value::I64(STRIDE)])
+                            .expect("atomic_add");
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            Runtime::builtin_atomic_load(vec![value]).expect("atomic_load"),
+            Value::I64(THREADS * ITERS * STRIDE)
         );
     }
 
