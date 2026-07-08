@@ -1,0 +1,12 @@
+# to_string renders every scalar in the numeric lattice, not just i64/f64.
+# Signed and unsigned fixed-width integers print their value/magnitude and f32
+# prints at single precision. Deterministic i64 (the joined length) on the AST,
+# IR, and bytecode backends.
+fn main -> i64
+    let parts string = to_string(to_i32(0 - 5))
+    parts = parts + "," + to_string(to_u32(4000000000))
+    parts = parts + "," + to_string(to_f32(1.5))
+    parts = parts + "," + to_string(to_u16(65535))
+    parts = parts + "," + to_string(to_i8(0 - 128))
+    # "-5,4000000000,1.5,65535,-128"
+    len(parts)

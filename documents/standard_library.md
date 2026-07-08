@@ -40,7 +40,7 @@ Signatures use the language's own spelling: `name param Type ... -> ReturnType`.
 
 | Function | Signature | Notes |
 |----------|-----------|-------|
-| `to_string` | `to_string(x) -> string` | accepts `i64`, `f64`, `bool`, `string`, `char`, `byte` |
+| `to_string` | `to_string(x) -> string` | accepts any scalar: the numeric lattice (`i64`/`f64`/`i8`…`usize`/`f32`), `bool`, `string`, `char`, `byte` |
 | `char_code` | `char_code(c char) -> i64` | Unicode scalar value |
 | `char_from` | `char_from(i i64) -> char` | runtime error on an invalid scalar |
 | `byte` | `byte(i i64) -> byte` | runtime error outside 0–255 |

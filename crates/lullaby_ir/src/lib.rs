@@ -4908,7 +4908,9 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("to_string", 1, args.len()))?;
         match value {
             Value::I64(_)
+            | Value::Int { .. }
             | Value::F64(_)
+            | Value::F32(_)
             | Value::Bool(_)
             | Value::String(_)
             | Value::Char(_)

@@ -2775,16 +2775,17 @@ impl<'a> Checker<'a> {
             "to_string" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let arg_type = self.check_expr(&args[0], scope, function)?;
-                if matches!(
-                    arg_type.name.as_str(),
-                    "i64" | "f64" | "bool" | "string" | "char" | "byte"
-                ) {
+                // Every scalar renders: the full numeric lattice plus bool,
+                // string, char, and byte.
+                if is_numeric_type_name(&arg_type.name)
+                    || matches!(arg_type.name.as_str(), "bool" | "string" | "char" | "byte")
+                {
                     Some(TypeRef::new("string"))
                 } else {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0313",
                         format!(
-                            "to_string expects an i64, f64, bool, string, char, or byte value but got `{}`",
+                            "to_string expects a scalar value (a numeric type, bool, string, char, or byte) but got `{}`",
                             arg_type.name
                         ),
                         Some(function.name.clone()),
@@ -7614,6 +7615,16 @@ mod tests {
             diagnostics.iter().any(|d| d.code == "L0307"),
             "{diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn to_string_accepts_the_numeric_lattice() {
+        // to_string renders every numeric type, not just i64/f64.
+        let source = concat!(
+            "fn main -> string\n",
+            "    to_string(to_i32(1)) + to_string(to_u64(2)) + to_string(to_f32(3.0))\n",
+        );
+        validate_source(source).expect("to_string on fixed-width ints and f32 type-checks");
     }
 
     #[test]
