@@ -1,0 +1,14 @@
+fn ok_path -> i64
+    let r result<i64, i64> = ok(30)
+    match r
+        ok(q) -> q + 5
+        err(e) -> e
+
+fn err_path -> i64
+    let r result<i64, i64> = err(9)
+    match r
+        ok(q) -> q + 5
+        err(e) -> e
+
+fn main -> i64
+    ok_path() + err_path()

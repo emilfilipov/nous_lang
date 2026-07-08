@@ -1,0 +1,12 @@
+fn lookup key i64 -> option<i64>
+    if key == 1
+        return some(11)
+    none
+
+fn use_lookup key i64 -> i64
+    match lookup(key)
+        some(v) -> v + 3
+        none -> 1
+
+fn main -> i64
+    use_lookup(1) + use_lookup(2)

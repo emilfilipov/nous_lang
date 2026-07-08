@@ -8,7 +8,8 @@ use lullaby_parser::{AssignOp, BinaryOp, TypeRef};
 use crate::native_contract::{NativeObjectFormat, NativeTarget, alpha1_native_backend_contract};
 use crate::{
     BytecodeExpr, BytecodeExprKind, BytecodeFunction, BytecodeIfBranch, BytecodeInstruction,
-    BytecodeModule, BytecodePlace, IntKind, IrStructDef,
+    BytecodeMatchArm, BytecodeMatchPattern, BytecodeModule, BytecodePlace, IntKind, IrEnumDef,
+    IrStructDef,
 };
 
 /// The fixed-width integer kind named by a Lullaby type name (`i8`/`u32`/…), or
@@ -890,6 +891,7 @@ pub fn emit_alpha1_native_program_with_debug(
                 &callable,
                 &extern_sigs,
                 &module.structs,
+                &module.enums,
                 &mut strings,
             ) {
                 Ok(l) => lowered.push(l),
@@ -1024,6 +1026,29 @@ enum NativeType {
     },
     /// A fixed-length array of a supported element type.
     Array { elem: Box<NativeType>, len: usize },
+    /// A tagged enum whose variants all carry scalar payloads. Laid out as one
+    /// tag word (the variant's discriminant index) followed by
+    /// `payload_words` payload words (the maximum payload width across the
+    /// variants). Each variant records its ordered scalar payload words for
+    /// construction and `match` binding. The discriminant of a variant is its
+    /// index in `variants`, matching the order the IR/interpreters use for that
+    /// enum (declared order for a user enum; `some,none` / `ok,err` for the
+    /// built-in generics).
+    Enum {
+        name: String,
+        variants: Vec<NativeEnumVariant>,
+        /// Max payload words across all variants (the payload region size).
+        payload_words: usize,
+    },
+}
+
+/// One variant of a native enum layout: its name, its discriminant index (the
+/// tag value), and its ordered scalar payload word layouts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeEnumVariant {
+    name: String,
+    tag: i64,
+    payload: Vec<NativeType>,
 }
 
 impl NativeType {
@@ -1033,6 +1058,8 @@ impl NativeType {
             NativeType::I64 | NativeType::F64 | NativeType::F32 => 1,
             NativeType::Struct { fields, .. } => fields.iter().map(|(_, t)| t.words()).sum(),
             NativeType::Array { elem, len } => elem.words() * len,
+            // One tag word plus the shared payload region.
+            NativeType::Enum { payload_words, .. } => 1 + payload_words,
         }
     }
 }
@@ -1062,12 +1089,22 @@ impl FloatWidth {
 /// from the type alone (their length is not encoded in `array<T>`); array
 /// locals derive their layout from their initializer instead, so a bare
 /// `array<...>` type reaching here is an error the caller turns into a skip.
-fn resolve_native_type(ty: &TypeRef, structs: &[IrStructDef]) -> Result<NativeType, String> {
+fn resolve_native_type(
+    ty: &TypeRef,
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> Result<NativeType, String> {
     match ty.name.as_str() {
         "i64" => Ok(NativeType::I64),
         // A fixed-width integer (`i8`…`usize`) is stored as its normalized `i64`
         // cell, so it occupies exactly one 8-byte word like `i64`.
         name if fixed_int_kind(name).is_some() => Ok(NativeType::I64),
+        // `bool`/`char`/`byte` are single normalized `i64` cells (0/1 for bool,
+        // the code point for char, the byte value for byte), so each occupies one
+        // 8-byte word. These reach here only as enum payload types; a scalar local
+        // of these types never selects this path (the frontend types them
+        // directly), but sizing them here keeps the enum payload word count exact.
+        "bool" | "char" | "byte" => Ok(NativeType::I64),
         // `f64`/`f32` each occupy one 8-byte word. An f32 keeps only its low four
         // bytes meaningful but is stored in a full word for uniform layout.
         "f64" => Ok(NativeType::F64),
@@ -1075,6 +1112,8 @@ fn resolve_native_type(ty: &TypeRef, structs: &[IrStructDef]) -> Result<NativeTy
         name if name.starts_with("array<") => Err(format!(
             "array length for `{name}` is unknown from its type"
         )),
+        // The built-in generic enums and user enums with scalar payloads.
+        name if is_enum_type_name(name, enums) => resolve_enum_type(ty, structs, enums),
         name => {
             let def = structs
                 .iter()
@@ -1082,7 +1121,7 @@ fn resolve_native_type(ty: &TypeRef, structs: &[IrStructDef]) -> Result<NativeTy
                 .ok_or_else(|| format!("type `{name}` is not in the native stack subset"))?;
             let mut fields = Vec::with_capacity(def.fields.len());
             for (field_name, field_ty) in &def.fields {
-                let native = resolve_native_type(field_ty, structs).map_err(|_| {
+                let native = resolve_native_type(field_ty, structs, enums).map_err(|_| {
                     format!("struct `{name}` field `{field_name}` is not an all-i64 native type")
                 })?;
                 // Float fields inside aggregates are out of scope: the aggregate
@@ -1104,17 +1143,127 @@ fn resolve_native_type(ty: &TypeRef, structs: &[IrStructDef]) -> Result<NativeTy
     }
 }
 
+/// The base enum-constructor name of a type spelling: `option` for `option<i64>`
+/// or a bare `option`, `result` for `result<i64, i64>`, and the enum name for a
+/// user enum spelling (which never carries generic arguments).
+fn enum_ctor_name(name: &str) -> &str {
+    match name.split_once('<') {
+        Some((ctor, _)) => ctor,
+        None => name,
+    }
+}
+
+/// Whether a type spelling names an enum: the built-in `option`/`result`
+/// generics (with or without arguments) or a declared user enum.
+fn is_enum_type_name(name: &str, enums: &[IrEnumDef]) -> bool {
+    let ctor = enum_ctor_name(name);
+    ctor == "option" || ctor == "result" || enums.iter().any(|e| e.name == ctor)
+}
+
+/// Resolve an enum type spelling into its native layout: the ordered variants
+/// (each with its discriminant tag and scalar payload word layouts) and the
+/// shared payload region width. The tag of a variant is its index in the
+/// interpreter/IR variant order: declared order for a user enum, and
+/// `some`(0)/`none`(1) for `option`, `ok`(0)/`err`(1) for `result`.
+fn resolve_enum_type(
+    ty: &TypeRef,
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> Result<NativeType, String> {
+    let ctor = enum_ctor_name(&ty.name);
+    // The ordered (variant name, payload types) pairs for this enum.
+    let variant_specs: Vec<(String, Vec<TypeRef>)> = match ctor {
+        "option" => {
+            // `option<T>`: `some(T)` then `none`. The payload type is only known
+            // when the spelling carries its argument (`option<i64>`); a bare
+            // `option` is not sizable and is rejected so the function skips.
+            let elem = ty.option_element().ok_or_else(|| {
+                "native enum layout needs the concrete `option<T>` element type".to_string()
+            })?;
+            vec![
+                ("some".to_string(), vec![elem]),
+                ("none".to_string(), vec![]),
+            ]
+        }
+        "result" => {
+            // `result<T, E>`: `ok(T)` then `err(E)`. Both arguments must be
+            // present and scalar; a heap `E` (e.g. `string`) is rejected below.
+            let (ok_ty, err_ty) = ty.result_args().ok_or_else(|| {
+                "native enum layout needs the concrete `result<T, E>` argument types".to_string()
+            })?;
+            vec![
+                ("ok".to_string(), vec![ok_ty]),
+                ("err".to_string(), vec![err_ty]),
+            ]
+        }
+        _ => {
+            let def = enums
+                .iter()
+                .find(|e| e.name == ctor)
+                .ok_or_else(|| format!("enum `{ctor}` is not declared"))?;
+            def.variants
+                .iter()
+                .map(|v| (v.name.clone(), v.payload.clone()))
+                .collect()
+        }
+    };
+
+    let mut variants = Vec::with_capacity(variant_specs.len());
+    let mut payload_words = 0usize;
+    for (tag, (name, payload_types)) in variant_specs.into_iter().enumerate() {
+        let mut payload = Vec::with_capacity(payload_types.len());
+        for payload_ty in &payload_types {
+            let native = resolve_native_type(payload_ty, structs, enums).map_err(|_| {
+                format!(
+                    "enum `{ctor}` variant `{name}` payload type `{}` is not a native scalar \
+                     (heap payloads and nested aggregates are deferred)",
+                    payload_ty.name
+                )
+            })?;
+            // Only scalar payloads are supported: an `i64`/fixed-width/bool/char/
+            // byte cell (`NativeType::I64`) or a float (`F64`/`F32`). A nested
+            // struct/array/enum payload is out of scope and skips gracefully.
+            match native {
+                NativeType::I64 | NativeType::F64 | NativeType::F32 => payload.push(native),
+                _ => {
+                    return Err(format!(
+                        "enum `{ctor}` variant `{name}` has a non-scalar payload; \
+                         only scalar enum payloads are in the native subset"
+                    ));
+                }
+            }
+        }
+        let this_words: usize = payload.iter().map(NativeType::words).sum();
+        payload_words = payload_words.max(this_words);
+        variants.push(NativeEnumVariant {
+            name,
+            tag: tag as i64,
+            payload,
+        });
+    }
+
+    Ok(NativeType::Enum {
+        name: ctor.to_string(),
+        variants,
+        payload_words,
+    })
+}
+
 /// Infer the `NativeType` of an initializer expression, using its static type
 /// plus (for array literals) the literal element count. This is how array
 /// lengths enter the layout, since `array<T>` carries no length.
-fn native_type_of_init(expr: &BytecodeExpr, structs: &[IrStructDef]) -> Result<NativeType, String> {
+fn native_type_of_init(
+    expr: &BytecodeExpr,
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> Result<NativeType, String> {
     if let BytecodeExprKind::Array(elements) = &expr.kind {
         let first = elements
             .first()
             .ok_or("empty array literals are not in the native stack subset")?;
-        let elem = native_type_of_init(first, structs)?;
+        let elem = native_type_of_init(first, structs, enums)?;
         for other in &elements[1..] {
-            let other_ty = native_type_of_init(other, structs)?;
+            let other_ty = native_type_of_init(other, structs, enums)?;
             if other_ty != elem {
                 return Err("array literal elements have differing native layouts".to_string());
             }
@@ -1124,7 +1273,7 @@ fn native_type_of_init(expr: &BytecodeExpr, structs: &[IrStructDef]) -> Result<N
             len: elements.len(),
         });
     }
-    resolve_native_type(&expr.ty, structs)
+    resolve_native_type(&expr.ty, structs, enums)
 }
 
 /// A function lowered to x86-64: its symbol name, machine-code bytes, and the
@@ -1205,6 +1354,14 @@ struct NativeCtx<'a> {
     /// Program-wide interned string constants (`.rdata`), shared across all
     /// functions being lowered.
     strings: &'a mut StringPool,
+    /// Struct definitions, for resolving aggregate and enum-payload layouts.
+    structs: &'a [IrStructDef],
+    /// Enum definitions, for resolving enum-value layouts (tags/payloads).
+    enums: &'a [IrEnumDef],
+    /// Temporary stack slots for materialized enum scrutinees (a `match` on a
+    /// call result or constructed enum spills the value here). Assigned lazily
+    /// past the planned locals; `scratch_base` marks the first free word.
+    scratch_next: i32,
 }
 
 impl<'a> NativeCtx<'a> {
@@ -1217,6 +1374,7 @@ impl<'a> NativeCtx<'a> {
         callable: &'a std::collections::HashSet<&'a str>,
         extern_sigs: &'a HashMap<&'a str, &'a crate::IrExternSignature>,
         structs: &'a [IrStructDef],
+        enums: &'a [IrEnumDef],
         strings: &'a mut StringPool,
     ) -> Result<Self, String> {
         let mut locals: HashMap<String, NativeLocal> = HashMap::new();
@@ -1236,7 +1394,23 @@ impl<'a> NativeCtx<'a> {
         }
 
         // Then `let` and `for` induction locals discovered anywhere in the body.
-        collect_native_locals(&function.instructions, structs, &mut locals, &mut next_slot)?;
+        collect_native_locals(
+            &function.instructions,
+            structs,
+            enums,
+            &mut locals,
+            &mut next_slot,
+        )?;
+
+        // Reserve scratch words for `match` scrutinees that are not plain locals
+        // (a call result or freshly-constructed enum is spilled to scratch before
+        // the tag dispatch). One shared region sized to the widest such enum
+        // scrutinee across the function suffices, since a match fully consumes its
+        // scratch before the next one runs. The scratch base is the first word
+        // past the planned locals.
+        let scratch_words = max_match_scratch_words(&function.instructions, structs, enums)?;
+        let scratch_base = next_slot;
+        next_slot += scratch_words as i32 * 8;
 
         let has_call = body_has_call(&function.instructions);
         // Reserve local slots plus (if calling) 32 bytes of shadow space.
@@ -1253,7 +1427,20 @@ impl<'a> NativeCtx<'a> {
             extern_sigs,
             relocations: Vec::new(),
             strings,
+            structs,
+            enums,
+            // First scratch word sits one word past the scratch base.
+            scratch_next: scratch_base + 8,
         })
+    }
+
+    /// Allocate `words` contiguous scratch words, returning the base slot of the
+    /// first word. Used to spill a temporary enum scrutinee. The cursor advances;
+    /// callers restore it after the match via the returned saved cursor.
+    fn alloc_scratch(&mut self, words: usize) -> i32 {
+        let base = self.scratch_next;
+        self.scratch_next += words as i32 * 8;
+        base
     }
 
     /// The base-word slot displacement of a local (its first `[rbp - slot]`).
@@ -1298,6 +1485,7 @@ enum ScalarPlace {
 fn collect_native_locals(
     body: &[BytecodeInstruction],
     structs: &[IrStructDef],
+    enums: &[IrEnumDef],
     locals: &mut HashMap<String, NativeLocal>,
     next_slot: &mut i32,
 ) -> Result<(), String> {
@@ -1308,9 +1496,9 @@ fn collect_native_locals(
             } => {
                 if !locals.contains_key(name) {
                     let native = if ty.name.starts_with("array<") {
-                        native_type_of_init(value, structs)?
+                        native_type_of_init(value, structs, enums)?
                     } else {
-                        resolve_native_type(ty, structs)?
+                        resolve_native_type(ty, structs, enums)?
                     };
                     let words = native.words() as i32;
                     *next_slot += words * 8;
@@ -1343,7 +1531,7 @@ fn collect_native_locals(
                         }
                     });
                 }
-                collect_native_locals(body, structs, locals, next_slot)?;
+                collect_native_locals(body, structs, enums, locals, next_slot)?;
             }
             BytecodeInstruction::If {
                 branches,
@@ -1351,17 +1539,109 @@ fn collect_native_locals(
                 ..
             } => {
                 for branch in branches {
-                    collect_native_locals(&branch.body, structs, locals, next_slot)?;
+                    collect_native_locals(&branch.body, structs, enums, locals, next_slot)?;
                 }
-                collect_native_locals(else_body, structs, locals, next_slot)?;
+                collect_native_locals(else_body, structs, enums, locals, next_slot)?;
             }
             BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
-                collect_native_locals(body, structs, locals, next_slot)?;
+                collect_native_locals(body, structs, enums, locals, next_slot)?;
+            }
+            BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } => {
+                // Each variant-pattern binding becomes a distinct local sized by
+                // the matched variant's payload word at that position. The
+                // scrutinee's static enum layout supplies the per-variant payload
+                // types; a non-enum or heap-payload scrutinee errors out here so
+                // the function skips gracefully.
+                let layout = resolve_native_type(&scrutinee.ty, structs, enums)?;
+                let NativeType::Enum { variants, .. } = &layout else {
+                    return Err("match scrutinee is not a native enum layout".to_string());
+                };
+                for arm in arms {
+                    if let BytecodeMatchPattern::Variant { name, bindings } = &arm.pattern {
+                        let variant = variants
+                            .iter()
+                            .find(|v| &v.name == name)
+                            .ok_or_else(|| format!("match arm names unknown variant `{name}`"))?;
+                        if bindings.len() > variant.payload.len() {
+                            return Err(format!(
+                                "variant `{name}` has {} payload field(s) but the pattern binds {}",
+                                variant.payload.len(),
+                                bindings.len()
+                            ));
+                        }
+                        for (binding, payload_ty) in bindings.iter().zip(variant.payload.iter()) {
+                            if !locals.contains_key(binding) {
+                                let words = payload_ty.words() as i32;
+                                *next_slot += words * 8;
+                                locals.insert(
+                                    binding.clone(),
+                                    NativeLocal {
+                                        slot: *next_slot - (words - 1) * 8,
+                                        ty: payload_ty.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    collect_native_locals(&arm.body, structs, enums, locals, next_slot)?;
+                }
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// The maximum scratch words a `match` in this body needs for a temporary
+/// (non-plain-local) enum scrutinee. A match whose scrutinee is a plain local
+/// dispatches in place and needs no scratch; any other scrutinee (a call
+/// result, a freshly-constructed enum, an aggregate access) is spilled to a
+/// scratch region sized to its enum layout. Recurses through nested bodies so
+/// the single shared scratch region is sized to the widest such scrutinee.
+fn max_match_scratch_words(
+    body: &[BytecodeInstruction],
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> Result<usize, String> {
+    let mut max = 0usize;
+    for instruction in body {
+        let nested = match instruction {
+            BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } => {
+                let mut here = 0usize;
+                if !matches!(scrutinee.kind, BytecodeExprKind::Variable(_)) {
+                    let layout = resolve_native_type(&scrutinee.ty, structs, enums)?;
+                    here = layout.words();
+                }
+                for arm in arms {
+                    here = here.max(max_match_scratch_words(&arm.body, structs, enums)?);
+                }
+                here
+            }
+            BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                let mut here = max_match_scratch_words(else_body, structs, enums)?;
+                for branch in branches {
+                    here = here.max(max_match_scratch_words(&branch.body, structs, enums)?);
+                }
+                here
+            }
+            BytecodeInstruction::While { body, .. }
+            | BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::For { body, .. } => {
+                max_match_scratch_words(body, structs, enums)?
+            }
+            _ => 0,
+        };
+        max = max.max(nested);
+    }
+    Ok(max)
 }
 
 /// Whether any instruction in a body issues a call (so the frame needs shadow
@@ -1406,10 +1686,14 @@ fn instruction_has_call(instruction: &BytecodeInstruction) -> bool {
                 || body_has_call(body)
         }
         BytecodeInstruction::Loop { body, .. } => body_has_call(body),
+        // A `match` needs shadow space if its scrutinee (often a call) or any arm
+        // body issues a call.
+        BytecodeInstruction::Match {
+            scrutinee, arms, ..
+        } => expr_has_call(scrutinee) || arms.iter().any(|arm| body_has_call(&arm.body)),
         BytecodeInstruction::Throw { .. }
         | BytecodeInstruction::Try { .. }
-        | BytecodeInstruction::Asm { .. }
-        | BytecodeInstruction::Match { .. } => false,
+        | BytecodeInstruction::Asm { .. } => false,
     }
 }
 
@@ -1443,9 +1727,10 @@ fn lower_native_function(
     callable: &std::collections::HashSet<&str>,
     extern_sigs: &HashMap<&str, &crate::IrExternSignature>,
     structs: &[IrStructDef],
+    enums: &[IrEnumDef],
     strings: &mut StringPool,
 ) -> Result<LoweredNativeFunction, String> {
-    let mut ctx = NativeCtx::plan(function, callable, extern_sigs, structs, strings)?;
+    let mut ctx = NativeCtx::plan(function, callable, extern_sigs, structs, enums, strings)?;
     let mut code = Vec::new();
 
     // Prologue: push rbp; mov rbp, rsp; sub rsp, frame_size.
@@ -1484,6 +1769,12 @@ fn lower_native_function(
     // the fallthrough `xor eax,eax` below. (The programmer must not emit their
     // own `ret` — the epilogue restores `rbp` and `rsp` and returns.)
     let tail_is_asm = matches!(instructions.last(), Some(BytecodeInstruction::Asm { .. }));
+    // A function whose last statement is a `match` producing the function's value:
+    // each arm leaves its result in `rax`; after the whole match, the epilogue
+    // returns it. (An arm that itself ends in an explicit `return` emits its own
+    // epilogue and never reaches the shared match end.)
+    let tail_is_value_match = !function.return_type.is_void()
+        && matches!(instructions.last(), Some(BytecodeInstruction::Match { .. }));
     if tail_is_asm {
         let (head, tail) = instructions.split_at(instructions.len() - 1);
         lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
@@ -1496,6 +1787,16 @@ fn lower_native_function(
         lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
         if let BytecodeInstruction::Expr(expr) = &tail[0] {
             lower_native_expr(&mut ctx, expr, &mut code)?;
+        }
+        emit_native_epilogue(&mut code, ctx.frame_size);
+    } else if tail_is_value_match {
+        let (head, tail) = instructions.split_at(instructions.len() - 1);
+        lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
+        if let BytecodeInstruction::Match {
+            scrutinee, arms, ..
+        } = &tail[0]
+        {
+            lower_native_match(&mut ctx, scrutinee, arms, true, &mut code, &mut loops)?;
         }
         emit_native_epilogue(&mut code, ctx.frame_size);
     } else {
@@ -1576,7 +1877,7 @@ fn lower_native_stmt(
                     let width = lower_native_float_expr(ctx, value, code)?;
                     store_float_local(code, slot, width); // movs[sd] [rbp - slot], xmm0
                 }
-                NativeType::Struct { .. } | NativeType::Array { .. } => {
+                NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. } => {
                     let base = ctx.local(name)?.slot;
                     let ty = ctx.local(name)?.ty.clone();
                     lower_aggregate_init(ctx, base, &ty, value, code)?;
@@ -1633,6 +1934,23 @@ fn lower_native_stmt(
                     }
                 }
                 return Ok(());
+            }
+            // A path-less whole-value assignment to an enum (or other aggregate)
+            // local re-materializes the value into the local's words. Only
+            // `Replace` is meaningful for an aggregate (there is no `+=` on a
+            // struct/array/enum), so a compound op on one is rejected as a skip.
+            if path.is_empty()
+                && matches!(
+                    ctx.local(name)?.ty,
+                    NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. }
+                )
+            {
+                if !matches!(op, AssignOp::Replace) {
+                    return Err("compound assignment on an aggregate is not supported".to_string());
+                }
+                let base = ctx.local(name)?.slot;
+                let ty = ctx.local(name)?.ty.clone();
+                return lower_aggregate_init(ctx, base, &ty, value, code);
             }
             let place = resolve_scalar_place(ctx, name, path)?;
             match op {
@@ -1751,7 +2069,9 @@ fn lower_native_stmt(
         BytecodeInstruction::Throw { .. } | BytecodeInstruction::Try { .. } => {
             Err("throw/try is not in the native subset".to_string())
         }
-        BytecodeInstruction::Match { .. } => Err("match is not in the native subset".to_string()),
+        BytecodeInstruction::Match {
+            scrutinee, arms, ..
+        } => lower_native_match(ctx, scrutinee, arms, false, code, loops),
     }
 }
 
@@ -1805,6 +2125,14 @@ fn lower_aggregate_init(
             }
             Ok(())
         }
+        (
+            BytecodeExprKind::Call { name, args },
+            NativeType::Enum {
+                variants,
+                payload_words,
+                ..
+            },
+        ) => lower_enum_construction(ctx, base_slot, variants, *payload_words, name, args, code),
         (BytecodeExprKind::Variable(source), _) => {
             // Aggregate copy: duplicate the source local word-by-word.
             let src = ctx.local(source)?;
@@ -1820,6 +2148,55 @@ fn lower_aggregate_init(
         }
         _ => Err("initializer is not a native aggregate constructor".to_string()),
     }
+}
+
+/// Materialize an enum value into the words at `base_slot`: word 0 = the
+/// variant's discriminant tag, words 1.. = its payload. `payload_words` is the
+/// enum's shared payload region width; unused trailing payload words (for a
+/// narrower variant) are left untouched — `match` only reads the words the
+/// matched variant defines, so stale bytes are never observed. `name` is the
+/// constructed variant; `args` its positional payload expressions.
+fn lower_enum_construction(
+    ctx: &mut NativeCtx,
+    base_slot: i32,
+    variants: &[NativeEnumVariant],
+    _payload_words: usize,
+    name: &str,
+    args: &[BytecodeExpr],
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    let variant = variants
+        .iter()
+        .find(|v| v.name == name)
+        .ok_or_else(|| format!("enum constructor `{name}` is not a variant of the target enum"))?;
+    if args.len() != variant.payload.len() {
+        return Err(format!(
+            "enum constructor `{name}` expects {} payload field(s), got {}",
+            variant.payload.len(),
+            args.len()
+        ));
+    }
+    // Tag word: mov the discriminant into rax and store it at word 0.
+    emit_mov_rax_imm(code, variant.tag);
+    store_local(code, base_slot);
+    // Payload words follow at base_slot + 8, +16, ... in field order. A float
+    // payload word is materialized through xmm0; a scalar through rax.
+    let mut word = base_slot + 8;
+    for (arg, field_ty) in args.iter().zip(variant.payload.iter()) {
+        match field_ty {
+            NativeType::I64 => {
+                lower_native_expr(ctx, arg, code)?;
+                store_local(code, word);
+            }
+            NativeType::F64 | NativeType::F32 => {
+                let width = lower_native_float_expr(ctx, arg, code)?;
+                store_float_local(code, word, width);
+            }
+            _ => return Err("enum payload must be a native scalar".to_string()),
+        }
+        word += field_ty.words() as i32 * 8;
+    }
+    Ok(())
 }
 
 /// Materialize `value` (of layout `ty`) into the stack word(s) at `word_slot`.
@@ -2022,6 +2399,198 @@ fn emit_imul_rax_imm(code: &mut Vec<u8>, imm: i64) {
 fn emit_sub_rcx_imm(code: &mut Vec<u8>, imm: i32) {
     code.extend_from_slice(&[0x48, 0x81, 0xE9]);
     code.extend_from_slice(&imm.to_le_bytes());
+}
+
+/// Lower a `match` over an enum value with scalar payloads.
+///
+/// Layout mirrors [`NativeType::Enum`]: the scrutinee occupies a tag word
+/// followed by its payload words. This function (1) materializes the scrutinee's
+/// value into a stack region — either an existing enum local (matched in place)
+/// or a scratch region holding a freshly-constructed / copied enum — (2) loads
+/// the tag word, and (3) dispatches: each variant arm compares the tag against
+/// the variant's discriminant, binds the variant's payload words into arm-scoped
+/// locals, lowers the arm body, then jumps to the shared match end. A wildcard
+/// arm binds nothing and is unconditional.
+///
+/// When `is_value` is true, each arm leaves its result value in `rax`; the caller
+/// emits the return epilogue after the shared end. When false the match is a
+/// statement and any produced value in `rax` is discarded.
+///
+/// The tag numbering is exactly the interpreter/IR variant order (declared order
+/// for a user enum; `some`(0)/`none`(1), `ok`(0)/`err`(1) for the built-ins), so
+/// the arm a native `match` selects is identical to the interpreters'.
+fn lower_native_match(
+    ctx: &mut NativeCtx,
+    scrutinee: &BytecodeExpr,
+    arms: &[BytecodeMatchArm],
+    is_value: bool,
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    // Resolve the scrutinee's enum layout from its static type.
+    let layout = resolve_native_type(&scrutinee.ty, ctx.structs, ctx.enums)?;
+    let NativeType::Enum {
+        variants,
+        payload_words,
+        ..
+    } = layout
+    else {
+        return Err("match scrutinee is not a native enum".to_string());
+    };
+
+    // Materialize the scrutinee into a stack region, yielding its base slot.
+    // A plain enum local is matched in place; any other scrutinee is spilled to a
+    // scratch region. The scratch cursor is saved and restored so sequential
+    // matches reuse the same words.
+    let saved_scratch = ctx.scratch_next;
+    let base_slot = match &scrutinee.kind {
+        BytecodeExprKind::Variable(name) if ctx.locals.contains_key(name) => {
+            // Match an existing enum local in place (no copy needed).
+            let local = ctx.local(name)?;
+            if !matches!(local.ty, NativeType::Enum { .. }) {
+                return Err("match scrutinee local is not an enum".to_string());
+            }
+            local.slot
+        }
+        BytecodeExprKind::Call { name, args } if variants.iter().any(|v| v.name == *name) => {
+            // A freshly-constructed enum: materialize it directly into scratch.
+            let words = 1 + payload_words;
+            let base = ctx.alloc_scratch(words);
+            lower_enum_construction(ctx, base, &variants, payload_words, name, args, code)?;
+            base
+        }
+        _ => {
+            // Matching the result of a call that *returns* an enum (or any other
+            // temporary enum expression) requires an aggregate return ABI that is
+            // not yet implemented; such a function skips gracefully to the
+            // interpreters rather than miscompiling.
+            return Err(
+                "match scrutinee must be an enum local or a freshly-constructed enum \
+                 (enum-returning calls are deferred on the native backend)"
+                    .to_string(),
+            );
+        }
+    };
+
+    let mut end_jumps: Vec<usize> = Vec::new();
+    let mut saw_wildcard = false;
+
+    for arm in arms {
+        match &arm.pattern {
+            BytecodeMatchPattern::Wildcard => {
+                // Unconditional: bind nothing, lower the body, jump to end.
+                saw_wildcard = true;
+                lower_match_arm_body(ctx, &arm.body, is_value, code, loops)?;
+                code.push(0xE9); // jmp end
+                let site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+                end_jumps.push(site);
+                // A wildcard is terminal (exhaustiveness), so stop emitting arms.
+                break;
+            }
+            BytecodeMatchPattern::Variant { name, bindings } => {
+                let variant = variants
+                    .iter()
+                    .find(|v| &v.name == name)
+                    .ok_or_else(|| format!("match arm names unknown variant `{name}`"))?;
+                // Reload the tag word each arm — arm bodies clobber rax — then
+                // cmp rax, tag ; jne next_arm.
+                load_local(code, base_slot);
+                emit_cmp_rax_imm(code, variant.tag);
+                code.extend_from_slice(&[0x0F, 0x85]); // jne rel32 (patched)
+                let jne_site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+
+                // Bind the matched variant's payload words into the arm locals.
+                // Payload word k lives at base_slot + 8*(1 + prefix_words).
+                let mut payload_word = base_slot + 8;
+                for (binding, field_ty) in bindings.iter().zip(variant.payload.iter()) {
+                    let dst = ctx.local_slot(binding)?;
+                    match field_ty {
+                        NativeType::I64 => {
+                            load_local(code, payload_word);
+                            store_local(code, dst);
+                        }
+                        NativeType::F64 | NativeType::F32 => {
+                            let width = match field_ty {
+                                NativeType::F64 => FloatWidth::F64,
+                                NativeType::F32 => FloatWidth::F32,
+                                _ => unreachable!("guarded above"),
+                            };
+                            load_float_local(code, payload_word, width);
+                            store_float_local(code, dst, width);
+                        }
+                        _ => return Err("enum payload binding is not a native scalar".to_string()),
+                    }
+                    payload_word += field_ty.words() as i32 * 8;
+                }
+
+                lower_match_arm_body(ctx, &arm.body, is_value, code, loops)?;
+                code.push(0xE9); // jmp end
+                let site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+                end_jumps.push(site);
+
+                // The next arm starts here (the jne target).
+                patch_rel32(code, jne_site);
+            }
+        }
+    }
+
+    // If no wildcard covered the fallthrough, exhaustiveness guarantees one of the
+    // variant arms matched, so this point is unreachable. Emit `ud2` to trap on
+    // the impossible case rather than run off into the next function.
+    if !saw_wildcard {
+        code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+    }
+
+    let end = code.len();
+    for site in end_jumps {
+        patch_rel32_to(code, site, end);
+    }
+
+    ctx.scratch_next = saved_scratch;
+    Ok(())
+}
+
+/// Lower one match arm body. When `is_value` is true the arm's tail expression is
+/// the match's result: its value is left in `rax` (an arm ending in an explicit
+/// `return` emits its own epilogue instead). When false the body is a statement
+/// block whose result is discarded.
+fn lower_match_arm_body(
+    ctx: &mut NativeCtx,
+    body: &[BytecodeInstruction],
+    is_value: bool,
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    if is_value && matches!(body.last(), Some(BytecodeInstruction::Expr(e)) if !e.ty.is_void()) {
+        let (head, tail) = body.split_at(body.len() - 1);
+        lower_native_stmts(ctx, head, code, loops)?;
+        if let BytecodeInstruction::Expr(expr) = &tail[0] {
+            lower_native_expr(ctx, expr, code)?;
+        }
+        Ok(())
+    } else {
+        lower_native_stmts(ctx, body, code, loops)
+    }
+}
+
+/// `cmp rax, imm`. Uses the sign-extended imm32 form (`48 3D imm32`) when the
+/// value fits in an i32 (every discriminant tag does), else materializes the
+/// immediate into `rcx` and compares register-to-register.
+fn emit_cmp_rax_imm(code: &mut Vec<u8>, imm: i64) {
+    if let Ok(imm32) = i32::try_from(imm) {
+        // cmp rax, imm32  (48 3D id) — sign-extended.
+        code.push(0x48);
+        code.push(0x3D);
+        code.extend_from_slice(&imm32.to_le_bytes());
+    } else {
+        // mov rcx, imm64 ; cmp rax, rcx.
+        code.extend_from_slice(&[0x48, 0xB9]);
+        code.extend_from_slice(&imm.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+    }
 }
 
 /// Lower an `if`/`elif`/`else` chain. Each branch: evaluate condition into rax,
@@ -4494,10 +5063,11 @@ mod native_program_tests {
 
     #[test]
     fn skips_match_over_enum_scrutinee_gracefully() {
-        // Lullaby `match` is exclusively variant-based (option/result/enum), whose
-        // scrutinees are heap values — there is no scalar (integer/bool) match in
-        // the grammar. Such a function stays outside the native i64-scalar subset:
-        // it is skipped (and runs on the interpreters), never miscompiled.
+        // `match` over a *local* enum now compiles natively, but an enum passed as
+        // a *parameter* is still deferred: aggregate/enum parameters are not in the
+        // native register ABI, so `classify` (whose `o` is an `option<i64>` param)
+        // is skipped at the signature stage and runs on the interpreters — never
+        // miscompiled — while the i64-scalar `double`/`main` still compile.
         let program = emit_alpha1_native_program(&module_for(concat!(
             "fn classify o option<i64> -> i64\n",
             "    match o\n",
@@ -4509,8 +5079,8 @@ mod native_program_tests {
             "    return double(21)\n",
         )))
         .expect("emit native program");
-        // `double` and `main` are i64-scalar and compile; `classify` (option param,
-        // match body) is skipped.
+        // `double` and `main` are i64-scalar and compile; `classify` (option param)
+        // is skipped for its non-i64 parameter.
         assert_eq!(
             program.compiled,
             vec!["double".to_string(), "main".to_string()]
@@ -4965,7 +5535,7 @@ mod native_program_tests {
                 ],
             },
         ];
-        let line = resolve_native_type(&TypeRef::new("Line"), &structs).expect("resolve Line");
+        let line = resolve_native_type(&TypeRef::new("Line"), &structs, &[]).expect("resolve Line");
         assert_eq!(line.words(), 4, "Line flattens to four i64 words");
 
         let array = NativeType::Array {
@@ -5350,5 +5920,188 @@ mod native_program_tests {
             4,
             "two SECREL32+SECTION relocation pairs for two functions"
         );
+    }
+
+    /// The compiled `.text` bytes contain a tag load followed by a conditional
+    /// branch — the signature of a native `match` dispatch (`cmp rax, imm32`
+    /// then `jne rel32`). Used by the enum tests below.
+    fn has_tag_dispatch(text: &[u8]) -> bool {
+        // `cmp rax, imm32` is `48 3D` + 4 bytes; a `jne rel32` is `0F 85` + 4.
+        text.windows(2).any(|w| w == [0x48, 0x3D]) && text.windows(2).any(|w| w == [0x0F, 0x85])
+    }
+
+    #[test]
+    fn compiles_option_match_natively() {
+        // A function that builds an `option<i64>` local and matches both arms is
+        // compiled to native code (tag dispatch + payload binding), not skipped.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn some_path -> i64\n",
+            "    let hit option<i64> = some(40)\n",
+            "    match hit\n",
+            "        some(v) -> v + 2\n",
+            "        none -> 7\n\n",
+            "fn main -> i64\n",
+            "    some_path()\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"some_path".to_string()),
+            "expected `some_path` compiled: {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped
+        );
+        assert!(program.compiled.contains(&"main".to_string()));
+        assert!(
+            has_tag_dispatch(text_bytes(&program)),
+            "expected a tag load + conditional branch for the option match"
+        );
+    }
+
+    #[test]
+    fn compiles_result_scalar_match_natively() {
+        // A `result<i64, i64>` (both arms scalar) compiles natively: `ok`/`err`
+        // are tags 0/1, and each arm binds its scalar payload.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn ok_path -> i64\n",
+            "    let r result<i64, i64> = ok(30)\n",
+            "    match r\n",
+            "        ok(q) -> q + 5\n",
+            "        err(e) -> e\n\n",
+            "fn main -> i64\n",
+            "    ok_path()\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"ok_path".to_string()),
+            "expected `ok_path` compiled: {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped
+        );
+        assert!(has_tag_dispatch(text_bytes(&program)));
+    }
+
+    #[test]
+    fn compiles_user_enum_match_with_wildcard_natively() {
+        // A user enum with scalar payloads and a wildcard arm compiles natively.
+        // The match is inside an i64-only function so the whole function is
+        // native-eligible.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "enum Signal\n",
+            "    Steady\n",
+            "    Pulse i64\n",
+            "    Burst i64\n\n",
+            "fn score kind i64 amount i64 -> i64\n",
+            "    let s Signal = Steady\n",
+            "    if kind == 1\n",
+            "        s = Pulse(amount)\n",
+            "    match s\n",
+            "        Pulse(n) -> n + 1\n",
+            "        _ -> 100\n\n",
+            "fn main -> i64\n",
+            "    score(1, 5)\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"score".to_string()),
+            "expected `score` compiled: {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped
+        );
+        let text = text_bytes(&program);
+        assert!(
+            has_tag_dispatch(text),
+            "expected a tag load + conditional branch for the user-enum match"
+        );
+        // A wildcard covers the fallthrough, so no unreachable `ud2` (0F 0B) trap
+        // is emitted for this match.
+        assert!(
+            !text.windows(2).any(|w| w == [0x0F, 0x0B]),
+            "a wildcard-terminated match should not emit an unreachable trap"
+        );
+    }
+
+    #[test]
+    fn exhaustive_variant_match_emits_unreachable_trap() {
+        // An exhaustive variant match with no wildcard (e.g. `option` some/none)
+        // ends with a `ud2` (0F 0B) on the impossible fallthrough, since
+        // exhaustiveness guarantees a variant arm matched.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn some_path -> i64\n",
+            "    let hit option<i64> = some(40)\n",
+            "    match hit\n",
+            "        some(v) -> v + 2\n",
+            "        none -> 7\n\n",
+            "fn main -> i64\n",
+            "    some_path()\n",
+        )))
+        .expect("emit native program");
+        let text = text_bytes(&program);
+        assert!(
+            text.windows(2).any(|w| w == [0x0F, 0x0B]),
+            "expected a `ud2` trap for the wildcard-free exhaustive match"
+        );
+    }
+
+    #[test]
+    fn defers_enum_returning_call_gracefully() {
+        // A function that returns an enum and a caller that matches that call
+        // result are both deferred (aggregate return ABI is not implemented), and
+        // the deferral never crashes — the whole program falls to the interpreters
+        // with a clear skip reason.
+        let err = emit_alpha1_native_program(&module_for(concat!(
+            "fn lookup key i64 -> option<i64>\n",
+            "    if key == 1\n",
+            "        return some(11)\n",
+            "    none\n\n",
+            "fn use_lookup key i64 -> i64\n",
+            "    match lookup(key)\n",
+            "        some(v) -> v + 3\n",
+            "        none -> 1\n\n",
+            "fn main -> i64\n",
+            "    use_lookup(1)\n",
+        )))
+        .expect_err("no function is native-eligible");
+        assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+        assert!(
+            err.skipped.iter().any(|s| s.name == "use_lookup"
+                && s.reason.contains("enum-returning calls are deferred")),
+            "expected a clear deferral reason for the enum-returning match: {:?}",
+            err.skipped
+        );
+    }
+
+    #[test]
+    fn defers_result_with_string_payload_gracefully() {
+        // A `result<i64, string>` carries a heap payload in `err`; matching it is
+        // out of the native scalar subset, so the function skips gracefully rather
+        // than miscompiling the string.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn classify n i64 -> i64\n",
+            "    let r result<i64, string> = ok(n)\n",
+            "    match r\n",
+            "        ok(v) -> v\n",
+            "        err(m) -> len(m)\n\n",
+            "fn main -> i64\n",
+            "    classify(3)\n",
+        )));
+        // Either the whole program is ineligible (error) or `classify` is skipped
+        // while a trivial `main` might still compile; in this shape `main` calls
+        // the skipped `classify`, so nothing is eligible.
+        match program {
+            Err(err) => {
+                assert!(
+                    err.skipped.iter().any(|s| s.name == "classify"),
+                    "expected `classify` skipped for its string payload: {:?}",
+                    err.skipped
+                );
+            }
+            Ok(program) => {
+                assert!(
+                    program.skipped.iter().any(|s| s.name == "classify"),
+                    "expected `classify` skipped for its string payload: {:?}",
+                    program.skipped
+                );
+            }
+        }
     }
 }

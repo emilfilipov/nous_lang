@@ -21,6 +21,7 @@ Implemented now:
 - **C-ABI FFI (calling C).** A body-less `extern fn NAME params -> Ret` declares an imported C function; a call lowers to a `call` of an undefined external symbol (Win64 integer registers, result in `rax`) and links against the C runtime (`ucrt.lib`). Calling an extern on an interpreter is `L0423`. See "C-ABI FFI (calling C)" below.
 - **C-ABI FFI (exposing Lullaby to C).** An `export fn NAME params -> Ret` is a normal (bodied) Lullaby function additionally exposed under its plain C name as an externally visible, defined `.text` symbol so C (or another object) can call **into** Lullaby. The first increment restricts an export to an i64-scalar signature (`L0424` otherwise). An export-only program (no `main`) emits a library object with no entry stub. See "C-ABI FFI (exposing Lullaby to C)" below.
 - **Native source-line debug info (`--debug`).** `lullaby native --debug` (alias `-g`) emits a CodeView `.debug$S` section with a per-function line table mapping each compiled function's entry offset to its `.lby` declaration line, plus the source file name, so a debugger (via a linker-built PDB) can break at a function and show its source line. Opt-in: without `--debug` the object bytes are byte-for-byte unchanged. See "Debug info (`--debug`)" below.
+- **Stack-allocated enums + `match` (scalar payloads).** Enum values whose payloads are native scalars — the built-in generics `option<T>`/`result<T, E>` (for scalar `T`/`E`) and user enums — are laid out on the stack as a tag word plus a shared payload region, and `match` dispatches on the tag with identical variant ordering to the interpreters. See "Stack-Allocated Enums And `match`" below.
 
 Now implemented (updated): `bool`/`char`/`byte` and the full fixed-width integer
 lattice (`i8`…`u64`, `isize`/`usize`) and `f64`/`f32` floats are lowered as native
@@ -35,8 +36,8 @@ Not implemented yet:
 - More than four parameters (stack arguments); `f32`/`f64` **extern** (FFI) args,
   which need XMM argument routing (a float-extern caller currently demotes to the
   interpreters).
-- String/enum/collection *values* (as locals, parameters, returns, or call arguments), `match`, and builtins beyond a constant-folded `len` on a fixed native array and `len` over a string literal. A string constant exists only as the immediate argument of `len`; there is no native string local, concatenation, or indexing yet.
-- Aggregates (structs/arrays) as function parameters, return values, or call arguments — they are locals only for this increment.
+- String/collection *values* (as locals, parameters, returns, or call arguments) and builtins beyond a constant-folded `len` on a fixed native array and `len` over a string literal. A string constant exists only as the immediate argument of `len`; there is no native string local, concatenation, or indexing yet. **Enum values with scalar payloads and `match` over them are now delivered** (see below); enums whose payload is a heap type (`string`, `list`, `array`, another struct/enum) are still deferred.
+- Aggregates (structs/arrays/enums) as function parameters, return values, or call arguments — they are locals only for this increment. In particular, a function that **returns** an enum, and a `match` on the result of such a call, are deferred (they need an aggregate return ABI) and skip gracefully to the interpreters.
 - Growable `list`/`map` and arrays whose length is not known from a literal initializer. The bump heap has no `free`/reclamation and is not yet exposed to general heap allocation beyond the string-constant copy.
 - Object file writing for non-COFF targets.
 - Native runtime packaging.
@@ -162,6 +163,39 @@ Object layout and codegen (only when a program references string constants):
 - `__lullaby_strlen_copy(src in rcx) -> len in rax` measures the `.rdata` source length, calls `__lullaby_alloc` for `n + 1` bytes, `rep movsb`-copies the string (with terminator) into the heap, and scans the heap copy for its length. It saves/restores the non-volatile `rsi`/`rdi`/`rbx` and keeps `rsp` 16-aligned at the internal `call`.
 - A `len(string_literal)` call site lowers to `lea rcx, [rip + __str{i}]` (a REL32 relocation to the `.rdata` symbol) followed by `call __lullaby_strlen_copy` (a REL32 relocation to the helper). Cross-section references reuse the existing `IMAGE_REL_AMD64_REL32` machinery; the `.rdata`/`.bss` data symbols carry COFF type `0` (not the function type `0x20`).
 - The fixture `tests/fixtures/valid/native_strings.lby` (`main` returns `len("hello") + len("native") + len("") = 11`) runs on all backends for ground truth and is native-compiled, linked, and run by `native_strings_execution_parity_when_linkable` in `crates/lullaby_cli/tests/cli.rs`, which asserts the `.exe` exit code equals the interpreter's `run` result mod 256 (gated on `rust-lld` + `kernel32.lib`).
+
+## Stack-Allocated Enums And `match` (DELIVERED)
+
+`emit_alpha1_native_program` lowers **enum values with scalar payloads** and **`match`** over them. This covers the built-in generic enums `option<T>` and `result<T, E>` (when `T`/`E` are native scalars) and **user enums** whose variant payloads are all native scalars. It is additive: a function using only these plus the already-supported i64-scalar/aggregate/control-flow subset now compiles; anything outside it (a heap-payload enum, an enum parameter/return, or a `match` on an enum-returning call) is skipped with a clear reason and runs on the interpreters — never miscompiled.
+
+### Enum layout
+
+An enum local occupies a **tag word** followed by a shared **payload region** sized to the widest variant:
+
+- **Word 0 is the discriminant tag** — the variant's index in the interpreter/IR variant order. For a **user enum** this is declared order; for the built-ins it is `some`(0)/`none`(1) and `ok`(0)/`err`(1). Because the interpreters select a `match` arm by variant *name*, any consistent tag numbering is correct; the native backend fixes the numbering to the declared/built-in order so construction and dispatch always agree.
+- **Payload words follow at word 1, 2, …** in field order. The payload region is `max` over the variants of that variant's total scalar payload words (each scalar payload field is one 8-byte word, like a struct field). A narrower variant leaves the trailing payload words untouched; `match` only reads the words the *matched* variant defines, so stale bytes are never observed.
+- A scalar payload word is an `i64`/fixed-width/`bool`/`char`/`byte` cell (stored through a GPR) or an `f32`/`f64` (stored through XMM), matching how scalar locals are stored elsewhere.
+
+### Construction
+
+`some(x)`, `none`, `ok(x)`, `err(e)`, and a user `Variant(payload…)` materialize directly into the local's words: `mov` the variant's tag into word 0, then evaluate each payload expression into its payload word (GPR for a scalar cell, XMM for a float). Unit variants (`none`, a payload-less user variant) write only the tag. A whole-value reassignment (`s = Pulse(n)`) re-materializes tag + payload in place.
+
+### `match`
+
+- The scrutinee is materialized into a stack region: a plain enum **local** is matched in place; a **freshly-constructed** enum scrutinee is spilled into a scratch region reserved during frame planning (one shared region sized to the widest temporary enum scrutinee in the function).
+- Dispatch reloads the tag word and, per variant arm, emits `cmp rax, tag` + `jne next_arm`; the matched arm **binds the variant's payload words** into arm-scoped locals (a `load`/`store` per scalar word, GPR or XMM by width), lowers the arm body, then `jmp`s to the shared match end. A `_` **wildcard** arm binds nothing and is an unconditional fall-in (it is terminal, so no later arm is emitted).
+- A wildcard-free match is exhaustive (semantics guarantee it), so the impossible fallthrough after the last variant arm emits a `ud2` trap rather than running off the end.
+- A value-producing `match` (its arms yield the function's result) leaves each arm's value in `rax`; the caller emits the return epilogue after the shared end. A void `match` is a statement whose arm results are discarded.
+
+### Deferred enum work
+
+- **Heap payloads** — an enum whose payload is `string`, `list`, `array`, or another struct/enum (notably `result<i64, string>`, whose `err` carries a string) is out of the scalar subset and skips gracefully.
+- **Enums as parameters, returns, and call arguments** — like other aggregates, enums are locals only. A function returning an enum, and a `match` on the result of such a call (e.g. matching `lookup(k)` where `lookup -> option<i64>`), are deferred (they need an aggregate return ABI) and skip to the interpreters. Matching a **local** enum or a **freshly-constructed** enum is fully supported.
+- **Nested enum values inside struct/array fields** are deferred.
+
+### Verification
+
+The fixtures `tests/fixtures/valid/native_enum_option.lby` (`option<i64>`, some=49-path), `native_enum_result.lby` (`result<i64, i64>`, ok/err scalar), and `native_enum_user.lby` (a user `Signal` enum with a scalar payload and a `_` arm) run on all interpreter backends for ground truth and are native-compiled, linked, and run by `native_enum_match_execution_parity_when_linkable` in `crates/lullaby_cli/tests/cli.rs`, which asserts each `.exe` exit code equals the interpreter's `run` result mod 256 (gated on `rust-lld` + `kernel32.lib`). `tests/fixtures/valid/native_enum_returned.lby` documents the deferred enum-return path (parity across the interpreters; native skips). Unit tests in `native_program_tests` assert the option/result/user-enum functions report `compiled` (not `skipped`) and that the expected opcodes appear (tag load + `cmp`/`jne` dispatch, and a `ud2` for the wildcard-free exhaustive case), plus that heap-payload and enum-returning cases skip with clear reasons.
 
 ## C-ABI FFI (calling C) (DELIVERED, first increment)
 

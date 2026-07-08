@@ -1,0 +1,17 @@
+enum Signal
+    Steady
+    Pulse i64
+    Burst i64
+
+fn score kind i64 amount i64 -> i64
+    let s Signal = Steady
+    if kind == 1
+        s = Pulse(amount)
+    if kind == 2
+        s = Burst(amount)
+    match s
+        Pulse(n) -> n + 1
+        _ -> 100
+
+fn main -> i64
+    score(1, 5) + score(0, 0) + score(2, 9)

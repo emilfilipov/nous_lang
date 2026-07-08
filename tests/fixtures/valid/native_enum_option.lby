@@ -1,0 +1,14 @@
+fn some_path -> i64
+    let hit option<i64> = some(40)
+    match hit
+        some(v) -> v + 2
+        none -> 7
+
+fn none_path -> i64
+    let miss option<i64> = none
+    match miss
+        some(v) -> v + 2
+        none -> 7
+
+fn main -> i64
+    some_path() + none_path()

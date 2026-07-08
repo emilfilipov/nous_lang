@@ -3476,6 +3476,68 @@ fn native_aggregates_execution_parity_when_linkable() {
     );
 }
 
+/// Best-effort execution parity for the native enum + `match` subset:
+/// native-compile a program that builds `option`/`result`/user enum locals and
+/// matches over them (tag dispatch + scalar payload binding), then assert the
+/// linked `.exe`'s exit code equals the interpreter's `main` result (mod 256).
+/// Gated on `rust-lld` + `kernel32.lib` like the other native parity tests.
+#[test]
+fn native_enum_match_execution_parity_when_linkable() {
+    for (name, expected) in [
+        ("native_enum_option", 49i64),
+        ("native_enum_result", 44),
+        ("native_enum_user", 206),
+    ] {
+        let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
+        let out = std::env::temp_dir().join(format!("lullaby_{name}_parity.exe"));
+
+        let emit = lullaby()
+            .args([
+                "native",
+                "--verbose",
+                "-o",
+                out.to_str().expect("out path"),
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(emit.status.success(), "{}", stderr(&emit));
+        // `main` (and the helper/match functions) compile natively — the match
+        // over a local enum is now in the native subset.
+        assert!(
+            stdout(&emit).contains("compiled main"),
+            "{name}: expected `main` compiled: {}",
+            stdout(&emit)
+        );
+
+        // Interpreter ground truth for `main`.
+        let run = lullaby()
+            .args(["run", fixture.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(interp, expected, "{name}: interpreter result");
+
+        if rust_lld_path().is_none() || !kernel32_available() {
+            eprintln!(
+                "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+                 skipping native enum/match link+run parity for {name}"
+            );
+            continue;
+        }
+
+        assert!(out.is_file(), "expected linked exe at {}", out.display());
+        let exe = Command::new(&out).output().expect("run native exe");
+        let exit = exe.status.code().expect("native exit code");
+        assert_eq!(
+            exit,
+            (interp.rem_euclid(256)) as i32,
+            "{name}: native exit code must equal the interpreter result (mod 256)"
+        );
+    }
+}
+
 /// Best-effort execution parity for the native control-flow subset: native-compile
 /// a program whose functions use a `while` loop, `for` sum/product loops, and
 /// inter-function calls, then assert the linked `.exe`'s exit code equals the
