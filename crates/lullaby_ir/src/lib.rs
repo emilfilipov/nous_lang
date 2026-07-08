@@ -66,6 +66,14 @@ pub struct IrModule {
     /// Serde-defaulted so existing artifacts and snapshots stay valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extern_functions: Vec<String>,
+    /// C-ABI signatures for the `extern_functions`, in the same declaration
+    /// order. The native backend uses each signature's parameter/return scalar
+    /// widths to marshal an extern call correctly (Win64 integer registers, with
+    /// a narrow C return normalized in `rax`). Serde-defaulted so existing
+    /// artifacts and snapshots (which lack this field) stay valid; when absent the
+    /// native backend falls back to treating extern params/returns as `i64`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extern_signatures: Vec<IrExternSignature>,
     /// Names of `export fn` functions — normal Lullaby functions additionally
     /// exposed under their plain C name as externally visible, defined native
     /// symbols so C can call into them. `export` is meaningful only to native
@@ -140,6 +148,19 @@ pub struct IrFunction {
 pub struct IrParam {
     pub name: String,
     pub ty: TypeRef,
+}
+
+/// The C-ABI signature of an `extern fn`: its symbol name, ordered parameter
+/// types, and return type. Carried alongside `extern_functions` (the names view)
+/// so the native backend can marshal each argument/return to the correct C
+/// scalar width and normalize a narrow C return per the Win64 ABI. The
+/// interpreters ignore it (they reject extern calls with `L0423`). Serde-defaulted
+/// so existing `.lbc` artifacts and JSON snapshots without this field stay valid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IrExternSignature {
+    pub name: String,
+    pub params: Vec<TypeRef>,
+    pub return_type: TypeRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -860,6 +881,11 @@ pub struct BytecodeModule {
     /// with `L0423`. Serde-defaulted for compatibility.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extern_functions: Vec<String>,
+    /// C-ABI signatures for the `extern_functions`, carried through so the native
+    /// backend can marshal each extern call to the correct C scalar widths.
+    /// Serde-defaulted for compatibility.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extern_signatures: Vec<IrExternSignature>,
     /// Names of `export fn` functions, carried through so the native backend
     /// emits an externally visible, defined symbol under the plain C name. Purely
     /// a native-codegen concern; the bytecode VM runs an export like any function.
@@ -1582,6 +1608,7 @@ pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
         trait_methods: module.trait_methods.clone(),
         async_functions: module.async_functions.clone(),
         extern_functions: module.extern_functions.clone(),
+        extern_signatures: module.extern_signatures.clone(),
         export_functions: module.export_functions.clone(),
         closures: module
             .closures
@@ -1626,6 +1653,7 @@ pub fn run_bytecode_main_with_args(
         trait_methods: module.trait_methods.clone(),
         async_functions: module.async_functions.clone(),
         extern_functions: module.extern_functions.clone(),
+        extern_signatures: module.extern_signatures.clone(),
         export_functions: module.export_functions.clone(),
         closures: module
             .closures
@@ -2019,6 +2047,7 @@ impl ConstantFolder {
             trait_methods: module.trait_methods.clone(),
             async_functions: module.async_functions.clone(),
             extern_functions: module.extern_functions.clone(),
+            extern_signatures: module.extern_signatures.clone(),
             export_functions: module.export_functions.clone(),
             // Closure bodies are carried through unchanged; this pass only
             // rewrites top-level function bodies. (Closures run on the
@@ -2289,7 +2318,10 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
             IrExprKind::Integer(0),
         ) => None,
         (IrExprKind::Integer(left), BinaryOp::Divide, IrExprKind::Integer(right)) => {
-            Some(IrExprKind::Integer(left / right))
+            // Fold with wrapping semantics so the one signed-overflow case
+            // (`i64::MIN / -1`) yields `i64::MIN` at compile time instead of
+            // panicking, matching the runtime interpreters and native backend.
+            Some(IrExprKind::Integer(left.wrapping_div(*right)))
         }
         (IrExprKind::Integer(left), BinaryOp::Equal, IrExprKind::Integer(right)) => {
             Some(IrExprKind::Bool(left == right))
@@ -2374,6 +2406,7 @@ impl CommonSubexpressionEliminator {
             trait_methods: module.trait_methods.clone(),
             async_functions: module.async_functions.clone(),
             extern_functions: module.extern_functions.clone(),
+            extern_signatures: module.extern_signatures.clone(),
             export_functions: module.export_functions.clone(),
             // Closure bodies are carried through unchanged; this pass only
             // rewrites top-level function bodies. (Closures run on the
@@ -2771,6 +2804,7 @@ impl LoopInvariantMover {
             trait_methods: module.trait_methods.clone(),
             async_functions: module.async_functions.clone(),
             extern_functions: module.extern_functions.clone(),
+            extern_signatures: module.extern_signatures.clone(),
             export_functions: module.export_functions.clone(),
             // Closure bodies are carried through unchanged; this pass only
             // rewrites top-level function bodies. (Closures run on the
@@ -3182,6 +3216,7 @@ impl CopyPropagator {
             trait_methods: module.trait_methods.clone(),
             async_functions: module.async_functions.clone(),
             extern_functions: module.extern_functions.clone(),
+            extern_signatures: module.extern_signatures.clone(),
             export_functions: module.export_functions.clone(),
             // Closure bodies are carried through unchanged; this pass only
             // rewrites top-level function bodies. (Closures run on the
@@ -3547,6 +3582,7 @@ impl DeadCodeEliminator {
             trait_methods: module.trait_methods.clone(),
             async_functions: module.async_functions.clone(),
             extern_functions: module.extern_functions.clone(),
+            extern_signatures: module.extern_signatures.clone(),
             export_functions: module.export_functions.clone(),
             // Closure bodies are carried through unchanged; this pass only
             // rewrites top-level function bodies. (Closures run on the
@@ -4618,7 +4654,9 @@ impl<'a> IrRuntime<'a> {
                 if divisor == 0 {
                     Err(RuntimeError::new("L0404", "division by zero"))
                 } else {
-                    Ok(Value::I64(left.as_i64()? / divisor))
+                    // Wrap `i64::MIN / -1` to `i64::MIN` (rather than panicking),
+                    // matching the AST runtime and the native backend.
+                    Ok(Value::I64(left.as_i64()?.wrapping_div(divisor)))
                 }
             }
             BinaryOp::Equal => Ok(Value::Bool(left == right)),
@@ -7059,6 +7097,20 @@ impl<'a> Lowerer<'a> {
             .filter(|function| function.is_extern)
             .map(|function| function.name.clone())
             .collect();
+        // The full C-ABI signature of each `extern fn`, so the native backend can
+        // marshal argument/return scalar widths correctly. Same declaration order
+        // as `extern_functions`.
+        let extern_signatures = self
+            .program
+            .functions
+            .iter()
+            .filter(|function| function.is_extern)
+            .map(|function| IrExternSignature {
+                name: function.name.clone(),
+                params: function.params.iter().map(|p| p.ty.clone()).collect(),
+                return_type: function.return_type.clone(),
+            })
+            .collect();
         // Record every `export fn` so the native backend emits an externally
         // visible, defined symbol for it under its plain C name. The function is
         // lowered like any ordinary function (it has a body); `export` only
@@ -7082,6 +7134,7 @@ impl<'a> Lowerer<'a> {
             trait_methods,
             async_functions,
             extern_functions,
+            extern_signatures,
             export_functions,
             closures,
         })
@@ -9229,6 +9282,7 @@ mod tests {
             trait_methods: Vec::new(),
             async_functions: Vec::new(),
             extern_functions: Vec::new(),
+            extern_signatures: Vec::new(),
             export_functions: Vec::new(),
             closures: Vec::new(),
             functions: vec![BytecodeFunction {
@@ -9266,6 +9320,7 @@ mod tests {
             trait_methods: Vec::new(),
             async_functions: Vec::new(),
             extern_functions: Vec::new(),
+            extern_signatures: Vec::new(),
             export_functions: Vec::new(),
             closures: Vec::new(),
             functions: vec![BytecodeFunction {

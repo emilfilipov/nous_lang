@@ -3124,7 +3124,10 @@ impl<'a> Runtime<'a> {
                 if divisor == 0 {
                     Err(RuntimeError::new("L0404", "division by zero"))
                 } else {
-                    Ok(Value::I64(left.as_i64()? / divisor))
+                    // Wrap the one signed-overflow case (`i64::MIN / -1`) to
+                    // `i64::MIN` rather than panicking, matching `int_div` and the
+                    // native backend's guarded `idiv`.
+                    Ok(Value::I64(left.as_i64()?.wrapping_div(divisor)))
                 }
             }
             BinaryOp::Equal => Ok(Value::Bool(left == right)),
@@ -4630,7 +4633,9 @@ pub fn apply_compound(current: Value, op: &AssignOp, rhs: Value) -> Result<Value
             if b == 0 {
                 return Err(RuntimeError::new("L0404", "division by zero"));
             }
-            a / b
+            // Wrap `i64::MIN /= -1` to `i64::MIN` instead of panicking, matching
+            // the binary-division and native paths.
+            a.wrapping_div(b)
         }
         AssignOp::Replace => b,
     }))
@@ -4919,6 +4924,22 @@ mod tests {
         let source = "fn main -> i64\n    unsafe\n        asm 72, 199, 192, 42, 0, 0, 0\n";
         let error = run_source(source).expect_err("asm must not run on an interpreter");
         assert_eq!(error.code, "L0425");
+    }
+
+    #[test]
+    fn rejects_extern_call_on_the_ast_interpreter() {
+        // A C-ABI `extern fn` call is native-only; the AST interpreter rejects it
+        // with `L0423` regardless of the C scalar width (here an `i32` signature),
+        // rather than executing C or silently no-op-ing.
+        let source =
+            "extern fn toupper c i32 -> i32\n\nfn main -> i64\n    to_i64(toupper(to_i32(97)))\n";
+        let error = run_source(source).expect_err("extern call must not run on an interpreter");
+        assert_eq!(error.code, "L0423");
+        assert!(
+            error.message.contains("toupper") && error.message.contains("lullaby native"),
+            "L0423 names the extern and points at `lullaby native`: {}",
+            error.message
+        );
     }
 
     #[test]
@@ -5951,6 +5972,18 @@ mod tests {
         assert!(int_cmp(umax, 1, IntKind::U64).is_gt());
         // Signed ordering of the same bits (-1) is less than 1.
         assert!(int_cmp(-1, 1, IntKind::Isize).is_lt());
+    }
+
+    #[test]
+    fn signed_division_min_over_neg_one_wraps_not_panics() {
+        // `i64::MIN / -1` is the one signed-overflow case: raw `/` panics, but the
+        // language wraps it to `i64::MIN` on every backend. `int_div` on the
+        // 64-bit signed kind (`isize`) yields `i64::MIN`; the plain-`i64`
+        // interpreter path is covered end-to-end by the `run_div_overflow`
+        // fixture. A narrower signed kind never reaches the overflow (the
+        // sign-extended cell is not `i64::MIN`), but still divides correctly.
+        assert_eq!(int_div(i64::MIN, -1, IntKind::Isize), i64::MIN);
+        assert_eq!(int_div(-128, -1, IntKind::I8), 128);
     }
 
     #[test]

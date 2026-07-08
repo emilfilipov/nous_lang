@@ -11,7 +11,9 @@
 //! kinds) compile to WASM. `i64` maps to wasm `i64`, `f32` to `f32`, `f64` to
 //! `f64`, and `bool`/`char`/`byte` to `i32`. `void` return means no result.
 //! Supported bodies: integer/float/bool literals, variables (params + `let`
-//! locals), arithmetic (`+ - * /`; integer `/` uses `i64.div_s` which traps on 0;
+//! locals), arithmetic (`+ - * /`; signed integer `/` uses a guarded `i64.div_s`
+//! that traps on a zero divisor but wraps `i64::MIN / -1` to `i64::MIN` to match
+//! the interpreters;
 //! `f32`/`f64` use the single/double SSE-equivalent `f32.*`/`f64.*` ops, so f32
 //! stays single precision), comparisons (float compares are IEEE-754 NaN-aware),
 //! `and`/`or`/`not`, `if`/`elif`/`else`, `while`, `loop` with `break`/`continue`,
@@ -766,7 +768,12 @@ fn lower_local_assign(
             lower_expr(ctx, value, out)?;
             let bop = assign_binop(other);
             match ir_name.as_deref().and_then(fixed_int_kind) {
-                Some(kind) => emit_fixed_binop(bop, kind, out)?,
+                Some(kind) => emit_fixed_binop(ctx, bop, kind, out)?,
+                // Plain `i64` signed division uses the wrapping guard so
+                // `i64::MIN /= -1` yields `i64::MIN` instead of trapping.
+                None if matches!((bop, local.ty), (BinaryOp::Divide, WasmValType::I64)) => {
+                    emit_i64_signed_div_guarded(ctx, out)
+                }
                 None => emit_binary_op_typed(bop, local.ty, out)?,
             }
         }
@@ -836,7 +843,12 @@ fn lower_path_assign(
             lower_expr(ctx, value, out)?;
             let bop = assign_binop(other);
             match fixed_int_kind(cur_ty.name.as_str()) {
-                Some(kind) => emit_fixed_binop(bop, kind, out)?,
+                Some(kind) => emit_fixed_binop(ctx, bop, kind, out)?,
+                // Plain `i64` signed division uses the wrapping guard so
+                // `i64::MIN /= -1` yields `i64::MIN` instead of trapping.
+                None if matches!((bop, slot_ty), (BinaryOp::Divide, WasmValType::I64)) => {
+                    emit_i64_signed_div_guarded(ctx, out)
+                }
                 None => emit_binary_op_typed(bop, slot_ty, out)?,
             }
             emit_store(slot_ty, out);
@@ -1413,7 +1425,7 @@ fn lower_binary(
     if let Some(kind) = fixed_int_kind(left.ty.name.as_str()) {
         lower_expr(ctx, left, out)?;
         lower_expr(ctx, right, out)?;
-        return emit_fixed_binop(op, kind, out);
+        return emit_fixed_binop(ctx, op, kind, out);
     }
 
     // Integer bitwise/shift operators on plain `i64` map directly to the WASM
@@ -1449,6 +1461,12 @@ fn lower_binary(
     };
     lower_expr(ctx, left, out)?;
     lower_expr(ctx, right, out)?;
+    // Plain `i64` signed division goes through the wrapping guard so `i64::MIN /
+    // -1` yields `i64::MIN` instead of trapping, matching the interpreters.
+    if matches!((op, operand_ty), (BinaryOp::Divide, WasmValType::I64)) {
+        emit_i64_signed_div_guarded(ctx, out);
+        return Ok(());
+    }
     emit_binary_op_typed(op, operand_ty, out)
 }
 
@@ -1489,7 +1507,12 @@ fn float_val_type_of(ctx: &LowerCtx, expr: &IrExpr) -> Option<WasmValType> {
 /// exactly: arithmetic wraps then re-normalizes (`Value::int`), division and
 /// comparison are signedness-aware (`int_div`/`int_cmp`), and shifts mask the
 /// count to the width and honor signedness (`int_shl`/`int_shr`).
-fn emit_fixed_binop(op: BinaryOp, kind: IntKind, out: &mut Vec<u8>) -> Result<(), String> {
+fn emit_fixed_binop(
+    ctx: &mut LowerCtx,
+    op: BinaryOp,
+    kind: IntKind,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     match op {
         BinaryOp::Add => {
             out.push(0x7c); // i64.add
@@ -1511,7 +1534,9 @@ fn emit_fixed_binop(op: BinaryOp, kind: IntKind, out: &mut Vec<u8>) -> Result<()
             if kind.is_unsigned() {
                 out.push(0x80); // i64.div_u
             } else {
-                out.push(0x7f); // i64.div_s
+                // Signed division guards `i64::MIN / -1` (and, after
+                // normalization, each width's MIN / -1) against the WASM trap.
+                emit_i64_signed_div_guarded(ctx, out);
             }
             emit_normalize_i64(kind, out);
         }
@@ -1748,6 +1773,43 @@ fn emit_i64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
     };
     out.push(opcode);
     Ok(())
+}
+
+/// Emit a signed `i64` division that matches the interpreters' wrapping
+/// semantics on the one overflow case `i64::MIN / -1`. WASM `i64.div_s` traps on
+/// that input (as well as on a zero divisor), but the interpreters use
+/// `wrapping_div`, which yields `i64::MIN`. Operands (dividend then divisor) must
+/// already be on the stack. Stash both, and when the divisor is `-1` compute
+/// `0 - dividend` — wrapping negation is exactly `x / -1` across the whole `i64`
+/// range, including `i64::MIN / -1 == i64::MIN`. Otherwise divide normally, which
+/// still traps on a zero divisor exactly like before (division-by-zero behavior
+/// is unchanged). Used for both the plain-`i64` and fixed-width signed division
+/// paths, so the WASM backend stays bit-for-bit with the interpreters and the
+/// native backend.
+fn emit_i64_signed_div_guarded(ctx: &mut LowerCtx, out: &mut Vec<u8>) {
+    let divisor = ctx.add_local(WasmValType::I64);
+    let dividend = ctx.add_local(WasmValType::I64);
+    // Stack holds [dividend, divisor]; pop them into locals (divisor is on top).
+    set_local(out, divisor);
+    set_local(out, dividend);
+    // divisor == -1 ?
+    get_local(out, divisor);
+    out.push(0x42); // i64.const -1
+    write_sleb(out, -1);
+    out.push(0x51); // i64.eq
+    out.push(0x04); // if
+    out.push(0x7e); // block type: i64 result
+    // then: 0 - dividend (wrapping negation == dividend / -1)
+    out.push(0x42); // i64.const 0
+    write_sleb(out, 0);
+    get_local(out, dividend);
+    out.push(0x7d); // i64.sub
+    out.push(0x05); // else
+    // else: dividend / divisor (traps only on a zero divisor)
+    get_local(out, dividend);
+    get_local(out, divisor);
+    out.push(0x7f); // i64.div_s
+    out.push(0x0b); // end
 }
 
 fn emit_f64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {

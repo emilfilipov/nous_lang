@@ -1,0 +1,4 @@
+extern fn toupper c i32 -> i32
+
+fn main -> i64
+    to_i64(toupper(to_i32(97)))

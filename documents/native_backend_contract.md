@@ -22,9 +22,19 @@ Implemented now:
 - **C-ABI FFI (exposing Lullaby to C).** An `export fn NAME params -> Ret` is a normal (bodied) Lullaby function additionally exposed under its plain C name as an externally visible, defined `.text` symbol so C (or another object) can call **into** Lullaby. The first increment restricts an export to an i64-scalar signature (`L0424` otherwise). An export-only program (no `main`) emits a library object with no entry stub. See "C-ABI FFI (exposing Lullaby to C)" below.
 - **Native source-line debug info (`--debug`).** `lullaby native --debug` (alias `-g`) emits a CodeView `.debug$S` section with a per-function line table mapping each compiled function's entry offset to its `.lby` declaration line, plus the source file name, so a debugger (via a linker-built PDB) can break at a function and show its source line. Opt-in: without `--debug` the object bytes are byte-for-byte unchanged. See "Debug info (`--debug`)" below.
 
+Now implemented (updated): `bool`/`char`/`byte` and the full fixed-width integer
+lattice (`i8`…`u64`, `isize`/`usize`) and `f64`/`f32` floats are lowered as native
+scalars within `i64`-signature functions — wrapping/normalized integer
+arithmetic, signedness-correct comparison and division, bitwise and shifts, the
+`to_<T>`/`to_f32`/`to_f64` conversions, and SSE/XMM float arithmetic/comparison.
+Control flow (`if`/`while`/`loop`/`for`) and inter-function calls compile.
+`extern fn` calls to C are compiled and linked for the integer scalar subset.
+
 Not implemented yet:
 
-- `f64`/`bool`/`char`/`byte` native scalar lowering and more than four parameters (stack arguments).
+- More than four parameters (stack arguments); `f32`/`f64` **extern** (FFI) args,
+  which need XMM argument routing (a float-extern caller currently demotes to the
+  interpreters).
 - String/enum/collection *values* (as locals, parameters, returns, or call arguments), `match`, and builtins beyond a constant-folded `len` on a fixed native array and `len` over a string literal. A string constant exists only as the immediate argument of `len`; there is no native string local, concatenation, or indexing yet.
 - Aggregates (structs/arrays) as function parameters, return values, or call arguments — they are locals only for this increment.
 - Growable `list`/`map` and arrays whose length is not known from a literal initializer. The bump heap has no `free`/reclamation and is not yet exposed to general heap allocation beyond the string-constant copy.
@@ -111,7 +121,7 @@ Eligibility and lowering:
 
 - source is still validated, lowered to typed IR, and lowered to bytecode before object emission
 - a function is eligible when its parameters and return type are all `i64` and it has at most four parameters (Win64 register arguments `rcx`/`rdx`/`r8`/`r9`; stack arguments are deferred)
-- supported bodies: integer literals, params/`let` locals, `+ - * /` (signed `idiv`, dividend sign-extended with `cqo`), comparisons producing `0`/`1`, short-circuiting `and`/`or` and `not`, `if`/`elif`/`else`, `while`, infinite `loop` with `break`/`continue`, range `for` (lowered to an `i64` counter loop mirroring the interpreter's inclusive range and optional step), `return`, a value-producing tail expression, and calls to other compiled i64 functions (including recursion)
+- supported bodies: integer literals, params/`let` locals, `+ - * /` (signed `idiv`, dividend sign-extended with `cqo`; the `i64::MIN / -1` overflow case is guarded so it wraps to `i64::MIN` — matching the interpreters' `wrapping_div` — instead of raising a hardware `#DE`), comparisons producing `0`/`1`, short-circuiting `and`/`or` and `not`, `if`/`elif`/`else`, `while`, infinite `loop` with `break`/`continue`, range `for` (lowered to an `i64` counter loop mirroring the interpreter's inclusive range and optional step), `return`, a value-producing tail expression, and calls to other compiled i64 functions (including recursion)
 - ineligible functions are recorded with a reason and still run on the interpreters; when no i64-scalar function (including `main`) is eligible the emitter returns an error carrying diagnostic code `L0339`
 
 Code generation is a stack-machine model over `rax`: expressions evaluate into `rax`, binary operands spill to the stack with `push`/`pop rcx`, locals and spilled parameters live in `[rbp - slot]` frame slots, and the frame reserves 32 bytes of Win64 shadow space whenever the function issues a call so `rsp` stays 16-byte aligned at each `call`. Inter-function calls, the entry stub's call to `main`, and the entry stub's call to the imported `ExitProcess` are emitted as `call rel32` with `IMAGE_REL_AMD64_REL32` COFF relocations; symbol names longer than eight bytes are stored in the COFF string table. The emitted entry stub `_lullaby_start` calls `main`, moves the `i64` result into `ecx`, and calls `ExitProcess` (imported from `kernel32`), so the process exit code is `main`'s result mod 256.
@@ -173,19 +183,20 @@ Rules:
 - `extern` prefixes a `fn` declaration (an optional `pub` may precede it: `pub extern fn`); `extern` and `async` cannot be combined. The declaration has **no indented body** — it ends after the return type.
 - The Lullaby function name **is** the C symbol name. Calling it emits a call to that external symbol.
 - Calls are type-checked exactly like ordinary calls (arity, argument types, return type) using the registered signature. An extern name that is not a built-in resolves through the ordinary user-function call path, so the builtin catalog is unaffected (choose an extern name that is not a Lullaby builtin — e.g. `llabs`, not `abs`).
-- First increment: parameters and the return type must be `i64` for native codegen to compile the caller (the Win64 integer-register subset). Up to four integer arguments pass in `rcx`/`rdx`/`r8`/`r9`; the result is read from `rax`. An extern function with non-i64 parameters/return still type-checks, but a caller that uses it is demoted to the interpreters (which then reject it, see below).
+- Marshalling: an extern's parameters and return type may be any **integer-class C scalar** — every fixed-width integer (`i8`…`u64`, `isize`/`usize`) plus `bool` (`_Bool`, 0/1), `char` (`uint32_t`), and `byte` (`uint8_t`). Up to four integer arguments pass in the low bits of `rcx`/`rdx`/`r8`/`r9`; the result is read from `rax`, and a **narrow C return is re-normalized in `rax`** (sign-extend for signed kinds, zero-extend for unsigned; `i64`/64-bit kinds are a no-op) so downstream Lullaby code sees the same cell the interpreters produce. `f32`/`f64` extern parameters/returns are **deferred** (they need the XMM argument registers `xmm0..3`, which the current all-GPR call path does not route): a caller of a float extern is demoted to the interpreters (which then reject it, see below). The extern C-ABI signatures are carried through the IR/bytecode as `extern_signatures` (serde-defaulted for artifact compatibility) so the native emitter can marshal each width.
 
 ### Win64 mapping and codegen
 
 - A call to an `extern fn` evaluates its arguments left-to-right and moves the first four into `rcx`/`rdx`/`r8`/`r9` (the caller already reserves 32 bytes of shadow space and keeps `rsp` 16-byte aligned at the `call`, exactly like inter-function calls).
 - The call site emits `call rel32` with an `IMAGE_REL_AMD64_REL32` relocation against the C symbol. The COFF symbol table gains that name as an **undefined external symbol** (section number 0), reusing the exact mechanism that imports `ExitProcess` from kernel32. The result in `rax` is the call's `i64` value.
-- `extern_functions` on `IrModule`/`BytecodeModule` carries the extern names (serde-defaulted for artifact compatibility). The native emitter adds them to the callable set; the object writer materializes any unresolved relocation target as an undefined external.
+- `extern_functions` on `IrModule`/`BytecodeModule` carries the extern names, and `extern_signatures` carries each extern's ordered parameter types and return type (both serde-defaulted for artifact compatibility). The native emitter adds the names to the callable set, marshals each call per its signature's scalar widths, and the object writer materializes any unresolved relocation target as an undefined external.
 
 ### Linking
 
 - When a program declares any `extern fn`, `emit_alpha1_native_program` reports the required C runtime import library (`ucrt.lib`) in `NativeProgram.import_libs`.
 - The `lullaby native` link step discovers `ucrt.lib` the same way it discovers `kernel32.lib` — via the MSVC `LIB` environment variable (a Developer Command Prompt) — and passes it to `rust-lld` alongside `kernel32.lib`. If `rust-lld` or any required import library cannot be located, linking degrades gracefully: the object is written and an explanation is printed, exactly like the existing native path.
 - The deterministic FFI fixture `tests/fixtures/native_only/ffi_llabs.lby` declares `extern fn llabs x i64 -> i64` and returns `llabs(-7)`; native-linked against `ucrt.lib`, the `.exe` calls the real C `llabs` and exits with code `7`. It lives under `tests/fixtures/native_only/` (not the auto-discovered parity directory) because it cannot run on the interpreters. `ffi_calls_c_abs_when_linkable` in `crates/lullaby_cli/tests/cli.rs` checks it, asserts `L0423` on every interpreter backend, and — when `rust-lld` + `kernel32.lib` + `ucrt.lib` are available — links and runs it asserting exit code 7.
+- The non-`i64`-width FFI fixture `tests/fixtures/native_only/ffi_toupper.lby` declares `extern fn toupper c i32 -> i32` and returns `to_i64(toupper(to_i32(97)))`; `toupper('a')` is `'A'` (65), so the linked `.exe` exits with code `65`. `ffi_calls_c_toupper_i32_when_linkable` in `crates/lullaby_cli/tests/cli.rs` checks it exactly like the `llabs` test (`L0423` on every interpreter; link+run when the toolchain is present), exercising the `i32` argument (low bits of `rcx`) and the `i32` return re-normalization (`movsxd rax, eax`). Native unit tests `emits_i32_extern_call_with_import_and_return_normalization` and `emits_u8_extern_call_with_zero_extend_return_normalization` in `crates/lullaby_ir/src/native_object.rs` assert the external symbol and the exact return-normalization opcodes, and `skips_float_extern_caller_gracefully` asserts an `f64` extern demotes its caller to the interpreters. `rejects_extern_call_on_the_ast_interpreter` in `crates/lullaby_runtime/src/lib.rs` asserts an `i32` extern call raises `L0423` on the AST interpreter.
 
 ### Interpreter restriction and diagnostic
 
@@ -197,7 +208,7 @@ The AST, IR, and bytecode interpreters cannot execute real C FFI. Calling an `ex
 
 ### Deferred FFI work
 
-Deferred beyond this increment: non-scalar/pointer/struct C parameter and return types, `f64`/floating and 32-bit `int`/`long` C types, variadic C functions, callbacks and function-pointer arguments, string/buffer marshalling, and non-Windows C ABIs (System V on Linux/macOS). Exposing Lullaby functions **to** C is now delivered for the i64-scalar case — see below.
+The integer-class C scalars (`i8`…`u64`, `isize`/`usize`, `bool`, `char`, `byte`) are now marshalled for **calling** C via `extern fn`; `i32`/`int` and `long`-width bindings therefore work. Deferred beyond this increment: `f32`/`f64` (floating) C parameter/return types (they need XMM argument routing), non-scalar/pointer/struct C parameter and return types, variadic C functions, callbacks and function-pointer arguments, string/buffer marshalling, and non-Windows C ABIs (System V on Linux/macOS). Exposing Lullaby functions **to** C is delivered for the i64-scalar case (widening the `export` marshalling to the same integer widths is a follow-up) — see below.
 
 ## C-ABI FFI (exposing Lullaby to C) (DELIVERED, first increment)
 

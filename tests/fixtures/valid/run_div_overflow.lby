@@ -1,0 +1,22 @@
+# i64::MIN / -1 is the one signed-division overflow case. A raw hardware/VM
+# divide traps on it (x86-64 `idiv` #DE, WASM `i64.div_s`), and Rust's `/`
+# panics; the language instead wraps it to i64::MIN (wrapping_div) on every
+# backend. This fixture pins that behavior across the AST, IR, and bytecode
+# interpreters, the native x86-64 backend, and the WASM backend, exercising both
+# the plain i64 division path and the fixed-width signed (isize) division path.
+# Deterministic i64 result: 7.
+fn main -> i64
+    let big i64 = 0 - 9223372036854775807 - 1   # i64::MIN
+    let neg i64 = 0 - 1                          # -1
+
+    # Plain i64 signed division: i64::MIN / -1 -> i64::MIN (wrapping, no trap).
+    let q64 i64 = big / neg
+
+    # Fixed-width signed division on the isize cell: isize::MIN / -1 -> isize::MIN.
+    let mn isize = to_isize(big)
+    let m1 isize = to_isize(neg)
+    let qsz isize = mn / m1
+
+    # Both quotients equal i64::MIN, so their difference is 0; add 7 so the exit
+    # code (7) is sensitive to either path returning the wrong value.
+    to_i64(qsz) - q64 + 7

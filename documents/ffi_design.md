@@ -281,19 +281,32 @@ check time (`L0424` for exports, `L0429` for extern params/returns; §9).
 
 | Lullaby type | C type | Size | Align | Class | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `i8`  | `int8_t`  | 1 | 1 | INTEGER | |
-| `i16` | `int16_t` | 2 | 2 | INTEGER | |
-| `i32` | `int32_t` | 4 | 4 | INTEGER | |
-| `i64` | `int64_t` | 8 | 8 | INTEGER | delivered |
-| `u8`  | `uint8_t` | 1 | 1 | INTEGER | |
-| `u16` | `uint16_t`| 2 | 2 | INTEGER | |
-| `u32` | `uint32_t`| 4 | 4 | INTEGER | |
-| `u64` | `uint64_t`| 8 | 8 | INTEGER | |
-| `f32` | `float`   | 4 | 4 | SSE | |
-| `f64` | `double`  | 8 | 8 | SSE | |
-| `bool`| `_Bool`   | 1 | 1 | INTEGER | 0/1; any nonzero from C reads as `true` |
-| `char`| `uint32_t`| 4 | 4 | INTEGER | Lullaby `char` is a Unicode scalar; not C `char` |
-| `byte`| `uint8_t` | 1 | 1 | INTEGER | the C `unsigned char`/octet type |
+| `i8`  | `int8_t`  | 1 | 1 | INTEGER | delivered (extern call) |
+| `i16` | `int16_t` | 2 | 2 | INTEGER | delivered (extern call) |
+| `i32` | `int32_t` | 4 | 4 | INTEGER | delivered (extern call) |
+| `i64` | `int64_t` | 8 | 8 | INTEGER | delivered (extern call + export) |
+| `u8`  | `uint8_t` | 1 | 1 | INTEGER | delivered (extern call) |
+| `u16` | `uint16_t`| 2 | 2 | INTEGER | delivered (extern call) |
+| `u32` | `uint32_t`| 4 | 4 | INTEGER | delivered (extern call) |
+| `u64` | `uint64_t`| 8 | 8 | INTEGER | delivered (extern call) |
+| `isize`| `intptr_t`| 8 | 8 | INTEGER | delivered (extern call); 64-bit on current targets |
+| `usize`| `size_t`  | 8 | 8 | INTEGER | delivered (extern call); 64-bit on current targets |
+| `f32` | `float`   | 4 | 4 | SSE | planned (needs XMM arg/return routing) |
+| `f64` | `double`  | 8 | 8 | SSE | planned (needs XMM arg/return routing) |
+| `bool`| `_Bool`   | 1 | 1 | INTEGER | delivered (extern call); 0/1, any nonzero from C reads as `true` |
+| `char`| `uint32_t`| 4 | 4 | INTEGER | delivered (extern call); Lullaby `char` is a Unicode scalar, not C `char` |
+| `byte`| `uint8_t` | 1 | 1 | INTEGER | delivered (extern call); the C `unsigned char`/octet type |
+
+For an **extern call** every integer-class scalar above is marshalled today: an
+argument is passed in the low bits of its Win64 register (`rcx`/`rdx`/`r8`/`r9`),
+already sign/zero-normalized to its width in the interpreter's cell model (which
+is exactly what the ABI requires), and a narrow C **return** is re-normalized in
+`rax` (sign-extend for signed kinds, zero-extend for unsigned; `i64`/64-bit kinds
+are a no-op). The `f32`/`f64` extern case remains **planned**: it needs the SSE
+argument registers `xmm0..3`, which the current all-GPR call path does not route,
+so a caller of a float extern is demoted to the interpreters (which reject it with
+`L0423`). The `export` direction still restricts to `i64` (`L0424`); widening the
+export marshalling to match the extern-call widths is a follow-up.
 
 Rules:
 
@@ -620,11 +633,19 @@ and independently testable, matching the delivered native slices.
 1. Call C — `extern fn`, i64-scalar Win64, `ucrt.lib` link, `L0423` on
    interpreters.
 2. Expose to C — `export fn`, i64-scalar Win64, library objects, C caller test.
+3. Call C via `extern fn` for the **full integer scalar subset** — all
+   fixed-width integers (`i8`…`u64`, `isize`/`usize`) plus `bool`/`char`/`byte`,
+   Win64 integer registers with narrow-return normalization in `rax`. `f32`/`f64`
+   extern calls remain planned (they need XMM routing) and demote to the
+   interpreters. The `extern fn` C-ABI signatures are threaded through the
+   IR/bytecode (`extern_signatures`) so the native emitter marshals each width.
 
 **First production-complete FFI increment (this design's near-term target):**
 
 - Full scalar marshalling (§5.1: all int widths, `f32`/`f64`, `bool`,
-  `char`/`byte`) for `extern` and `export` on Win64.
+  `char`/`byte`) for `extern` and `export` on Win64. **Extern-call integer
+  widths + `bool`/`char`/`byte` are delivered (item 3 above); `f32`/`f64` extern
+  and the widened `export` marshalling remain.**
 - `ptr<T>` parameters/returns (§5.2) and `repr(C)` structs passed **by pointer**
   (§5.3), including nested/array fields.
 - `string`↔`cstr` marshalling with the ownership rules and `L0430`/`L0431`

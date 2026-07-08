@@ -2603,10 +2603,13 @@ fn wasm_fixed_width_integers_execution_parity_with_node() {
     // signedness-correct comparison/division, bitwise/shift, `~`, and the
     // `to_<T>`/`to_i64` conversions). Each compiles to WASM now, and each exported
     // `main` must equal the interpreter's ground truth bit-for-bit.
-    let cases: [(&str, &str); 3] = [
+    let cases: [(&str, &str); 4] = [
         ("run_int_widths", "2147483649"),
         ("run_int_widths_wide", "7"),
         ("run_bitwise_widths", "410"),
+        // `i64::MIN / -1` must wrap to `i64::MIN` (result 7) rather than trap the
+        // WASM `i64.div_s`, on both the plain-i64 and fixed-width signed paths.
+        ("run_div_overflow", "7"),
     ];
 
     // Emit each module and confirm `main` compiled (not skipped).
@@ -3353,6 +3356,71 @@ fn native_execution_parity_when_linkable() {
     );
 }
 
+/// The `i64::MIN / -1` signed-division overflow case must yield `i64::MIN`
+/// (wrapping) on every backend, not trap or panic. The three interpreters agree
+/// on the fixture's deterministic result (7), and — when linkable — the native
+/// `.exe` must exit with the same value. Without the wrapping guard the native
+/// `idiv` would raise a hardware #DE and the process would crash instead of
+/// exiting 7.
+#[test]
+fn native_signed_div_overflow_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_div_overflow.lby");
+    let out = std::env::temp_dir().join("lullaby_native_div_overflow_parity.exe");
+
+    // All three interpreters agree on 7 (plain-i64 and fixed-width isize paths).
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        assert_eq!(
+            stdout(&run).trim(),
+            "7",
+            "{backend}: i64::MIN / -1 must wrap to i64::MIN (result 7)"
+        );
+    }
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native signed-division overflow link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 7,
+        "native exit code must equal the interpreter result (7); a trap on \
+         i64::MIN / -1 would crash the process instead"
+    );
+}
+
 /// Best-effort execution parity for the stack-aggregate subset: native-compile
 /// a program that builds a struct and sums a fixed i64 array, then assert the
 /// linked `.exe`'s exit code equals the interpreter's `main` result (mod 256).
@@ -3715,6 +3783,80 @@ fn ffi_calls_c_abs_when_linkable() {
     let exe = Command::new(&out).output().expect("run native exe");
     let exit = exe.status.code().expect("native exit code");
     assert_eq!(exit, 7, "llabs(-7) via C FFI must exit 7");
+}
+
+/// C-ABI FFI (non-`i64` scalar width): a program that declares
+/// `extern fn toupper c i32 -> i32` and returns `to_i64(toupper(to_i32(97)))`.
+/// `toupper('a')` is `'A'` (65), so the `.exe` exits with code 65. This exercises
+/// the extended scalar marshalling: an `i32` C argument passed in the low bits of
+/// `rcx` and an `i32` C return re-normalized in `rax` (`movsxd rax, eax`). On the
+/// interpreters the extern call is rejected with `L0423`. Native-compiled and
+/// linked against `ucrt.lib` (which provides `toupper`), the `.exe` calls the real
+/// C `toupper`. Gated on `rust-lld` + `kernel32.lib` + `ucrt.lib`; skips otherwise.
+#[test]
+fn ffi_calls_c_toupper_i32_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/native_only/ffi_toupper.lby");
+
+    // `check` validates the extern declaration and its call site.
+    let check = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(check.status.success(), "{}", stderr(&check));
+
+    // Every interpreter backend rejects the extern call with L0423.
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(
+            !run.status.success(),
+            "extern call must fail on the {backend} interpreter"
+        );
+        let rendered = format!("{}{}", stdout(&run), stderr(&run));
+        assert!(
+            rendered.contains("L0423"),
+            "expected L0423 on {backend}: {rendered}"
+        );
+    }
+
+    // Native codegen: emit + link + run.
+    let out = std::env::temp_dir().join("lullaby_ffi_toupper.exe");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() || !ucrt_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib/ucrt.lib (via the LIB env var) not available; \
+             skipping i32 C-ABI FFI link+run"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(exit, 65, "toupper('a') via C FFI must exit 65 ('A')");
 }
 
 /// Inline assembly: a `main` whose `unsafe` `asm` block emits the seven bytes of
