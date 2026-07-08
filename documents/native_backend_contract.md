@@ -22,9 +22,19 @@ Implemented now:
 - **C-ABI FFI (exposing Lullaby to C).** An `export fn NAME params -> Ret` is a normal (bodied) Lullaby function additionally exposed under its plain C name as an externally visible, defined `.text` symbol so C (or another object) can call **into** Lullaby. The first increment restricts an export to an i64-scalar signature (`L0424` otherwise). An export-only program (no `main`) emits a library object with no entry stub. See "C-ABI FFI (exposing Lullaby to C)" below.
 - **Native source-line debug info (`--debug`).** `lullaby native --debug` (alias `-g`) emits a CodeView `.debug$S` section with a per-function line table mapping each compiled function's entry offset to its `.lby` declaration line, plus the source file name, so a debugger (via a linker-built PDB) can break at a function and show its source line. Opt-in: without `--debug` the object bytes are byte-for-byte unchanged. See "Debug info (`--debug`)" below.
 
+Now implemented (updated): `bool`/`char`/`byte` and the full fixed-width integer
+lattice (`i8`…`u64`, `isize`/`usize`) and `f64`/`f32` floats are lowered as native
+scalars within `i64`-signature functions — wrapping/normalized integer
+arithmetic, signedness-correct comparison and division, bitwise and shifts, the
+`to_<T>`/`to_f32`/`to_f64` conversions, and SSE/XMM float arithmetic/comparison.
+Control flow (`if`/`while`/`loop`/`for`) and inter-function calls compile.
+`extern fn` calls to C are compiled and linked for the integer scalar subset.
+
 Not implemented yet:
 
-- `f64`/`bool`/`char`/`byte` native scalar lowering and more than four parameters (stack arguments).
+- More than four parameters (stack arguments); `f32`/`f64` **extern** (FFI) args,
+  which need XMM argument routing (a float-extern caller currently demotes to the
+  interpreters).
 - String/enum/collection *values* (as locals, parameters, returns, or call arguments), `match`, and builtins beyond a constant-folded `len` on a fixed native array and `len` over a string literal. A string constant exists only as the immediate argument of `len`; there is no native string local, concatenation, or indexing yet.
 - Aggregates (structs/arrays) as function parameters, return values, or call arguments — they are locals only for this increment.
 - Growable `list`/`map` and arrays whose length is not known from a literal initializer. The bump heap has no `free`/reclamation and is not yet exposed to general heap allocation beyond the string-constant copy.
