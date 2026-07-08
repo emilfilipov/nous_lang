@@ -1,0 +1,10 @@
+extern fn ldexp x f64 e i32 -> f64
+
+fn main -> i64
+    let r f64 = ldexp(1.5, to_i32(3))
+    let code i64 = 0
+    if r > 11.9
+        code = 6
+    if r < 12.1
+        code = code + 6
+    code

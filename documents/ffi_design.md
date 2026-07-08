@@ -291,22 +291,32 @@ check time (`L0424` for exports, `L0429` for extern params/returns; §9).
 | `u64` | `uint64_t`| 8 | 8 | INTEGER | delivered (extern call) |
 | `isize`| `intptr_t`| 8 | 8 | INTEGER | delivered (extern call); 64-bit on current targets |
 | `usize`| `size_t`  | 8 | 8 | INTEGER | delivered (extern call); 64-bit on current targets |
-| `f32` | `float`   | 4 | 4 | SSE | planned (needs XMM arg/return routing) |
-| `f64` | `double`  | 8 | 8 | SSE | planned (needs XMM arg/return routing) |
+| `f32` | `float`   | 4 | 4 | SSE | delivered (extern call + export); XMM arg/return routing |
+| `f64` | `double`  | 8 | 8 | SSE | delivered (extern call + export); XMM arg/return routing |
 | `bool`| `_Bool`   | 1 | 1 | INTEGER | delivered (extern call); 0/1, any nonzero from C reads as `true` |
 | `char`| `uint32_t`| 4 | 4 | INTEGER | delivered (extern call); Lullaby `char` is a Unicode scalar, not C `char` |
 | `byte`| `uint8_t` | 1 | 1 | INTEGER | delivered (extern call); the C `unsigned char`/octet type |
 
-For an **extern call** every integer-class scalar above is marshalled today: an
+For an **extern call** every scalar above is marshalled today. An integer-class
 argument is passed in the low bits of its Win64 register (`rcx`/`rdx`/`r8`/`r9`),
 already sign/zero-normalized to its width in the interpreter's cell model (which
 is exactly what the ABI requires), and a narrow C **return** is re-normalized in
 `rax` (sign-extend for signed kinds, zero-extend for unsigned; `i64`/64-bit kinds
-are a no-op). The `f32`/`f64` extern case remains **planned**: it needs the SSE
-argument registers `xmm0..3`, which the current all-GPR call path does not route,
-so a caller of a float extern is demoted to the interpreters (which reject it with
-`L0423`). The `export` direction still restricts to `i64` (`L0424`); widening the
-export marshalling to match the extern-call widths is a follow-up.
+are a no-op). A **float** (`f32`/`f64`) argument is passed in the SSE register at
+its **position** (`xmm0..3`, positionally aligned with the integer registers — a
+float at position N uses `xmm N` while an integer at position N uses integer
+register N, and each position consumes its slot in exactly one sequence, so
+`ldexp(double, int)` sends `double`→`xmm0` and `int`→`rdx`). A `f32`/`f64`
+**return** is read from `xmm0` (`movsd`/`movss`; f32 keeps only its low four
+bytes). Both directions are **delivered** and native-only: a caller of a float or
+mixed float/int extern compiles and links, while the interpreters still reject the
+extern call with `L0423`.
+
+The `export` direction accepts the delivered scalar set `i64`/`f64`/`f32` (a
+non-scalar export signature is `L0424`); the float export receives each float
+parameter in its positional SSE register and returns its float in `xmm0`. Widening
+the export marshalling to the full integer-width set and to pointers/structs is a
+follow-up.
 
 Rules:
 
@@ -635,17 +645,28 @@ and independently testable, matching the delivered native slices.
 2. Expose to C — `export fn`, i64-scalar Win64, library objects, C caller test.
 3. Call C via `extern fn` for the **full integer scalar subset** — all
    fixed-width integers (`i8`…`u64`, `isize`/`usize`) plus `bool`/`char`/`byte`,
-   Win64 integer registers with narrow-return normalization in `rax`. `f32`/`f64`
-   extern calls remain planned (they need XMM routing) and demote to the
-   interpreters. The `extern fn` C-ABI signatures are threaded through the
-   IR/bytecode (`extern_signatures`) so the native emitter marshals each width.
+   Win64 integer registers with narrow-return normalization in `rax`. The
+   `extern fn` C-ABI signatures are threaded through the IR/bytecode
+   (`extern_signatures`) so the native emitter marshals each width.
+4. **Float scalar marshalling** (`f32`/`f64`) for both `extern` calls and
+   `export fn` on Win64. A float argument is routed to the SSE register at its
+   position (`xmm0..3`, positionally aligned with the integer registers, so a
+   mixed `f(double, int)` sends `double`→`xmm0` and `int`→`rdx`); a float return
+   is read from `xmm0` (`movsd`/`movss`). An `export fn` receives each float
+   parameter in its positional SSE register and returns its float in `xmm0`. This
+   completes the scalar C-ABI story (all integer widths + `bool`/`char`/`byte` +
+   `f32`/`f64`). Verified end to end against the C runtime's `sqrt`
+   (`double sqrt(double)`) and `ldexp` (`double ldexp(double, int)`, mixed
+   float/int).
 
 **First production-complete FFI increment (this design's near-term target):**
 
 - Full scalar marshalling (§5.1: all int widths, `f32`/`f64`, `bool`,
   `char`/`byte`) for `extern` and `export` on Win64. **Extern-call integer
-  widths + `bool`/`char`/`byte` are delivered (item 3 above); `f32`/`f64` extern
-  and the widened `export` marshalling remain.**
+  widths + `bool`/`char`/`byte` are delivered (item 3 above); `f32`/`f64` scalar
+  marshalling — positional `xmm0..3` arguments and the `xmm0` return, for both
+  extern calls and `export fn` — is now delivered (item 4 below). Widening the
+  `export` direction to the full integer-width set remains.**
 - `ptr<T>` parameters/returns (§5.2) and `repr(C)` structs passed **by pointer**
   (§5.3), including nested/array fields.
 - `string`↔`cstr` marshalling with the ownership rules and `L0430`/`L0431`
