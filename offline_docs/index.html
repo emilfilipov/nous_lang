@@ -877,6 +877,10 @@ fn main -> i64
             <tr><td><code>remove_file(path)</code> / <code>remove_dir(path)</code></td><td>Removes a file / an empty directory.</td></tr>
             <tr><td><code>sys_status(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns its exit status.</td></tr>
             <tr><td><code>sys_output(program, args)</code></td><td>Runs a program directly with an <code>array&lt;string&gt;</code> argv and returns stdout.</td></tr>
+            <tr><td><code>proc_spawn(program, args)</code></td><td>Spawns a live child process (captured stdout/stderr) and returns a <code>result&lt;process, string&gt;</code> handle — <code>ok(process)</code> on success, <code>err</code> when the command cannot be launched. Unlike <code>sys_status</code>/<code>sys_output</code>, the child runs concurrently until you <code>proc_wait</code> it.</td></tr>
+            <tr><td><code>proc_wait(p)</code></td><td>Waits for the child to exit and returns <code>result&lt;i64, string&gt;</code> — the exit code (on Unix, a signal-terminated child reports <code>128 + signal</code>).</td></tr>
+            <tr><td><code>proc_stdout(p)</code> / <code>proc_stderr(p)</code></td><td>Returns the child's captured stdout / stderr as <code>result&lt;string, string&gt;</code> after it has been waited on.</td></tr>
+            <tr><td><code>proc_kill(p)</code></td><td>Forcibly terminates the child, returning <code>result&lt;i64, string&gt;</code>.</td></tr>
             <tr><td><code>env(name)</code></td><td>Reads an environment variable, returning <code>option&lt;string&gt;</code> (<code>some(value)</code> when set, <code>none</code> otherwise).</td></tr>
             <tr><td><code>args()</code></td><td>Returns the running program's CLI arguments as a <code>list&lt;string&gt;</code> (empty when none were passed). <code>lullaby run &lt;file.lby&gt; [args...]</code> supplies trailing tokens after the source path.</td></tr>
             <tr><td><code>mono_now()</code></td><td>A monotonic clock in nanoseconds (<code>i64</code>) since a fixed per-process baseline — non-decreasing, for measuring durations.</td></tr>
