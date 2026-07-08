@@ -2597,8 +2597,10 @@ fn wasm_heap_types_execution_parity_with_node() {
     }
 
     // The runner instantiates the module (a no-op `env.log_i64`), calls each
-    // export, and additionally reads the interned `[len i32][utf8]` string layout
-    // straight out of `memory` at the reserved base (offset 16).
+    // export, and additionally reads the interned
+    // `[char_len i32][byte_len i32][utf8]` string layout straight out of `memory`
+    // at the reserved base (offset 16): char count at +0, byte count at +4, bytes
+    // at +8.
     let runner = std::env::temp_dir().join("lullaby_wasm_heap_runner.js");
     let js = format!(
         "const fs=require('fs');\
@@ -2608,7 +2610,8 @@ fn wasm_heap_types_execution_parity_with_node() {
            const e=r.instance.exports;\
            const dv=new DataView(e.memory.buffer);\
            const slen=dv.getInt32(16,true);\
-           const sbytes=new Uint8Array(e.memory.buffer).slice(20,20+slen);\
+           const sblen=dv.getInt32(20,true);\
+           const sbytes=new Uint8Array(e.memory.buffer).slice(24,24+sblen);\
            const lines=[\
              'greet_len='+e.greet_len().toString(),\
              'point_sum='+e.point_sum(3n,4n).toString(),\
@@ -2648,6 +2651,117 @@ fn wasm_heap_types_execution_parity_with_node() {
     );
     // The interned string layout in `memory` decodes back to the literal.
     assert!(out_text.contains("str=hello/5"), "{out_text}");
+}
+
+#[test]
+fn wasm_string_concat_execution_parity_with_node() {
+    // Runtime string concatenation (`a + b` on two `string` values) compiles to
+    // WASM: each function allocates a fresh `[char_len][byte_len][utf8]` record and
+    // copies both operands' byte ranges. The fixture exercises direct concat, a
+    // chained `a + b + c`, and concatenation through a helper function, returning
+    // deterministic `i64` char counts via `len(...)`. Every export's WASM result
+    // must match the interpreter bit-for-bit.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_string_concat.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_string_concat.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // Every function — including the ones doing runtime `+` on strings — compiles
+    // to WASM (none is skipped/demoted to the interpreters).
+    let emit_out = stdout(&emit);
+    for name in [
+        "concat_two",
+        "concat_three",
+        "simple_len",
+        "chained_len",
+        "helper_len",
+        "deep_len",
+        "main",
+    ] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile to WASM, got: {emit_out}"
+        );
+    }
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "33");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM string-concat execution parity");
+        return;
+    }
+
+    // Instantiate under node, call each export, and additionally decode a
+    // concatenated record built at runtime straight out of `memory` (char count at
+    // +0, byte count at +4, bytes at +8) to prove the layout round-trips.
+    let runner = std::env::temp_dir().join("lullaby_wasm_string_concat_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           const e=r.instance.exports;\
+           const dv=new DataView(e.memory.buffer);\
+           const u8=new Uint8Array(e.memory.buffer);\
+           const ptr=e.concat_two(16,16);\
+           const cl=dv.getInt32(ptr,true);\
+           const bl=dv.getInt32(ptr+4,true);\
+           const s=Buffer.from(u8.slice(ptr+8,ptr+8+bl)).toString();\
+           const lines=[\
+             'simple_len='+e.simple_len().toString(),\
+             'chained_len='+e.chained_len().toString(),\
+             'helper_len='+e.helper_len().toString(),\
+             'deep_len='+e.deep_len().toString(),\
+             'main='+e.main().toString(),\
+             'rec='+s+'/'+cl+'/'+bl\
+           ];\
+           process.stdout.write(lines.join(';'));\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(out_text.contains("simple_len=6"), "{out_text}");
+    assert!(out_text.contains("chained_len=6"), "{out_text}");
+    assert!(out_text.contains("helper_len=10"), "{out_text}");
+    assert!(out_text.contains("deep_len=11"), "{out_text}");
+    // Whole-program `main` matches the interpreter.
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "{out_text}"
+    );
+    // `concat_two("", "")` over the two `[16..]` records at the reserved base —
+    // both point at the same interned first literal — concatenates its bytes and
+    // sums its headers, so the runtime-built record decodes correctly. The first
+    // interned literal is `foo` (from `simple_len`), so `concat_two(16, 16)`
+    // yields `foofoo` with char count 6 and byte count 6.
+    assert!(out_text.contains("rec=foofoo/6/6"), "{out_text}");
 }
 
 #[test]
@@ -3385,14 +3499,16 @@ fn wasm_js_dom_interop_execution_parity_with_node() {
         return;
     }
 
-    // The harness decodes each string from the `[len i32][utf8]` layout at
-    // `ptr`, captures console/dom calls, and prints the whole-program `main`.
+    // The harness decodes each string from the `(ptr, len)` host operands — `ptr`
+    // points directly at the first UTF-8 byte and `len` is the byte length — so
+    // it slices `[ptr, ptr + len)`, captures console/dom calls, and prints the
+    // whole-program `main`.
     let runner = std::env::temp_dir().join("lullaby_wasm_interop_runner.js");
     let js = format!(
         "const fs=require('fs');\
          const bytes=fs.readFileSync({wasm:?});\
          const logs=[];const doms=[];let mem;\
-         const dec=(ptr,len)=>Buffer.from(new Uint8Array(mem.buffer).slice(ptr+4,ptr+4+len)).toString();\
+         const dec=(ptr,len)=>Buffer.from(new Uint8Array(mem.buffer).slice(ptr,ptr+len)).toString();\
          const imports={{env:{{\
            log_i64:()=>{{}},\
            console_log:(p,l)=>logs.push(dec(p,l)),\
@@ -3524,7 +3640,7 @@ fn fullstack_frontend_wasm_matches_shared_logic() {
         "const fs=require('fs');\
          const bytes=fs.readFileSync({wasm:?});\
          const logs=[];const doms=[];let mem;\
-         const dec=(ptr,len)=>Buffer.from(new Uint8Array(mem.buffer).slice(ptr+4,ptr+4+len)).toString();\
+         const dec=(ptr,len)=>Buffer.from(new Uint8Array(mem.buffer).slice(ptr,ptr+len)).toString();\
          const imports={{env:{{\
            log_i64:()=>{{}},\
            console_log:(p,l)=>logs.push(dec(p,l)),\

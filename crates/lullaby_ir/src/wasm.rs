@@ -24,9 +24,17 @@
 //!
 //! Heap types (this increment): `string`, `struct`, and fixed `array` values are
 //! **pointers** (`i32`) into linear memory.
-//! - A `string` is a pointer to `[len: i32 (char count)][utf8 bytes]`. String
-//!   literals are laid out once in the Data section (their pointer is a constant
-//!   static offset); `len(s)` loads the leading `i32`.
+//! - A `string` is a pointer to `[char_len: i32][byte_len: i32][utf8 bytes]`: the
+//!   Unicode scalar (char) count, then the UTF-8 byte length, then the encoded
+//!   bytes. String literals are laid out once in the Data section (their pointer
+//!   is a constant static offset); `len(s)` loads the leading `i32` (the char
+//!   count). Runtime concatenation `a + b` on two strings allocates a fresh record
+//!   via `__alloc`, writes the summed char/byte headers, and `memory.copy`s each
+//!   operand's UTF-8 byte range into place — so it works for multi-byte text, not
+//!   just ASCII, and the result is a normal string usable by `len`, `console_log`,
+//!   and further `+`. Other string builtins (`to_string`, `substring`, `find`,
+//!   `replace`, `upper`/`lower`, `split`/`join`) remain deferred to the
+//!   interpreters.
 //! - A `struct` is a pointer to a contiguous run of 8-byte slots, one per field in
 //!   declared order. Positional construction (a call whose name is the struct)
 //!   `__alloc`s the run and stores each field; `.field` reads a slot; `p.field =
@@ -84,12 +92,14 @@
 //! (surfaced as `dom_set_text`) — the JS/DOM browser-host interop layer —
 //! declares a mutable `i32` global bump pointer, writes a Data section seeding the
 //! reserved region and the string-literal pool, and emits an internal
-//! `__alloc(size i32) -> i32` bump-allocator helper used to build structs/arrays
-//! at runtime. Imported functions occupy the LOW function indices, so every
+//! `__alloc(size i32) -> i32` bump-allocator helper used to build strings/structs/
+//! arrays at runtime. Imported functions occupy the LOW function indices, so every
 //! internally-defined function's index is shifted by the import count; call
 //! targets and exports are fixed up accordingly. The string host imports take a
-//! `(ptr, len)` pair per string decoded out of `memory`. Enums with heap payloads
-//! and heap-element `list`/`map` remain deferred.
+//! `(ptr, len)` pair per string, where `ptr` points at the string's first UTF-8
+//! byte (`record + STR_DATA_OFF`) and `len` is its UTF-8 byte length, so the host
+//! slices `[ptr, ptr + len)` of `memory` directly. Enums with heap payloads and
+//! heap-element `list`/`map` remain deferred.
 
 use std::collections::HashMap;
 
@@ -210,6 +220,28 @@ const LEN_HEADER: i32 = 4;
 
 /// The builtin that reads a string's or array's length header.
 const LEN_BUILTIN: &str = "len";
+
+// -- String record layout ----------------------------------------------------
+//
+// A `string` is an `i32` pointer to `[char_len: i32][byte_len: i32][utf8 bytes]`:
+// two `i32` headers followed by the UTF-8 encoding of the text. The FIRST header
+// is the Unicode scalar (char) count — the value `len(s)` returns, matching the
+// interpreters — and shares offset 0 with the array/list length header, so
+// `len(s)` reuses the array length path. The SECOND header is the UTF-8 BYTE
+// count, needed to slice the raw bytes without assuming one byte per char (so
+// non-ASCII text concatenates and decodes correctly). String literals are laid
+// out once in the Data section (their pointer is a constant static offset);
+// runtime concatenation `a + b` allocates a fresh record.
+
+/// Byte offset of a string's char-count header (Unicode scalar count). Shares
+/// offset 0 with the array/list length header so `len(s)` reuses that path.
+const STR_CHAR_LEN_OFF: i32 = 0;
+
+/// Byte offset of a string's byte-count header (UTF-8 byte length of the text).
+const STR_BYTE_LEN_OFF: i32 = 4;
+
+/// Byte offset of a string's first UTF-8 data byte: past the two `i32` headers.
+const STR_DATA_OFF: i32 = 8;
 
 // -- Growable list layout ----------------------------------------------------
 //
@@ -735,8 +767,11 @@ fn enum_table(defs: &[IrEnumDef]) -> HashMap<String, IrEnumDef> {
 }
 
 /// The static data pool for string literals. Each distinct literal is laid out
-/// once as `[len: i32 char-count][utf8 bytes]` starting at `RESERVED_BASE`; the
-/// value of the literal is the byte offset of its length header.
+/// once as `[char_len: i32][byte_len: i32][utf8 bytes]` starting at
+/// `RESERVED_BASE`; the value of the literal is the byte offset of its char-count
+/// header. The two headers mirror the runtime record layout (see the string
+/// record layout notes near `STR_DATA_OFF`) so a literal and a runtime-built
+/// string are byte-for-byte interchangeable.
 struct StringPool {
     /// Literal text -> its pointer (offset of the length header).
     offsets: HashMap<String, i32>,
@@ -759,7 +794,11 @@ impl StringPool {
         }
         let offset = RESERVED_BASE + self.bytes.len() as i32;
         let char_count = text.chars().count() as i32;
+        let byte_count = text.len() as i32;
+        // `[char_len: i32][byte_len: i32][utf8 bytes]` — matches the runtime record
+        // built by string concatenation, so literals and runtime strings interop.
         self.bytes.extend_from_slice(&char_count.to_le_bytes());
+        self.bytes.extend_from_slice(&byte_count.to_le_bytes());
         self.bytes.extend_from_slice(text.as_bytes());
         self.offsets.insert(text.to_string(), offset);
         offset
@@ -1826,12 +1865,14 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
     }
 }
 
-/// Lower a `string` argument to the two host-import operands `[ptr, len]`: push
-/// the string's linear-memory pointer, then its length header. The pointer is
-/// evaluated once into a scratch `i32` local so a non-trivial string expression
-/// is not lowered twice; the length is the leading `i32` header of the interned
-/// `[len i32][utf8 bytes]` layout (the char count, equal to the byte length for
-/// ASCII, which is what the host decodes out of `memory`).
+/// Lower a `string` argument to the two host-import operands `[ptr, len]`: push a
+/// pointer to the string's first UTF-8 byte, then its UTF-8 BYTE length. The
+/// record pointer is evaluated once into a scratch `i32` local so a non-trivial
+/// string expression is not lowered twice; the operand pointer is
+/// `record_ptr + STR_DATA_OFF` (past the two `i32` headers) so the host slices
+/// `[ptr, ptr + len)` directly, and the length is the record's byte-length header
+/// (`STR_BYTE_LEN_OFF`) so multi-byte UTF-8 text decodes correctly — not the char
+/// count, which only equals the byte length for ASCII.
 fn lower_string_ptr_len(ctx: &mut LowerCtx, arg: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
     if value_val_type(&arg.ty, ctx.structs, ctx.enums) != Some(WasmValType::I32)
         || arg.ty.name != "string"
@@ -1841,14 +1882,17 @@ fn lower_string_ptr_len(ctx: &mut LowerCtx, arg: &IrExpr, out: &mut Vec<u8>) -> 
             arg.ty.name
         ));
     }
-    lower_expr(ctx, arg, out)?; // string pointer (i32)
+    lower_expr(ctx, arg, out)?; // string record pointer (i32)
     let ptr = ctx.add_local(WasmValType::I32);
     set_local(out, ptr);
-    get_local(out, ptr); // operand: ptr
+    // operand: record_ptr + STR_DATA_OFF (pointer to the first UTF-8 byte).
+    get_local(out, ptr);
+    out.push(0x41); // i32.const STR_DATA_OFF
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add
+    // operand: byte length (the second header).
     get_local(out, ptr); // base for the length load
-    out.push(0x28); // i32.load
-    out.push(0x02); // align 2 (4-byte)
-    write_uleb(out, 0); // offset 0 (the length header) -> operand: len
+    emit_load_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
     Ok(())
 }
 
@@ -2056,6 +2100,16 @@ fn lower_binary(
         _ => {}
     }
 
+    // Runtime string concatenation: `a + b` where both operands are `string`
+    // allocates a fresh `[char_len][byte_len][utf8 bytes]` record whose bytes are
+    // the two operands' byte ranges joined and whose char/byte headers are the
+    // sums of the operands' headers. Strings are immutable, so the result is a new
+    // record with no aliasing. Any other `+` operand type falls through to the
+    // scalar arithmetic paths below.
+    if op == BinaryOp::Add && left.ty.name == "string" && right.ty.name == "string" {
+        return lower_string_concat(ctx, left, right, out);
+    }
+
     // A fixed-width operand kind (both operands share it; the type checker forbids
     // mixing widths) selects width- and signedness-correct codegen that
     // re-normalizes width-producing results, mirroring the interpreter free
@@ -2106,6 +2160,119 @@ fn lower_binary(
         return Ok(());
     }
     emit_binary_op_typed(op, operand_ty, out)
+}
+
+/// Lower runtime string concatenation `a + b` (both `string`) into a fresh
+/// `[char_len: i32][byte_len: i32][utf8 bytes]` record and leave its pointer on
+/// the stack.
+///
+/// Strings are immutable, so concatenation always builds a NEW record (no
+/// aliasing): read each operand's char-count and byte-count headers, `__alloc` a
+/// record of `STR_DATA_OFF + byte_a + byte_b` bytes, write the summed headers
+/// (char count = `char_a + char_b`, byte count = `byte_a + byte_b`), then
+/// `memory.copy` each operand's UTF-8 byte range into place. Working in BYTE
+/// ranges (not char counts) keeps multi-byte UTF-8 correct; the result's `len`
+/// (its char-count header) is `len(a) + len(b)`, matching the interpreters
+/// bit-for-bit. Chained `a + b + c` nests naturally: the inner `+` yields a normal
+/// string record consumed by the outer `+`.
+fn lower_string_concat(
+    ctx: &mut LowerCtx,
+    left: &IrExpr,
+    right: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    // Evaluate both operands once into scratch record-pointer locals (each may be
+    // a non-trivial expression — a variable, a literal, or a nested concat).
+    lower_expr(ctx, left, out)?;
+    let a = ctx.add_local(WasmValType::I32);
+    set_local(out, a);
+    lower_expr(ctx, right, out)?;
+    let b = ctx.add_local(WasmValType::I32);
+    set_local(out, b);
+
+    // Read the four headers into locals: char and byte counts of each operand.
+    let char_a = ctx.add_local(WasmValType::I32);
+    get_local(out, a);
+    emit_load_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+    set_local(out, char_a);
+    let byte_a = ctx.add_local(WasmValType::I32);
+    get_local(out, a);
+    emit_load_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+    set_local(out, byte_a);
+    let char_b = ctx.add_local(WasmValType::I32);
+    get_local(out, b);
+    emit_load_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+    set_local(out, char_b);
+    let byte_b = ctx.add_local(WasmValType::I32);
+    get_local(out, b);
+    emit_load_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+    set_local(out, byte_b);
+
+    // dst = __alloc(STR_DATA_OFF + byte_a + byte_b): header + both byte ranges.
+    out.push(0x41); // i32.const STR_DATA_OFF
+    write_sleb(out, STR_DATA_OFF as i64);
+    get_local(out, byte_a);
+    out.push(0x6a); // i32.add
+    get_local(out, byte_b);
+    out.push(0x6a); // i32.add
+    let dst = alloc_runtime(ctx, out);
+
+    // dst[char_len] = char_a + char_b.
+    get_local(out, dst);
+    get_local(out, char_a);
+    get_local(out, char_b);
+    out.push(0x6a); // i32.add
+    emit_store_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+    // dst[byte_len] = byte_a + byte_b.
+    get_local(out, dst);
+    get_local(out, byte_a);
+    get_local(out, byte_b);
+    out.push(0x6a); // i32.add
+    emit_store_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+
+    // memory.copy(dst + STR_DATA_OFF, a + STR_DATA_OFF, byte_a): first operand's
+    // bytes. `memory.copy` pops size, src, dest (pushed dest, src, size).
+    get_local(out, dst);
+    out.push(0x41); // i32.const STR_DATA_OFF
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add -> dest
+    get_local(out, a);
+    out.push(0x41);
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add -> src
+    get_local(out, byte_a); // size
+    emit_memory_copy(out);
+
+    // memory.copy(dst + STR_DATA_OFF + byte_a, b + STR_DATA_OFF, byte_b): second
+    // operand's bytes appended after the first range.
+    get_local(out, dst);
+    out.push(0x41);
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add
+    get_local(out, byte_a);
+    out.push(0x6a); // i32.add -> dest = dst + STR_DATA_OFF + byte_a
+    get_local(out, b);
+    out.push(0x41);
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add -> src
+    get_local(out, byte_b); // size
+    emit_memory_copy(out);
+
+    // The concatenated record's pointer is the value of the expression.
+    get_local(out, dst);
+    Ok(())
+}
+
+/// Emit the `memory.copy` bulk-memory instruction, copying `size` bytes from `src`
+/// to `dest` within the single linear memory (all three operands already on the
+/// stack in dest, src, size order). Encoded as the `0xfc` misc prefix, sub-opcode
+/// `0x0a`, then the destination and source memory indices (both `0` — the module
+/// has exactly one memory).
+fn emit_memory_copy(out: &mut Vec<u8>) {
+    out.push(0xfc); // misc-op prefix
+    write_uleb(out, 0x0a); // memory.copy
+    out.push(0x00); // dest memory index
+    out.push(0x00); // src memory index
 }
 
 /// The WASM float value type (`F32`/`F64`) an expression evaluates to, or `None`
@@ -4144,6 +4311,90 @@ mod tests {
             find_subslice(&artifact.bytes, b"yes").is_some()
                 && find_subslice(&artifact.bytes, b"no").is_some(),
             "string literals seeded into the data section"
+        );
+    }
+
+    #[test]
+    fn string_literal_record_has_char_and_byte_headers() {
+        // A string literal is interned as `[char_len i32][byte_len i32][utf8]`.
+        // For a multi-byte literal the two headers differ (char count != byte
+        // count), proving the byte length is stored, not derived by assuming ASCII.
+        let mut pool = StringPool::new();
+        let offset = pool.intern("café"); // 4 chars, 5 UTF-8 bytes (é = 2 bytes)
+        assert_eq!(offset, RESERVED_BASE);
+        let base = (offset - RESERVED_BASE) as usize;
+        let char_len = i32::from_le_bytes(pool.bytes[base..base + 4].try_into().unwrap());
+        let byte_len = i32::from_le_bytes(pool.bytes[base + 4..base + 8].try_into().unwrap());
+        assert_eq!(char_len, 4, "char-count header is the Unicode scalar count");
+        assert_eq!(byte_len, 5, "byte-count header is the UTF-8 byte length");
+        assert_eq!(
+            &pool.bytes[base + 8..base + 8 + 5],
+            "café".as_bytes(),
+            "the UTF-8 bytes follow the two headers at STR_DATA_OFF"
+        );
+    }
+
+    #[test]
+    fn string_concat_function_compiles_with_alloc_and_copy_codegen() {
+        // A function doing runtime `+` on two `string` values must COMPILE to WASM
+        // (not skip to the interpreters). The operands are parameters so the IR
+        // constant-folder cannot collapse the concat to a literal, exercising the
+        // real runtime alloc-and-copy path.
+        let source = "fn join a string b string -> string\n    a + b\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(
+            artifact.compiled,
+            vec!["join".to_string()],
+            "string concat should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The concat allocates a fresh record via `call __alloc`. `__alloc` is the
+        // last internal function: join(0) then __alloc(1), so its shifted WASM index
+        // is IMPORT_FUNC_COUNT + 1.
+        let alloc_index = IMPORT_FUNC_COUNT as u8 + 1;
+        assert!(
+            find_subslice(&code, &[0x10, alloc_index]).is_some(),
+            "string concat emits a `call __alloc` for the fresh record"
+        );
+        // The two byte ranges are copied with the bulk-memory `memory.copy`
+        // instruction: 0xfc prefix, sub-opcode 0x0a, dest/src memory indices 0, 0.
+        assert!(
+            find_subslice(&code, &[0xfc, 0x0a, 0x00, 0x00]).is_some(),
+            "string concat emits `memory.copy` to join the operand byte ranges"
+        );
+    }
+
+    #[test]
+    fn string_concat_result_len_matches_sum_of_char_counts() {
+        // `len(a + b)` on a runtime concat returns the SUM of the operands' char
+        // counts, matching the interpreters. The concat's char-count header is
+        // written as `char_a + char_b` and `len` reads offset 0, so the whole
+        // module compiles and the `len` read (an `i32.load` at offset 0 followed by
+        // `i64.extend_i32_s`) appears in the emitted code.
+        let source = concat!(
+            "fn cat a string b string -> string\n    a + b\n\n",
+            "fn probe -> i64\n",
+            "    let a string = \"ab\"\n",
+            "    let b string = \"cde\"\n",
+            "    len(cat(a, b))\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"cat".to_string())
+                && artifact.compiled.contains(&"probe".to_string()),
+            "cat/probe should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // `len(...)` reads the char-count header at offset 0 (`i32.load align=2
+        // offset=0`) then extends to i64 (`i64.extend_i32_s` = 0xac).
+        assert!(
+            find_subslice(&code, &[0x28, 0x02, 0x00, 0xac]).is_some(),
+            "len of the concat reads the char-count header and extends to i64"
         );
     }
 
