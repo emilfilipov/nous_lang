@@ -1,0 +1,48 @@
+# Native float subset: f64/f32 arithmetic, comparisons, and the to_f32/to_f64
+# conversions inside an otherwise-i64 function. `main` returns i64, so it is
+# eligible for native codegen; every float value lives only in locals.
+#
+# Deterministic i64 result (9) across the AST, IR, bytecode, and native
+# backends. Each passing check adds one.
+fn main -> i64
+    let count i64 = 0
+
+    # f64 arithmetic and an ordered `>` comparison.
+    let a f64 = 1.5
+    let b f64 = 2.0
+    let sum f64 = a + b
+    if sum > 3.0
+        count = count + 1
+
+    # f64 subtraction/multiply/divide chained, then `<`, `>=`, `<=`, `==`, `!=`.
+    let prod f64 = b * 2.0
+    let diff f64 = prod - 1.0
+    let quot f64 = prod / 2.0
+    if diff < prod
+        count = count + 1
+    if prod >= 4.0
+        count = count + 1
+    if quot <= 2.0
+        count = count + 1
+    if quot == 2.0
+        count = count + 1
+    if diff != prod
+        count = count + 1
+
+    # f32: 2^24 + 1 rounds back to 2^24 (single precision loses the extra bit).
+    let big f32 = to_f32(16777216.0)
+    let bumped f32 = big + to_f32(1.0)
+    if bumped == big
+        count = count + 1
+
+    # f32 arithmetic then widen to f64 for a cross-width comparison.
+    let half f32 = to_f32(1.0) / to_f32(2.0)
+    if to_f64(half) < 1.0
+        count = count + 1
+
+    # f64 keeps the bit that f32 drops.
+    let big64 f64 = 16777216.0
+    if big64 + 1.0 > big64
+        count = count + 1
+
+    count
