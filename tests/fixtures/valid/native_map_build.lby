@@ -1,0 +1,28 @@
+fn build -> map<i64, i64>
+    let m map<i64, i64> = map_new()
+    m = map_set(m, 1, 10)
+    m = map_set(m, 2, 20)
+    m = map_set(m, 3, 30)
+    m = map_set(m, 4, 40)
+    m = map_set(m, 5, 50)
+    m = map_set(m, 2, 99)
+    m
+
+fn lookup m map<i64, i64> k i64 -> i64
+    match map_get(m, k)
+        some(v) -> v
+        none -> 0
+
+fn main -> i64
+    let m map<i64, i64> = build()
+    let n i64 = map_len(m)
+    let got2 i64 = lookup(m, 2)
+    let got5 i64 = lookup(m, 5)
+    let missing i64 = lookup(m, 42)
+    let has3 i64 = 0
+    if map_has(m, 3)
+        has3 = 1
+    let has99 i64 = 0
+    if map_has(m, 99)
+        has99 = 1
+    n + got2 + got5 + missing + has3 + has99

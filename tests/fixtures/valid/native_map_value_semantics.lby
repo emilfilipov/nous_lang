@@ -1,0 +1,25 @@
+fn probe m map<i64, i64> -> i64
+    let extended map<i64, i64> = map_set(m, 7, 70)
+    let a i64 = map_len(m)
+    let b i64 = map_len(extended)
+    a + b
+
+fn value_of m map<i64, i64> k i64 -> i64
+    match map_get(m, k)
+        some(v) -> v
+        none -> 0
+
+fn main -> i64
+    let a map<i64, i64> = map_new()
+    a = map_set(a, 1, 10)
+    a = map_set(a, 2, 20)
+    let b map<i64, i64> = a
+    let c map<i64, i64> = map_set(b, 3, 30)
+    let d map<i64, i64> = map_set(b, 1, 77)
+    let call_probe i64 = probe(a)
+    let len_a i64 = map_len(a)
+    let len_b i64 = map_len(b)
+    let len_c i64 = map_len(c)
+    let b1 i64 = value_of(b, 1)
+    let d1 i64 = value_of(d, 1)
+    len_a + len_b + len_c + b1 + d1 + call_probe

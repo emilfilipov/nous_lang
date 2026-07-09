@@ -836,6 +836,115 @@ fn supported_list_element(ty: &TypeRef) -> Option<TypeRef> {
     }
 }
 
+// -- Growable map layout (native) --------------------------------------------
+//
+// A growable `map<K, V>` (scalar `K`/`V`) is a heap pointer (one 8-byte word,
+// like a list) to a header `[len: i64][cap: i64][entries...]`: the current entry
+// count, the allocated capacity in entries, then `cap` two-word entries. Each
+// entry is a `(key, value)` pair of 8-byte words — the key at `+0`, the value at
+// `+MAP_VALUE_OFF` — so entry `i` lives at `MAP_DATA_OFF + i * MAP_ENTRY_SIZE`.
+// Every field is an 8-byte word (uniform with native list/struct/enum slots).
+//
+// This mirrors the interpreters' `Value::Map`: an INSERTION-ORDERED association
+// list scanned linearly with `Value` equality. `map_set` overwrites the value of
+// an existing key in place (preserving its position) or appends a new entry at
+// the end, growing with capacity doubling like a list; `map_get`/`map_has` scan
+// entries front-to-back so the FIRST matching key wins; `map_len` reads the
+// header. Ordering and lookup therefore match the interpreters bit-for-bit.
+//
+// Value semantics: like native lists, maps are value-semantic. Every mutating op
+// (`map_set`) deep-copies the source map first and mutates the fresh copy, and a
+// map crossing a call boundary shares its pointer safely because the only
+// mutator copies. Read ops (`map_get`/`map_has`/`map_len`) never mutate. The bump
+// allocator never reclaims, so a grown/copied map orphans its old block.
+//
+// Key equality is a raw 8-byte word compare (`cmp`), exact for the integer-cell
+// key types (`i64`/fixed-width/`bool`/`char`/`byte`, all stored as normalized
+// `i64` cells). FLOAT keys are DEFERRED here: their word compare would treat
+// `+0.0`/`-0.0` and NaNs differently from the interpreters' value equality (and
+// from the WASM backend's ordered `f*.eq`), so a `map<f64, V>`/`map<f32, V>` is
+// unsupported and its function skips to the interpreters. Float VALUES are fine:
+// they are stored/loaded bit-for-bit and never compared.
+
+/// Byte offset of a map's `len` header (entry count), an `i64` word.
+const MAP_LEN_OFF: i32 = 0;
+
+/// Byte offset of a map's `cap` header (allocated capacity in entries), an `i64`
+/// word.
+const MAP_CAP_OFF: i32 = 8;
+
+/// Byte offset of a map's first entry, past the two `i64` headers.
+const MAP_DATA_OFF: i32 = 16;
+
+/// Byte offset of the value word within an entry (past the key word).
+const MAP_VALUE_OFF: i32 = 8;
+
+/// Bytes per map entry — a `(key, value)` pair of two 8-byte words.
+const MAP_ENTRY_SIZE: i32 = 16;
+
+/// Initial capacity a `map_new()` header (and the first growth of an empty map)
+/// allocates. Mirrors the list `LIST_INITIAL_CAP` and the WASM `MAP_INITIAL_CAP`.
+const MAP_INITIAL_CAP: i64 = 4;
+
+/// The map-runtime helper emitted in `.text`. Signature: no arguments; returns a
+/// fresh `[len=0][cap=MAP_INITIAL_CAP][entries]` heap block pointer in `rax`.
+const MAP_NEW_SYMBOL: &str = "__lullaby_map_new";
+
+/// The map deep-copy helper emitted in `.text`. Signature: the source map pointer
+/// in `rcx`; returns a fresh independent copy's pointer in `rax`.
+const MAP_COPY_SYMBOL: &str = "__lullaby_map_copy";
+
+/// The map-grow helper emitted in `.text`. Signature: the map pointer in `rcx`;
+/// returns a (possibly reallocated) map pointer in `rax` guaranteed to have
+/// `cap > len` (room for one more entry). Doubles capacity (or seeds
+/// `MAP_INITIAL_CAP` from an empty map) and copies the live entries.
+const MAP_GROW_SYMBOL: &str = "__lullaby_map_grow";
+
+/// The map linear-scan helper emitted in `.text`. Signature: the map pointer in
+/// `rcx`, the key word in `rdx`; returns in `rax` the index of the first entry
+/// whose key equals `rdx`, or the map's `len` if no key matched (the "found index
+/// else len" convention shared by `map_set`/`map_get`/`map_has`).
+const MAP_FIND_SYMBOL: &str = "__lullaby_map_find";
+
+/// Builtins that construct or read growable maps, matched by name in call
+/// lowering (arity / key / value types are validated there).
+const MAP_NEW_BUILTIN: &str = "map_new";
+const MAP_SET_BUILTIN: &str = "map_set";
+const MAP_GET_BUILTIN: &str = "map_get";
+const MAP_HAS_BUILTIN: &str = "map_has";
+const MAP_LEN_BUILTIN: &str = "map_len";
+
+/// The `(key, value)` element types of a supported growable `map<K, V>`, or
+/// `None` if `ty` is not a map, or its key/value are not both supported native
+/// scalars. Keys are restricted to the integer-cell scalar types (`i64`,
+/// fixed-width integers, `bool`/`char`/`byte`) so that key equality is an exact
+/// 8-byte word compare. Values may be any native scalar including a float
+/// (`f64`/`f32`, stored bit-for-bit, never compared). Heap keys/values
+/// (`map<string, V>`, `map<K, list<…>>`, …) and float keys are DEFERRED — such a
+/// map is unsupported and its enclosing function skips (still runs on the
+/// interpreters), matching the WASM map's first increment.
+fn supported_map_kv(ty: &TypeRef) -> Option<(TypeRef, TypeRef)> {
+    let (key, value) = ty.map_args()?;
+    // Key must be an integer-cell scalar (word-compare equality).
+    if !(key.name == "i64"
+        || fixed_int_kind(&key.name).is_some()
+        || matches!(key.name.as_str(), "bool" | "char" | "byte"))
+    {
+        return None;
+    }
+    // Value may be any native scalar, including a float.
+    if !(value.name == "i64"
+        || fixed_int_kind(&value.name).is_some()
+        || matches!(
+            value.name.as_str(),
+            "bool" | "char" | "byte" | "f64" | "f32"
+        ))
+    {
+        return None;
+    }
+    Some((key, value))
+}
+
 /// `.rdata` section characteristics: initialized, read-only data.
 /// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ`.
 const RDATA_CHARACTERISTICS: u32 = 0x4000_0040;
@@ -1155,12 +1264,24 @@ fn native_signature_type_is_aggregate(
         resolve_native_type(ty, structs, enums)?;
         return Ok(false);
     }
+    // A scalar-key/value growable `map<K, V>` likewise crosses a boundary as a
+    // single pointer word in an integer register (by value, value-semantic — its
+    // only mutator copies), so it is a scalar for the signature classification. A
+    // heap-key/value or float-key map is rejected by `resolve_native_type` below.
+    if ty.name.starts_with("map<") {
+        resolve_native_type(ty, structs, enums)?;
+        return Ok(false);
+    }
     // A struct or scalar-payload enum resolves to an aggregate layout; a heap type
-    // (`string`/`map`) or a heap-containing aggregate fails to resolve and is
-    // rejected here so the function skips gracefully.
+    // (`string`) or a heap-containing aggregate fails to resolve and is rejected
+    // here so the function skips gracefully.
     let native = resolve_native_type(ty, structs, enums)?;
     match native {
-        NativeType::I64 | NativeType::F64 | NativeType::F32 | NativeType::List { .. } => Ok(false),
+        NativeType::I64
+        | NativeType::F64
+        | NativeType::F32
+        | NativeType::List { .. }
+        | NativeType::Map { .. } => Ok(false),
         NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. } => Ok(true),
     }
 }
@@ -1568,6 +1689,17 @@ enum NativeType {
     /// layout, used to keep the element word count exact and mirror the WASM
     /// backend.
     List { elem: Box<NativeType> },
+    /// A growable `map<K, V>` with scalar key/value types. Represented as a single
+    /// 8-byte word holding a heap pointer to a `[len i64][cap i64][entries]`
+    /// block (each entry a `(key, value)` word pair); it passes/returns in an
+    /// integer register (by value, like a pointer) and is value-semantic because
+    /// its only mutator (`map_set`) deep-copies its source. `key`/`value` are the
+    /// scalar element layouts, used to keep the value slot exact and mirror the
+    /// WASM backend.
+    Map {
+        key: Box<NativeType>,
+        value: Box<NativeType>,
+    },
     /// A tagged enum whose variants all carry scalar payloads. Laid out as one
     /// tag word (the variant's discriminant index) followed by
     /// `payload_words` payload words (the maximum payload width across the
@@ -1608,8 +1740,12 @@ impl NativeType {
     /// The number of 8-byte words this value occupies on the stack.
     fn words(&self) -> usize {
         match self {
-            // A list is a single pointer word, like a scalar.
-            NativeType::I64 | NativeType::F64 | NativeType::F32 | NativeType::List { .. } => 1,
+            // A list or map is a single pointer word, like a scalar.
+            NativeType::I64
+            | NativeType::F64
+            | NativeType::F32
+            | NativeType::List { .. }
+            | NativeType::Map { .. } => 1,
             NativeType::Struct { fields, .. } => fields.iter().map(|(_, t)| t.words()).sum(),
             NativeType::Array { elem, len } => elem.words() * len,
             // One tag word plus the shared payload region.
@@ -1679,6 +1815,24 @@ fn resolve_native_type(
             let elem_native = resolve_native_type(&elem, structs, enums)?;
             Ok(NativeType::List {
                 elem: Box::new(elem_native),
+            })
+        }
+        // A growable `map<K, V>` (scalar key/value): a single pointer word. The key
+        // must be an integer-cell scalar and the value a native scalar; a heap
+        // key/value or float key is deferred and rejected so the enclosing
+        // function skips gracefully.
+        name if name.starts_with("map<") => {
+            let (key, value) = supported_map_kv(ty).ok_or_else(|| {
+                format!(
+                    "map `{name}` key/value is not a supported native scalar \
+                     (heap keys/values and float keys are deferred)"
+                )
+            })?;
+            let key_native = resolve_native_type(&key, structs, enums)?;
+            let value_native = resolve_native_type(&value, structs, enums)?;
+            Ok(NativeType::Map {
+                key: Box::new(key_native),
+                value: Box::new(value_native),
             })
         }
         // The built-in generic enums and user enums with scalar payloads.
@@ -2640,12 +2794,13 @@ fn lower_native_function(
                     emit_mov_slot_from_rcx(&mut code, local.slot + word * 8);
                 }
             }
-            NativeType::I64 | NativeType::List { .. } => {
-                // An integer/pointer scalar parameter — or a list (a heap pointer
-                // word) — spills its register directly into its slot. A list
-                // parameter shares the caller's block by pointer, which is safe:
-                // list mutators (`push`/`set`/`pop`) deep-copy their source, so the
-                // callee cannot alter the caller's list through the shared pointer.
+            NativeType::I64 | NativeType::List { .. } | NativeType::Map { .. } => {
+                // An integer/pointer scalar parameter — or a list/map (a heap
+                // pointer word) — spills its register directly into its slot. A
+                // list/map parameter shares the caller's block by pointer, which is
+                // safe: their mutators (`push`/`set`/`pop`, `map_set`) deep-copy
+                // their source, so the callee cannot alter the caller's value
+                // through the shared pointer.
                 code.extend_from_slice(PARAM_STORE[reg]);
                 code.extend_from_slice(&(-local.slot).to_le_bytes());
             }
@@ -2779,9 +2934,9 @@ fn lower_native_stmt(
             // xmm0 and stores the whole word; an aggregate `let` materializes each
             // flattened scalar word directly into its slots.
             match ctx.local(name)?.ty {
-                // An `i64` scalar or a list (a pointer word) uses the register
+                // An `i64` scalar or a list/map (a pointer word) uses the register
                 // path: evaluate into `rax` and store the whole word.
-                NativeType::I64 | NativeType::List { .. } => {
+                NativeType::I64 | NativeType::List { .. } | NativeType::Map { .. } => {
                     lower_native_expr(ctx, value, code)?;
                     let slot = ctx.local_slot(name)?;
                     store_local(code, slot); // mov [rbp - slot], rax
@@ -2866,13 +3021,19 @@ fn lower_native_stmt(
                 let ty = ctx.local(name)?.ty.clone();
                 return lower_aggregate_init(ctx, base, &ty, value, code);
             }
-            // A path-less whole-value assignment to a list local (`l = push(l, x)`,
-            // `l = list_new()`, `l = set(l, i, x)`, `l = pop(l)`) re-stores the
-            // pointer word through the register path. Only `Replace` is meaningful
-            // for a list (there is no `+=` on a list); a compound op is a skip.
-            if path.is_empty() && matches!(ctx.local(name)?.ty, NativeType::List { .. }) {
+            // A path-less whole-value assignment to a list or map local
+            // (`l = push(l, x)`, `l = list_new()`, `m = map_set(m, k, v)`,
+            // `m = map_new()`, …) re-stores the pointer word through the register
+            // path. Only `Replace` is meaningful for a list/map (there is no `+=` on
+            // one); a compound op is a skip.
+            if path.is_empty()
+                && matches!(
+                    ctx.local(name)?.ty,
+                    NativeType::List { .. } | NativeType::Map { .. }
+                )
+            {
                 if !matches!(op, AssignOp::Replace) {
-                    return Err("compound assignment on a list is not supported".to_string());
+                    return Err("compound assignment on a list or map is not supported".to_string());
                 }
                 lower_native_expr(ctx, value, code)?;
                 let slot = ctx.local_slot(name)?;
@@ -3029,6 +3190,17 @@ fn lower_aggregate_init(
     value: &BytecodeExpr,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
+    // `map_get(m, k) -> option<V>` is a builtin producing an aggregate: materialize
+    // the `some(v)`/`none` option directly into `base_slot`. It is matched before
+    // the compiled-function case because `map_get` is a builtin, not a `signatures`
+    // entry.
+    if let BytecodeExprKind::Call { name, args } = &value.kind
+        && name == MAP_GET_BUILTIN
+        && args.len() == 2
+        && supported_map_kv(&args[0].ty).is_some()
+    {
+        return lower_map_get_into(ctx, base_slot, &value.ty, &args[0], &args[1], code);
+    }
     // A call to a compiled function that returns this aggregate: the callee writes
     // its result through a hidden pointer we supply. We could pass `base_slot`'s
     // address as that pointer directly, but the address must be computed relative
@@ -3405,6 +3577,20 @@ fn lower_native_match(
             let words = 1 + payload_words;
             let base = ctx.alloc_scratch(words);
             lower_enum_construction(ctx, base, &variants, payload_words, name, args, code)?;
+            base
+        }
+        BytecodeExprKind::Call { name, args }
+            if name == MAP_GET_BUILTIN
+                && args.len() == 2
+                && supported_map_kv(&args[0].ty).is_some() =>
+        {
+            // `match map_get(m, k)`: materialize the builtin's `option<V>` result
+            // (tag + payload words) directly into scratch, then dispatch on it. The
+            // `map_get` lowering scans the map and writes `some(v)`/`none` into the
+            // scratch region, exactly like a constructed enum scrutinee.
+            let words = 1 + payload_words;
+            let base = ctx.alloc_scratch(words);
+            lower_map_get_into(ctx, base, &scrutinee.ty, &args[0], &args[1], code)?;
             base
         }
         BytecodeExprKind::Call { name, .. }
@@ -3891,6 +4077,44 @@ fn lower_native_expr(
                 lower_native_expr(ctx, &args[0], code)?; // list pointer -> rax
                 // mov rax, [rax + LIST_LEN_OFF]
                 emit_mov_rax_from_rax_disp(code, LIST_LEN_OFF);
+                return Ok(());
+            }
+            // Growable `map<K, V>` (scalar key/value) builtins with a *scalar*
+            // result. `map_new()` allocates an empty header; `map_set` deep-copies
+            // then updates-or-appends (value-semantic, returns the fresh map
+            // pointer); `map_has` scans to a `bool`; `map_len` reads the `len`
+            // header. `map_get` returns `option<V>` (an aggregate), so it is lowered
+            // in the aggregate paths (`lower_aggregate_init` / a `match` scrutinee),
+            // not here. Each name is unique (no array/list op shares it), so they
+            // dispatch by name; the key/value types are validated in each lowering.
+            if name == MAP_NEW_BUILTIN {
+                if !args.is_empty() {
+                    return Err("map_new expects 0 arguments".to_string());
+                }
+                lower_map_new(ctx, code);
+                return Ok(());
+            }
+            if name == MAP_SET_BUILTIN
+                && args.len() == 3
+                && supported_map_kv(&args[0].ty).is_some()
+            {
+                lower_map_set(ctx, &args[0], &args[1], &args[2], code)?;
+                return Ok(());
+            }
+            if name == MAP_HAS_BUILTIN
+                && args.len() == 2
+                && supported_map_kv(&args[0].ty).is_some()
+            {
+                lower_map_has(ctx, &args[0], &args[1], code)?;
+                return Ok(());
+            }
+            if name == MAP_LEN_BUILTIN
+                && args.len() == 1
+                && supported_map_kv(&args[0].ty).is_some()
+            {
+                lower_native_expr(ctx, &args[0], code)?; // map pointer -> rax
+                // mov rax, [rax + MAP_LEN_OFF]
+                emit_mov_rax_from_rax_disp(code, MAP_LEN_OFF);
                 return Ok(());
             }
             // `len(arr)` over a fixed native array folds to a compile-time
@@ -5241,6 +5465,266 @@ fn lower_list_get(
     Ok(())
 }
 
+// -- Growable map op lowering (native) ---------------------------------------
+//
+// A `map<K, V>` value is a heap pointer to `[len i64][cap i64][entries]` (each
+// entry a `(key, value)` word pair). The heavy lifting (allocate, deep-copy,
+// grow, linear-scan) lives in four `.text` helpers (`__lullaby_map_new`/`_copy`/
+// `_grow`/`_find`), so each call site stays small; the inline codegen below
+// stages operands, calls them, and stores results. Every map op is a `Call` IR
+// node, so the frame reserves shadow space and stays 16-byte aligned at each
+// `call` exactly like other calls and the list ops.
+
+/// `map_new()` -> a fresh `[len=0][cap=MAP_INITIAL_CAP][entries]` heap block
+/// pointer in `rax`. Just calls the runtime helper.
+fn lower_map_new(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
+    emit_call_symbol(ctx, MAP_NEW_SYMBOL, code);
+}
+
+/// Evaluate a map key expression into `rax`. Keys are integer-cell scalars
+/// (`supported_map_kv` rejects float keys), so the ordinary integer expression
+/// path yields the normalized key word directly.
+fn lower_map_key(
+    ctx: &mut NativeCtx,
+    key: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, key, code)
+}
+
+/// Evaluate a map value expression into `rax` as a flat 8-byte word (a float value
+/// is moved bit-for-bit from `xmm0` through `rax`, mirroring the list element
+/// path), so it can be stored into an entry's value slot.
+fn lower_map_value_word(
+    ctx: &mut NativeCtx,
+    value_ty: &TypeRef,
+    value: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    if let Some(width) = FloatWidth::from_type_name(&value_ty.name) {
+        lower_native_float_expr(ctx, value, code)?;
+        emit_movq_rax_from_xmm0(code, width);
+    } else {
+        lower_native_expr(ctx, value, code)?;
+    }
+    Ok(())
+}
+
+/// Lower `map_set(m, k, v) -> map<K, V>` (value-semantic insert/update): deep-copy
+/// `m`, scan the copy for `k`; if found, overwrite that entry's value slot in
+/// place (preserving order); otherwise grow when full (capacity doubling) and
+/// append a new `(k, v)` entry, bumping `len`. Leaves the fresh map pointer in
+/// `rax`. Because `map_set` always returns a NEW map, `m = map_set(m, k, v)`
+/// matches the interpreters' clone-then-mutate on the insertion-ordered list.
+fn lower_map_set(
+    ctx: &mut NativeCtx,
+    map: &BytecodeExpr,
+    key: &BytecodeExpr,
+    value: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    let (_key_ty, value_ty) = supported_map_kv(&map.ty).ok_or_else(|| {
+        format!(
+            "map_set expects a scalar-key, scalar-value map but got `{}`",
+            map.ty.name
+        )
+    })?;
+    // rax = deep copy of the source map (value semantics).
+    lower_native_expr(ctx, map, code)?;
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    emit_call_symbol(ctx, MAP_COPY_SYMBOL, code); // rax = fresh copy
+    code.push(0x50); // push rax (the copy pointer)
+    // Evaluate the key into a saved word (any nested call balances its own stack).
+    lower_map_key(ctx, key, code)?;
+    code.push(0x50); // push rax (key)
+    // Evaluate the value word (float via xmm0 -> rax) and save it.
+    lower_map_value_word(ctx, &value_ty, value, code)?;
+    code.push(0x50); // push rax (value)
+    // Restore into stable non-argument-clobbered registers: r8 = value, rdx = key,
+    // rcx = map copy. All three pops complete before the find call, so rsp is back
+    // to the frame-aligned base at that `call`. `__lullaby_map_find` reads rcx/rdx
+    // as its args and clobbers only rax/r10/r11, so rcx/rdx/r8 survive the call and
+    // need no save/restore around it.
+    code.push(0x41);
+    code.push(0x58); // pop r8 (value)
+    code.push(0x5A); // pop rdx (key)
+    code.push(0x59); // pop rcx (map copy)
+    emit_call_symbol(ctx, MAP_FIND_SYMBOL, code); // rax = index or len (rcx=map, rdx=key)
+    // r10 = len = [rcx + MAP_LEN_OFF]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x91]); // mov r10, [rcx + disp32]
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // if rax (found index) == r10 (len) -> append; else overwrite.
+    code.extend_from_slice(&[0x4C, 0x39, 0xD0]); // cmp rax, r10
+    code.extend_from_slice(&[0x0F, 0x84]); // je append (rel32)
+    let append_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // --- overwrite branch: store value into entry `rax`'s value slot ---
+    // entry addr = rcx + MAP_DATA_OFF + rax * MAP_ENTRY_SIZE (16). rax*16 = rax<<4.
+    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x04]); // shl rax, 4
+    // lea r11, [rcx + rax + MAP_DATA_OFF]
+    code.extend_from_slice(&[0x4C, 0x8D, 0x9C, 0x01]); // lea r11, [rcx + rax + disp32]
+    code.extend_from_slice(&MAP_DATA_OFF.to_le_bytes());
+    // mov [r11 + MAP_VALUE_OFF], r8
+    code.extend_from_slice(&[0x4D, 0x89, 0x83]); // mov [r11 + disp32], r8
+    code.extend_from_slice(&MAP_VALUE_OFF.to_le_bytes());
+    // rax = rcx (result map pointer) ; jmp done
+    code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx
+    code.push(0xE9); // jmp done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // --- append branch ---
+    patch_rel32(code, append_site);
+    // Grow if full: rcx = grow(map). Save key(rdx)/value(r8) across the call.
+    code.push(0x52); // push rdx (key)
+    code.push(0x41);
+    code.push(0x50); // push r8 (value)
+    emit_call_symbol(ctx, MAP_GROW_SYMBOL, code); // rax = grown map (rcx = map arg)
+    code.push(0x41);
+    code.push(0x58); // pop r8 (value)
+    code.push(0x5A); // pop rdx (key)
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (rcx = grown map)
+    // r10 = len = [rcx + MAP_LEN_OFF]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x91]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // entry addr of index `len`: r11 = rcx + MAP_DATA_OFF + len*16.
+    // r10*16: shl r10, 4
+    code.extend_from_slice(&[0x49, 0xC1, 0xE2, 0x04]); // shl r10, 4
+    // lea r11, [rcx + r10 + MAP_DATA_OFF]  (REX.WRX: r11 dest, r10 index)
+    code.extend_from_slice(&[0x4E, 0x8D, 0x9C, 0x11]); // lea r11, [rcx + r10 + disp32]
+    code.extend_from_slice(&MAP_DATA_OFF.to_le_bytes());
+    // mov [r11], rdx  (store key word at the entry's key slot, offset 0)
+    code.extend_from_slice(&[0x49, 0x89, 0x13]); // mov [r11], rdx
+    // mov [r11 + MAP_VALUE_OFF], r8  (store value word)
+    code.extend_from_slice(&[0x4D, 0x89, 0x83]);
+    code.extend_from_slice(&MAP_VALUE_OFF.to_le_bytes());
+    // len += 1: r10 currently holds len<<4; reload len and bump it.
+    // mov r10, [rcx + MAP_LEN_OFF]; inc r10; mov [rcx + MAP_LEN_OFF], r10
+    code.extend_from_slice(&[0x4C, 0x8B, 0x91]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0xFF, 0xC2]); // inc r10
+    code.extend_from_slice(&[0x4C, 0x89, 0x91]); // mov [rcx + disp32], r10
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // rax = rcx (result map pointer)
+    code.extend_from_slice(&[0x48, 0x89, 0xC8]);
+    // done:
+    patch_rel32(code, done_site);
+    Ok(())
+}
+
+/// Lower `map_has(m, k) -> bool`: scan for `k`, leaving `found != len` (1 if
+/// present, 0 if absent) in `rax`.
+fn lower_map_has(
+    ctx: &mut NativeCtx,
+    map: &BytecodeExpr,
+    key: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    supported_map_kv(&map.ty).ok_or_else(|| {
+        format!(
+            "map_has expects a scalar-key, scalar-value map but got `{}`",
+            map.ty.name
+        )
+    })?;
+    // Evaluate key first, save it; then map into rcx; restore key into rdx. Both
+    // pushes are popped before the find call, so rsp is frame-aligned there.
+    // `__lullaby_map_find` preserves rcx (map) and clobbers only rax/r10/r11, so
+    // the map pointer survives for the post-call `len` reload.
+    lower_map_key(ctx, key, code)?;
+    code.push(0x50); // push rax (key)
+    lower_native_expr(ctx, map, code)?; // rax = map pointer
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (map)
+    code.push(0x5A); // pop rdx (key)
+    emit_call_symbol(ctx, MAP_FIND_SYMBOL, code); // rax = index or len (rcx=map, rdx=key)
+    // r10 = len = [rcx + MAP_LEN_OFF]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x91]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // result = (rax != len) ? 1 : 0. cmp rax, r10 ; setne al ; movzx eax, al.
+    code.extend_from_slice(&[0x4C, 0x39, 0xD0]); // cmp rax, r10
+    code.extend_from_slice(&[0x0F, 0x95, 0xC0]); // setne al
+    code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+    Ok(())
+}
+
+/// Materialize `map_get(m, k) -> option<V>` into the aggregate words at
+/// `base_slot`: word 0 = the option tag (`some`=0 / `none`=1), word 1 = the value
+/// payload (for `some`). Deep-copy is NOT needed (read-only). Scans for `k`; when
+/// found builds `some(value)` (loading the entry's value slot), else `none`,
+/// reusing the native enum/option layout. `result_ty` is the call's `option<V>`
+/// type, from which the `some`/`none` layout is resolved.
+fn lower_map_get_into(
+    ctx: &mut NativeCtx,
+    base_slot: i32,
+    result_ty: &TypeRef,
+    map: &BytecodeExpr,
+    key: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    supported_map_kv(&map.ty).ok_or_else(|| {
+        format!(
+            "map_get expects a scalar-key, scalar-value map but got `{}`",
+            map.ty.name
+        )
+    })?;
+    // Resolve the option layout to get the `some`/`none` tags (some=0, none=1).
+    let layout = resolve_native_type(result_ty, ctx.structs, ctx.enums)?;
+    let NativeType::Enum { variants, .. } = &layout else {
+        return Err(format!(
+            "map_get result type `{}` is not a supported option enum",
+            result_ty.name
+        ));
+    };
+    let some_tag = variants
+        .iter()
+        .find(|v| v.name == "some")
+        .map(|v| v.tag)
+        .ok_or_else(|| "map_get result option layout missing `some` variant".to_string())?;
+    let none_tag = variants
+        .iter()
+        .find(|v| v.name == "none")
+        .map(|v| v.tag)
+        .ok_or_else(|| "map_get result option layout missing `none` variant".to_string())?;
+
+    // Evaluate key, save; map into rcx; restore key into rdx; keep map across find.
+    lower_map_key(ctx, key, code)?;
+    code.push(0x50); // push rax (key)
+    lower_native_expr(ctx, map, code)?; // rax = map pointer
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (map)
+    code.push(0x5A); // pop rdx (key)
+    // Both pushes are popped before the call; `__lullaby_map_find` preserves rcx
+    // (map), so the pointer survives for the value load / `len` reload below.
+    emit_call_symbol(ctx, MAP_FIND_SYMBOL, code); // rax = index or len (rcx=map, rdx=key)
+    // r10 = len = [rcx + MAP_LEN_OFF]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x91]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // if rax == len -> none; else some(value).
+    code.extend_from_slice(&[0x4C, 0x39, 0xD0]); // cmp rax, r10
+    code.extend_from_slice(&[0x0F, 0x84]); // je none (rel32)
+    let none_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // --- some branch: payload = entry(rax).value, then tag = some_tag ---
+    // entry addr: r11 = rcx + MAP_DATA_OFF + rax*16.
+    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x04]); // shl rax, 4
+    code.extend_from_slice(&[0x4C, 0x8D, 0x9C, 0x01]); // lea r11, [rcx + rax + disp32]
+    code.extend_from_slice(&MAP_DATA_OFF.to_le_bytes());
+    // rax = [r11 + MAP_VALUE_OFF]  (the value word); store it as the payload word.
+    code.extend_from_slice(&[0x49, 0x8B, 0x83]); // mov rax, [r11 + disp32]
+    code.extend_from_slice(&MAP_VALUE_OFF.to_le_bytes());
+    store_local(code, base_slot + 8); // payload word (base_slot + 8)
+    // tag word = some_tag at base_slot.
+    emit_mov_rax_imm(code, some_tag);
+    store_local(code, base_slot);
+    code.push(0xE9); // jmp done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // --- none branch: tag word = none_tag ---
+    patch_rel32(code, none_site);
+    emit_mov_rax_imm(code, none_tag);
+    store_local(code, base_slot); // tag word (payload word left untouched)
+    // done:
+    patch_rel32(code, done_site);
+    Ok(())
+}
+
 /// `movq rax, xmm0` (f64) or `movd eax, xmm0` (f32, zero-extending the low four
 /// bytes into rax) — move a float's bit pattern into `rax` so it can be stored as
 /// a flat 8-byte list element word bit-for-bit.
@@ -5388,16 +5872,22 @@ fn write_native_program_object(
     }
 }
 
-/// Whether any lowered function references a growable-list runtime helper (via a
-/// relocation against `__lullaby_list_new`/`__lullaby_list_copy`/
-/// `__lullaby_list_grow`). Used to decide whether the object needs the heap
-/// sections + helpers even when it interns no string constants.
+/// Whether any lowered function references a growable-list or growable-map runtime
+/// helper (via a relocation against `__lullaby_list_new`/`_copy`/`_grow` or
+/// `__lullaby_map_new`/`_copy`/`_grow`/`_find`). Used to decide whether the object
+/// needs the heap sections + helpers even when it interns no string constants.
 fn program_uses_list_helpers(functions: &[LoweredNativeFunction]) -> bool {
     functions.iter().any(|f| {
         f.relocations.iter().any(|r| {
             matches!(
                 r.symbol.as_str(),
-                LIST_NEW_SYMBOL | LIST_COPY_SYMBOL | LIST_GROW_SYMBOL
+                LIST_NEW_SYMBOL
+                    | LIST_COPY_SYMBOL
+                    | LIST_GROW_SYMBOL
+                    | MAP_NEW_SYMBOL
+                    | MAP_COPY_SYMBOL
+                    | MAP_GROW_SYMBOL
+                    | MAP_FIND_SYMBOL
             )
         })
     })
@@ -6077,6 +6567,250 @@ fn emit_list_grow_helper() -> HelperFunction {
     }
 }
 
+// -- Growable-map runtime helpers (native) -----------------------------------
+//
+// Four `.text` helpers back the inline map op codegen. Each map value is a
+// pointer to `[len i64][cap i64][cap * 16-byte entries]` (entry = key word +
+// value word). The helpers bump-allocate through `__lullaby_alloc` (no
+// reclamation) and copy whole 8-byte words. Because `MAP_DATA_OFF == LIST_DATA_OFF
+// == 16`, the shared `emit_list_word_copy_loop_rsi_rdi_rbx` copies map entry
+// words too — a map with `len` entries copies `2 * len` words.
+
+/// `__lullaby_map_new() -> ptr in rax`: allocate a fresh empty map block with
+/// `len = 0`, `cap = MAP_INITIAL_CAP`.
+fn emit_map_new_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+    emit_helper_shadow_prologue(&mut code);
+    // rcx = MAP_DATA_OFF + MAP_INITIAL_CAP * MAP_ENTRY_SIZE  (block byte size)
+    let size = MAP_DATA_OFF as i64 + MAP_INITIAL_CAP * MAP_ENTRY_SIZE as i64;
+    code.push(0xB9); // mov ecx, imm32 (zero-extends; size is small)
+    code.extend_from_slice(&(size as i32).to_le_bytes());
+    // call __lullaby_alloc
+    code.push(0xE8);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_ALLOC_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // mov qword [rax + MAP_LEN_OFF], 0
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&0i32.to_le_bytes());
+    // mov qword [rax + MAP_CAP_OFF], MAP_INITIAL_CAP
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]);
+    code.extend_from_slice(&MAP_CAP_OFF.to_le_bytes());
+    code.extend_from_slice(&(MAP_INITIAL_CAP as i32).to_le_bytes());
+    emit_helper_shadow_epilogue(&mut code);
+    code.push(0xC3); // ret (rax = new block)
+    HelperFunction {
+        name: MAP_NEW_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_map_copy(rcx = src) -> rax = fresh copy`: allocate a block with the
+/// source's `cap`, copy the `len`/`cap` headers and the `2 * len` live entry
+/// words.
+fn emit_map_copy_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.push(0x53); // push rbx
+    emit_helper_shadow_prologue(&mut code); // sub rsp, 40
+    // rsi = src
+    code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx
+    // Allocation size = MAP_DATA_OFF + cap * MAP_ENTRY_SIZE. cap = [rsi + CAP].
+    // rcx = [rsi + MAP_CAP_OFF]
+    code.extend_from_slice(&[0x48, 0x8B, 0x8E]);
+    code.extend_from_slice(&MAP_CAP_OFF.to_le_bytes());
+    // rcx = rcx * MAP_ENTRY_SIZE (16) : shl rcx, 4
+    code.extend_from_slice(&[0x48, 0xC1, 0xE1, 0x04]);
+    // rcx = rcx + MAP_DATA_OFF : add rcx, imm32
+    code.extend_from_slice(&[0x48, 0x81, 0xC1]);
+    code.extend_from_slice(&MAP_DATA_OFF.to_le_bytes());
+    // call __lullaby_alloc -> rax = dst
+    code.push(0xE8);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_ALLOC_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rdi = dst
+    code.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax
+    // Copy len + cap headers (offsets 0 and 8).
+    // r10 = [rsi + LEN]; [rdi + LEN] = r10
+    code.extend_from_slice(&[0x4C, 0x8B, 0x96]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x89, 0x97]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // r10 = [rsi + CAP]; [rdi + CAP] = r10
+    code.extend_from_slice(&[0x4C, 0x8B, 0x96]);
+    code.extend_from_slice(&MAP_CAP_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x89, 0x97]);
+    code.extend_from_slice(&MAP_CAP_OFF.to_le_bytes());
+    // rbx = 2 * len (entry word count to copy). rbx = [rsi + LEN]; shl rbx, 1.
+    code.extend_from_slice(&[0x48, 0x8B, 0x9E]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xD1, 0xE3]); // shl rbx, 1
+    // Copy `rbx` words from rsi to rdi (data offset 16 == MAP_DATA_OFF).
+    emit_list_word_copy_loop_rsi_rdi_rbx(&mut code);
+    // rax = dst (return value)
+    code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+    emit_helper_shadow_epilogue(&mut code);
+    code.push(0x5B); // pop rbx
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+    HelperFunction {
+        name: MAP_COPY_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_map_grow(rcx = map) -> rax = map with room for one more entry`:
+/// when `len < cap` the map is returned unchanged; otherwise a block with
+/// `new_cap = (cap == 0 ? MAP_INITIAL_CAP : cap * 2)` is allocated, the `len`
+/// header and the `2 * len` live entry words are copied, the new `cap` is
+/// written, and the fresh block is returned (the old block is orphaned).
+fn emit_map_grow_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.push(0x53); // push rbx
+    emit_helper_shadow_prologue(&mut code); // sub rsp, 40
+    // rsi = map
+    code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx
+    // rax = len = [rsi + LEN]; rdx = cap = [rsi + CAP].
+    code.extend_from_slice(&[0x48, 0x8B, 0x86]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x8B, 0x96]);
+    code.extend_from_slice(&MAP_CAP_OFF.to_le_bytes());
+    // if len < cap: return the map unchanged.
+    code.extend_from_slice(&[0x48, 0x39, 0xD0]); // cmp rax, rdx
+    code.extend_from_slice(&[0x0F, 0x8C]); // jl return_same (rel32)
+    let return_same_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rbx = new_cap = (cap == 0 ? MAP_INITIAL_CAP : cap * 2).
+    code.extend_from_slice(&[0x48, 0x89, 0xD3]); // mov rbx, rdx (cap)
+    code.extend_from_slice(&[0x48, 0x85, 0xDB]); // test rbx, rbx
+    code.extend_from_slice(&[0x0F, 0x85]); // jnz double (rel32)
+    let double_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.push(0xBB); // mov ebx, imm32 (MAP_INITIAL_CAP)
+    code.extend_from_slice(&(MAP_INITIAL_CAP as i32).to_le_bytes());
+    code.extend_from_slice(&[0xE9]); // jmp sized (rel32)
+    let sized_jmp_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // double: rbx = cap * 2 (shl rbx, 1)
+    patch_rel32(&mut code, double_site);
+    code.extend_from_slice(&[0x48, 0xD1, 0xE3]); // shl rbx, 1
+    // sized: allocate MAP_DATA_OFF + new_cap * MAP_ENTRY_SIZE.
+    patch_rel32(&mut code, sized_jmp_site);
+    // rcx = rbx * MAP_ENTRY_SIZE (16) + MAP_DATA_OFF
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE1, 0x04]); // shl rcx, 4
+    code.extend_from_slice(&[0x48, 0x81, 0xC1]); // add rcx, imm32
+    code.extend_from_slice(&MAP_DATA_OFF.to_le_bytes());
+    // call __lullaby_alloc -> rax = dst
+    code.push(0xE8);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_ALLOC_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rdi = dst
+    code.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax
+    // dst.len = src.len : r10 = [rsi + LEN]; [rdi + LEN] = r10.
+    code.extend_from_slice(&[0x4C, 0x8B, 0x96]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x89, 0x97]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // dst.cap = new_cap (rbx) : mov [rdi + CAP], rbx.
+    code.extend_from_slice(&[0x48, 0x89, 0x9F]);
+    code.extend_from_slice(&MAP_CAP_OFF.to_le_bytes());
+    // Copy 2 * len entry words. rbx = [rsi + LEN]; shl rbx, 1.
+    code.extend_from_slice(&[0x48, 0x8B, 0x9E]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xD1, 0xE3]); // shl rbx, 1
+    emit_list_word_copy_loop_rsi_rdi_rbx(&mut code);
+    // rax = dst (the grown block).
+    code.extend_from_slice(&[0x48, 0x89, 0xF8]); // mov rax, rdi
+    code.extend_from_slice(&[0xE9]); // jmp epilogue (rel32)
+    let epi_jmp_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // return_same: rax = the original map (rsi).
+    patch_rel32(&mut code, return_same_site);
+    code.extend_from_slice(&[0x48, 0x89, 0xF0]); // mov rax, rsi
+    // epilogue:
+    patch_rel32(&mut code, epi_jmp_site);
+    emit_helper_shadow_epilogue(&mut code);
+    code.push(0x5B); // pop rbx
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+    HelperFunction {
+        name: MAP_GROW_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_map_find(rcx = map, rdx = key) -> rax = index-or-len`: linear-scan
+/// the map's entries front-to-back for the FIRST entry whose key word equals
+/// `rdx`, returning its index; if none matches, return the map's `len` (the
+/// "found index else len" convention). Key equality is an exact 8-byte word
+/// compare (keys are integer-cell scalars), matching the interpreters' value
+/// equality. No allocation, so no shadow space / callee-saved registers needed:
+/// uses only volatile `rax`/`r10`/`r11`.
+fn emit_map_find_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let relocations: Vec<CodeRelocation> = Vec::new();
+    // r10 = len = [rcx + MAP_LEN_OFF]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x91]);
+    code.extend_from_slice(&MAP_LEN_OFF.to_le_bytes());
+    // rax = 0 (i = 0; also the running index)
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+    let loop_top = code.len();
+    // cmp rax, r10  ; jge not_found (rel32)
+    code.extend_from_slice(&[0x4C, 0x39, 0xD0]); // cmp rax, r10
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge not_found
+    let not_found_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // entry key addr: r11 = rcx + MAP_DATA_OFF + rax*16. rax*16 = rax<<4 into r11.
+    // mov r11, rax ; shl r11, 4
+    code.extend_from_slice(&[0x49, 0x89, 0xC3]); // mov r11, rax
+    code.extend_from_slice(&[0x49, 0xC1, 0xE3, 0x04]); // shl r11, 4
+    // r11 = [rcx + r11 + MAP_DATA_OFF]  (load the key word)
+    // mov r11, [rcx + r11 + disp32]  (REX.WRXB: r11 dest+base... base rcx no B;
+    // index r11 sets X; dest r11 sets R) -> REX = W+R+X = 0x4E
+    code.extend_from_slice(&[0x4E, 0x8B, 0x9C, 0x19]); // mov r11, [rcx + r11 + disp32]
+    code.extend_from_slice(&MAP_DATA_OFF.to_le_bytes());
+    // if r11 == rdx -> found (return rax). cmp r11, rdx ; je found.
+    // The `je` skips `inc rax` (3 bytes) + `jmp loop_top` (5 bytes) = 8 bytes,
+    // landing on the `ret` at `found:`.
+    code.extend_from_slice(&[0x49, 0x39, 0xD3]); // cmp r11, rdx
+    code.extend_from_slice(&[0x74, 0x08]); // je +8 -> found: ret
+    // Not equal: rax += 1 ; jmp loop_top.
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    emit_jmp_to(&mut code, loop_top); // jmp loop_top (rel32, 5 bytes)
+    // found: (je target) — rax already holds the matching index.
+    code.push(0xC3); // ret
+    // not_found: rax = len (r10).
+    patch_rel32(&mut code, not_found_site);
+    code.extend_from_slice(&[0x4C, 0x89, 0xD0]); // mov rax, r10
+    code.push(0xC3); // ret
+    HelperFunction {
+        name: MAP_FIND_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// Write the extended COFF object with `.text`, `.rdata`, and `.bss` sections.
 /// Used only when the program references string constants.
 fn write_object_with_data(
@@ -6181,6 +6915,25 @@ fn write_object_with_data(
             &list_helper.relocations,
         );
     }
+    // Growable-map runtime helpers (map_new / map_copy / map_grow / map_find),
+    // emitted alongside the list helpers whenever the heap path runs. A program
+    // that never references them carries unused `.text` functions (dead-stripped
+    // by the linker).
+    for map_helper in [
+        emit_map_new_helper(),
+        emit_map_copy_helper(),
+        emit_map_grow_helper(),
+        emit_map_find_helper(),
+    ] {
+        append_code(
+            &mut text,
+            &mut relocations,
+            &mut func_offsets,
+            &map_helper.name,
+            &map_helper.code,
+            &map_helper.relocations,
+        );
+    }
 
     // -- Build .rdata: NUL-terminated string constants -----------------------
     let mut rdata: Vec<u8> = Vec::new();
@@ -6223,6 +6976,10 @@ fn write_object_with_data(
         LIST_NEW_SYMBOL,
         LIST_COPY_SYMBOL,
         LIST_GROW_SYMBOL,
+        MAP_NEW_SYMBOL,
+        MAP_COPY_SYMBOL,
+        MAP_GROW_SYMBOL,
+        MAP_FIND_SYMBOL,
     ] {
         symbols.push(SymbolDef {
             name: helper.to_string(),
@@ -8510,5 +9267,148 @@ mod native_program_tests {
         .expect("emit native program");
         assert_eq!(program.compiled, vec!["main".to_string()]);
         assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+    }
+
+    // -- Growable map<K, V> (scalar key/value) native codegen ----------------
+
+    #[test]
+    fn compiles_growable_map_function_natively() {
+        // A program that builds a scalar `map<i64, i64>` via `map_new`/`map_set`
+        // (including a signature returning `map<i64, i64>`, one taking it, and a
+        // `match map_get(...)`), reads it via `map_get`/`map_has`/`map_len` — all
+        // compile natively (nothing skipped).
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn build -> map<i64, i64>\n",
+            "    let m map<i64, i64> = map_new()\n",
+            "    m = map_set(m, 1, 10)\n",
+            "    m = map_set(m, 2, 20)\n",
+            "    m = map_set(m, 2, 99)\n",
+            "    m\n\n",
+            "fn lookup m map<i64, i64> k i64 -> i64\n",
+            "    match map_get(m, k)\n",
+            "        some(v) -> v\n",
+            "        none -> 0\n\n",
+            "fn main -> i64\n",
+            "    let m map<i64, i64> = build()\n",
+            "    let has1 i64 = 0\n",
+            "    if map_has(m, 1)\n",
+            "        has1 = 1\n",
+            "    map_len(m) + lookup(m, 2) + has1\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"build".to_string())
+                && program.compiled.contains(&"lookup".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "growable map functions must compile: {:?} / {:?}",
+            program.compiled,
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+    }
+
+    #[test]
+    fn map_object_emits_map_and_alloc_helpers() {
+        // A map-using program (no string constants) still emits the heap path: the
+        // object must contain the `__lullaby_map_new`/`_copy`/`_grow`/`_find`
+        // runtime-helper symbols and the bump allocator, proving map codegen is
+        // present and defined in `.text`.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let m map<i64, i64> = map_new()\n",
+            "    m = map_set(m, 1, 5)\n",
+            "    m = map_set(m, 2, 6)\n",
+            "    map_len(m)\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        for symbol in [
+            MAP_NEW_SYMBOL,
+            MAP_COPY_SYMBOL,
+            MAP_GROW_SYMBOL,
+            MAP_FIND_SYMBOL,
+            HEAP_ALLOC_SYMBOL,
+        ] {
+            let (section, _storage) =
+                coff_symbol(&program.bytes, symbol).unwrap_or_else(|| panic!("missing {symbol}"));
+            assert_eq!(section, 1, "{symbol} must be defined in .text");
+        }
+        assert!(
+            coff_symbol(&program.bytes, HEAP_BASE_SYMBOL).is_some(),
+            "the .bss heap region must be present for a map-using object"
+        );
+    }
+
+    #[test]
+    fn map_set_call_site_calls_copy_then_find() {
+        // A `map_set` call site deep-copies the source map (value semantics) and
+        // then scans it, so `main`'s object carries relocations against BOTH the
+        // map-copy and the map-find helpers.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let m map<i64, i64> = map_new()\n",
+            "    m = map_set(m, 3, 7)\n",
+            "    map_len(m)\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(
+            coff_symbol(&program.bytes, MAP_COPY_SYMBOL).is_some(),
+            "map_set must reference the map-copy helper"
+        );
+        assert!(
+            coff_symbol(&program.bytes, MAP_FIND_SYMBOL).is_some(),
+            "map_set must reference the map-find helper"
+        );
+    }
+
+    #[test]
+    fn compiles_float_value_map_natively() {
+        // A `map<i64, f64>` (float value) compiles: values are stored/loaded as
+        // bit-preserving 8-byte words, and a `some(v)` float payload round-trips
+        // through the option layout.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn probe m map<i64, f64> k i64 -> i64\n",
+            "    match map_get(m, k)\n",
+            "        some(v) -> 1\n",
+            "        none -> 0\n\n",
+            "fn main -> i64\n",
+            "    let m map<i64, f64> = map_new()\n",
+            "    m = map_set(m, 1, 1.5)\n",
+            "    m = map_set(m, 2, 2.5)\n",
+            "    probe(m, 2) + map_len(m)\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"probe".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "float-value map functions must compile: {:?} / {:?}",
+            program.compiled,
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+    }
+
+    #[test]
+    fn defers_string_key_map_gracefully() {
+        // A `map<string, i64>` (heap key) is DEFERRED: the enclosing function skips
+        // with a clear reason and still runs on the interpreters — never
+        // miscompiled. String-key equality needs the string heap (content
+        // comparison), matching the WASM map's first increment.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn build -> map<string, i64>\n",
+            "    map_set(map_new(), \"a\", 1)\n\n",
+            "fn main -> i64\n",
+            "    map_len(build())\n",
+        )));
+        let err = program.expect_err("string-key map must not compile");
+        assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+        assert!(
+            err.skipped
+                .iter()
+                .any(|s| s.name == "build" && s.reason.contains("map")),
+            "the skip reason must cite the deferred map key/value: {:?}",
+            err.skipped
+        );
     }
 }
