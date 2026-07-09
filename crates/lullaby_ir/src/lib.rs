@@ -7575,22 +7575,30 @@ fn expr_mentions_var(expr: &IrExpr, name: &str) -> bool {
     }
 }
 
+/// A lexical environment: a stack of scopes, each an insertion-ordered
+/// association list of `(name, value)`. Function-call and block scopes are
+/// small, so a linear-scan `Vec` beats a `HashMap` — it avoids a per-scope
+/// bucket allocation and per-access string hashing, and its contiguous layout
+/// is cache-friendly. `define` keeps at most one binding per name per scope
+/// (replacing in place, like the previous `HashMap::insert`), so resolution
+/// never disambiguates duplicates within a scope; cross-scope shadowing is
+/// innermost-first. Mirrors the AST runtime's `Env` one-to-one.
 #[derive(Debug, Clone)]
 struct Env {
-    scopes: Vec<HashMap<String, Value>>,
+    scopes: Vec<Vec<(String, Value)>>,
 }
 
 impl Default for Env {
     fn default() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![Vec::new()],
         }
     }
 }
 
 impl Env {
     fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
@@ -7598,17 +7606,23 @@ impl Env {
     }
 
     fn define(&mut self, name: String, value: Value) {
-        self.scopes
-            .last_mut()
-            .expect("env always has a scope")
-            .insert(name, value);
+        let scope = self.scopes.last_mut().expect("env always has a scope");
+        for (existing, slot) in scope.iter_mut() {
+            if *existing == name {
+                *slot = value;
+                return;
+            }
+        }
+        scope.push((name, value));
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                *slot = value;
-                return Ok(());
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    *slot = value;
+                    return Ok(());
+                }
             }
         }
         Err(RuntimeError::new(
@@ -7618,10 +7632,7 @@ impl Env {
     }
 
     fn get(&self, name: &str) -> Result<Value, RuntimeError> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
+        self.get_ref(name)
             .cloned()
             .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
     }
@@ -7630,7 +7641,14 @@ impl Env {
     /// [`Env::get`]). Used to classify a call target on the
     /// move-on-functional-update fast path without paying for a clone.
     fn get_ref(&self, name: &str) -> Option<&Value> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+        for scope in self.scopes.iter().rev() {
+            for (existing, value) in scope.iter() {
+                if existing == name {
+                    return Some(value);
+                }
+            }
+        }
+        None
     }
 
     /// True when `name` is bound in the innermost (current) scope. A `let x =
@@ -7640,7 +7658,7 @@ impl Env {
     fn innermost_has(&self, name: &str) -> bool {
         self.scopes
             .last()
-            .is_some_and(|scope| scope.contains_key(name))
+            .is_some_and(|scope| scope.iter().any(|(n, _)| n == name))
     }
 
     /// True when `name` is bound in any scope (a normal local). A plain `x =
@@ -7659,8 +7677,10 @@ impl Env {
     /// never observable (see the AST runtime twin for the full argument).
     fn move_out_nearest(&mut self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                return Some(std::mem::replace(slot, Value::Void));
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    return Some(std::mem::replace(slot, Value::Void));
+                }
             }
         }
         None
