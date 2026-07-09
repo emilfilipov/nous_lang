@@ -11,18 +11,18 @@ use lullaby_parser::{
     TypeRef, UnaryOp, function_type, generic_type,
 };
 use lullaby_runtime::{
-    ArithOp, Closure, Future, IntKind, MEMORY_ORDER_VARIANTS, OrderedMap, OverflowMode,
-    ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource, Task,
-    Value, apply_compound, asm_interpreter_error, await_future, builtin_atomic_add_ordered,
-    builtin_atomic_and_ordered, builtin_atomic_cas_ordered, builtin_atomic_load_ordered,
-    builtin_atomic_or_ordered, builtin_atomic_store_ordered, builtin_atomic_sub_ordered,
-    builtin_atomic_swap_ordered, builtin_atomic_xor_ordered, builtin_fence, char_find,
-    expect_atomic, expect_bool, expect_chan, expect_future, expect_i64, expect_list, expect_map,
-    expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64, get_place, http_exchange,
-    int_cmp, int_div, int_shl, int_shr, join_task, list_extreme, list_sum_values,
-    monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes, overflow_arith,
-    process_exit_code, result_value, scalar_order_keys, set_place, shift_left, shift_right,
-    sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
+    ArithOp, Closure, EnumValue, Future, IntKind, MEMORY_ORDER_VARIANTS, OverflowMode,
+    ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource,
+    StructValue, Task, Value, apply_compound, asm_interpreter_error, await_future,
+    builtin_atomic_add_ordered, builtin_atomic_and_ordered, builtin_atomic_cas_ordered,
+    builtin_atomic_load_ordered, builtin_atomic_or_ordered, builtin_atomic_store_ordered,
+    builtin_atomic_sub_ordered, builtin_atomic_swap_ordered, builtin_atomic_xor_ordered,
+    builtin_fence, char_find, expect_atomic, expect_bool, expect_chan, expect_future, expect_i64,
+    expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64,
+    get_place, http_exchange, int_cmp, int_div, int_shl, int_shr, join_task, list_extreme,
+    list_sum_values, monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes,
+    overflow_arith, process_exit_code, result_value, scalar_order_keys, set_place, shift_left,
+    shift_right, sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -4099,17 +4099,17 @@ impl<'a> IrRuntime<'a> {
             return self.invoke_function(method, args);
         }
         if let Some(enum_name) = self.variants.get(name) {
-            return Ok(Value::Enum {
+            return Ok(Value::Enum(Box::new(EnumValue {
                 enum_name: enum_name.to_string(),
                 variant: name.to_string(),
                 payload: args,
-            });
+            })));
         }
         if let Some(field_names) = self.structs.get(name) {
-            return Ok(Value::Struct {
+            return Ok(Value::Struct(Box::new(StructValue {
                 name: name.to_string(),
                 fields: field_names.iter().cloned().zip(args).collect(),
-            });
+            })));
         }
         match name {
             "alloc" => self.builtin_alloc(args),
@@ -4629,15 +4629,15 @@ impl<'a> IrRuntime<'a> {
         env: &mut Env,
     ) -> Result<Control, RuntimeError> {
         let value = self.eval_expr(scrutinee, env)?;
-        let Value::Enum {
-            variant, payload, ..
-        } = value
-        else {
+        let Value::Enum(e) = value else {
             return Err(RuntimeError::new(
                 "L0383",
                 "match scrutinee did not evaluate to an enum value",
             ));
         };
+        let EnumValue {
+            variant, payload, ..
+        } = *e;
         for arm in arms {
             match &arm.pattern {
                 IrMatchPattern::Wildcard => {
@@ -4694,11 +4694,11 @@ impl<'a> IrRuntime<'a> {
                     // A bare name that is not a local but is a known enum variant
                     // constructs a unit variant.
                     if let Some(enum_name) = self.variants.get(name.as_str()) {
-                        Ok(Value::Enum {
+                        Ok(Value::Enum(Box::new(EnumValue {
                             enum_name: enum_name.to_string(),
                             variant: name.clone(),
                             payload: Vec::new(),
-                        })
+                        })))
                     } else if self.functions.contains_key(name.as_str()) {
                         // A bare name that is a known top-level function evaluates
                         // to a first-class function value.
@@ -4725,7 +4725,8 @@ impl<'a> IrRuntime<'a> {
                 })
             }
             IrExprKind::Field { target, field } => match self.eval_expr(target, env)? {
-                Value::Struct { fields, .. } => fields
+                Value::Struct(s) => s
+                    .fields
                     .into_iter()
                     .find(|(name, _)| name == field)
                     .map(|(_, value)| value)
@@ -6811,7 +6812,7 @@ impl<'a> IrRuntime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_new", 0, args.len()))?;
-        Ok(Value::Map(OrderedMap::new()))
+        Ok(Value::Map(Box::default()))
     }
 
     /// `map_set(m, k, v) -> map<K, V>`: a new map with `k` mapped to `v`.
@@ -6822,7 +6823,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_set", 3, args.len()))?;
         let mut entries = expect_map("map_set", map)?;
         entries.insert(key, value);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`. O(1).
@@ -6882,7 +6883,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_del", 2, args.len()))?;
         let mut entries = expect_map("map_del", map)?;
         entries.remove(&key);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     fn builtin_substring(args: Vec<Value>) -> Result<Value, RuntimeError> {

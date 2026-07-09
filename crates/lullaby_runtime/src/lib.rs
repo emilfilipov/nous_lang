@@ -27,8 +27,8 @@ pub fn value_type_name(value: &Value) -> String {
         Value::Char(_) => "char".to_string(),
         Value::Byte(_) => "byte".to_string(),
         Value::Array(_) => "array".to_string(),
-        Value::Struct { name, .. } => name.clone(),
-        Value::Enum { enum_name, .. } => enum_name.clone(),
+        Value::Struct(s) => s.name.clone(),
+        Value::Enum(e) => e.enum_name.clone(),
         Value::Map(_) => "map".to_string(),
         Value::Func(_) => "fn".to_string(),
         // The runtime closure value carries no parameter/return types (they live
@@ -598,19 +598,19 @@ pub enum Value {
     Byte(u8),
     Array(Vec<Value>),
     Ptr(usize),
-    Struct {
-        name: String,
-        fields: Vec<(String, Value)>,
-    },
-    Enum {
-        enum_name: String,
-        variant: String,
-        payload: Vec<Value>,
-    },
+    /// A struct value. Boxed so the common scalar `Value` variants stay small
+    /// (the interpreter moves/clones `Value`s constantly, so enum size is on the
+    /// hot path); the box is one indirection paid only by struct values.
+    Struct(Box<StructValue>),
+    /// An enum value (including the built-in `option`/`result`). Boxed for the
+    /// same size reason as [`Value::Struct`].
+    Enum(Box<EnumValue>),
     /// A `map<K, V>`: an insertion-ordered association list ([`OrderedMap`])
     /// backed by a hash index, so `map_get`/`map_has`/`map_set`-of-an-existing-
     /// key are O(1) while iteration order and `==` remain those of the entries.
-    Map(OrderedMap),
+    /// Boxed so the map's Vec+hash-index (the largest payload) does not inflate
+    /// every `Value`.
+    Map(Box<OrderedMap>),
     /// A first-class function value: a handle to a top-level function by name.
     /// No environment is captured in this increment.
     Func(String),
@@ -644,6 +644,24 @@ pub enum Value {
     Void,
 }
 
+/// The payload of a [`Value::Struct`]: the struct type name plus its fields in
+/// declaration order. Boxed inside `Value` to keep the enum small.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructValue {
+    pub name: String,
+    pub fields: Vec<(String, Value)>,
+}
+
+/// The payload of a [`Value::Enum`]: the owning enum name, the variant name,
+/// and the (positional) payload values. Boxed inside `Value` to keep the enum
+/// small.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumValue {
+    pub enum_name: String,
+    pub variant: String,
+    pub payload: Vec<Value>,
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -672,21 +690,22 @@ impl fmt::Display for Value {
                 write!(formatter, "[{values}]")
             }
             Self::Ptr(slot) => write!(formatter, "ptr({slot})"),
-            Self::Struct { name, fields } => {
-                let rendered = fields
+            Self::Struct(s) => {
+                let rendered = s
+                    .fields
                     .iter()
                     .map(|(field, value)| format!("{field}: {value}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(formatter, "{name}({rendered})")
+                write!(formatter, "{}({rendered})", s.name)
             }
-            Self::Enum {
-                variant, payload, ..
-            } => {
-                if payload.is_empty() {
+            Self::Enum(e) => {
+                let variant = &e.variant;
+                if e.payload.is_empty() {
                     write!(formatter, "{variant}")
                 } else {
-                    let rendered = payload
+                    let rendered = e
+                        .payload
                         .iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>()
@@ -1021,9 +1040,7 @@ pub const MEMORY_ORDER_VARIANTS: [&str; 5] =
 /// `L0432`.
 pub fn expect_memory_order(name: &str, value: Value) -> Result<Ordering, RuntimeError> {
     match value {
-        Value::Enum {
-            enum_name, variant, ..
-        } if enum_name == "MemoryOrder" => match variant.as_str() {
+        Value::Enum(e) if e.enum_name == "MemoryOrder" => match e.variant.as_str() {
             "relaxed" => Ok(Ordering::Relaxed),
             "acquire" => Ok(Ordering::Acquire),
             "release" => Ok(Ordering::Release),
@@ -1210,7 +1227,7 @@ pub fn builtin_fence(args: Vec<Value>) -> Result<Value, RuntimeError> {
 /// Unwrap a runtime `Value` expected to be a map, reporting `L0417` otherwise.
 pub fn expect_map(name: &str, value: Value) -> Result<OrderedMap, RuntimeError> {
     match value {
-        Value::Map(entries) => Ok(entries),
+        Value::Map(entries) => Ok(*entries),
         other => Err(RuntimeError::new(
             "L0417",
             format!("{name} expects a map but got `{other}`"),
@@ -1222,16 +1239,16 @@ pub fn expect_map(name: &str, value: Value) -> Result<OrderedMap, RuntimeError> 
 /// representation (`some(v)` or `none`).
 pub fn option_value(payload: Option<Value>) -> Value {
     match payload {
-        Some(value) => Value::Enum {
+        Some(value) => Value::Enum(Box::new(EnumValue {
             enum_name: "option".to_string(),
             variant: "some".to_string(),
             payload: vec![value],
-        },
-        None => Value::Enum {
+        })),
+        None => Value::Enum(Box::new(EnumValue {
             enum_name: "option".to_string(),
             variant: "none".to_string(),
             payload: Vec::new(),
-        },
+        })),
     }
 }
 
@@ -1405,16 +1422,16 @@ fn mixed_numeric_list_error(name: &str, value: &Value) -> RuntimeError {
 /// representation (`ok(v)` or `err(e)`).
 pub fn result_value(payload: Result<Value, Value>) -> Value {
     match payload {
-        Ok(value) => Value::Enum {
+        Ok(value) => Value::Enum(Box::new(EnumValue {
             enum_name: "result".to_string(),
             variant: "ok".to_string(),
             payload: vec![value],
-        },
-        Err(error) => Value::Enum {
+        })),
+        Err(error) => Value::Enum(Box::new(EnumValue {
             enum_name: "result".to_string(),
             variant: "err".to_string(),
             payload: vec![error],
-        },
+        })),
     }
 }
 
@@ -2241,17 +2258,17 @@ impl<'a> Runtime<'a> {
             return self.invoke_function(method, args);
         }
         if let Some(enum_name) = self.variants.get(name) {
-            return Ok(Value::Enum {
+            return Ok(Value::Enum(Box::new(EnumValue {
                 enum_name: enum_name.to_string(),
                 variant: name.to_string(),
                 payload: args,
-            });
+            })));
         }
         if let Some(field_names) = self.structs.get(name) {
-            return Ok(Value::Struct {
+            return Ok(Value::Struct(Box::new(StructValue {
                 name: name.to_string(),
                 fields: field_names.iter().cloned().zip(args).collect(),
-            });
+            })));
         }
         match name {
             "alloc" => self.builtin_alloc(args),
@@ -3709,15 +3726,15 @@ impl<'a> Runtime<'a> {
         env: &mut Env,
     ) -> Result<Control, RuntimeError> {
         let value = self.eval_expr(scrutinee, env)?;
-        let Value::Enum {
-            variant, payload, ..
-        } = value
-        else {
+        let Value::Enum(e) = value else {
             return Err(RuntimeError::new(
                 "L0383",
                 "match scrutinee did not evaluate to an enum value",
             ));
         };
+        let EnumValue {
+            variant, payload, ..
+        } = *e;
         for arm in arms {
             match &arm.pattern {
                 MatchPattern::Wildcard => {
@@ -3763,7 +3780,8 @@ impl<'a> Runtime<'a> {
             ExprKind::Field { target, field } => {
                 let target = self.eval_expr(target, env)?;
                 match target {
-                    Value::Struct { fields, .. } => fields
+                    Value::Struct(s) => s
+                        .fields
                         .into_iter()
                         .find(|(name, _)| name == field)
                         .map(|(_, value)| value)
@@ -3790,11 +3808,11 @@ impl<'a> Runtime<'a> {
                     // A bare name that is not a local but is a known enum variant
                     // constructs a unit variant.
                     if let Some(enum_name) = self.variants.get(name.as_str()) {
-                        Ok(Value::Enum {
+                        Ok(Value::Enum(Box::new(EnumValue {
                             enum_name: enum_name.to_string(),
                             variant: name.clone(),
                             payload: Vec::new(),
-                        })
+                        })))
                     } else if self.functions.contains_key(name.as_str()) {
                         // A bare name that is a known top-level function evaluates
                         // to a first-class function value.
@@ -3897,16 +3915,14 @@ impl<'a> Runtime<'a> {
             // `option`/`result` and the return type is compatible.
             ExprKind::Try(inner) => {
                 let value = self.eval_expr(inner, env)?;
-                let Value::Enum {
-                    variant, payload, ..
-                } = &value
-                else {
+                let Value::Enum(e) = &value else {
                     return Err(RuntimeError::new(
                         "L0428",
                         "`?` operand did not evaluate to an option/result value",
                     )
                     .with_span(expr.span));
                 };
+                let (variant, payload) = (&e.variant, &e.payload);
                 match variant.as_str() {
                     "ok" | "some" => payload.first().cloned().ok_or_else(|| {
                         RuntimeError::new("L0428", format!("`{variant}` payload missing for `?`"))
@@ -5099,7 +5115,7 @@ impl<'a> Runtime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_new", 0, args.len()))?;
-        Ok(Value::Map(OrderedMap::new()))
+        Ok(Value::Map(Box::default()))
     }
 
     /// `map_set(m, k, v) -> map<K, V>`: a new map with `k` mapped to `v`.
@@ -5110,7 +5126,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_set", 3, args.len()))?;
         let mut entries = expect_map("map_set", map)?;
         entries.insert(key, value);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`. O(1).
@@ -5170,7 +5186,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_del", 2, args.len()))?;
         let mut entries = expect_map("map_del", map)?;
         entries.remove(&key);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     fn builtin_substring(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5893,13 +5909,13 @@ pub enum ResolvedPlace {
 fn place_get<'a>(current: &'a Value, place: &ResolvedPlace) -> Result<&'a Value, RuntimeError> {
     match place {
         ResolvedPlace::Field(field) => {
-            let Value::Struct { fields, .. } = current else {
+            let Value::Struct(s) = current else {
                 return Err(RuntimeError::new(
                     "L0371",
                     format!("cannot access field `{field}` on non-struct value"),
                 ));
             };
-            fields
+            s.fields
                 .iter()
                 .find(|(name, _)| name == field)
                 .map(|(_, value)| value)
@@ -5928,13 +5944,13 @@ fn place_get_mut<'a>(
 ) -> Result<&'a mut Value, RuntimeError> {
     match place {
         ResolvedPlace::Field(field) => {
-            let Value::Struct { fields, .. } = current else {
+            let Value::Struct(s) = current else {
                 return Err(RuntimeError::new(
                     "L0371",
                     format!("cannot access field `{field}` on non-struct value"),
                 ));
             };
-            fields
+            s.fields
                 .iter_mut()
                 .find(|(name, _)| name == field)
                 .map(|(_, value)| value)
@@ -6281,10 +6297,10 @@ impl Value {
             Value::F32(_) => 4,
             Value::Char(_) => 4,
             Value::Bool(_) | Value::Byte(_) => 1,
-            Value::Struct { fields, .. } => {
+            Value::Struct(s) => {
                 let mut offset = 0i64;
                 let mut max_align = 1i64;
-                for (_, field) in fields {
+                for (_, field) in &s.fields {
                     let size = field.layout_size()?;
                     let align = field.layout_align()?;
                     max_align = max_align.max(align);
@@ -6314,9 +6330,9 @@ impl Value {
             Value::F32(_) => 4,
             Value::Char(_) => 4,
             Value::Bool(_) | Value::Byte(_) => 1,
-            Value::Struct { fields, .. } => {
+            Value::Struct(s) => {
                 let mut max_align = 1i64;
-                for (_, field) in fields {
+                for (_, field) in &s.fields {
                     max_align = max_align.max(field.layout_align()?);
                 }
                 max_align
@@ -6334,11 +6350,11 @@ impl Value {
     /// defined layout. Fields are laid out in declaration order per
     /// [`Value::layout_size`].
     pub fn layout_field_offset(&self, field: &str) -> Option<i64> {
-        let Value::Struct { fields, .. } = self else {
+        let Value::Struct(s) = self else {
             return None;
         };
         let mut offset = 0i64;
-        for (name, value) in fields {
+        for (name, value) in &s.fields {
             offset = layout_round_up(offset, value.layout_align()?);
             if name == field {
                 return Some(offset);
@@ -7031,11 +7047,11 @@ mod tests {
         let order = |name: &str| {
             expect_memory_order(
                 "t",
-                Value::Enum {
+                Value::Enum(Box::new(EnumValue {
                     enum_name: "MemoryOrder".to_string(),
                     variant: name.to_string(),
                     payload: Vec::new(),
-                },
+                })),
             )
             .expect("decode")
         };
@@ -7055,10 +7071,12 @@ mod tests {
                 cell: Arc::new(AtomicI64::new(0)),
             })
         };
-        let order = |name: &str| Value::Enum {
-            enum_name: "MemoryOrder".to_string(),
-            variant: name.to_string(),
-            payload: Vec::new(),
+        let order = |name: &str| {
+            Value::Enum(Box::new(EnumValue {
+                enum_name: "MemoryOrder".to_string(),
+                variant: name.to_string(),
+                payload: Vec::new(),
+            }))
         };
         // A `release` load is illegal.
         let load = builtin_atomic_load_ordered(vec![atomic(), order("release")]);
@@ -7342,18 +7360,18 @@ mod tests {
 
     #[test]
     fn enum_value_display_formats_unit_and_payload_variants() {
-        let unit = Value::Enum {
+        let unit = Value::Enum(Box::new(EnumValue {
             enum_name: "Shape".to_string(),
             variant: "Empty".to_string(),
             payload: Vec::new(),
-        };
+        }));
         assert_eq!(unit.to_string(), "Empty");
 
-        let payload = Value::Enum {
+        let payload = Value::Enum(Box::new(EnumValue {
             enum_name: "Shape".to_string(),
             variant: "Circle".to_string(),
             payload: vec![Value::F64(2.0)],
-        };
+        }));
         assert_eq!(payload.to_string(), "Circle(2)");
     }
 
