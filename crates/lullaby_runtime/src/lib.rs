@@ -1995,6 +1995,122 @@ impl<'a> Runtime<'a> {
         })
     }
 
+    /// True when a call to `name` is a plain builtin (or infallible enum/struct
+    /// constructor) rather than anything that could raise a *catchable* `L0420`
+    /// user error. This is the safety gate for the move-on-functional-update fast
+    /// path: builtins in the accumulation idiom (`push`, `concat`, `map_set`,
+    /// `sort`, `replace`, `set`, …) only ever fail with non-catchable errors that
+    /// halt the program, so moving the consumed argument out can never leave a
+    /// moved-out placeholder observable by a surrounding `catch`. Excluded, because
+    /// they can run user code (which may `throw`) or dispatch by value:
+    /// closure/func-valued variables, `extern`/`async` functions, trait methods,
+    /// user-defined functions, and `assert` (the one builtin that raises `L0420`).
+    fn is_move_safe_builtin(&self, name: &str, env: &Env) -> bool {
+        if matches!(
+            env.get_ref(name),
+            Some(Value::Closure(_)) | Some(Value::Func(_))
+        ) {
+            return false;
+        }
+        name != "assert"
+            && !self.extern_functions.contains(name)
+            && !self.async_functions.contains(name)
+            && !self.trait_method_names.contains(name)
+            && !self.functions.contains_key(name)
+    }
+
+    /// The move-on-functional-update fast path for the pervasive `x = f(x, …)`
+    /// accumulation idiom. When `rhs` is a builtin call in which the assignment
+    /// target `name` appears **exactly once, as a bare argument**, and nowhere
+    /// else in the argument list, and `name` is a local in the innermost scope,
+    /// this evaluates the call with that one argument **moved** out of the
+    /// environment instead of cloned, and returns `Some(result)`. Returning
+    /// `None` means the pattern did not apply and the caller must fall back to the
+    /// ordinary clone path.
+    ///
+    /// Safety: moving is observably identical to cloning here because `name` is
+    /// (a) consumed exactly once, (b) not read anywhere else in the statement, and
+    /// (c) immediately overwritten with the result. Other arguments are evaluated
+    /// *before* the move, so a failure while evaluating them leaves `name` intact;
+    /// and the call is gated to builtins that cannot raise a catchable error, so a
+    /// mid-call failure halts the program with `name` never observed again.
+    fn try_move_functional_update(
+        &mut self,
+        name: &str,
+        rhs: &Expr,
+        env: &mut Env,
+        require_innermost: bool,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let ExprKind::Call { name: callee, args } = &rhs.kind else {
+            return Ok(None);
+        };
+        // Never optimize when the call target is the variable itself (`x = x(x)`):
+        // moving `x` out would change how the call name resolves.
+        if callee == name {
+            return Ok(None);
+        }
+        if !self.is_move_safe_builtin(callee, env) {
+            return Ok(None);
+        }
+        // The consumed binding must be a local. For a `let` re-binding it must be
+        // the innermost binding (because `let` shadows into the innermost scope);
+        // for a plain reassignment any-scope is fine (moved from, and written back
+        // to, the nearest binding). Checked before locating the argument so the
+        // common non-matching cases stay cheap.
+        let bound = if require_innermost {
+            env.innermost_has(name)
+        } else {
+            env.is_bound(name)
+        };
+        if !bound {
+            return Ok(None);
+        }
+        // Locate the single bare `Variable(name)` argument and prove `name` does
+        // not appear anywhere else in the argument list.
+        let mut target_idx: Option<usize> = None;
+        for (i, arg) in args.iter().enumerate() {
+            let is_bare = matches!(&arg.kind, ExprKind::Variable(v) if v == name);
+            if is_bare && target_idx.is_none() {
+                target_idx = Some(i);
+            } else if expr_mentions_var(arg, name) {
+                return Ok(None);
+            }
+        }
+        let Some(target_idx) = target_idx else {
+            return Ok(None);
+        };
+        // Evaluate every *other* argument first, in source order. If one fails
+        // (e.g. a nested `throw`), `name` is still intact and the env consistent.
+        let mut evaluated: Vec<Option<Value>> = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            if i == target_idx {
+                evaluated.push(None);
+            } else {
+                evaluated.push(Some(self.eval_expr(arg, env)?));
+            }
+        }
+        // All other arguments succeeded: move the target's value out (no clone),
+        // leaving a placeholder in its slot for the caller's write-back.
+        let moved = env
+            .move_out_nearest(name)
+            .expect("target verified bound as a local");
+        let mut moved = Some(moved);
+        let values: Vec<Value> = evaluated
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                if i == target_idx {
+                    moved.take().expect("single target slot")
+                } else {
+                    slot.expect("non-target slots are evaluated")
+                }
+            })
+            .collect();
+        // `callee` is a plain builtin/constructor here (closures/func values/
+        // extern/async/user functions were excluded), so dispatch it directly.
+        Ok(Some(self.call_function(callee, values)?))
+    }
+
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Trait-method dispatch: when `name` is a trait method, select the impl
         // by the receiver `args[0]`'s runtime type and invoke it. Because
@@ -3277,7 +3393,12 @@ impl<'a> Runtime<'a> {
         let span = statement_span(statement);
         let result = match statement {
             Stmt::Let { name, value, .. } => {
-                let value = self.eval_expr(value, env)?;
+                // Move-on-functional-update fast path: `let x = f(x, …)` re-binding
+                // an existing innermost local consumes it by move, not clone.
+                let value = match self.try_move_functional_update(name, value, env, true)? {
+                    Some(result) => result,
+                    None => self.eval_expr(value, env)?,
+                };
                 env.define(name.clone(), value);
                 Ok(Control::Value(Value::Void))
             }
@@ -3288,22 +3409,30 @@ impl<'a> Runtime<'a> {
                 value,
                 ..
             } => {
-                let rhs = self.eval_expr(value, env)?;
-                if path.is_empty() {
-                    let new = match op {
-                        AssignOp::Replace => rhs,
-                        _ => apply_compound(env.get(name)?, op, rhs)?,
+                if path.is_empty() && matches!(op, AssignOp::Replace) {
+                    // Whole-variable reassignment `x = RHS`: try the
+                    // move-on-functional-update fast path (`x = f(x, …)`) before
+                    // falling back to the ordinary clone path.
+                    let new = match self.try_move_functional_update(name, value, env, false)? {
+                        Some(result) => result,
+                        None => self.eval_expr(value, env)?,
                     };
                     env.assign(name, new)?;
                 } else {
-                    let resolved = self.resolve_places(path, env)?;
-                    let mut root = env.get(name)?;
-                    let new = match op {
-                        AssignOp::Replace => rhs,
-                        _ => apply_compound(get_place(&root, &resolved)?, op, rhs)?,
-                    };
-                    set_place(&mut root, &resolved, new)?;
-                    env.assign(name, root)?;
+                    let rhs = self.eval_expr(value, env)?;
+                    if path.is_empty() {
+                        let new = apply_compound(env.get(name)?, op, rhs)?;
+                        env.assign(name, new)?;
+                    } else {
+                        let resolved = self.resolve_places(path, env)?;
+                        let mut root = env.get(name)?;
+                        let new = match op {
+                            AssignOp::Replace => rhs,
+                            _ => apply_compound(get_place(&root, &resolved)?, op, rhs)?,
+                        };
+                        set_place(&mut root, &resolved, new)?;
+                        env.assign(name, root)?;
+                    }
                 }
                 Ok(Control::Value(Value::Void))
             }
@@ -5738,6 +5867,106 @@ fn statement_span(statement: &Stmt) -> Span {
     }
 }
 
+/// Conservative "does `name` appear anywhere in this expression?" walk used by
+/// the move-on-functional-update fast path to prove the target variable is not
+/// referenced outside its single consuming argument. It over-approximates on
+/// purpose: a mention inside a nested closure body (which may actually bind a
+/// fresh `name`) still counts, and a call *name* equal to `name` counts too.
+/// Over-approximating only ever forgoes the optimization — it never changes an
+/// observable result — so the walk stays simple and total over `ExprKind`.
+fn expr_mentions_var(expr: &Expr, name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Integer(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::String(_)
+        | ExprKind::Char(_) => false,
+        ExprKind::Variable(v) => v == name,
+        ExprKind::Array(items) => items.iter().any(|item| expr_mentions_var(item, name)),
+        ExprKind::Index { target, index } => {
+            expr_mentions_var(target, name) || expr_mentions_var(index, name)
+        }
+        ExprKind::Unary { expr, .. } => expr_mentions_var(expr, name),
+        ExprKind::Binary { left, right, .. } => {
+            expr_mentions_var(left, name) || expr_mentions_var(right, name)
+        }
+        ExprKind::Call { name: callee, args } => {
+            callee == name || args.iter().any(|arg| expr_mentions_var(arg, name))
+        }
+        ExprKind::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_mentions_var(value, name)),
+        ExprKind::Field { target, .. } => expr_mentions_var(target, name),
+        ExprKind::Match { scrutinee, arms } => {
+            expr_mentions_var(scrutinee, name)
+                || arms
+                    .iter()
+                    .any(|arm| arm.body.iter().any(|stmt| stmt_mentions_var(stmt, name)))
+        }
+        ExprKind::Await { expr } => expr_mentions_var(expr, name),
+        ExprKind::Try(inner) => expr_mentions_var(inner, name),
+        ExprKind::Closure { body, .. } => expr_mentions_var(body, name),
+    }
+}
+
+/// Statement-level companion to [`expr_mentions_var`] for `match` arm bodies.
+/// Also conservative: any syntactic mention of `name` counts.
+fn stmt_mentions_var(stmt: &Stmt, name: &str) -> bool {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::Throw { value, .. } => expr_mentions_var(value, name),
+        Stmt::Assign {
+            name: target,
+            path,
+            value,
+            ..
+        } => {
+            target == name
+                || path.iter().any(|place| match place {
+                    Place::Field(_) => false,
+                    Place::Index(index) => expr_mentions_var(index, name),
+                })
+                || expr_mentions_var(value, name)
+        }
+        Stmt::Expr(expr) => expr_mentions_var(expr, name),
+        Stmt::Return(expr) => expr.as_ref().is_some_and(|e| expr_mentions_var(e, name)),
+        Stmt::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            branches.iter().any(|branch| {
+                expr_mentions_var(&branch.condition, name)
+                    || branch.body.iter().any(|s| stmt_mentions_var(s, name))
+            }) || else_body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        Stmt::While {
+            condition, body, ..
+        } => expr_mentions_var(condition, name) || body.iter().any(|s| stmt_mentions_var(s, name)),
+        Stmt::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            expr_mentions_var(start, name)
+                || expr_mentions_var(end, name)
+                || step.as_ref().is_some_and(|e| expr_mentions_var(e, name))
+                || body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+            body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        Stmt::Try {
+            body, catch_body, ..
+        } => {
+            body.iter().any(|s| stmt_mentions_var(s, name))
+                || catch_body.iter().any(|s| stmt_mentions_var(s, name))
+        }
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Region(_) | Stmt::Asm { .. } => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Env {
     scopes: Vec<HashMap<String, Value>>,
@@ -5787,6 +6016,49 @@ impl Env {
             .find_map(|scope| scope.get(name))
             .cloned()
             .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
+    }
+
+    /// Borrow a binding's value without cloning it, resolving innermost-first
+    /// exactly like [`Env::get`]. Used to classify a call target (closure/func
+    /// value vs. builtin) on the move-on-functional-update fast path without
+    /// paying for a clone.
+    fn get_ref(&self, name: &str) -> Option<&Value> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// True when `name` is bound in the innermost (current) scope. A `let x =
+    /// f(x, …)` re-binding only moves when the consumed binding lives here,
+    /// because `let` shadows (defines into the innermost scope) rather than
+    /// overwriting an outer binding — moving from an outer scope would corrupt it.
+    fn innermost_has(&self, name: &str) -> bool {
+        self.scopes
+            .last()
+            .is_some_and(|scope| scope.contains_key(name))
+    }
+
+    /// True when `name` is bound in any scope (a normal local). A plain `x =
+    /// f(x, …)` reassignment moves from — and writes back to — the *nearest*
+    /// binding, and both [`Env::get`] and [`Env::assign`] resolve nearest-first to
+    /// that same slot, so the move is safe at any scope depth (e.g. `x` declared
+    /// outside a loop, reassigned inside it).
+    fn is_bound(&self, name: &str) -> bool {
+        self.get_ref(name).is_some()
+    }
+
+    /// Move the value out of the nearest scope binding `name`, leaving a cheap
+    /// [`Value::Void`] placeholder in the same slot (no clone), and return the old
+    /// value. Nearest-first, matching [`Env::get`]/[`Env::assign`] resolution, so
+    /// the caller's write-back overwrites this exact slot. The placeholder is
+    /// never observable: on the fast path all other work is already done and the
+    /// result is written back immediately, and the gating builtin cannot raise a
+    /// catchable error mid-call.
+    fn move_out_nearest(&mut self, name: &str) -> Option<Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(slot) = scope.get_mut(name) {
+                return Some(std::mem::replace(slot, Value::Void));
+            }
+        }
+        None
     }
 
     /// Snapshot every in-scope local by value: one `(name, value.clone())` per
@@ -5980,6 +6252,66 @@ mod tests {
     fn runs_function_calls_and_arithmetic() {
         let source = "fn add x i64 y i64 -> i64\n    x + y\n\nfn main -> i64\n    let value i64 = add(40, 2)\n    value\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
+    fn move_on_functional_update_builds_list_correctly() {
+        // `l = push(l, i)` in a loop consumes `l` by move on the fast path; the
+        // built list must be byte-for-byte what a clone would produce. Sum of
+        // 0..=49 is 1225, length 50.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    for i from 0 to 49\n",
+            "        l = push(l, i)\n",
+            "    let total i64 = 0\n",
+            "    let n i64 = len(l)\n",
+            "    for i from 0 to n - 1\n",
+            "        total += get(l, i)\n",
+            "    total * 100 + len(l)\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(122550));
+    }
+
+    #[test]
+    fn move_on_functional_update_preserves_aliased_binding() {
+        // `let b = a` clones `a`; the subsequent `a = push(a, 9)` moves `a`'s slot
+        // but must never corrupt the independent `b`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a list<i64> = list_new()\n",
+            "    a = push(a, 1)\n",
+            "    a = push(a, 2)\n",
+            "    a = push(a, 3)\n",
+            "    let b list<i64> = a\n",
+            "    a = push(a, 9)\n",
+            "    let bsum i64 = get(b, 0) + get(b, 1) + get(b, 2)\n",
+            "    len(a) * 10000 + get(a, 3) * 100 + len(b) * 10 + bsum\n",
+        );
+        // a=[1,2,3,9], b=[1,2,3]: 40936. A corrupted b would change the result.
+        assert_eq!(run_source(source).expect("run"), Value::I64(40936));
+    }
+
+    #[test]
+    fn move_on_functional_update_error_in_other_argument_leaves_target_intact() {
+        // In `l = push(l, boom())` the other argument throws before `l` is moved,
+        // so `l` stays intact and the `catch` observes the original list, never a
+        // moved-out placeholder.
+        let source = concat!(
+            "fn boom -> i64\n",
+            "    throw \"boom\"\n\n",
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 1)\n",
+            "    l = push(l, 2)\n",
+            "    let caught i64 = 0\n",
+            "    try\n",
+            "        l = push(l, boom())\n",
+            "    catch m\n",
+            "        caught = 1\n",
+            "    caught * 1000 + len(l) * 10 + get(l, 0) + get(l, 1)\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(1023));
     }
 
     #[test]

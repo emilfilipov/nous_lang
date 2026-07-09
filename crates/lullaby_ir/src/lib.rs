@@ -3887,6 +3887,102 @@ impl<'a> IrRuntime<'a> {
         })
     }
 
+    /// Safety gate for the move-on-functional-update fast path (IR twin of the
+    /// AST runtime's method): true when a call to `name` is a plain builtin (or
+    /// infallible enum/struct constructor) that cannot raise a *catchable*
+    /// `L0420` user error, so moving the consumed argument out can never leave a
+    /// moved-out placeholder observable by a surrounding `catch`. Excludes
+    /// closure/func-valued variables, `extern`/`async` functions, trait methods,
+    /// user functions, and `assert` (the one builtin that raises `L0420`).
+    fn is_move_safe_builtin(&self, name: &str, env: &Env) -> bool {
+        if matches!(
+            env.get_ref(name),
+            Some(Value::Closure(_)) | Some(Value::Func(_))
+        ) {
+            return false;
+        }
+        name != "assert"
+            && !self.extern_functions.contains(name)
+            && !self.async_functions.contains(name)
+            && !self.trait_method_names.contains(name)
+            && !self.functions.contains_key(name)
+    }
+
+    /// The move-on-functional-update fast path for the `x = f(x, …)` accumulation
+    /// idiom (IR twin of the AST runtime's method). When `rhs` is a builtin call
+    /// in which the assignment target `name` appears exactly once as a bare
+    /// argument and nowhere else, and `name` is a local in the innermost scope,
+    /// this evaluates the call with that argument **moved** out of the environment
+    /// instead of cloned and returns `Some(result)`. `None` means the caller must
+    /// fall back to the ordinary clone path. See the AST runtime for the full
+    /// safety argument; the two implementations are kept in lockstep.
+    fn try_move_functional_update(
+        &mut self,
+        name: &str,
+        rhs: &IrExpr,
+        env: &mut Env,
+        require_innermost: bool,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let IrExprKind::Call { name: callee, args } = &rhs.kind else {
+            return Ok(None);
+        };
+        if callee == name {
+            return Ok(None);
+        }
+        if !self.is_move_safe_builtin(callee, env) {
+            return Ok(None);
+        }
+        // For a `let` re-binding the binding must be innermost (`let` shadows into
+        // the innermost scope); for a plain reassignment any-scope is fine (moved
+        // from, and written back to, the nearest binding).
+        let bound = if require_innermost {
+            env.innermost_has(name)
+        } else {
+            env.is_bound(name)
+        };
+        if !bound {
+            return Ok(None);
+        }
+        let mut target_idx: Option<usize> = None;
+        for (i, arg) in args.iter().enumerate() {
+            let is_bare = matches!(&arg.kind, IrExprKind::Variable(v) if v == name);
+            if is_bare && target_idx.is_none() {
+                target_idx = Some(i);
+            } else if expr_mentions_var(arg, name) {
+                return Ok(None);
+            }
+        }
+        let Some(target_idx) = target_idx else {
+            return Ok(None);
+        };
+        // Evaluate every *other* argument first, in source order, so a failure
+        // there leaves `name` intact and the env consistent.
+        let mut evaluated: Vec<Option<Value>> = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            if i == target_idx {
+                evaluated.push(None);
+            } else {
+                evaluated.push(Some(self.eval_expr(arg, env)?));
+            }
+        }
+        let moved = env
+            .move_out_nearest(name)
+            .expect("target verified bound as a local");
+        let mut moved = Some(moved);
+        let values: Vec<Value> = evaluated
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                if i == target_idx {
+                    moved.take().expect("single target slot")
+                } else {
+                    slot.expect("non-target slots are evaluated")
+                }
+            })
+            .collect();
+        Ok(Some(self.call_function(callee, values)?))
+    }
+
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Trait-method dispatch: select the impl by the receiver's runtime type.
         if self.trait_method_names.contains(name) {
@@ -4241,7 +4337,12 @@ impl<'a> IrRuntime<'a> {
         let span = statement_span(statement);
         let result = match statement {
             IrStmt::Let { name, value, .. } => {
-                let value = self.eval_expr(value, env)?;
+                // Move-on-functional-update fast path: `let x = f(x, …)` re-binding
+                // an existing innermost local consumes it by move, not clone.
+                let value = match self.try_move_functional_update(name, value, env, true)? {
+                    Some(result) => result,
+                    None => self.eval_expr(value, env)?,
+                };
                 env.define(name.clone(), value);
                 Ok(Control::Value(Value::Void))
             }
@@ -4252,22 +4353,30 @@ impl<'a> IrRuntime<'a> {
                 value,
                 ..
             } => {
-                let rhs = self.eval_expr(value, env)?;
-                if path.is_empty() {
-                    let new = match op {
-                        AssignOp::Replace => rhs,
-                        _ => apply_compound(env.get(name)?, op, rhs)?,
+                if path.is_empty() && matches!(op, AssignOp::Replace) {
+                    // Whole-variable reassignment `x = RHS`: try the
+                    // move-on-functional-update fast path (`x = f(x, …)`) before
+                    // falling back to the ordinary clone path.
+                    let new = match self.try_move_functional_update(name, value, env, false)? {
+                        Some(result) => result,
+                        None => self.eval_expr(value, env)?,
                     };
                     env.assign(name, new)?;
                 } else {
-                    let resolved = self.resolve_places(path, env)?;
-                    let mut root = env.get(name)?;
-                    let new = match op {
-                        AssignOp::Replace => rhs,
-                        _ => apply_compound(get_place(&root, &resolved)?, op, rhs)?,
-                    };
-                    set_place(&mut root, &resolved, new)?;
-                    env.assign(name, root)?;
+                    let rhs = self.eval_expr(value, env)?;
+                    if path.is_empty() {
+                        let new = apply_compound(env.get(name)?, op, rhs)?;
+                        env.assign(name, new)?;
+                    } else {
+                        let resolved = self.resolve_places(path, env)?;
+                        let mut root = env.get(name)?;
+                        let new = match op {
+                            AssignOp::Replace => rhs,
+                            _ => apply_compound(get_place(&root, &resolved)?, op, rhs)?,
+                        };
+                        set_place(&mut root, &resolved, new)?;
+                        env.assign(name, root)?;
+                    }
                 }
                 Ok(Control::Value(Value::Void))
             }
@@ -7340,6 +7449,38 @@ fn statement_span(statement: &IrStmt) -> Span {
     }
 }
 
+/// Conservative "does `name` appear anywhere in this IR expression?" walk, the
+/// IR twin of the AST runtime's `expr_mentions_var`. Used by the
+/// move-on-functional-update fast path to prove the target variable is not
+/// referenced outside its single consuming argument. It over-approximates on
+/// purpose (a mention inside a nested closure body or a matching call name still
+/// counts); over-approximating only ever forgoes the optimization, never changes
+/// a result, so the walk stays simple and total over `IrExprKind`.
+fn expr_mentions_var(expr: &IrExpr, name: &str) -> bool {
+    match &expr.kind {
+        IrExprKind::Integer(_)
+        | IrExprKind::Float(_)
+        | IrExprKind::Bool(_)
+        | IrExprKind::String(_)
+        | IrExprKind::Char(_) => false,
+        IrExprKind::Variable(v) => v == name,
+        IrExprKind::Array(items) => items.iter().any(|item| expr_mentions_var(item, name)),
+        IrExprKind::Index { target, index } => {
+            expr_mentions_var(target, name) || expr_mentions_var(index, name)
+        }
+        IrExprKind::Unary { expr, .. } => expr_mentions_var(expr, name),
+        IrExprKind::Binary { left, right, .. } => {
+            expr_mentions_var(left, name) || expr_mentions_var(right, name)
+        }
+        IrExprKind::Call { name: callee, args } => {
+            callee == name || args.iter().any(|arg| expr_mentions_var(arg, name))
+        }
+        IrExprKind::Field { target, .. } => expr_mentions_var(target, name),
+        IrExprKind::Await { expr } => expr_mentions_var(expr, name),
+        IrExprKind::Closure { .. } => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Env {
     scopes: Vec<HashMap<String, Value>>,
@@ -7389,6 +7530,46 @@ impl Env {
             .find_map(|scope| scope.get(name))
             .cloned()
             .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
+    }
+
+    /// Borrow a binding's value without cloning it (innermost-first, like
+    /// [`Env::get`]). Used to classify a call target on the
+    /// move-on-functional-update fast path without paying for a clone.
+    fn get_ref(&self, name: &str) -> Option<&Value> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// True when `name` is bound in the innermost (current) scope. A `let x =
+    /// f(x, …)` re-binding only moves when the consumed binding lives here,
+    /// because `let` shadows into the innermost scope rather than overwriting an
+    /// outer binding.
+    fn innermost_has(&self, name: &str) -> bool {
+        self.scopes
+            .last()
+            .is_some_and(|scope| scope.contains_key(name))
+    }
+
+    /// True when `name` is bound in any scope (a normal local). A plain `x =
+    /// f(x, …)` reassignment moves from — and writes back to — the *nearest*
+    /// binding, and both [`Env::get`] and [`Env::assign`] resolve nearest-first to
+    /// that same slot, so the move is safe at any scope depth (e.g. `x` declared
+    /// outside a loop, reassigned inside it).
+    fn is_bound(&self, name: &str) -> bool {
+        self.get_ref(name).is_some()
+    }
+
+    /// Move the value out of the nearest scope binding `name`, leaving a cheap
+    /// [`Value::Void`] placeholder in the same slot (no clone), and return the old
+    /// value. Nearest-first, matching [`Env::get`]/[`Env::assign`] resolution, so
+    /// the caller's write-back overwrites this exact slot. The placeholder is
+    /// never observable (see the AST runtime twin for the full argument).
+    fn move_out_nearest(&mut self, name: &str) -> Option<Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(slot) = scope.get_mut(name) {
+                return Some(std::mem::replace(slot, Value::Void));
+            }
+        }
+        None
     }
 
     /// Snapshot every in-scope local by value for closure frame capture, mirroring
@@ -10054,6 +10235,198 @@ mod tests {
         assert_eq!(bytecode, ast);
         assert_eq!(optimized_ir, ast);
         assert_eq!(optimized_bytecode, ast);
+    }
+
+    // ---- move-on-functional-update optimization: correctness parity ----
+    //
+    // These exercise the `x = f(x, …)` accumulation idiom, whose target argument
+    // is now MOVED (not cloned) out of the environment on the interpreter fast
+    // path. Every case runs through all five interpreter variants
+    // (AST / IR / bytecode / optimized IR / optimized bytecode) and asserts the
+    // result equals what the pre-optimization clone path produced, proving the
+    // move changes no observable behavior.
+
+    fn assert_all_variants_eq(source: &str, expected: i64) {
+        let (ast, ir, bytecode, optimized_ir, optimized_bytecode) =
+            run_all_backend_variants(source);
+        assert_eq!(ast, Value::I64(expected), "AST result");
+        assert_eq!(ir, ast, "IR result differs from AST");
+        assert_eq!(bytecode, ast, "bytecode result differs from AST");
+        assert_eq!(optimized_ir, ast, "optimized IR result differs from AST");
+        assert_eq!(
+            optimized_bytecode, ast,
+            "optimized bytecode result differs from AST"
+        );
+    }
+
+    #[test]
+    fn move_update_builds_list_correctly_across_backends() {
+        // `l = push(l, i)` fifty times, then sum every element back. The moved
+        // accumulation must yield the exact same list a clone would: sum of
+        // 0..=49 is 1225, and the length is 50.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    for i from 0 to 49\n",
+            "        l = push(l, i)\n",
+            "    let total i64 = 0\n",
+            "    let n i64 = len(l)\n",
+            "    for i from 0 to n - 1\n",
+            "        total += get(l, i)\n",
+            "    total * 100 + len(l)\n",
+        );
+        // 1225 * 100 + 50 = 122550
+        assert_all_variants_eq(source, 122550);
+    }
+
+    #[test]
+    fn move_update_does_not_corrupt_aliased_binding_across_backends() {
+        // Aliasing safety: `let b = a` clones `a`; a subsequent `a = push(a, 9)`
+        // moves `a`'s slot but must leave the independent `b` untouched.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a list<i64> = list_new()\n",
+            "    a = push(a, 1)\n",
+            "    a = push(a, 2)\n",
+            "    a = push(a, 3)\n",
+            "    let b list<i64> = a\n",
+            "    a = push(a, 9)\n",
+            "    let bsum i64 = get(b, 0) + get(b, 1) + get(b, 2)\n",
+            "    len(a) * 10000 + get(a, 3) * 100 + len(b) * 10 + bsum\n",
+        );
+        // a = [1,2,3,9] (len 4, a[3]=9); b = [1,2,3] (len 3, sum 6).
+        // 4*10000 + 9*100 + 3*10 + 6 = 40936. A corrupted (aliased) b would make
+        // len(b)=4 and bsum include the 9, changing the result.
+        assert_all_variants_eq(source, 40936);
+    }
+
+    #[test]
+    fn multi_occurrence_concat_is_not_optimized_but_correct_across_backends() {
+        // `l = concat(l, l)` has the target in two arguments, so the move must NOT
+        // fire; the result must still double the list correctly.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 1)\n",
+            "    l = push(l, 2)\n",
+            "    l = concat(l, l)\n",
+            "    len(l) * 10 + get(l, 0) + get(l, 1) + get(l, 2) + get(l, 3)\n",
+        );
+        // l = [1,2,1,2]: 4*10 + 1+2+1+2 = 46.
+        assert_all_variants_eq(source, 46);
+    }
+
+    #[test]
+    fn target_in_nested_argument_is_not_optimized_but_correct_across_backends() {
+        // `l = set(l, len(l) - 1, 99)`: the target appears bare in arg0 and nested
+        // inside arg1 (`len(l)`), so the move must NOT fire; setting the last
+        // element must still work.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 1)\n",
+            "    l = push(l, 2)\n",
+            "    l = push(l, 3)\n",
+            "    l = set(l, len(l) - 1, 99)\n",
+            "    get(l, 0) * 100 + get(l, 1) * 10 + get(l, 2)\n",
+        );
+        // l = [1,2,99]: 1*100 + 2*10 + 99 = 219.
+        assert_all_variants_eq(source, 219);
+    }
+
+    #[test]
+    fn move_update_sort_across_backends() {
+        // `l = sort(l)` moves the list into the sort; the ordering must be exact.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 3)\n",
+            "    l = push(l, 1)\n",
+            "    l = push(l, 2)\n",
+            "    l = sort(l)\n",
+            "    get(l, 0) * 100 + get(l, 1) * 10 + get(l, 2)\n",
+        );
+        // sorted [1,2,3]: 123.
+        assert_all_variants_eq(source, 123);
+    }
+
+    #[test]
+    fn move_update_map_set_accumulation_across_backends() {
+        // `m = map_set(m, k, v)` accumulation with a repeated key overwrite; the
+        // moved map must read back the final values.
+        let source = concat!(
+            "fn get_or m map<string, i64> k string fallback i64 -> i64\n",
+            "    match map_get(m, k)\n",
+            "        some(v) -> v\n",
+            "        none -> fallback\n\n",
+            "fn main -> i64\n",
+            "    let m map<string, i64> = map_new()\n",
+            "    m = map_set(m, \"a\", 1)\n",
+            "    m = map_set(m, \"b\", 2)\n",
+            "    m = map_set(m, \"a\", 10)\n",
+            "    get_or(m, \"a\", 0) * 1000 + get_or(m, \"b\", 0) * 10 + map_len(m)\n",
+        );
+        // a=10, b=2, map_len=2 => 10000 + 20 + 2 = 10022.
+        assert_all_variants_eq(source, 10022);
+    }
+
+    #[test]
+    fn move_update_string_replace_across_backends() {
+        // `s = replace(s, from, to)` moves the string into the builtin; the result
+        // must match the clone path exactly.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let s string = \"aaa\"\n",
+            "    s = replace(s, \"a\", \"b\")\n",
+            "    s = replace(s, \"b\", \"cc\")\n",
+            "    len(s)\n",
+        );
+        // "aaa" -> "bbb" -> "cccccc": length 6.
+        assert_all_variants_eq(source, 6);
+    }
+
+    #[test]
+    fn move_update_error_in_other_argument_leaves_target_intact_across_backends() {
+        // Error-path safety: in `l = push(l, boom())` the *other* argument throws
+        // BEFORE the target `l` is moved out. The move fast path evaluates other
+        // arguments first, so `l` stays intact and a surrounding `catch` observes
+        // the original list — never a moved-out placeholder.
+        let source = concat!(
+            "fn boom -> i64\n",
+            "    throw \"boom\"\n\n",
+            "fn main -> i64\n",
+            "    let l list<i64> = list_new()\n",
+            "    l = push(l, 1)\n",
+            "    l = push(l, 2)\n",
+            "    let caught i64 = 0\n",
+            "    try\n",
+            "        l = push(l, boom())\n",
+            "    catch m\n",
+            "        caught = 1\n",
+            "    caught * 1000 + len(l) * 10 + get(l, 0) + get(l, 1)\n",
+        );
+        // boom() throws before the move: l stays [1,2]; caught=1.
+        // 1*1000 + 2*10 + 1 + 2 = 1023. A corrupted l would fail len/get or differ.
+        assert_all_variants_eq(source, 1023);
+    }
+
+    #[test]
+    fn user_function_accumulation_is_correct_across_backends() {
+        // `acc = add_one(acc)` calls a *user* function, which the fast path does
+        // NOT move (user code could raise a catchable error). It must still be
+        // correct via the clone path.
+        let source = concat!(
+            "fn double x list<i64> -> list<i64>\n",
+            "    push(x, len(x))\n\n",
+            "fn main -> i64\n",
+            "    let acc list<i64> = list_new()\n",
+            "    acc = double(acc)\n",
+            "    acc = double(acc)\n",
+            "    acc = double(acc)\n",
+            "    len(acc) * 100 + get(acc, 0) * 10 + get(acc, 1) + get(acc, 2)\n",
+        );
+        // acc: [] -> [0] -> [0,1] -> [0,1,2]: len 3, 3*100 + 0 + 1 + 2 = 303.
+        assert_all_variants_eq(source, 303);
     }
 
     #[test]
