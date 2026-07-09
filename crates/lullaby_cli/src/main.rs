@@ -7,10 +7,11 @@ use std::{
 use lullaby_diagnostics::{
     DiagnosticPhase, DiagnosticReport, render_concise, render_json, render_verbose,
 };
+use lullaby_ir::native_contract::{NativeObjectFormat, native_target_for_triple};
 use lullaby_ir::{
     BYTECODE_ARTIFACT_EXTENSION, BytecodeArtifact, BytecodeArtifactError, DebugOptions,
     IrCleanupRole, IrMemoryOperation, IrMemoryOperationKind, OptimizationConfig,
-    decode_bytecode_artifact, emit_alpha1_native_program_with_debug, emit_wasm_module,
+    decode_bytecode_artifact, emit_alpha1_native_program_for_target, emit_wasm_module,
     encode_bytecode_artifact, lower, lower_to_bytecode, optimize, run_bytecode_main,
     run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
 };
@@ -70,6 +71,7 @@ fn run() -> Result<(), String> {
             invocation.mode,
             invocation.freestanding,
             invocation.debug,
+            invocation.native_target,
         ),
         CommandName::Lsp => lsp(),
         CommandName::Version => {
@@ -350,7 +352,30 @@ fn native_file(
     mode: OutputMode,
     freestanding: bool,
     debug: bool,
+    target_triple: Option<String>,
 ) -> Result<(), String> {
+    // Resolve the object-file target. `None` is the default Windows COFF target;
+    // an explicit `--target` selects ELF (Linux) or Mach-O (macOS). An unknown or
+    // non-x86-64 triple is rejected up front with `L0427`.
+    let target = match target_triple.as_deref() {
+        None => native_target_for_triple("x86_64-pc-windows-msvc")
+            .expect("default target is always known"),
+        Some(triple) => match native_target_for_triple(triple) {
+            Some(target) => target,
+            None => {
+                let report = DiagnosticReport::new(
+                    "L0347",
+                    DiagnosticPhase::Ir,
+                    format!("unknown or unsupported native target triple `{triple}`"),
+                )
+                .with_note(
+                    "supported targets: x86_64-pc-windows-msvc (COFF), x86_64-unknown-linux-gnu (ELF), x86_64-apple-darwin (Mach-O)",
+                );
+                return Err(format_reports(&[report], mode, None));
+            }
+        },
+    };
+
     // Library mode: a `main` is not required. A program with `main` still emits a
     // runnable executable; an export-only program (only `export fn` functions)
     // emits a C-callable library object. `emit_alpha1_native_program` requires at
@@ -381,23 +406,25 @@ fn native_file(
     let debug_options = debug.then(|| DebugOptions {
         source_file: compiled.path.display().to_string(),
     });
-    let program = match emit_alpha1_native_program_with_debug(&bytecode, debug_options.as_ref()) {
-        Ok(program) => program,
-        Err(error) => {
-            let mut report = DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
-                .with_source_path(compiled.path.display().to_string());
-            report = report.with_note(
+    let program =
+        match emit_alpha1_native_program_for_target(&bytecode, &target, debug_options.as_ref()) {
+            Ok(program) => program,
+            Err(error) => {
+                let mut report =
+                    DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
+                        .with_source_path(compiled.path.display().to_string());
+                report = report.with_note(
                 "the native backend compiles only i64-scalar functions (params and return all i64)",
             );
-            let mut rendered = format_reports(&[report], mode, Some(&compiled.source));
-            if mode == OutputMode::Verbose {
-                for skip in &error.skipped {
-                    rendered.push_str(&format!("\nskipped {}: {}", skip.name, skip.reason));
+                let mut rendered = format_reports(&[report], mode, Some(&compiled.source));
+                if mode == OutputMode::Verbose {
+                    for skip in &error.skipped {
+                        rendered.push_str(&format!("\nskipped {}: {}", skip.name, skip.reason));
+                    }
                 }
+                return Err(rendered);
             }
-            return Err(rendered);
-        }
-    };
+        };
 
     // Freestanding / no-std mode guarantees a no-C-runtime executable. The emitted
     // program links only the minimal OS import (`kernel32!ExitProcess`); any
@@ -421,8 +448,20 @@ fn native_file(
         return Err(format_reports(&[report], mode, Some(&compiled.source)));
     }
 
-    let exe_output = output.unwrap_or_else(|| compiled.path.with_extension("exe"));
-    let obj_output = exe_output.with_extension("obj");
+    // The object-file extension and the link step are target-specific. Windows
+    // COFF objects (`.obj`) can be linked into a runnable `.exe` on this host;
+    // the ELF (`.o`) and Mach-O (`.o`) objects cannot be linked or run here (no
+    // cross-linker on a Windows host), so their link+run verification is deferred
+    // to the Phase 9 cross-platform CI. The relocatable object is always written.
+    let is_coff = matches!(target.object_format, NativeObjectFormat::Coff);
+    let (exe_output, obj_output) = if is_coff {
+        let exe = output.unwrap_or_else(|| compiled.path.with_extension("exe"));
+        let obj = exe.with_extension("obj");
+        (Some(exe), obj)
+    } else {
+        let obj = output.unwrap_or_else(|| compiled.path.with_extension("o"));
+        (None, obj)
+    };
     if let Err(error) = fs::write(&obj_output, &program.bytes) {
         return Err(format_reports(
             &[DiagnosticReport::new(
@@ -436,18 +475,19 @@ fn native_file(
         ));
     }
 
-    // Best-effort link. Extra C import libraries (e.g. `ucrt.lib`) are required
-    // when the program calls `extern fn` C functions. A program with no `main`
-    // (only `export fn` functions) is a *library object* with no entry point:
-    // there is nothing to link into a standalone `.exe`, so the CLI stops at the
-    // object and reports that it is C-callable.
+    // Best-effort link (COFF only). Extra C import libraries (e.g. `ucrt.lib`)
+    // are required when the program calls `extern fn` C functions. A program with
+    // no `main` (only `export fn` functions) is a *library object* with no entry
+    // point: there is nothing to link into a standalone `.exe`, so the CLI stops
+    // at the object and reports that it is C-callable. Non-COFF targets are never
+    // linked on this host.
     let is_library = program.entry_symbol.is_empty();
-    let link = if is_library {
+    let link = if !is_coff || is_library {
         None
     } else {
         Some(link_native_object(
             &obj_output,
-            &exe_output,
+            exe_output.as_ref().expect("COFF target has an exe path"),
             &program.entry_symbol,
             &program.import_libs,
         ))
@@ -459,6 +499,11 @@ fn native_file(
     }
 
     println!("native object: {}", obj_output.display());
+    println!(
+        "target: {} ({})",
+        target.triple,
+        object_format_label(&target)
+    );
     if freestanding {
         println!(
             "freestanding (no-std): no C runtime linked; only kernel32!ExitProcess for process exit"
@@ -469,13 +514,29 @@ fn native_file(
             "debug info: CodeView `.debug$S` source-line table emitted (per-function `.lby` line mapping)"
         );
     }
+    if !is_coff {
+        // ELF/Mach-O: emitted and structurally well-formed, but this Windows host
+        // has no cross-linker, so the object is not linked or run here.
+        println!(
+            "cross-target object emitted; linking and running are deferred to the native platform / Phase 9 CI (structurally verified, x86-64 only)"
+        );
+    }
     match &link {
-        None => {
+        None if is_coff => {
             println!(
                 "C-callable library object (no `main`): link it against a C program that calls the exported function(s)"
             );
         }
-        Some(LinkOutcome::Linked) => println!("native exe: {}", exe_output.display()),
+        None => {}
+        Some(LinkOutcome::Linked) => {
+            println!(
+                "native exe: {}",
+                exe_output
+                    .as_ref()
+                    .expect("linked COFF has exe path")
+                    .display()
+            );
+        }
         Some(LinkOutcome::Unavailable(reason)) => {
             println!("linking unavailable: {reason}");
             println!("emitted object only (link manually with rust-lld + kernel32.lib)");
@@ -493,6 +554,15 @@ fn native_file(
         }
     }
     Ok(())
+}
+
+/// A short human-readable label for a native target's object-file container.
+fn object_format_label(target: &lullaby_ir::native_contract::NativeTarget) -> &'static str {
+    match target.object_format {
+        NativeObjectFormat::Coff => "COFF",
+        NativeObjectFormat::Elf => "ELF64",
+        NativeObjectFormat::MachO => "Mach-O",
+    }
 }
 
 /// The result of the best-effort link step.
@@ -1246,6 +1316,12 @@ struct Invocation {
     /// a CodeView `.debug$S` section mapping each function's entry offset to its
     /// `.lby` source line. Ignored by every command other than `native`.
     debug: bool,
+    /// The native object-file target triple (`lullaby native --target <triple>`).
+    /// `None` selects the default `x86_64-pc-windows-msvc` (COFF). The other
+    /// accepted triples are `x86_64-unknown-linux-gnu` (ELF) and
+    /// `x86_64-apple-darwin` (Mach-O). Ignored by every command other than
+    /// `native`.
+    native_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1340,6 +1416,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     program_args: Vec::new(),
                     freestanding: false,
                     debug: false,
+                    native_target: None,
                 }))
             } else {
                 Err("usage: lullaby --version".to_string())
@@ -1358,6 +1435,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     program_args: Vec::new(),
                     freestanding: false,
                     debug: false,
+                    native_target: None,
                 }))
             } else {
                 Err("usage: lullaby --help".to_string())
@@ -1376,6 +1454,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     program_args: Vec::new(),
                     freestanding: false,
                     debug: false,
+                    native_target: None,
                 }))
             } else {
                 Err("usage: lullaby docs".to_string())
@@ -1394,6 +1473,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     program_args: Vec::new(),
                     freestanding: false,
                     debug: false,
+                    native_target: None,
                 }))
             } else {
                 Err("usage: lullaby examples".to_string())
@@ -1412,6 +1492,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     program_args: Vec::new(),
                     freestanding: false,
                     debug: false,
+                    native_target: None,
                 }))
             } else {
                 Err("usage: lullaby lsp".to_string())
@@ -1432,6 +1513,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     let mut output = None;
     let mut freestanding = false;
     let mut debug = false;
+    let mut native_target: Option<String> = None;
     let mut cursor = 0;
     let usage = command_usage(command);
 
@@ -1512,6 +1594,18 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 debug = true;
                 cursor += 1;
             }
+            "--target" => {
+                // Native object-file target triple only. Selects the container
+                // format: COFF (default), ELF, or Mach-O.
+                if command != "native" || native_target.is_some() {
+                    return Err(usage);
+                }
+                let Some(value) = args.get(cursor + 1) else {
+                    return Err(usage);
+                };
+                native_target = Some(value.clone());
+                cursor += 2;
+            }
             _ => break,
         }
     }
@@ -1574,6 +1668,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         program_args,
         freestanding,
         debug,
+        native_target,
     }))
 }
 
@@ -1611,6 +1706,7 @@ fn parse_fmt_command(args: &[String]) -> Result<Option<Invocation>, String> {
         program_args: Vec::new(),
         freestanding: false,
         debug: false,
+        native_target: None,
     }))
 }
 
@@ -1621,7 +1717,7 @@ fn command_usage(command: &str) -> String {
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
         "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
-        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [-o out.exe] <file.lby>".to_string(),
+        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu|x86_64-apple-darwin] [-o out] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
@@ -1629,7 +1725,7 @@ fn command_usage(command: &str) -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [-o out.exe] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
         env!("CARGO_PKG_VERSION")
     );
 }

@@ -303,7 +303,10 @@ fn pointer_sized_handle_layout(
     }
 }
 
-fn x86_64_windows_target() -> NativeTarget {
+/// The default native target: `x86_64-pc-windows-msvc` (COFF). The native
+/// backend emits this format by default, so existing behavior and the
+/// byte-for-byte COFF snapshots are unchanged.
+pub fn x86_64_windows_target() -> NativeTarget {
     NativeTarget {
         triple: "x86_64-pc-windows-msvc".to_string(),
         architecture: NativeArchitecture::X86_64,
@@ -313,7 +316,9 @@ fn x86_64_windows_target() -> NativeTarget {
     }
 }
 
-fn x86_64_linux_target() -> NativeTarget {
+/// The `x86_64-unknown-linux-gnu` target (ELF64, System V AMD64). Selected with
+/// `lullaby native --target x86_64-unknown-linux-gnu`.
+pub fn x86_64_linux_target() -> NativeTarget {
     NativeTarget {
         triple: "x86_64-unknown-linux-gnu".to_string(),
         architecture: NativeArchitecture::X86_64,
@@ -323,7 +328,9 @@ fn x86_64_linux_target() -> NativeTarget {
     }
 }
 
-fn x86_64_macos_target() -> NativeTarget {
+/// The `x86_64-apple-darwin` target (Mach-O x86-64). Selected with
+/// `lullaby native --target x86_64-apple-darwin`.
+pub fn x86_64_macos_target() -> NativeTarget {
     NativeTarget {
         triple: "x86_64-apple-darwin".to_string(),
         architecture: NativeArchitecture::X86_64,
@@ -340,6 +347,20 @@ fn aarch64_macos_target() -> NativeTarget {
         object_format: NativeObjectFormat::MachO,
         pointer_width_bits: 64,
         endian: NativeEndian::Little,
+    }
+}
+
+/// Resolve a `--target` triple to the native target the backend can emit today.
+/// Only the x86-64 triples with an implemented object-format writer are
+/// accepted: `x86_64-pc-windows-msvc` (COFF), `x86_64-unknown-linux-gnu` (ELF),
+/// and `x86_64-apple-darwin` (Mach-O). The `aarch64-apple-darwin` triple is a
+/// declared future target with no code generator yet, so it is rejected here.
+pub fn native_target_for_triple(triple: &str) -> Option<NativeTarget> {
+    match triple {
+        "x86_64-pc-windows-msvc" => Some(x86_64_windows_target()),
+        "x86_64-unknown-linux-gnu" => Some(x86_64_linux_target()),
+        "x86_64-apple-darwin" => Some(x86_64_macos_target()),
+        _ => None,
     }
 }
 

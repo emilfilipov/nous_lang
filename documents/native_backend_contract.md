@@ -48,17 +48,20 @@ Not implemented yet:
 - **Now delivered:** scalar-field aggregates (structs, fixed arrays of scalars, scalar-payload enums) as function **parameters, return values, and call arguments** — by a hidden-pointer ABI with copy-in value semantics. A function that returns an enum, and a `match` on the result of such a call, now compile. See "Scalar-Field Aggregates Across Function Boundaries". A top-level `f64`/`f32` **scalar** parameter/return is now delivered (routed through the SSE registers `xmm0..3`, positionally aligned with the integer registers, with the float return in `xmm0`). Still deferred at the aggregate boundary: aggregates containing heap values (`string`/`list`/`map`, or a heap element/field). A signature whose effective register arguments (parameters plus a hidden return pointer) exceed four is **no longer** deferred — the 5th+ effective argument spills to the stack (see "Win64 Stack Arguments (5th+ Parameter)").
 - **Now delivered:** growable **`list<T>` with a scalar OR `string` element** (`i64`/fixed-width/`bool`/`char`/`byte`/`f32`/`f64`, or `string`) — `list_new`, `push`, `get`, `set`, `len`, and `pop`, with value semantics and lists crossing function boundaries. A `string` element is a shared immutable pointer word. See "Growable `list<T>` (scalar or `string` element)" below. **A one-level MUTABLE-aggregate element (`list<struct>`, `list<list<scalar>>`) is now delivered** — deep-copied per element on the value-semantic copy (see "MUTABLE-heap collection elements and enum payloads" below). Still deferred: lists whose element is a `map` (`list<map<…>>`), nesting past one mutable level (`list<list<list<…>>>`), and arrays whose length is not known from a literal initializer. The bump heap still has no `free`/reclamation (a grown or copied list orphans its old block).
 - **Now delivered:** growable **`map<K, V>` with an integer-cell key and a scalar OR `string` value** — `map_new`, `map_set`, `map_get` (returning `option<V>`, including `option<string>`), `map_has`, and `map_len`, with insertion-ordered value semantics and maps crossing function boundaries. A `string` value is a shared immutable pointer word. See "Growable `map<K, V>` (scalar key; scalar or `string` value)" below. **A one-level MUTABLE-aggregate value (`map<K, struct>`) is now delivered** — deep-copied per value on the value-semantic copy, with `map_get` returning `option<struct>` (see "MUTABLE-heap collection elements and enum payloads" below). Still deferred: **string/heap KEYS** (`map<string, V>`) — string-key equality needs the string heap for content comparison, matching the WASM map — a `map`/`array`-typed value or nesting past one mutable level, a mutable-aggregate KEY, **float keys** (their bit-pattern word compare would diverge from the interpreters' value equality on `±0.0`/NaN; float *values* are fine, stored/loaded bit-for-bit), and `map_keys`/`map_values`/`map_del`.
-- Object file writing for non-COFF targets.
+- **Now delivered (structurally):** object-file writing for the non-COFF targets. The native backend emits a relocatable **ELF64** (`x86_64-unknown-linux-gnu`) or **Mach-O x86-64** (`x86_64-apple-darwin`) object in addition to COFF, selected by `lullaby native --target <triple>`. See "Object-Format Abstraction (COFF / ELF / Mach-O)" below. Still deferred: **link-and-run** verification of the ELF/Mach-O objects (this is a Windows host with no cross-linker — deferred to the Phase 9 cross-platform CI), a non-Windows C-runtime link workflow, and DWARF debug info (the `--debug` CodeView section is COFF-only).
 - Native runtime packaging.
+- ARM64 (`aarch64-apple-darwin`) code generation and object emission (a separate future effort; the triple is a declared target with no code generator yet, and `--target aarch64-apple-darwin` is rejected with `L0347`).
 
 ## Targets
 
-The first native prototype target is `x86_64-pc-windows-msvc` with COFF object emission. The contract also records the intended 64-bit target family for later work:
+The default native target is `x86_64-pc-windows-msvc` with COFF object emission. The backend now also emits relocatable objects for the two other x86-64 targets; the `--target` flag selects the object-file container. The `aarch64-apple-darwin` triple is a declared future target with no code generator yet.
 
-- `x86_64-pc-windows-msvc`
-- `x86_64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
-- `aarch64-apple-darwin`
+| Triple | Object format | Object emission | Link + run |
+| :--- | :--- | :--- | :--- |
+| `x86_64-pc-windows-msvc` (default) | COFF | delivered | best-effort `rust-lld` → `.exe` on this host |
+| `x86_64-unknown-linux-gnu` | ELF64 (System V AMD64) | delivered | deferred to Phase 9 CI (no cross-linker on a Windows host) |
+| `x86_64-apple-darwin` | Mach-O x86-64 | delivered | deferred to Phase 9 CI (no cross-linker on a Windows host) |
+| `aarch64-apple-darwin` | Mach-O arm64 | pending (no codegen) | pending |
 
 All current contract targets are 64-bit little-endian targets.
 
@@ -137,6 +140,30 @@ Eligibility and lowering:
 Code generation is a stack-machine model over `rax`: expressions evaluate into `rax`, binary operands spill to the stack with `push`/`pop rcx`, locals and spilled parameters live in `[rbp - slot]` frame slots, and the frame reserves 32 bytes of Win64 shadow space whenever the function issues a call so `rsp` stays 16-byte aligned at each `call`. Inter-function calls, the entry stub's call to `main`, and the entry stub's call to the imported `ExitProcess` are emitted as `call rel32` with `IMAGE_REL_AMD64_REL32` COFF relocations; symbol names longer than eight bytes are stored in the COFF string table. The emitted entry stub `_lullaby_start` calls `main`, moves the `i64` result into `ecx`, and calls `ExitProcess` (imported from `kernel32`), so the process exit code is `main`'s result mod 256.
 
 Link-to-executable is best-effort. The CLI writes the COFF object unconditionally (the reliable floor), then attempts to link with `rust-lld` (`-flavor link`, `/subsystem:console`, `/entry:_lullaby_start`, the object, and `kernel32.lib`), discovering `rust-lld` under the rustc sysroot and library search paths from the MSVC `LIB` environment variable. When `rust-lld` or `kernel32.lib` cannot be located the command reports the object and explains that linking was unavailable rather than failing.
+
+## Object-Format Abstraction (COFF / ELF / Mach-O) (DELIVERED, structural)
+
+The generated x86-64 machine code — the entry stub, the compiled functions, and the heap/string runtime helpers — is **platform-agnostic**: the internal Lullaby-to-Lullaby calling convention is self-consistent, so the same `.text` bytes, symbol table, and REL32 relocation model can be written into any of the three x86-64 object containers. Only the **object-file wrapper** and the **entry/exit mechanism** differ. `lullaby native --target <triple>` selects the container; the default stays `x86_64-pc-windows-msvc` (COFF), so existing behavior and the byte-for-byte COFF snapshots are unchanged.
+
+### Neutral object model
+
+`crates/lullaby_ir/src/object_model.rs` defines a container-neutral `ObjectModel` — a list of sections (`.text`, `.rodata`, `.bss`), a flat global symbol table (each symbol tagged code vs data, defined-in-section vs undefined-external), and per-section relocations tagged `Branch` (a `call`/`jmp` to a function) or `PcRel32` (a RIP-relative `lea`/`mov` to a data symbol). `emit_alpha1_native_program_for_target` builds this model from the same lowered functions the COFF path uses, then serializes it with the format-specific writer. The **COFF path deliberately keeps its own writer** (`native_object.rs`) rather than flowing through the model, so its snapshot tests stay exact; the model is the shared source of truth for ELF and Mach-O only.
+
+### ELF64 (`x86_64-unknown-linux-gnu`)
+
+`crates/lullaby_ir/src/elf_object.rs` writes a relocatable (`ET_REL`) ELF64 object for `EM_X86_64`: an `Elf64_Ehdr`, a section header table (`.text` `SHT_PROGBITS`+`ALLOC`+`EXECINSTR`, `.rodata` when strings are used, `.bss` `SHT_NOBITS` for the bump heap, `.rela.text`, `.symtab`, `.strtab`, `.shstrtab`), a global symbol table, and `Elf64_Rela` relocations. A `call` site uses `R_X86_64_PLT32` and a data reference uses `R_X86_64_PC32`, both with addend `-4` (the field ends 4 bytes past `P`, so the displacement to `S` is `S − (P + 4)`).
+
+### Mach-O x86-64 (`x86_64-apple-darwin`)
+
+`crates/lullaby_ir/src/macho_object.rs` writes a relocatable (`MH_OBJECT`) Mach-O 64 object: a `mach_header_64`, a single `LC_SEGMENT_64` holding the `__text`/`__const`/`__bss` (`S_ZEROFILL`) sections, an `LC_SYMTAB`, an `LC_DYSYMTAB` (defined symbols precede undefined ones), and `relocation_info` entries with `r_pcrel=1`, `r_length=2`, `r_extern=1` using `X86_64_RELOC_BRANCH` for calls and `X86_64_RELOC_SIGNED` for data references (the implicit `-4` comes from the PC-relative field ending after the instruction).
+
+### Freestanding entry / exit
+
+The internal calling convention is **kept unchanged** across all three platforms; only the entry stub differs. The COFF stub `_lullaby_start` calls `main`, moves the result to `ecx`, and calls `kernel32!ExitProcess`. The freestanding non-Windows stubs (`_start` on ELF, `start` on Mach-O) instead reserve the internal ABI's shadow space (`sub rsp, 32`, landing `rsp` 16-aligned for the `call main` from the OS's 16-aligned entry), call `main`, move the exit code to `edi`, and issue a raw `exit` syscall — `mov eax, 60; syscall` on Linux, `mov eax, 0x2000001; syscall` on macOS — so the object needs no libc, mirroring the freestanding COFF approach. An `extern fn` C dependency remains a Windows-oriented feature; on the non-Windows targets the undefined external is still emitted for the linker but no C-runtime link workflow is provided yet.
+
+### Honest verification boundary
+
+This work is developed and tested on a **Windows host with no ELF/Mach-O cross-linker**, so the ELF and Mach-O objects are verified **structurally only**: unit tests in `elf_object.rs` and `macho_object.rs` parse the emitted bytes back and assert the magic numbers, class/endianness, header fields, section table, symbol table (names, types, defining sections), and relocation records (offsets, symbol indices, types, addends); CLI tests confirm `lullaby native --target …` produces a file beginning with the correct magic (`\x7fELF` / `\xCF\xFA\xED\xFE`) without attempting to link. **Link-and-run verification is deferred to the Phase 9 cross-platform CI** on real Linux/macOS runners. This is x86-64 only; ARM64 is a separate future effort. The CLI reports the deferral explicitly (it never claims to have linked or run a cross-target object).
 
 ## Win64 Stack Arguments (5th+ Parameter) (DELIVERED)
 

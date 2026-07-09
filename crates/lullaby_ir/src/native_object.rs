@@ -5,12 +5,19 @@ use serde::{Deserialize, Serialize};
 
 use lullaby_parser::{AssignOp, BinaryOp, TypeRef};
 
-use crate::native_contract::{NativeObjectFormat, NativeTarget, alpha1_native_backend_contract};
+use crate::native_contract::{
+    NativeObjectFormat, NativeTarget, alpha1_native_backend_contract, x86_64_windows_target,
+};
+use crate::object_model::{
+    ObjectModel, ObjectRelocation, ObjectRelocationKind, ObjectSection, ObjectSectionKind,
+    ObjectSymbol, ObjectSymbolKind,
+};
 use crate::{
     BytecodeExpr, BytecodeExprKind, BytecodeFunction, BytecodeIfBranch, BytecodeInstruction,
     BytecodeMatchArm, BytecodeMatchPattern, BytecodeModule, BytecodePlace, IntKind, IrEnumDef,
     IrStructDef,
 };
+use crate::{elf_object, macho_object};
 
 /// The fixed-width integer kind named by a Lullaby type name (`i8`/`u32`/…), or
 /// `None` for `i64` and every non-fixed-width type. The native backend keeps a
@@ -1294,8 +1301,28 @@ pub fn emit_alpha1_native_program_with_debug(
     module: &BytecodeModule,
     debug: Option<&DebugOptions>,
 ) -> Result<NativeProgram, NativeProgramError> {
-    let contract = alpha1_native_backend_contract();
-    let target = contract.first_target;
+    emit_alpha1_native_program_for_target(module, &x86_64_windows_target(), debug)
+}
+
+/// Emit a native program for an explicit `target`, selecting the object-file
+/// container by the target's [`NativeObjectFormat`]:
+///
+/// - `x86_64-pc-windows-msvc` → COFF (the default; byte-for-byte unchanged),
+/// - `x86_64-unknown-linux-gnu` → ELF64 (System V AMD64), and
+/// - `x86_64-apple-darwin` → Mach-O x86-64.
+///
+/// The x86-64 machine code and the internal calling convention are identical
+/// across all three; only the object wrapper and the entry/exit stub differ (a
+/// freestanding `exit` syscall on Linux/macOS instead of `kernel32!ExitProcess`).
+/// The ELF and Mach-O objects are relocatable objects verified structurally on
+/// this host; link-and-run verification is deferred to the Phase 9 cross-platform
+/// CI. See `documents/native_backend_contract.md`.
+pub fn emit_alpha1_native_program_for_target(
+    module: &BytecodeModule,
+    target: &NativeTarget,
+    debug: Option<&DebugOptions>,
+) -> Result<NativeProgram, NativeProgramError> {
+    let target = target.clone();
 
     // First pass: decide signature eligibility. Calls resolve against the set of
     // names we intend to compile.
@@ -1438,22 +1465,40 @@ pub fn emit_alpha1_native_program_with_debug(
 
         let compiled: Vec<String> = lowered.iter().map(|f| f.name.clone()).collect();
         // Emit the entry stub only when a `main` is present. A pure export library
-        // (no `main`) omits the stub entirely, so it carries no `ExitProcess`
-        // dependency and does not collide with a C `main` at link time.
-        let bytes = write_native_program_object(&lowered, &strings, has_main, debug);
+        // (no `main`) omits the stub entirely, so it carries no exit dependency
+        // and does not collide with a C `main` at link time.
+        //
+        // The object container is selected by the target format: COFF keeps its
+        // own byte-for-byte writer (and `kernel32!ExitProcess` entry stub); ELF
+        // and Mach-O flow through the shared neutral object model with a
+        // freestanding `exit`-syscall entry stub.
+        let (bytes, entry_symbol) = match target.object_format {
+            NativeObjectFormat::Coff => {
+                let bytes = write_native_program_object(&lowered, &strings, has_main, debug);
+                let entry = if has_main {
+                    NATIVE_ENTRY_SYMBOL.to_string()
+                } else {
+                    String::new()
+                };
+                (bytes, entry)
+            }
+            NativeObjectFormat::Elf => {
+                let model = build_object_model(&lowered, &strings, has_main, PlatformAbi::Linux);
+                let entry = model.entry_symbol.clone().unwrap_or_default();
+                (elf_object::write_elf64(&model), entry)
+            }
+            NativeObjectFormat::MachO => {
+                let model = build_object_model(&lowered, &strings, has_main, PlatformAbi::MacOs);
+                let entry = model.entry_symbol.clone().unwrap_or_default();
+                (macho_object::write_macho64(&model), entry)
+            }
+        };
         // When the program declares any `extern fn`, the C runtime import library
         // must be linked so the external C symbols resolve.
         let import_libs = if module.extern_functions.is_empty() {
             Vec::new()
         } else {
             vec![C_RUNTIME_IMPORT_LIB.to_string()]
-        };
-        // A library object (no stub) has no `/entry:` symbol; the C runtime
-        // provides the entry point when it is linked with a C `main`.
-        let entry_symbol = if has_main {
-            NATIVE_ENTRY_SYMBOL.to_string()
-        } else {
-            String::new()
         };
         return Ok(NativeProgram {
             target,
@@ -7062,6 +7107,297 @@ fn write_native_program_object(
     }
 }
 
+/// The ELF entry-point symbol. Linux's default linker entry is `_start`, so a
+/// plain `ld`/`clang` link of the emitted object finds it without extra flags.
+const ELF_ENTRY_SYMBOL: &str = "_start";
+
+/// The Mach-O entry-point symbol. The macOS linker's default entry is `start`.
+const MACHO_ENTRY_SYMBOL: &str = "start";
+
+/// The freestanding platform ABI a non-Windows object targets: it selects the
+/// entry-point symbol and the entry stub's process-exit mechanism (a raw `exit`
+/// syscall) so the object needs no libc, mirroring the freestanding COFF path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlatformAbi {
+    /// Linux System V: `_start`, `exit` via `syscall` rax=60.
+    Linux,
+    /// macOS: `start`, `exit` via `syscall` rax=0x2000001.
+    MacOs,
+}
+
+impl PlatformAbi {
+    /// The entry-point symbol name for this platform.
+    fn entry_symbol(self) -> &'static str {
+        match self {
+            PlatformAbi::Linux => ELF_ENTRY_SYMBOL,
+            PlatformAbi::MacOs => MACHO_ENTRY_SYMBOL,
+        }
+    }
+}
+
+/// A relocation carrying the target *symbol name*; resolved to a symbol index
+/// once the neutral model's symbol table is assembled.
+struct NamedTextReloc {
+    offset: u64,
+    symbol: String,
+}
+
+/// Build the target-neutral [`ObjectModel`] for a native program, used by the
+/// ELF and Mach-O writers. It assembles exactly the same `.text` (functions +
+/// heap/string helpers), `.rodata` (string constants), and `.bss` (bump heap)
+/// content as the COFF path, but leads `.text` with a *freestanding* entry stub
+/// that exits through a raw `exit` syscall instead of `kernel32!ExitProcess` —
+/// the only machine-code difference between the platforms. The shared internal
+/// calling convention is kept unchanged (see `documents/native_backend_contract.md`).
+///
+/// When `emit_stub` is true the object is a runnable program led by the entry
+/// stub; when false it is a library object (no `main`) with no entry stub and no
+/// exit dependency.
+fn build_object_model(
+    functions: &[LoweredNativeFunction],
+    strings: &StringPool,
+    emit_stub: bool,
+    abi: PlatformAbi,
+) -> ObjectModel {
+    let use_heap = !strings.is_empty() || program_uses_heap_helpers(functions);
+
+    // -- Assemble `.text`: entry stub, functions, then heap/string helpers ---
+    let mut text: Vec<u8> = Vec::new();
+    let mut relocations: Vec<NamedTextReloc> = Vec::new();
+
+    if emit_stub {
+        // Freestanding entry stub. `sub rsp, 32` reserves the internal ABI's
+        // shadow space and lands `rsp` 16-byte aligned for the `call main`
+        // (the OS enters `_start`/`start` with a 16-aligned stack). After `main`
+        // returns its exit code in `eax`, the stub moves it to `edi` and issues
+        // the platform `exit` syscall, so the object needs no libc.
+        text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
+        text.push(0xE8); // call main (rel32)
+        relocations.push(NamedTextReloc {
+            offset: text.len() as u64,
+            symbol: "main".to_string(),
+        });
+        text.extend_from_slice(&[0, 0, 0, 0]);
+        text.extend_from_slice(&[0x89, 0xC7]); // mov edi, eax (exit code)
+        match abi {
+            PlatformAbi::Linux => {
+                // mov eax, 60 (SYS_exit); syscall.
+                text.extend_from_slice(&[0xB8, 0x3C, 0x00, 0x00, 0x00]);
+            }
+            PlatformAbi::MacOs => {
+                // mov eax, 0x2000001 (BSD `exit`); syscall.
+                text.extend_from_slice(&[0xB8, 0x01, 0x00, 0x00, 0x02]);
+            }
+        }
+        text.extend_from_slice(&[0x0F, 0x05]); // syscall
+        text.push(0xCC); // int3 (unreachable; exit does not return)
+    }
+
+    let mut func_offsets: HashMap<String, u64> = HashMap::new();
+    let mut append_code = |text: &mut Vec<u8>,
+                           relocations: &mut Vec<NamedTextReloc>,
+                           name: &str,
+                           code: &[u8],
+                           relocs: &[CodeRelocation]| {
+        while !text.len().is_multiple_of(16) {
+            text.push(0xCC);
+        }
+        let start = text.len() as u64;
+        func_offsets.insert(name.to_string(), start);
+        for reloc in relocs {
+            relocations.push(NamedTextReloc {
+                offset: start + u64::from(reloc.offset),
+                symbol: reloc.symbol.clone(),
+            });
+        }
+        text.extend_from_slice(code);
+    };
+
+    for function in functions {
+        append_code(
+            &mut text,
+            &mut relocations,
+            &function.name,
+            &function.code,
+            &function.relocations,
+        );
+    }
+
+    // The heap/string runtime helpers are emitted as one fixed set (identical to
+    // the COFF data path) whenever the heap is used, so the symbol set matches.
+    if use_heap {
+        for helper in heap_runtime_helpers() {
+            append_code(
+                &mut text,
+                &mut relocations,
+                &helper.name,
+                &helper.code,
+                &helper.relocations,
+            );
+        }
+    }
+
+    // -- `.rodata`: NUL-terminated string constants --------------------------
+    let mut rdata: Vec<u8> = Vec::new();
+    let mut str_offsets: Vec<u64> = Vec::new();
+    if use_heap {
+        for text_value in &strings.entries {
+            str_offsets.push(rdata.len() as u64);
+            rdata.extend_from_slice(text_value.as_bytes());
+            rdata.push(0);
+        }
+    }
+
+    // -- Sections ------------------------------------------------------------
+    // `.text` is section 0. `.rodata` (1) and `.bss` (2) follow when the heap is
+    // used, matching the COFF data layout.
+    let text_len = text.len() as u64;
+    let mut sections: Vec<ObjectSection> = vec![ObjectSection {
+        kind: ObjectSectionKind::Text,
+        data: text,
+        size: text_len,
+        relocations: Vec::new(),
+    }];
+    let (rodata_section, bss_section) = if use_heap {
+        let rdata_len = rdata.len() as u64;
+        sections.push(ObjectSection {
+            kind: ObjectSectionKind::ReadOnlyData,
+            data: rdata,
+            size: rdata_len,
+            relocations: Vec::new(),
+        });
+        sections.push(ObjectSection {
+            kind: ObjectSectionKind::Bss,
+            data: Vec::new(),
+            size: u64::from(8 + HEAP_REGION_SIZE),
+            relocations: Vec::new(),
+        });
+        (Some(1usize), Some(2usize))
+    } else {
+        (None, None)
+    };
+
+    // -- Symbols (defined first, then undefined externs) ---------------------
+    let mut symbols: Vec<ObjectSymbol> = Vec::new();
+    if emit_stub {
+        symbols.push(ObjectSymbol {
+            name: abi.entry_symbol().to_string(),
+            section: Some(0),
+            value: 0,
+            kind: ObjectSymbolKind::Function,
+        });
+    }
+    for function in functions {
+        symbols.push(ObjectSymbol {
+            name: function.name.clone(),
+            section: Some(0),
+            value: func_offsets[&function.name],
+            kind: ObjectSymbolKind::Function,
+        });
+    }
+    if use_heap {
+        for helper in heap_runtime_helpers() {
+            symbols.push(ObjectSymbol {
+                name: helper.name.clone(),
+                section: Some(0),
+                value: func_offsets[&helper.name],
+                kind: ObjectSymbolKind::Function,
+            });
+        }
+        for (index, offset) in str_offsets.iter().enumerate() {
+            symbols.push(ObjectSymbol {
+                name: format!("__str{index}"),
+                section: rodata_section,
+                value: *offset,
+                kind: ObjectSymbolKind::Data,
+            });
+        }
+        symbols.push(ObjectSymbol {
+            name: HEAP_NEXT_SYMBOL.to_string(),
+            section: bss_section,
+            value: 0,
+            kind: ObjectSymbolKind::Data,
+        });
+        symbols.push(ObjectSymbol {
+            name: HEAP_BASE_SYMBOL.to_string(),
+            section: bss_section,
+            value: 8,
+            kind: ObjectSymbolKind::Data,
+        });
+    }
+    // Undefined externals (an `extern fn` bound by the linker) come last so the
+    // Mach-O `LC_DYSYMTAB` defined/undefined ranges stay contiguous.
+    for reloc in &relocations {
+        if !symbols.iter().any(|s| s.name == reloc.symbol) {
+            symbols.push(ObjectSymbol {
+                name: reloc.symbol.clone(),
+                section: None,
+                value: 0,
+                kind: ObjectSymbolKind::Function,
+            });
+        }
+    }
+
+    // -- Resolve relocation symbol indices + classify branch vs data ---------
+    let index_of = |name: &str| -> usize {
+        symbols
+            .iter()
+            .position(|s| s.name == name)
+            .expect("relocation symbol is defined")
+    };
+    let text_relocs: Vec<ObjectRelocation> = relocations
+        .iter()
+        .map(|reloc| {
+            let symbol = index_of(&reloc.symbol);
+            let kind = match symbols[symbol].kind {
+                ObjectSymbolKind::Function => ObjectRelocationKind::Branch,
+                ObjectSymbolKind::Data => ObjectRelocationKind::PcRel32,
+            };
+            ObjectRelocation {
+                offset: reloc.offset,
+                symbol,
+                kind,
+            }
+        })
+        .collect();
+    sections[0].relocations = text_relocs;
+
+    ObjectModel {
+        sections,
+        symbols,
+        entry_symbol: emit_stub.then(|| abi.entry_symbol().to_string()),
+    }
+}
+
+/// The fixed set of heap/string runtime helper functions emitted (in this order)
+/// whenever a native program uses the heap. Shared by the COFF data path and the
+/// neutral (ELF/Mach-O) model so all three object formats carry the same helper
+/// symbol set.
+fn heap_runtime_helpers() -> Vec<HelperFunction> {
+    vec![
+        emit_heap_alloc_helper(),
+        emit_heap_strlen_helper(),
+        emit_list_new_helper(),
+        emit_list_copy_helper(),
+        emit_list_grow_helper(),
+        emit_struct_copy_helper(),
+        emit_map_new_helper(),
+        emit_map_copy_helper(),
+        emit_map_grow_helper(),
+        emit_map_find_helper(),
+        emit_str_lit_helper(),
+        emit_str_concat_helper(),
+        emit_str_from_int_helper(),
+        emit_str_from_bool_helper(),
+        emit_str_from_char_helper(),
+        emit_str_substring_helper(),
+        emit_str_find_helper(),
+        emit_str_contains_helper(),
+        emit_str_starts_with_helper(),
+        emit_str_ends_with_helper(),
+    ]
+}
+
 /// Whether any lowered function references a runtime heap helper (a growable-list
 /// or growable-map helper, or a string helper), which requires the heap sections +
 /// helper `.text` even when the program interns no `.rdata` string constants (e.g.
@@ -12366,5 +12702,110 @@ mod native_program_tests {
                 .expect("string classifies"),
             "a string signature slot is a scalar (register), not an aggregate"
         );
+    }
+
+    // -- Cross-format object emission (ELF / Mach-O) -------------------------
+    //
+    // These exercise the object-format abstraction end-to-end: the same lowered
+    // x86-64 program is re-serialized into an ELF64 or Mach-O container. The bytes
+    // are checked structurally (link+run is deferred to Phase 9 CI on the native
+    // platform), and the default Windows COFF path is confirmed unchanged.
+
+    const ADD_AND_MAIN: &str =
+        "fn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(20, 22)\n";
+
+    #[test]
+    fn elf_target_emits_relocatable_elf64() {
+        let program = emit_alpha1_native_program_for_target(
+            &module_for(ADD_AND_MAIN),
+            &crate::native_contract::x86_64_linux_target(),
+            None,
+        )
+        .expect("emit ELF program");
+
+        assert_eq!(program.target.triple, "x86_64-unknown-linux-gnu");
+        assert_eq!(program.entry_symbol, "_start");
+        assert_eq!(&program.bytes[0..4], &[0x7f, b'E', b'L', b'F'], "ELF magic");
+        assert_eq!(program.bytes[4], 2, "ELFCLASS64");
+        // e_type = ET_REL, e_machine = EM_X86_64.
+        assert_eq!(read_u16(&program.bytes, 16), 1);
+        assert_eq!(read_u16(&program.bytes, 18), 62);
+        assert_eq!(
+            program.compiled,
+            vec!["add".to_string(), "main".to_string()]
+        );
+    }
+
+    #[test]
+    fn macho_target_emits_relocatable_macho64() {
+        let program = emit_alpha1_native_program_for_target(
+            &module_for(ADD_AND_MAIN),
+            &crate::native_contract::x86_64_macos_target(),
+            None,
+        )
+        .expect("emit Mach-O program");
+
+        assert_eq!(program.target.triple, "x86_64-apple-darwin");
+        assert_eq!(program.entry_symbol, "start");
+        // MH_MAGIC_64 little-endian.
+        assert_eq!(read_u32(&program.bytes, 0), 0xFEED_FACF);
+        // filetype = MH_OBJECT.
+        assert_eq!(read_u32(&program.bytes, 12), 1);
+    }
+
+    #[test]
+    fn elf_entry_stub_exits_via_the_linux_syscall() {
+        // The freestanding `_start` stub must end in `mov eax, 60` (SYS_exit) then
+        // `syscall`, and must NOT reference `ExitProcess` (a Windows-only import).
+        let program = emit_alpha1_native_program_for_target(
+            &module_for(ADD_AND_MAIN),
+            &crate::native_contract::x86_64_linux_target(),
+            None,
+        )
+        .expect("emit ELF program");
+        // Locate `.text` and confirm the exit-syscall byte sequence appears.
+        let needle = [0xB8, 0x3C, 0x00, 0x00, 0x00, 0x0F, 0x05]; // mov eax,60; syscall
+        assert!(
+            program.bytes.windows(needle.len()).any(|w| w == needle),
+            "ELF entry stub issues the Linux exit syscall"
+        );
+    }
+
+    #[test]
+    fn default_target_is_unchanged_windows_coff() {
+        // The default emit path and the explicit Windows target produce identical
+        // COFF bytes, proving the abstraction did not disturb the default.
+        let module = module_for(ADD_AND_MAIN);
+        let default = emit_alpha1_native_program(&module).expect("default");
+        let windows = emit_alpha1_native_program_for_target(
+            &module,
+            &crate::native_contract::x86_64_windows_target(),
+            None,
+        )
+        .expect("windows");
+        assert_eq!(
+            default.bytes, windows.bytes,
+            "COFF bytes byte-for-byte equal"
+        );
+        assert_eq!(default.target.triple, "x86_64-pc-windows-msvc");
+        assert_eq!(read_u16(&default.bytes, 0), AMD64_MACHINE);
+    }
+
+    #[test]
+    fn elf_string_program_carries_rodata_and_bss() {
+        // A program that interns a string constant must produce the data sections
+        // in the ELF object too (.rodata for the constant, .bss for the heap).
+        let program = emit_alpha1_native_program_for_target(
+            &module_for(
+                "fn main -> i64\n    let a i64 = len(\"hello\")\n    let b i64 = len(\"native\")\n    return a + b\n",
+            ),
+            &crate::native_contract::x86_64_linux_target(),
+            None,
+        )
+        .expect("emit ELF program with strings");
+        assert_eq!(&program.bytes[0..4], &[0x7f, b'E', b'L', b'F']);
+        // More than the text-only section count (null,.text,.symtab,.strtab,.shstrtab
+        // = 5); the data path adds .rodata, .bss, and .rela.text.
+        assert!(read_u16(&program.bytes, 60) > 5, "data sections present");
     }
 }

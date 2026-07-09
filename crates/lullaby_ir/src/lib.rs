@@ -23,14 +23,18 @@ use lullaby_runtime::{
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
 
+pub mod elf_object;
 pub mod frame_layout;
+pub mod macho_object;
 pub mod native_contract;
 pub mod native_object;
+pub mod object_model;
 pub mod wasm;
 
 pub use native_object::{
     DebugOptions, NATIVE_ENTRY_SYMBOL, NATIVE_NO_ELIGIBLE_CODE, NativeProgram, NativeProgramError,
-    NativeSkippedFunction, emit_alpha1_native_program, emit_alpha1_native_program_with_debug,
+    NativeSkippedFunction, emit_alpha1_native_program, emit_alpha1_native_program_for_target,
+    emit_alpha1_native_program_with_debug,
 };
 pub use wasm::{SkippedFunction, WasmArtifact, WasmError, emit_wasm_module};
 

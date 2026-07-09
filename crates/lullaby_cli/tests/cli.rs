@@ -4564,6 +4564,88 @@ fn native_emits_object_and_lists_functions() {
     assert_eq!(&bytes[0..2], &[0x64, 0x86], "COFF AMD64 machine");
 }
 
+/// `lullaby native --target x86_64-unknown-linux-gnu` writes a relocatable ELF64
+/// object beginning with the ELF magic. On this Windows host the object is not
+/// linked or run (deferred to the native platform / Phase 9 CI); the CLI reports
+/// exactly that.
+#[test]
+fn native_target_linux_emits_elf_object() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_native_linux.o");
+    let output = lullaby()
+        .args([
+            "native",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let listing = stdout(&output);
+    assert!(
+        listing.contains("x86_64-unknown-linux-gnu (ELF64)"),
+        "reports the ELF target: {listing}"
+    );
+    assert!(
+        listing.contains("Phase 9") || listing.contains("deferred"),
+        "reports link+run deferral: {listing}"
+    );
+    assert!(
+        !listing.contains("native exe:"),
+        "must not link an exe on this host: {listing}"
+    );
+
+    let bytes = std::fs::read(&out).expect("read ELF object");
+    assert_eq!(&bytes[0..4], &[0x7f, b'E', b'L', b'F'], "ELF magic");
+    assert_eq!(bytes[4], 2, "ELFCLASS64");
+}
+
+/// `lullaby native --target x86_64-apple-darwin` writes a relocatable Mach-O
+/// x86-64 object beginning with the Mach-O magic, also without linking.
+#[test]
+fn native_target_macos_emits_macho_object() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_native_macos.o");
+    let output = lullaby()
+        .args([
+            "native",
+            "--target",
+            "x86_64-apple-darwin",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let bytes = std::fs::read(&out).expect("read Mach-O object");
+    // MH_MAGIC_64 (0xFEEDFACF) little-endian.
+    assert_eq!(&bytes[0..4], &[0xCF, 0xFA, 0xED, 0xFE], "Mach-O magic");
+}
+
+/// An unknown `--target` triple is rejected with `L0347` and no object is
+/// produced.
+#[test]
+fn native_unknown_target_is_rejected() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let output = lullaby()
+        .args([
+            "native",
+            "--target",
+            "riscv64-unknown-linux-gnu",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "unknown target must fail");
+    let combined = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(combined.contains("L0347"), "reports L0347: {combined}");
+}
+
 /// `lullaby native --debug` must emit a CodeView `.debug$S` source-line section
 /// (opt-in) and print the debug notice, while the default (no `--debug`) object
 /// stays byte-for-byte identical. This structural part always runs. If
