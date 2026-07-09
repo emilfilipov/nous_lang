@@ -27,6 +27,7 @@ use lullaby_runtime::{
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
 
+pub mod aarch64;
 pub mod elf_object;
 pub mod frame_layout;
 pub mod macho_object;

@@ -286,6 +286,12 @@ pub fn write_macho64(model: &ObjectModel) -> Vec<u8> {
         let r_type = match reloc.kind {
             ObjectRelocationKind::Branch => X86_64_RELOC_BRANCH,
             ObjectRelocationKind::PcRel32 => X86_64_RELOC_SIGNED,
+            // The Mach-O writer is x86-64 only; AArch64 programs are always
+            // emitted as ELF, so an AArch64 branch relocation can never reach a
+            // Mach-O container by construction.
+            ObjectRelocationKind::Aarch64Call26 => {
+                panic!("the Mach-O writer is x86-64 only; AArch64 objects are emitted as ELF")
+            }
         };
         // r_pcrel = 1, r_length = 2 (4 bytes), r_extern = 1.
         let packed: u32 = (reloc.symbol as u32 & 0x00FF_FFFF)
@@ -350,8 +356,8 @@ fn push_u64(out: &mut Vec<u8>, value: u64) {
 mod tests {
     use super::*;
     use crate::object_model::{
-        ObjectModel, ObjectRelocation, ObjectRelocationKind, ObjectSection, ObjectSectionKind,
-        ObjectSymbol, ObjectSymbolKind,
+        ObjectMachine, ObjectModel, ObjectRelocation, ObjectRelocationKind, ObjectSection,
+        ObjectSectionKind, ObjectSymbol, ObjectSymbolKind,
     };
 
     fn rd_u32(b: &[u8], off: usize) -> u32 {
@@ -433,6 +439,7 @@ mod tests {
                 },
             ],
             entry_symbol: Some("start".to_string()),
+            machine: ObjectMachine::X86_64,
         }
     }
 

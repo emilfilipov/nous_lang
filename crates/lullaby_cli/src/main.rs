@@ -369,7 +369,7 @@ fn native_file(
                     format!("unknown or unsupported native target triple `{triple}`"),
                 )
                 .with_note(
-                    "supported targets: x86_64-pc-windows-msvc (COFF), x86_64-unknown-linux-gnu (ELF), x86_64-apple-darwin (Mach-O)",
+                    "supported targets: x86_64-pc-windows-msvc (COFF), x86_64-unknown-linux-gnu (ELF), x86_64-apple-darwin (Mach-O), aarch64-unknown-linux-gnu (aarch64 ELF)",
                 );
                 return Err(format_reports(&[report], mode, None));
             }
@@ -515,11 +515,21 @@ fn native_file(
         );
     }
     if !is_coff {
-        // ELF/Mach-O: emitted and structurally well-formed, but this Windows host
-        // has no cross-linker, so the object is not linked or run here.
-        println!(
-            "cross-target object emitted; linking and running are deferred to the native platform / Phase 9 CI (structurally verified, x86-64 only)"
-        );
+        use lullaby_ir::native_contract::NativeArchitecture;
+        if matches!(target.architecture, NativeArchitecture::Aarch64) {
+            // The aarch64 ELF is a real, freestanding relocatable object. It links
+            // with a cross-linker (`rust-lld`/`ld.lld -m aarch64linux`) and runs
+            // under arm64 emulation (Docker/QEMU); this is link+run verified in CI.
+            println!(
+                "aarch64 ELF object emitted; link with `rust-lld -flavor gnu -m aarch64linux` (or `ld.lld -m aarch64linux`) and run under arm64 (Docker/QEMU)"
+            );
+        } else {
+            // x86-64 ELF/Mach-O: emitted and structurally well-formed, but this
+            // Windows host has no cross-linker, so it is not linked or run here.
+            println!(
+                "cross-target object emitted; linking and running are deferred to the native platform / Phase 9 CI (structurally verified, x86-64 only)"
+            );
+        }
     }
     match &link {
         None if is_coff => {
@@ -1717,7 +1727,7 @@ fn command_usage(command: &str) -> String {
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
         "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
-        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu|x86_64-apple-darwin] [-o out] <file.lby>".to_string(),
+        "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-unknown-linux-gnu] [-o out] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }

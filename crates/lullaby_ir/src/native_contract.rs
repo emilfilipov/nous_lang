@@ -350,16 +350,32 @@ fn aarch64_macos_target() -> NativeTarget {
     }
 }
 
-/// Resolve a `--target` triple to the native target the backend can emit today.
-/// Only the x86-64 triples with an implemented object-format writer are
-/// accepted: `x86_64-pc-windows-msvc` (COFF), `x86_64-unknown-linux-gnu` (ELF),
-/// and `x86_64-apple-darwin` (Mach-O). The `aarch64-apple-darwin` triple is a
-/// declared future target with no code generator yet, so it is rejected here.
+/// The `aarch64-unknown-linux-gnu` target (ELF64, AAPCS64). Selected with
+/// `lullaby native --target aarch64-unknown-linux-gnu`; lowered by the dedicated
+/// AArch64 code generator (`crate::aarch64`) to a freestanding aarch64 ELF
+/// object. This is the second implemented instruction-set backend.
+pub fn aarch64_linux_target() -> NativeTarget {
+    NativeTarget {
+        triple: "aarch64-unknown-linux-gnu".to_string(),
+        architecture: NativeArchitecture::Aarch64,
+        object_format: NativeObjectFormat::Elf,
+        pointer_width_bits: 64,
+        endian: NativeEndian::Little,
+    }
+}
+
+/// Resolve a `--target` triple to the native target the backend can emit today:
+/// the three x86-64 triples — `x86_64-pc-windows-msvc` (COFF),
+/// `x86_64-unknown-linux-gnu` (ELF), `x86_64-apple-darwin` (Mach-O) — plus
+/// `aarch64-unknown-linux-gnu` (aarch64 ELF), the second instruction-set
+/// backend. The `aarch64-apple-darwin` triple is a declared future target with
+/// no code generator yet, so it is still rejected here.
 pub fn native_target_for_triple(triple: &str) -> Option<NativeTarget> {
     match triple {
         "x86_64-pc-windows-msvc" => Some(x86_64_windows_target()),
         "x86_64-unknown-linux-gnu" => Some(x86_64_linux_target()),
         "x86_64-apple-darwin" => Some(x86_64_macos_target()),
+        "aarch64-unknown-linux-gnu" => Some(aarch64_linux_target()),
         _ => None,
     }
 }

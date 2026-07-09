@@ -44,8 +44,20 @@ pub enum ObjectSectionKind {
     Bss,
 }
 
-/// How a relocation site is resolved. Both are 32-bit PC-relative fixups; they
-/// differ only in how each container classifies the target.
+/// The instruction-set architecture an [`ObjectModel`]'s machine code targets.
+/// The ELF writer keys `e_machine` and its relocation types off this; the Mach-O
+/// writer is x86-64 only and ignores it. Existing x86-64 models set
+/// [`ObjectMachine::X86_64`], so the byte-for-byte x86-64 output is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectMachine {
+    /// x86-64 (`EM_X86_64` = 62).
+    X86_64,
+    /// AArch64 / ARM64 (`EM_AARCH64` = 183).
+    Aarch64,
+}
+
+/// How a relocation site is resolved. The two x86-64 kinds are 32-bit PC-relative
+/// fixups; the AArch64 kind patches a 26-bit branch-immediate instruction word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRelocationKind {
     /// A `call`/`jmp rel32` targeting a function symbol (ELF `R_X86_64_PLT32`,
@@ -54,6 +66,9 @@ pub enum ObjectRelocationKind {
     /// A RIP-relative `lea`/`mov` targeting a data symbol (ELF `R_X86_64_PC32`,
     /// Mach-O `X86_64_RELOC_SIGNED`).
     PcRel32,
+    /// An AArch64 `bl` call site: patch the 26-bit branch immediate of the
+    /// instruction word at `offset` (ELF `R_AARCH64_CALL26` = 283, addend 0).
+    Aarch64Call26,
 }
 
 /// A relocation within one section: patch the 4-byte little-endian field at
@@ -127,6 +142,10 @@ pub struct ObjectModel {
     /// The freestanding entry-point symbol (`_start` on ELF, `start` on Mach-O),
     /// or `None` for a library object with no `main`.
     pub entry_symbol: Option<String>,
+    /// The instruction-set architecture of the `.text` machine code. Selects the
+    /// ELF `e_machine` and relocation types; ignored by the (x86-64-only) Mach-O
+    /// writer.
+    pub machine: ObjectMachine,
 }
 
 impl ObjectModel {

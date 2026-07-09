@@ -3,21 +3,26 @@
 //! Serializes an [`ObjectModel`](crate::object_model::ObjectModel) into a
 //! `ET_REL` ELF64 object: an `Elf64_Ehdr`, a section header table
 //! (`.text`/`.rodata`/`.bss`/`.rela.text`/`.symtab`/`.strtab`/`.shstrtab`), a
-//! global symbol table, and `Elf64_Rela` relocations that use
+//! global symbol table, and `Elf64_Rela` relocations. The `e_machine` field and
+//! the relocation types are selected from the model's
+//! [`ObjectMachine`](crate::object_model::ObjectMachine): x86-64 objects use
 //! `R_X86_64_PLT32` for `call` sites and `R_X86_64_PC32` for RIP-relative data
-//! references. The shared machine code is emitted by the native backend; this
-//! module only builds the ELF container plus the Linux freestanding entry stub's
-//! symbol (`_start`).
+//! references; AArch64 objects use `R_AARCH64_CALL26` for `bl` call sites. The
+//! shared machine code is emitted by the native backend; this module only builds
+//! the ELF container plus the Linux freestanding entry stub's symbol (`_start`).
 //!
 //! # Verification honesty
 //!
-//! This is a Windows host: the emitted object is verified *structurally* (magic,
-//! class/endianness, header fields, section and symbol tables, relocation
-//! records — see the unit tests) but is **not** linked or executed here.
-//! Link-and-run verification is deferred to the cross-platform CI of the Phase 9
-//! roadmap. x86-64 only; ARM64 (`aarch64`) ELF is a separate future effort.
+//! This is a Windows host: the emitted x86-64 object is verified *structurally*
+//! (magic, class/endianness, header fields, section and symbol tables,
+//! relocation records — see the unit tests) but is not linked or executed here.
+//! The AArch64 object, by contrast, IS link-and-run verified via QEMU-emulated
+//! arm64 Docker in the CLI test suite when Docker is available (skipped
+//! gracefully otherwise). See `documents/native_backend_contract.md`.
 
-use crate::object_model::{ObjectModel, ObjectRelocationKind, ObjectSectionKind, ObjectSymbolKind};
+use crate::object_model::{
+    ObjectMachine, ObjectModel, ObjectRelocationKind, ObjectSectionKind, ObjectSymbolKind,
+};
 
 // -- ELF64 constants ---------------------------------------------------------
 
@@ -34,6 +39,8 @@ const RELA_SIZE: u64 = 24;
 const ET_REL: u16 = 1;
 /// `EM_X86_64`.
 const EM_X86_64: u16 = 62;
+/// `EM_AARCH64` — the ARM 64-bit architecture.
+const EM_AARCH64: u16 = 183;
 
 /// `SHT_PROGBITS` — section holds program-defined bytes.
 const SHT_PROGBITS: u32 = 1;
@@ -65,6 +72,9 @@ const R_X86_64_PC32: u32 = 2;
 /// `R_X86_64_PLT32` — 32-bit PLT-relative reference; resolves like `PC32` for a
 /// defined local target.
 const R_X86_64_PLT32: u32 = 4;
+/// `R_AARCH64_CALL26` — a `bl`/`call` site: the linker writes `(S + A - P) >> 2`
+/// into the low 26 bits of the branch instruction word.
+const R_AARCH64_CALL26: u32 = 283;
 
 /// The REL32 addend: the relocated field sits at `P` and its 4 bytes end at
 /// `P + 4`, so a displacement to `S` is `S - (P + 4)` = `S + (-4) - P`.
@@ -143,17 +153,22 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
     let symtab_index_of = |model_index: usize| -> u64 { 1 + model_index as u64 };
 
     // -- Build `.rela.text` --------------------------------------------------
+    // Each relocation kind maps to its architecture-specific ELF type and addend.
+    // The x86-64 REL32 kinds carry the `-4` end-of-field addend; the AArch64
+    // `CALL26` kind carries addend 0 (the branch immediate is PC-relative to the
+    // instruction word itself).
     let mut rela: Vec<u8> = Vec::new();
     if has_text_relocs {
         for reloc in &model.sections[text_index].relocations {
-            let r_type = match reloc.kind {
-                ObjectRelocationKind::Branch => R_X86_64_PLT32,
-                ObjectRelocationKind::PcRel32 => R_X86_64_PC32,
+            let (r_type, addend) = match reloc.kind {
+                ObjectRelocationKind::Branch => (R_X86_64_PLT32, REL32_ADDEND),
+                ObjectRelocationKind::PcRel32 => (R_X86_64_PC32, REL32_ADDEND),
+                ObjectRelocationKind::Aarch64Call26 => (R_AARCH64_CALL26, 0),
             };
             let r_info = (symtab_index_of(reloc.symbol) << 32) | u64::from(r_type);
             push_u64(&mut rela, reloc.offset);
             push_u64(&mut rela, r_info);
-            push_i64(&mut rela, REL32_ADDEND);
+            push_i64(&mut rela, addend);
         }
     }
 
@@ -303,8 +318,12 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
     out.push(0); // EI_OSABI = ELFOSABI_SYSV
     out.push(0); // EI_ABIVERSION
     out.extend_from_slice(&[0u8; 7]); // EI_PAD
+    let e_machine = match model.machine {
+        ObjectMachine::X86_64 => EM_X86_64,
+        ObjectMachine::Aarch64 => EM_AARCH64,
+    };
     push_u16(&mut out, ET_REL);
-    push_u16(&mut out, EM_X86_64);
+    push_u16(&mut out, e_machine);
     push_u32(&mut out, 1); // e_version
     push_u64(&mut out, 0); // e_entry (relocatable: none)
     push_u64(&mut out, 0); // e_phoff
@@ -393,8 +412,8 @@ fn push_i64(out: &mut Vec<u8>, value: i64) {
 mod tests {
     use super::*;
     use crate::object_model::{
-        ObjectModel, ObjectRelocation, ObjectRelocationKind, ObjectSection, ObjectSectionKind,
-        ObjectSymbol, ObjectSymbolKind,
+        ObjectMachine, ObjectModel, ObjectRelocation, ObjectRelocationKind, ObjectSection,
+        ObjectSectionKind, ObjectSymbol, ObjectSymbolKind,
     };
 
     fn rd_u16(b: &[u8], off: usize) -> u16 {
@@ -475,6 +494,7 @@ mod tests {
                 },
             ],
             entry_symbol: Some("_start".to_string()),
+            machine: ObjectMachine::X86_64,
         }
     }
 
@@ -642,6 +662,7 @@ mod tests {
                 kind: ObjectSymbolKind::Function,
             }],
             entry_symbol: None,
+            machine: ObjectMachine::X86_64,
         };
         let bytes = write_elf64(&model);
         assert!(find_section(&bytes, ".text").is_some());
@@ -651,5 +672,53 @@ mod tests {
         assert!(find_section(&bytes, ".rela.text").is_none());
         // Sections: null, .text, .symtab, .strtab, .shstrtab.
         assert_eq!(rd_u16(&bytes, 60), 5, "e_shnum");
+    }
+
+    #[test]
+    fn aarch64_machine_selects_em_aarch64_and_call26() {
+        // A minimal AArch64 model: `_start` with a `bl main` (`Aarch64Call26`)
+        // relocation at offset 0, and `main` at offset 4. The header must report
+        // `EM_AARCH64` and the relocation must be `R_AARCH64_CALL26` with addend 0.
+        let model = ObjectModel {
+            sections: vec![ObjectSection {
+                kind: ObjectSectionKind::Text,
+                data: vec![0u8; 8],
+                size: 8,
+                relocations: vec![ObjectRelocation {
+                    offset: 0,
+                    symbol: 1, // main
+                    kind: ObjectRelocationKind::Aarch64Call26,
+                }],
+            }],
+            symbols: vec![
+                ObjectSymbol {
+                    name: "_start".to_string(),
+                    section: Some(0),
+                    value: 0,
+                    kind: ObjectSymbolKind::Function,
+                },
+                ObjectSymbol {
+                    name: "main".to_string(),
+                    section: Some(0),
+                    value: 4,
+                    kind: ObjectSymbolKind::Function,
+                },
+            ],
+            entry_symbol: Some("_start".to_string()),
+            machine: ObjectMachine::Aarch64,
+        };
+        let bytes = write_elf64(&model);
+        assert_eq!(&bytes[0..4], &[0x7f, b'E', b'L', b'F'], "ELF magic");
+        assert_eq!(rd_u16(&bytes, 18), EM_AARCH64, "e_machine = EM_AARCH64");
+        let (_, sh_type, _, rela_off, rela_size, _, _, entsize) =
+            find_section(&bytes, ".rela.text").expect(".rela.text present");
+        assert_eq!(sh_type, SHT_RELA);
+        assert_eq!(entsize, RELA_SIZE);
+        assert_eq!((rela_size / RELA_SIZE) as usize, 1);
+        let r0 = rela_off as usize;
+        assert_eq!(rd_u64(&bytes, r0), 0, "r_offset");
+        assert_eq!(rd_u32(&bytes, r0 + 8), R_AARCH64_CALL26, "type = CALL26");
+        assert_eq!(rd_u32(&bytes, r0 + 12), 2, "symbol index (main)");
+        assert_eq!(rd_i64(&bytes, r0 + 16), 0, "CALL26 addend is 0");
     }
 }

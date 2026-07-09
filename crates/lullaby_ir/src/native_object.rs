@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use lullaby_parser::{AssignOp, BinaryOp, TypeRef};
 
 use crate::native_contract::{
-    NativeObjectFormat, NativeTarget, alpha1_native_backend_contract, x86_64_windows_target,
+    NativeArchitecture, NativeObjectFormat, NativeTarget, alpha1_native_backend_contract,
+    x86_64_windows_target,
 };
 use crate::object_model::{
     ObjectModel, ObjectRelocation, ObjectRelocationKind, ObjectSection, ObjectSectionKind,
@@ -1385,6 +1386,14 @@ pub fn emit_alpha1_native_program_for_target(
     debug: Option<&DebugOptions>,
 ) -> Result<NativeProgram, NativeProgramError> {
     let target = target.clone();
+
+    // AArch64 is a distinct instruction set with its own code generator: it
+    // consumes the same `BytecodeModule` but emits AArch64 machine code and an
+    // aarch64 ELF object (see `crate::aarch64`). The `--debug` CodeView line
+    // table is an x86-64/COFF feature and does not apply to the AArch64 core.
+    if matches!(target.architecture, NativeArchitecture::Aarch64) {
+        return crate::aarch64::emit_aarch64_program(module, &target);
+    }
 
     // First pass: decide signature eligibility. Calls resolve against the set of
     // names we intend to compile.
@@ -7861,6 +7870,9 @@ fn build_object_model(
         sections,
         symbols,
         entry_symbol: emit_stub.then(|| abi.entry_symbol().to_string()),
+        // This builder lowers x86-64 machine code (shared by the ELF and Mach-O
+        // paths). The AArch64 ELF path has its own model builder in `aarch64`.
+        machine: crate::object_model::ObjectMachine::X86_64,
     }
 }
 
