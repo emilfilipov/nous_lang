@@ -2818,6 +2818,144 @@ fn wasm_string_concat_execution_parity_with_node() {
 }
 
 #[test]
+fn wasm_to_string_execution_parity_with_node() {
+    // `to_string(x)` compiles to WASM for integer/bool/char/byte/string arguments,
+    // building `[char_len][byte_len][utf8]` records identical to the interpreters'
+    // `Value::Display`. Floats are DEFERRED (no float `to_string` appears in the
+    // fixture). The fixture exercises signed/unsigned/`i64::MIN`/`u64::MAX`/zero
+    // integers, fixed-width kinds, `bool`, `byte`, ASCII + multi-byte `char`, and
+    // the string identity, returning a deterministic joined `i64` length from
+    // `main` plus per-type `string`-returning exports the node runner decodes.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_to_string.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_to_string.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // Every function compiles to WASM (none is skipped/demoted to the interpreters).
+    let emit_out = stdout(&emit);
+    for name in [
+        "i64_text",
+        "i64_min_text",
+        "u64_text",
+        "fixed_text",
+        "bool_text",
+        "byte_text",
+        "char_of",
+        "char_text",
+        "string_id",
+        "main",
+    ] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile to WASM, got: {emit_out}"
+        );
+    }
+
+    // Interpreter ground truth for `main` (the joined char count of the bundle).
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "78");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM to_string execution parity");
+        return;
+    }
+
+    // Instantiate under node, call each string-returning export, and decode its
+    // record straight out of `memory` (char count at +0, byte count at +4, bytes at
+    // +8). The decoded text must match the interpreters' `to_string` bit-for-bit,
+    // including `i64::MIN`, `u64::MAX`, a byte magnitude passed as a parameter, and
+    // a 2-byte UTF-8 char (char_len = 1, byte_len = 2).
+    let runner = std::env::temp_dir().join("lullaby_wasm_to_string_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           const e=r.instance.exports;\
+           const dv=new DataView(e.memory.buffer);\
+           const u8=new Uint8Array(e.memory.buffer);\
+           const dec=(ptr)=>{{\
+             const cl=dv.getInt32(ptr,true);\
+             const bl=dv.getInt32(ptr+4,true);\
+             const s=Buffer.from(u8.slice(ptr+8,ptr+8+bl)).toString();\
+             return s+'/'+cl+'/'+bl;\
+           }};\
+           const lines=[\
+             'i64='+dec(e.i64_text()),\
+             'i64min='+dec(e.i64_min_text()),\
+             'u64='+dec(e.u64_text()),\
+             'fixed='+dec(e.fixed_text()),\
+             'bool='+dec(e.bool_text()),\
+             'byte='+dec(e.byte_text(200)),\
+             'char='+dec(e.char_of(233)),\
+             'chars='+dec(e.char_text()),\
+             'sid='+dec(e.string_id()),\
+             'main='+e.main().toString()\
+           ];\
+           process.stdout.write(lines.join(';'));\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    // Signed decimal with a negative and zero; all ASCII, so char_len == byte_len.
+    assert!(out_text.contains("i64=42,0,-7/7/7"), "{out_text}");
+    // `i64::MIN` prints its full negative magnitude (20 chars incl. the `-`).
+    assert!(
+        out_text.contains("i64min=-9223372036854775808/20/20"),
+        "{out_text}"
+    );
+    // `to_u64(0 - 1)` is `u64::MAX` — the unsigned magnitude, not `-1`.
+    assert!(
+        out_text.contains("u64=18446744073709551615/20/20"),
+        "{out_text}"
+    );
+    // `i8` wraps to -128; `u32` prints its magnitude.
+    assert!(
+        out_text.contains("fixed=-128|4000000000/15/15"),
+        "{out_text}"
+    );
+    assert!(out_text.contains("bool=true,false/10/10"), "{out_text}");
+    // `byte(200)` passed via the parameter prints decimal 200.
+    assert!(out_text.contains("byte=200/3/3"), "{out_text}");
+    // A 2-byte UTF-8 scalar (é = U+00E9): one char, two bytes.
+    assert!(out_text.contains("char=é/1/2"), "{out_text}");
+    // ASCII + 2-byte char: two chars, three bytes.
+    assert!(out_text.contains("chars=Aé/2/3"), "{out_text}");
+    // `to_string(string)` is the identity record.
+    assert!(out_text.contains("sid=kept/4/4"), "{out_text}");
+    // Whole-program `main` matches the interpreter.
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "{out_text}"
+    );
+}
+
+#[test]
 fn wasm_aggregate_args_execution_parity_with_node() {
     // Aggregates across call boundaries: a `main -> i64` that passes a struct to a
     // function reading its fields, receives a struct another function returns, and

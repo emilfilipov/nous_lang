@@ -221,6 +221,12 @@ const LEN_HEADER: i32 = 4;
 /// The builtin that reads a string's or array's length header.
 const LEN_BUILTIN: &str = "len";
 
+/// The builtin that formats a scalar value as its decimal/textual `string`. The
+/// WASM backend compiles it for integer/bool/char/byte/string arguments and
+/// defers float arguments (`f32`/`f64`) to the interpreters (dtoa is out of the
+/// scalar subset).
+const TO_STRING_BUILTIN: &str = "to_string";
+
 // -- String record layout ----------------------------------------------------
 //
 // A `string` is an `i32` pointer to `[char_len: i32][byte_len: i32][utf8 bytes]`:
@@ -1768,6 +1774,18 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 lower_expr(ctx, &args[0], out)?;
                 return Ok(());
             }
+            // `to_string(x)` builds a `[char_len][byte_len][utf8]` string record for
+            // an integer / bool / char / byte / string argument, matching the
+            // interpreters' `Value::Display` bit-for-bit. A float argument
+            // (`to_string(f32|f64)`) is DEFERRED — matching Rust's `Display` dtoa in
+            // WASM is out of scope — so it errors here and the function falls back to
+            // the interpreters.
+            if name == TO_STRING_BUILTIN {
+                if args.len() != 1 {
+                    return Err("`to_string` takes exactly one argument".to_string());
+                }
+                return lower_to_string(ctx, &args[0], out);
+            }
             // Growable `list<T>` (scalar `T`) builtins. `list_new()` allocates an
             // empty header; `push`/`get`/`set`/`pop` operate on a `list`-typed
             // first argument (checked so these names cannot shadow a user function
@@ -2273,6 +2291,482 @@ fn emit_memory_copy(out: &mut Vec<u8>) {
     write_uleb(out, 0x0a); // memory.copy
     out.push(0x00); // dest memory index
     out.push(0x00); // src memory index
+}
+
+// -- to_string codegen -------------------------------------------------------
+//
+// `to_string(x)` produces a fresh `[char_len: i32][byte_len: i32][utf8 bytes]`
+// string record (see the string record layout notes near `STR_DATA_OFF`),
+// interchangeable with string literals and concatenation results. The output
+// matches the interpreters' `Value::Display`:
+//   - `i64`/signed fixed-width/`isize`: decimal, leading `-` for negatives.
+//   - `u64`/unsigned fixed-width/`usize`/`byte`: unsigned decimal magnitude.
+//   - `bool`: `"true"` / `"false"` (interned literals).
+//   - `char`: the 1–4 byte UTF-8 encoding of the scalar (char_len = 1).
+//   - `string`: identity — strings are immutable, so the same pointer is returned.
+// A float argument is deferred (see the caller).
+
+/// Lower `to_string(x)` for the supported argument types, leaving the resulting
+/// string record's `i32` pointer on the stack. Dispatches on the argument's IR
+/// type. A float argument errors so the enclosing function falls back to the
+/// interpreters.
+fn lower_to_string(ctx: &mut LowerCtx, arg: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
+    match arg.ty.name.as_str() {
+        // A `string` is already a record; strings are immutable, so returning the
+        // same pointer is value-equivalent to the interpreters' clone.
+        "string" => lower_expr(ctx, arg, out),
+        // `bool` prints `true`/`false`: select the interned literal pointer.
+        "bool" => lower_bool_to_string(ctx, arg, out),
+        // `char` prints its UTF-8 encoding (1–4 bytes, char_len = 1).
+        "char" => lower_char_to_string(ctx, arg, out),
+        // `byte` is a 0–255 magnitude held in an `i32` cell: unsigned itoa.
+        "byte" => {
+            lower_expr(ctx, arg, out)?;
+            // Widen the i32 byte cell to an i64 magnitude (unsigned: 0..255).
+            out.push(0xad); // i64.extend_i32_u
+            emit_itoa_unsigned(ctx, out);
+            Ok(())
+        }
+        // `i64` (plain signed) and the fixed-width integer kinds. Unsigned kinds
+        // print the u64 reinterpretation of their normalized cell; signed kinds
+        // print the signed value with a leading `-` for negatives.
+        "i64" => {
+            lower_expr(ctx, arg, out)?;
+            emit_itoa_signed(ctx, out);
+            Ok(())
+        }
+        name => match fixed_int_kind(name) {
+            Some(kind) if kind.is_unsigned() => {
+                lower_expr(ctx, arg, out)?;
+                emit_itoa_unsigned(ctx, out);
+                Ok(())
+            }
+            Some(_) => {
+                lower_expr(ctx, arg, out)?;
+                emit_itoa_signed(ctx, out);
+                Ok(())
+            }
+            // Floats and everything else are deferred to the interpreters.
+            None => Err(format!(
+                "to_string of `{name}` is not supported by the WASM backend"
+            )),
+        },
+    }
+}
+
+/// Lower `to_string(b)` for a `bool`: push the pointer of the interned `"true"`
+/// literal when `b` is nonzero, else the interned `"false"` literal, via a typed
+/// `if`/`else` yielding an `i32`.
+fn lower_bool_to_string(ctx: &mut LowerCtx, arg: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
+    let true_ptr = ctx.pool.intern("true");
+    let false_ptr = ctx.pool.intern("false");
+    lower_expr(ctx, arg, out)?; // bool condition (i32 0/1)
+    out.push(0x04); // if
+    out.push(WasmValType::I32.byte()); // block type: yields i32
+    out.push(0x41); // i32.const true_ptr
+    write_sleb(out, true_ptr as i64);
+    out.push(0x05); // else
+    out.push(0x41); // i32.const false_ptr
+    write_sleb(out, false_ptr as i64);
+    out.push(0x0b); // end
+    Ok(())
+}
+
+/// Lower `to_string(c)` for a `char`: encode the Unicode scalar (an `i32` code
+/// point) to its 1–4 byte UTF-8 sequence in a fresh record with `char_len == 1`
+/// and `byte_len` the encoded length. The scalar is guaranteed valid (the type
+/// checker only admits real `char` values), so the four ranges below are
+/// exhaustive over Unicode scalars.
+fn lower_char_to_string(ctx: &mut LowerCtx, arg: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
+    lower_expr(ctx, arg, out)?;
+    let code = ctx.add_local(WasmValType::I32);
+    set_local(out, code);
+
+    // Allocate the maximum record (header + 4 UTF-8 bytes). Only `byte_len` bytes
+    // are meaningful; the bump allocator never reclaims, so an over-allocation of
+    // a few bytes is harmless and keeps the size a compile-time constant.
+    let dst = alloc_bytes(ctx, STR_DATA_OFF + 4, out);
+    // char_len is always 1 for a single scalar.
+    get_local(out, dst);
+    out.push(0x41); // i32.const 1
+    write_sleb(out, 1);
+    emit_store_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+
+    // byte_len local, computed alongside the byte writes.
+    let byte_len = ctx.add_local(WasmValType::I32);
+
+    // if code < 0x80 { 1-byte } else if < 0x800 { 2-byte } else if < 0x10000
+    // { 3-byte } else { 4-byte }. Each arm writes its bytes at dst+STR_DATA_OFF..
+    // and sets byte_len.
+    // --- code < 0x80 ---
+    get_local(out, code);
+    out.push(0x41);
+    write_sleb(out, 0x80);
+    out.push(0x48); // i32.lt_s
+    out.push(0x04); // if
+    out.push(0x40); // block type: void
+    // dst[data+0] = code
+    emit_store_byte_at(dst, STR_DATA_OFF, |o| get_local(o, code), out);
+    set_byte_len(byte_len, 1, out);
+    out.push(0x05); // else
+    // --- code < 0x800 ---
+    get_local(out, code);
+    out.push(0x41);
+    write_sleb(out, 0x800);
+    out.push(0x48); // i32.lt_s
+    out.push(0x04); // if
+    out.push(0x40);
+    // b0 = 0xC0 | (code >> 6)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF,
+        |o| {
+            push_or(o, 0xC0, |o| push_shr_u(o, code, 6));
+        },
+        out,
+    );
+    // b1 = 0x80 | (code & 0x3F)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF + 1,
+        |o| {
+            push_or(o, 0x80, |o| push_and(o, code, 0x3F));
+        },
+        out,
+    );
+    set_byte_len(byte_len, 2, out);
+    out.push(0x05); // else
+    // --- code < 0x10000 ---
+    get_local(out, code);
+    out.push(0x41);
+    write_sleb(out, 0x10000);
+    out.push(0x48); // i32.lt_s
+    out.push(0x04); // if
+    out.push(0x40);
+    // b0 = 0xE0 | (code >> 12)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF,
+        |o| {
+            push_or(o, 0xE0, |o| push_shr_u(o, code, 12));
+        },
+        out,
+    );
+    // b1 = 0x80 | ((code >> 6) & 0x3F)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF + 1,
+        |o| {
+            push_or(o, 0x80, |o| push_and_of_shr(o, code, 6, 0x3F));
+        },
+        out,
+    );
+    // b2 = 0x80 | (code & 0x3F)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF + 2,
+        |o| {
+            push_or(o, 0x80, |o| push_and(o, code, 0x3F));
+        },
+        out,
+    );
+    set_byte_len(byte_len, 3, out);
+    out.push(0x05); // else
+    // --- 4-byte: code >= 0x10000 ---
+    // b0 = 0xF0 | (code >> 18)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF,
+        |o| {
+            push_or(o, 0xF0, |o| push_shr_u(o, code, 18));
+        },
+        out,
+    );
+    // b1 = 0x80 | ((code >> 12) & 0x3F)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF + 1,
+        |o| {
+            push_or(o, 0x80, |o| push_and_of_shr(o, code, 12, 0x3F));
+        },
+        out,
+    );
+    // b2 = 0x80 | ((code >> 6) & 0x3F)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF + 2,
+        |o| {
+            push_or(o, 0x80, |o| push_and_of_shr(o, code, 6, 0x3F));
+        },
+        out,
+    );
+    // b3 = 0x80 | (code & 0x3F)
+    emit_store_byte_at(
+        dst,
+        STR_DATA_OFF + 3,
+        |o| {
+            push_or(o, 0x80, |o| push_and(o, code, 0x3F));
+        },
+        out,
+    );
+    set_byte_len(byte_len, 4, out);
+    // Close the three nested `if`s (`< 0x10000`, `< 0x800`, `< 0x80`); the 4-byte
+    // case is the innermost `else`, so it needs no `end` of its own.
+    out.push(0x0b); // end (`< 0x10000` if)
+    out.push(0x0b); // end (`< 0x800` if)
+    out.push(0x0b); // end (`< 0x80` if)
+
+    // dst[byte_len] = byte_len local.
+    get_local(out, dst);
+    get_local(out, byte_len);
+    emit_store_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+
+    // The record pointer is the result.
+    get_local(out, dst);
+    Ok(())
+}
+
+/// Store one byte at `dst + offset`: push `dst + offset`, then `value_fn` pushes
+/// the byte value, then `i32.store8`.
+fn emit_store_byte_at(
+    dst: u32,
+    offset: i32,
+    value_fn: impl FnOnce(&mut Vec<u8>),
+    out: &mut Vec<u8>,
+) {
+    get_local(out, dst);
+    value_fn(out);
+    out.push(0x3a); // i32.store8
+    write_uleb(out, 0); // align 0 (1-byte)
+    write_uleb(out, offset as u64);
+}
+
+/// Push `constant | inner(...)` as an `i32`: push `constant`, run `inner` (which
+/// leaves an i32), `i32.or`.
+fn push_or(out: &mut Vec<u8>, constant: i64, inner: impl FnOnce(&mut Vec<u8>)) {
+    out.push(0x41); // i32.const constant
+    write_sleb(out, constant);
+    inner(out);
+    out.push(0x72); // i32.or
+}
+
+/// Push `local >> shift` (logical) as an `i32`.
+fn push_shr_u(out: &mut Vec<u8>, local: u32, shift: i64) {
+    get_local(out, local);
+    out.push(0x41); // i32.const shift
+    write_sleb(out, shift);
+    out.push(0x76); // i32.shr_u
+}
+
+/// Push `local & mask` as an `i32`.
+fn push_and(out: &mut Vec<u8>, local: u32, mask: i64) {
+    get_local(out, local);
+    out.push(0x41); // i32.const mask
+    write_sleb(out, mask);
+    out.push(0x71); // i32.and
+}
+
+/// Push `(local >> shift) & mask` as an `i32`.
+fn push_and_of_shr(out: &mut Vec<u8>, local: u32, shift: i64, mask: i64) {
+    push_shr_u(out, local, shift);
+    out.push(0x41); // i32.const mask
+    write_sleb(out, mask);
+    out.push(0x71); // i32.and
+}
+
+/// Store the constant `value` into the `byte_len` local (an i32).
+fn set_byte_len(byte_len: u32, value: i64, out: &mut Vec<u8>) {
+    out.push(0x41); // i32.const value
+    write_sleb(out, value);
+    set_local(out, byte_len);
+}
+
+/// Emit signed integer-to-decimal: consume the `i64` value on the stack and leave
+/// a fresh string record pointer. A negative value writes a leading `-` and
+/// formats its magnitude; `i64::MIN` is handled by computing the magnitude in
+/// unsigned space (`0 - value` wraps to the correct unsigned magnitude), so the
+/// unformattable positive `-i64::MIN` is never needed.
+fn emit_itoa_signed(ctx: &mut LowerCtx, out: &mut Vec<u8>) {
+    let value = ctx.add_local(WasmValType::I64);
+    set_local(out, value);
+    // sign = (value < 0) as i32.
+    let sign = ctx.add_local(WasmValType::I32);
+    get_local(out, value);
+    out.push(0x42); // i64.const 0
+    write_sleb(out, 0);
+    out.push(0x53); // i64.lt_s
+    set_local(out, sign);
+    // magnitude = value < 0 ? (0 - value) : value, computed via unsigned wrap so
+    // `i64::MIN` yields its correct u64 magnitude (0x8000000000000000).
+    let mag = ctx.add_local(WasmValType::I64);
+    get_local(out, sign);
+    out.push(0x04); // if
+    out.push(WasmValType::I64.byte()); // yields i64
+    out.push(0x42); // i64.const 0
+    write_sleb(out, 0);
+    get_local(out, value);
+    out.push(0x7d); // i64.sub  -> 0 - value (wrapping)
+    out.push(0x05); // else
+    get_local(out, value);
+    out.push(0x0b); // end
+    set_local(out, mag);
+    emit_itoa_core(ctx, mag, sign, out);
+}
+
+/// Emit unsigned integer-to-decimal: consume the `i64` magnitude on the stack
+/// (interpreted as `u64`) and leave a fresh string record pointer. No sign is
+/// written.
+fn emit_itoa_unsigned(ctx: &mut LowerCtx, out: &mut Vec<u8>) {
+    let mag = ctx.add_local(WasmValType::I64);
+    set_local(out, mag);
+    // sign = 0 (no leading `-`).
+    let sign = ctx.add_local(WasmValType::I32);
+    out.push(0x41); // i32.const 0
+    write_sleb(out, 0);
+    set_local(out, sign);
+    emit_itoa_core(ctx, mag, sign, out);
+}
+
+/// The shared itoa core: format the unsigned `u64` magnitude in `mag` with an
+/// optional leading `-` when `sign` is nonzero, leaving a fresh
+/// `[char_len][byte_len][utf8]` record pointer on the stack. All output is ASCII,
+/// so `char_len == byte_len == sign + digit_count`.
+///
+/// Two passes over the magnitude: pass one counts decimal digits (`0` is one
+/// digit), pass two writes them least-significant-first into the tail of the data
+/// region, moving a write cursor backward from the last byte so the digits land
+/// in print order. The record is allocated once the digit count is known.
+fn emit_itoa_core(ctx: &mut LowerCtx, mag: u32, sign: u32, out: &mut Vec<u8>) {
+    // --- Pass 1: ndigits = number of decimal digits in `mag` (>= 1). ---
+    // A do-while counting loop (`block { loop { body; br_if 1 exit; br 0 } }`, the
+    // same idiom the list/map loops use): each iteration counts one digit and
+    // divides `scratch` down, so `mag == 0` still counts a single digit.
+    let ndigits = ctx.add_local(WasmValType::I32);
+    let scratch = ctx.add_local(WasmValType::I64);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, ndigits);
+    get_local(out, mag);
+    set_local(out, scratch);
+    out.push(0x02); // block
+    out.push(0x40); // void
+    out.push(0x03); // loop
+    out.push(0x40); // void
+    // ndigits += 1
+    get_local(out, ndigits);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, ndigits);
+    // scratch /= 10
+    get_local(out, scratch);
+    out.push(0x42);
+    write_sleb(out, 10);
+    out.push(0x80); // i64.div_u
+    set_local(out, scratch);
+    // exit the block when scratch == 0.
+    get_local(out, scratch);
+    out.push(0x42);
+    write_sleb(out, 0);
+    out.push(0x51); // i64.eq
+    out.push(0x0d); // br_if 1 (exit block)
+    write_uleb(out, 1);
+    out.push(0x0c); // br 0 (repeat loop)
+    write_uleb(out, 0);
+    out.push(0x0b); // end loop
+    out.push(0x0b); // end block
+
+    // total_len = sign + ndigits.
+    let total = ctx.add_local(WasmValType::I32);
+    get_local(out, sign);
+    get_local(out, ndigits);
+    out.push(0x6a); // i32.add
+    set_local(out, total);
+
+    // dst = __alloc(STR_DATA_OFF + total).
+    out.push(0x41);
+    write_sleb(out, STR_DATA_OFF as i64);
+    get_local(out, total);
+    out.push(0x6a); // i32.add
+    let dst = alloc_runtime(ctx, out);
+
+    // Headers: char_len = byte_len = total (all ASCII).
+    get_local(out, dst);
+    get_local(out, total);
+    emit_store_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+    get_local(out, dst);
+    get_local(out, total);
+    emit_store_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+
+    // Optional leading '-' at dst + STR_DATA_OFF (only when sign != 0).
+    get_local(out, sign);
+    out.push(0x04); // if
+    out.push(0x40);
+    get_local(out, dst);
+    out.push(0x41);
+    write_sleb(out, b'-' as i64);
+    out.push(0x3a); // i32.store8
+    write_uleb(out, 0);
+    write_uleb(out, STR_DATA_OFF as u64);
+    out.push(0x0b); // end if
+
+    // --- Pass 2: write digits from the tail backward. ---
+    // cursor = dst + STR_DATA_OFF + total - 1  (address of the last byte).
+    let cursor = ctx.add_local(WasmValType::I32);
+    get_local(out, dst);
+    out.push(0x41);
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add
+    get_local(out, total);
+    out.push(0x6a); // i32.add
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6b); // i32.sub  -> last byte address
+    set_local(out, cursor);
+
+    // scratch = mag; then a do-while writing one digit per iteration (so `0`
+    // writes a single '0').
+    get_local(out, mag);
+    set_local(out, scratch);
+    out.push(0x03); // loop
+    out.push(0x40);
+    // *cursor = '0' + (scratch % 10).
+    get_local(out, cursor);
+    out.push(0x41);
+    write_sleb(out, b'0' as i64);
+    // (scratch % 10) as i32
+    get_local(out, scratch);
+    out.push(0x42);
+    write_sleb(out, 10);
+    out.push(0x82); // i64.rem_u
+    out.push(0xa7); // i32.wrap_i64
+    out.push(0x6a); // i32.add -> '0' + digit
+    out.push(0x3a); // i32.store8
+    write_uleb(out, 0);
+    write_uleb(out, 0);
+    // cursor -= 1.
+    get_local(out, cursor);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6b); // i32.sub
+    set_local(out, cursor);
+    // scratch /= 10.
+    get_local(out, scratch);
+    out.push(0x42);
+    write_sleb(out, 10);
+    out.push(0x80); // i64.div_u
+    set_local(out, scratch);
+    // continue while scratch != 0.
+    get_local(out, scratch);
+    out.push(0x42);
+    write_sleb(out, 0);
+    out.push(0x52); // i64.ne
+    out.push(0x0d); // br_if 0 -> repeat while nonzero
+    write_uleb(out, 0);
+    out.push(0x0b); // end loop
+
+    // The record pointer is the result.
+    get_local(out, dst);
 }
 
 /// The WASM float value type (`F32`/`F64`) an expression evaluates to, or `None`
@@ -4395,6 +4889,71 @@ mod tests {
         assert!(
             find_subslice(&code, &[0x28, 0x02, 0x00, 0xac]).is_some(),
             "len of the concat reads the char-count header and extends to i64"
+        );
+    }
+
+    #[test]
+    fn to_string_of_integer_compiles_with_itoa_codegen() {
+        // `to_string(x)` on an integer argument compiles to WASM: it builds a fresh
+        // string record via `call __alloc` and formats the digits with `i64.div_u`
+        // (the itoa passes). The argument is a parameter so the IR constant-folder
+        // cannot collapse the call to a literal, exercising the real runtime path.
+        let source = "fn show n i64 -> string\n    to_string(n)\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(
+            artifact.compiled,
+            vec!["show".to_string()],
+            "to_string of an integer should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The itoa allocates the record via `call __alloc` (the last internal
+        // function: show(0) then __alloc(1), shifted WASM index IMPORT_FUNC_COUNT+1).
+        let alloc_index = IMPORT_FUNC_COUNT as u8 + 1;
+        assert!(
+            find_subslice(&code, &[0x10, alloc_index]).is_some(),
+            "to_string emits a `call __alloc` for the fresh string record"
+        );
+        // The digit extraction uses unsigned 64-bit division (`i64.const 10`,
+        // `i64.div_u` = 0x80) — the itoa core divides the magnitude down by 10.
+        assert!(
+            find_subslice(&code, &[0x42, 0x0a, 0x80]).is_some(),
+            "to_string emits `i64.div_u` by 10 to extract decimal digits"
+        );
+    }
+
+    #[test]
+    fn to_string_of_float_skips_to_interpreters() {
+        // `to_string(f64)` / `to_string(f32)` is DEFERRED: matching Rust's `Display`
+        // dtoa bit-for-bit in WASM is out of scope, so a function calling it must be
+        // demoted to the interpreters rather than miscompiled. The float `to_string`
+        // is isolated in its own function so the sibling integer `to_string` still
+        // compiles, proving only the float case falls back.
+        let source = concat!(
+            "fn float_text x f64 -> string\n    to_string(x)\n\n",
+            "fn int_text n i64 -> string\n    to_string(n)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"int_text".to_string()),
+            "integer to_string still compiles: {:?}",
+            artifact.compiled
+        );
+        let skipped = artifact
+            .skipped
+            .iter()
+            .find(|s| s.name == "float_text")
+            .expect("float to_string is skipped");
+        assert!(
+            skipped.reason.contains("to_string"),
+            "skip reason names the unsupported to_string: {}",
+            skipped.reason
+        );
+        assert!(
+            !artifact.compiled.contains(&"float_text".to_string()),
+            "float to_string must not compile to WASM"
         );
     }
 

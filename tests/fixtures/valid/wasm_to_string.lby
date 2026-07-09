@@ -1,0 +1,49 @@
+# `to_string(x)` compiles to WASM for integer/bool/char/byte/string arguments,
+# building a `[char_len][byte_len][utf8]` record identical to the interpreters'
+# `Value::Display`. Floats are deferred (dtoa), so no float `to_string` appears
+# here. Every function returns a deterministic i64 (a char/byte count) or a
+# `string`, so the WASM path matches AST/IR/bytecode bit-for-bit.
+
+# A plain i64: positive, zero, and a negative value.
+fn i64_text -> string
+    to_string(42) + "," + to_string(0) + "," + to_string(0 - 7)
+
+# The signed 64-bit minimum: -9223372036854775808 (can't be negated naively).
+fn i64_min_text -> string
+    to_string(0 - 9223372036854775807 - 1)
+
+# An unsigned 64-bit value near the top of the range.
+fn u64_text -> string
+    to_string(to_u64(0 - 1))
+
+# A fixed-width signed value (i8 wraps to -128) and an unsigned one (u32).
+fn fixed_text -> string
+    to_string(to_i8(0 - 128)) + "|" + to_string(to_u32(4000000000))
+
+# A bool renders as `true`/`false`.
+fn bool_text -> string
+    to_string(true) + "," + to_string(false)
+
+# `to_string(byte)` on a byte PARAMETER (0-255 decimal). The byte enters through
+# the parameter slot because the `byte()` constructor is interpreter-only.
+fn byte_text b byte -> string
+    to_string(b)
+
+# `to_string(char)` on a char PARAMETER — the node runner passes a multi-byte
+# scalar to exercise the 2/3/4-byte UTF-8 encoder paths.
+fn char_of c char -> string
+    to_string(c)
+
+# ASCII and a 2-byte UTF-8 char literal render to a 2-char, 3-byte record.
+fn char_text -> string
+    to_string('A') + to_string('é')
+
+# `to_string(string)` is the identity on the record.
+fn string_id -> string
+    to_string("kept")
+
+# The joined length of a representative bundle, deterministic across backends.
+fn main -> i64
+    let joined string = i64_text() + i64_min_text() + u64_text()
+    let more string = fixed_text() + bool_text() + char_text() + string_id()
+    len(joined + more)

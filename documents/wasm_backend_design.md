@@ -111,9 +111,37 @@ a pointer (nested strings/structs/arrays).
     yields a normal record consumed by the outer). The constant folder collapses a
     literal-only `"foo" + "bar"` to a single interned literal before codegen, so the
     runtime path is exercised only when at least one operand is computed at runtime.
-  - Other runtime string builders (`to_string`, `substring`, `find`, `replace`,
-    `upper`/`lower`, `split`/`join`) are not yet lowered — a function using one is
-    skipped and still runs on the interpreters.
+  - **`to_string(x)`** is lowered for **integer / `bool` / `char` / `byte` /
+    `string`** arguments, building a fresh `[char_len][byte_len][utf8]` record
+    identical to the interpreters' `Value::Display`:
+    - **Integers** (`i64`, the fixed-width kinds `i8`…`u64`, `isize`/`usize`) use an
+      in-WASM itoa. A signed value records `sign = value < 0`, then computes the
+      magnitude as `u64` (`0 - value`, computed with wrapping `i64.sub`, so
+      `i64::MIN` yields its correct unsigned magnitude `0x8000000000000000` without
+      the unrepresentable negation); an unsigned/`byte` value uses the magnitude
+      directly. A first pass counts decimal digits (a `block { loop { … } }`
+      dividing the magnitude down by 10 with `i64.div_u`, so `0` still counts one
+      digit); the record `[STR_DATA_OFF + sign + ndigits]` is then `__alloc`'d, an
+      optional leading `-` is written, and a second pass writes the digits
+      least-significant-first from the tail backward (`i64.rem_u`/`i64.div_u`). All
+      output is ASCII, so `char_len == byte_len == sign + ndigits`. Unsigned kinds
+      print the `u64` reinterpretation of the normalized cell (matching the
+      interpreters), so `to_u64(0 - 1)` renders `18446744073709551615`.
+    - **`bool`** selects the interned `"true"` / `"false"` literal pointer via a
+      typed `if`/`else`.
+    - **`char`** encodes the Unicode scalar to its 1–4 byte UTF-8 sequence in a
+      fresh record with `char_len == 1` and `byte_len` the encoded length (a
+      nested `< 0x80` / `< 0x800` / `< 0x10000` / else chain writes the continuation
+      bytes with `i32.store8`).
+    - **`string`** is the identity — strings are immutable, so the same record
+      pointer is returned.
+    - **Floats** (`to_string(f32)` / `to_string(f64)`) are **deferred**: matching
+      Rust's `Display` dtoa bit-for-bit is out of scope, so a function formatting a
+      float still skips to the interpreters. Verified end-to-end by
+      `tests/fixtures/valid/wasm_to_string.lby` (`main` = 78).
+  - Other runtime string builders (`substring`, `find`, `replace`, `upper`/`lower`,
+    `split`/`join`) are not yet lowered — a function using one is skipped and still
+    runs on the interpreters.
 - **Structs:** a `struct` is a pointer to a contiguous run of one 8-byte slot per
   field in declared order (uniform 8-byte slots keep `i64`/`f64` naturally
   aligned and make offsets a simple `slot_index * 8`). Positional construction (a
@@ -176,10 +204,10 @@ node-gated against the interpreter.
 **Deferred:** aggregates containing heap values the backend does not lay out (a
 `list` with a heap element, or `map`, or an enum with a heap payload); enums with
 a **heap** payload (`string`/`list`/`array`/`map` — notably `result<i64,
-string>`); the `map` collection and lists of heap elements; runtime string
-builders other than `+` concat (`to_string`, `substring`, `find`, `replace`,
-`upper`/`lower`, `split`/`join`); and a free-list allocator (`__alloc` never frees
-this increment).
+string>`); the `map` collection and lists of heap elements; `to_string` of a
+**float** (`f32`/`f64`) and the string builders other than `+` concat and
+`to_string` (`substring`, `find`, `replace`, `upper`/`lower`, `split`/`join`); and
+a free-list allocator (`__alloc` never frees this increment).
 Functions using any of these are skipped with a reason and still run on the
 interpreters.
 
@@ -456,13 +484,19 @@ concatenation now compiles: the string record gained a second `byte_len` header
 operands' UTF-8 byte ranges `memory.copy`'d in, handling multi-byte text — see
 **Heap types (landed) → Strings** above. It is node-parity-tested
 (`crates/lullaby_cli/tests/cli.rs::wasm_string_concat_execution_parity_with_node`,
-fixture `tests/fixtures/valid/wasm_string_concat.lby`, `main` = 33). Deferred:
+fixture `tests/fixtures/valid/wasm_string_concat.lby`, `main` = 33).
+`to_string(x)` now compiles for integer/`bool`/`char`/`byte`/`string` arguments
+(in-WASM itoa for integers incl. `i64::MIN`/`u64::MAX`, interned `true`/`false`,
+1–4 byte UTF-8 char encoding, and the string identity), node-parity-tested
+(`crates/lullaby_cli/tests/cli.rs::wasm_to_string_execution_parity_with_node`,
+fixture `tests/fixtures/valid/wasm_to_string.lby`, `main` = 78). Deferred:
 enums with a heap payload (`string`/`list`/`array`/`map`, e.g. `result<i64,
 string>`), lists of heap elements, maps with a heap key or value (including string
-keys), `map_keys`/`map_values`/`map_del`, runtime string builders other than `+`
-concat (`to_string`, `substring`, `find`, `replace`, `upper`/`lower`,
-`split`/`join`), a free-list allocator, and a richer DOM interop surface (reading
-DOM values, events) that builds on these imports.
+keys), `map_keys`/`map_values`/`map_del`, `to_string` of a **float** (`f32`/`f64`)
+and the string builders other than `+` concat and `to_string` (`substring`,
+`find`, `replace`, `upper`/`lower`, `split`/`join`), a free-list allocator, and a
+richer DOM interop surface (reading DOM values, events) that builds on these
+imports.
 
 ## Why these choices
 
