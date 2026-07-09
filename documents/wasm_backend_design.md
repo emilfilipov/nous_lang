@@ -139,9 +139,46 @@ a pointer (nested strings/structs/arrays).
       Rust's `Display` dtoa bit-for-bit is out of scope, so a function formatting a
       float still skips to the interpreters. Verified end-to-end by
       `tests/fixtures/valid/wasm_to_string.lby` (`main` = 78).
-  - Other runtime string builders (`substring`, `find`, `replace`, `upper`/`lower`,
-    `split`/`join`) are not yet lowered — a function using one is skipped and still
-    runs on the interpreters.
+  - **Index-based string operations** are lowered, matching the interpreters
+    (`builtin_substring` / `builtin_find` / `char_find` / `builtin_contains` /
+    `builtin_starts_with` / `builtin_ends_with`) bit-for-bit. The dispatch is gated
+    on a `string` first argument. All scans are inline WASM loops over the record's
+    UTF-8 bytes, comparing `memory[hay + i]` against `memory[needle + j]` with
+    `i32.load8_u`.
+    - **`substring(s, start, end) -> string`** is the CHAR-indexed half-open
+      `[start, end)` slice. `start`/`end` are `i64` char indices; the interpreters
+      raise `L0413` when `start < 0 || end < 0 || start > end || end > char_count`,
+      so the WASM path emits that exact bounds test and `unreachable` (traps) on
+      failure rather than producing a wrong value. Otherwise it maps the char
+      indices to byte offsets by walking the UTF-8 (advancing past one lead byte
+      plus its continuation bytes per char — a byte is a continuation byte iff
+      `(b & 0xC0) == 0x80`), `__alloc`s a fresh `[char_len][byte_len][utf8]` record
+      sized `STR_DATA_OFF + (end_byte - start_byte)`, writes the summed headers, and
+      `memory.copy`s the byte range in. `substring("café", 3, 4)` yields the
+      multi-byte `é` with `char_len = 1`, `byte_len = 2`.
+    - **`find(haystack, needle) -> i64`** returns the CHAR index of the first
+      byte-level occurrence of `needle`, or `-1` if absent. It byte-searches every
+      start position `0..=(hay_len - needle_len)` for the first full match, then
+      counts the UTF-8 characters preceding that byte offset (the count of
+      non-continuation bytes, `(b & 0xC0) != 0x80`) and extends it to `i64` — exactly
+      `text[..byte_index].chars().count()`. An empty needle matches at byte 0, whose
+      preceding char count is 0, so `find(s, "") == 0` (matching Rust's
+      `find("") == Some(0)`).
+    - **`contains(s, sub)` / `starts_with(s, prefix)` / `ends_with(s, suffix)`** are
+      **byte-exact** `bool` tests (byte equality is char-position-independent, so no
+      UTF-8 decode is needed). `contains` reuses the `find` byte search and yields its
+      found flag; `starts_with`/`ends_with` short-circuit to `false` when the
+      needle is longer than the haystack, else compare bytes at position `0` /
+      `hay_len - needle_len`. An empty needle matches for all three.
+    - Verified end-to-end by
+      `crates/lullaby_cli/tests/cli.rs::wasm_string_ops_execution_parity_with_node`,
+      fixture `tests/fixtures/valid/wasm_string_ops.lby` (`main` = 11), which
+      exercises a multi-byte string across edge indices, present/absent/empty
+      `find`, and true/false predicate cases under Node.
+  - Other runtime string builders (`replace`, `upper`/`lower`, `split`/`join`,
+    `chars`/`string_from_chars`) are not yet lowered — a function using one is
+    skipped and still runs on the interpreters. `upper`/`lower` are deferred because
+    Unicode case mapping is hard to match Rust bit-for-bit.
 - **Structs:** a `struct` is a pointer to a contiguous run of one 8-byte slot per
   field in declared order (uniform 8-byte slots keep `i64`/`f64` naturally
   aligned and make offsets a simple `slot_index * 8`). Positional construction (a
@@ -205,9 +242,10 @@ node-gated against the interpreter.
 `list` with a heap element, or `map`, or an enum with a heap payload); enums with
 a **heap** payload (`string`/`list`/`array`/`map` — notably `result<i64,
 string>`); the `map` collection and lists of heap elements; `to_string` of a
-**float** (`f32`/`f64`) and the string builders other than `+` concat and
-`to_string` (`substring`, `find`, `replace`, `upper`/`lower`, `split`/`join`); and
-a free-list allocator (`__alloc` never frees this increment).
+**float** (`f32`/`f64`) and the string builders not yet lowered — `replace`,
+`upper`/`lower`, `split`/`join`, `chars`/`string_from_chars` (the `+` concat,
+`to_string`, `substring`, `find`, `contains`, `starts_with`, and `ends_with` DO
+compile); and a free-list allocator (`__alloc` never frees this increment).
 Functions using any of these are skipped with a reason and still run on the
 interpreters.
 
@@ -384,9 +422,12 @@ second phase. So the first increment compiles the **scalar subset** only:
   `wasm_log(x i64) -> void` (the host log import above), `console_log(s string) ->
   void` and `dom_set_text(id string, text string) -> void` (the JS/DOM host imports
   above), `len(string|array|list) -> i64`, the scalar-element `list` builtins
-  `list_new`/`push`/`get`/`set`/`pop`, and the scalar-key/value `map` builtins
-  `map_new`/`map_set`/`map_get`/`map_has`/`map_len`; every other builtin is still
-  rejected. Strings, structs, fixed arrays, scalar-element lists, and
+  `list_new`/`push`/`get`/`set`/`pop`, the scalar-key/value `map` builtins
+  `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, `to_string` (non-float
+  arguments), and the index-based string operations `substring`/`find`/`contains`/
+  `starts_with`/`ends_with` (see **Heap types (landed)** above); every other
+  builtin is still rejected. Strings, structs, fixed arrays, scalar-element lists,
+  and
   scalar-key/value maps are now supported — see **Heap types (landed)**, **Growable
   `list<T>` (landed)**, and **Growable `map<K, V>` (landed)** above.
 
@@ -489,14 +530,22 @@ fixture `tests/fixtures/valid/wasm_string_concat.lby`, `main` = 33).
 (in-WASM itoa for integers incl. `i64::MIN`/`u64::MAX`, interned `true`/`false`,
 1–4 byte UTF-8 char encoding, and the string identity), node-parity-tested
 (`crates/lullaby_cli/tests/cli.rs::wasm_to_string_execution_parity_with_node`,
-fixture `tests/fixtures/valid/wasm_to_string.lby`, `main` = 78). Deferred:
+fixture `tests/fixtures/valid/wasm_to_string.lby`, `main` = 78). The index-based
+string operations now compile: char-indexed `substring`/`find` (which decode UTF-8
+to map char indices to byte offsets) and byte-exact `contains`/`starts_with`/
+`ends_with`, matching the interpreters' `builtin_substring`/`char_find`/etc.
+bit-for-bit — see **Heap types (landed) → Strings** above. They are
+node-parity-tested
+(`crates/lullaby_cli/tests/cli.rs::wasm_string_ops_execution_parity_with_node`,
+fixture `tests/fixtures/valid/wasm_string_ops.lby`, `main` = 11, including a
+multi-byte string). Deferred:
 enums with a heap payload (`string`/`list`/`array`/`map`, e.g. `result<i64,
 string>`), lists of heap elements, maps with a heap key or value (including string
 keys), `map_keys`/`map_values`/`map_del`, `to_string` of a **float** (`f32`/`f64`)
-and the string builders other than `+` concat and `to_string` (`substring`,
-`find`, `replace`, `upper`/`lower`, `split`/`join`), a free-list allocator, and a
-richer DOM interop surface (reading DOM values, events) that builds on these
-imports.
+and the string builders not yet lowered — `replace`, `upper`/`lower` (Unicode case
+mapping is hard to match Rust), `split`/`join`, `chars`/`string_from_chars` — a
+free-list allocator, and a richer DOM interop surface (reading DOM values, events)
+that builds on these imports.
 
 ## Why these choices
 

@@ -2818,6 +2818,140 @@ fn wasm_string_concat_execution_parity_with_node() {
 }
 
 #[test]
+fn wasm_string_ops_execution_parity_with_node() {
+    // Index-based string operations compile to WASM: char-indexed `substring`/`find`
+    // (which decode UTF-8 to map char indices to byte offsets) and byte-exact
+    // `contains`/`starts_with`/`ends_with`. The fixture exercises a multi-byte
+    // ("café", where `é` is 2 bytes) string across edge indices, present/absent
+    // `find`, an empty needle, and true/false cases of every predicate, combining
+    // them into a deterministic `i64` from `main` plus string-returning `substring`
+    // exports the node runner decodes. Every export's WASM result must match the
+    // interpreter bit-for-bit — including the char-vs-byte distinction.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_string_ops.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_string_ops.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // Every function compiles to WASM (none is skipped/demoted to the interpreters).
+    let emit_out = stdout(&emit);
+    for name in [
+        "sub_af",
+        "sub_e",
+        "sub_full",
+        "sub_empty",
+        "find_present",
+        "find_absent",
+        "find_empty",
+        "contains_true",
+        "contains_false",
+        "starts_true",
+        "starts_false",
+        "ends_true",
+        "ends_false",
+        "bool_to_i64",
+        "main",
+    ] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile to WASM, got: {emit_out}"
+        );
+    }
+
+    // Interpreter ground truth for `main` (the joined deterministic total).
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "11");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM string-ops execution parity");
+        return;
+    }
+
+    // Instantiate under node, call each export, and decode every `substring` record
+    // straight out of `memory` (char count at +0, byte count at +4, bytes at +8).
+    // The decoded text and headers must match the interpreters' `builtin_substring`
+    // — critically, `substring("café", 3, 4)` is the multi-byte `é` (char_len 1,
+    // byte_len 2), proving the char->byte mapping.
+    let runner = std::env::temp_dir().join("lullaby_wasm_string_ops_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           const e=r.instance.exports;\
+           const dv=new DataView(e.memory.buffer);\
+           const u8=new Uint8Array(e.memory.buffer);\
+           function dec(ptr){{const cl=dv.getInt32(ptr,true);const bl=dv.getInt32(ptr+4,true);\
+             const s=Buffer.from(u8.slice(ptr+8,ptr+8+bl)).toString();return s+'/'+cl+'/'+bl;}}\
+           const lines=[\
+             'sub_af='+dec(e.sub_af()),\
+             'sub_e='+dec(e.sub_e()),\
+             'sub_full='+dec(e.sub_full()),\
+             'sub_empty='+dec(e.sub_empty()),\
+             'find_present='+e.find_present().toString(),\
+             'find_absent='+e.find_absent().toString(),\
+             'find_empty='+e.find_empty().toString(),\
+             'contains_true='+e.contains_true().toString(),\
+             'contains_false='+e.contains_false().toString(),\
+             'starts_true='+e.starts_true().toString(),\
+             'starts_false='+e.starts_false().toString(),\
+             'ends_true='+e.ends_true().toString(),\
+             'ends_false='+e.ends_false().toString(),\
+             'main='+e.main().toString()\
+           ];\
+           process.stdout.write(lines.join(';'));\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    // Char-indexed substring slices, including a multi-byte char (char_len != byte_len).
+    assert!(out_text.contains("sub_af=af/2/2"), "{out_text}");
+    assert!(out_text.contains("sub_e=\u{e9}/1/2"), "{out_text}");
+    assert!(out_text.contains("sub_full=caf\u{e9}/4/5"), "{out_text}");
+    assert!(out_text.contains("sub_empty=/0/0"), "{out_text}");
+    // `find` returns a CHAR index (present), -1 (absent), 0 (empty needle).
+    assert!(out_text.contains("find_present=2"), "{out_text}");
+    assert!(out_text.contains("find_absent=-1"), "{out_text}");
+    assert!(out_text.contains("find_empty=0"), "{out_text}");
+    // Byte-exact predicates, true and false cases.
+    assert!(out_text.contains("contains_true=1"), "{out_text}");
+    assert!(out_text.contains("contains_false=0"), "{out_text}");
+    assert!(out_text.contains("starts_true=1"), "{out_text}");
+    assert!(out_text.contains("starts_false=0"), "{out_text}");
+    assert!(out_text.contains("ends_true=1"), "{out_text}");
+    assert!(out_text.contains("ends_false=0"), "{out_text}");
+    // Whole-program `main` matches the interpreter.
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "{out_text}"
+    );
+}
+
+#[test]
 fn wasm_to_string_execution_parity_with_node() {
     // `to_string(x)` compiles to WASM for integer/bool/char/byte/string arguments,
     // building `[char_len][byte_len][utf8]` records identical to the interpreters'

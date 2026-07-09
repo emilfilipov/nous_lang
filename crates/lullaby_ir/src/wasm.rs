@@ -227,6 +227,17 @@ const LEN_BUILTIN: &str = "len";
 /// scalar subset).
 const TO_STRING_BUILTIN: &str = "to_string";
 
+/// Index-based string-operation builtins the WASM backend compiles. `substring`
+/// and `find` are CHAR-indexed (they decode UTF-8 to map char indices to byte
+/// offsets, matching the interpreters' `chars()`/char-count semantics);
+/// `contains`/`starts_with`/`ends_with` are byte-exact substring/prefix/suffix
+/// tests (byte equality is char-position-independent, so no decode is needed).
+const SUBSTRING_BUILTIN: &str = "substring";
+const FIND_BUILTIN: &str = "find";
+const CONTAINS_BUILTIN: &str = "contains";
+const STARTS_WITH_BUILTIN: &str = "starts_with";
+const ENDS_WITH_BUILTIN: &str = "ends_with";
+
 // -- String record layout ----------------------------------------------------
 //
 // A `string` is an `i32` pointer to `[char_len: i32][byte_len: i32][utf8 bytes]`:
@@ -1786,6 +1797,28 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 }
                 return lower_to_string(ctx, &args[0], out);
             }
+            // Index-based string operations. Each is gated on a `string` first
+            // argument so the name cannot shadow a user function of the same
+            // spelling: only a genuine `string`-typed call routes here. `substring`
+            // and `find` are CHAR-indexed (they decode UTF-8 to map char index to
+            // byte offset), while `contains`/`starts_with`/`ends_with` are byte-exact
+            // substring/prefix/suffix tests — matching the interpreters bit-for-bit
+            // (`builtin_substring`/`builtin_find`/`char_find`/`builtin_contains`/…).
+            if name == SUBSTRING_BUILTIN && args.len() == 3 && args[0].ty.name == "string" {
+                return lower_substring(ctx, &args[0], &args[1], &args[2], out);
+            }
+            if name == FIND_BUILTIN && args.len() == 2 && args[0].ty.name == "string" {
+                return lower_find(ctx, &args[0], &args[1], out);
+            }
+            if name == CONTAINS_BUILTIN && args.len() == 2 && args[0].ty.name == "string" {
+                return lower_contains(ctx, &args[0], &args[1], out);
+            }
+            if name == STARTS_WITH_BUILTIN && args.len() == 2 && args[0].ty.name == "string" {
+                return lower_starts_with(ctx, &args[0], &args[1], out);
+            }
+            if name == ENDS_WITH_BUILTIN && args.len() == 2 && args[0].ty.name == "string" {
+                return lower_ends_with(ctx, &args[0], &args[1], out);
+            }
             // Growable `list<T>` (scalar `T`) builtins. `list_new()` allocates an
             // empty header; `push`/`get`/`set`/`pop` operate on a `list`-typed
             // first argument (checked so these names cannot shadow a user function
@@ -2291,6 +2324,577 @@ fn emit_memory_copy(out: &mut Vec<u8>) {
     write_uleb(out, 0x0a); // memory.copy
     out.push(0x00); // dest memory index
     out.push(0x00); // src memory index
+}
+
+// -- Index-based string-operation codegen ------------------------------------
+//
+// These lower the char-indexed `substring`/`find` and the byte-exact
+// `contains`/`starts_with`/`ends_with` builtins over the `[char_len][byte_len]
+// [utf8 bytes]` string record. The byte scans compare `memory[hay + i]` against
+// `memory[needle + j]` with `i32.load8_u`; `find`/`substring` additionally decode
+// UTF-8 lead bytes (a byte is a char start iff `(b & 0xC0) != 0x80`) to map char
+// indices to byte offsets. Every scan is an inline WASM loop over the UTF-8 bytes,
+// matching the interpreters' `str::find`/`str::contains`/`chars()` bit-for-bit.
+
+/// Push a pointer to a string record's first UTF-8 byte: `record_ptr + STR_DATA_OFF`.
+/// The record pointer must already be on the stack.
+fn emit_add_data_off(out: &mut Vec<u8>) {
+    out.push(0x41); // i32.const STR_DATA_OFF
+    write_sleb(out, STR_DATA_OFF as i64);
+    out.push(0x6a); // i32.add
+}
+
+/// Emit `i32.load8_u` reading the byte at the address on the stack (offset 0).
+fn emit_load8_u(out: &mut Vec<u8>) {
+    out.push(0x2d); // i32.load8_u
+    write_uleb(out, 0); // align 0 (1-byte)
+    write_uleb(out, 0); // offset 0
+}
+
+/// Evaluate a `string` expression into a fresh scratch triple of `i32` locals and
+/// return them as `(data_ptr, byte_len)`: `data_ptr` points at the first UTF-8
+/// byte (`record + STR_DATA_OFF`) and `byte_len` is the UTF-8 byte-length header.
+/// The record pointer is evaluated once so a non-trivial string expression is not
+/// lowered twice.
+fn lower_string_data_len(
+    ctx: &mut LowerCtx,
+    arg: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(u32, u32), String> {
+    if arg.ty.name != "string" {
+        return Err(format!(
+            "index-based string op expects a string but got `{}`",
+            arg.ty.name
+        ));
+    }
+    lower_expr(ctx, arg, out)?; // record pointer (i32)
+    let record = ctx.add_local(WasmValType::I32);
+    set_local(out, record);
+    // data = record + STR_DATA_OFF
+    let data = ctx.add_local(WasmValType::I32);
+    get_local(out, record);
+    emit_add_data_off(out);
+    set_local(out, data);
+    // byte_len = i32.load [record + STR_BYTE_LEN_OFF]
+    let byte_len = ctx.add_local(WasmValType::I32);
+    get_local(out, record);
+    emit_load_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+    set_local(out, byte_len);
+    Ok((data, byte_len))
+}
+
+/// Emit an expression that leaves an `i32` bool (`1`/`0`) on the stack: whether the
+/// `needle` bytes match the haystack bytes starting at byte position `pos`. The
+/// caller guarantees `pos + needle_len <= hay_len`, so no bounds check is needed
+/// inside; an empty needle (`needle_len == 0`) yields `1` (the inner loop runs zero
+/// times), matching Rust's `""` prefix/substring semantics. Emitted as a
+/// self-contained `block (result i32)` holding a byte-compare loop.
+fn emit_bytes_match_at(
+    ctx: &mut LowerCtx,
+    hay_data: u32,
+    needle_data: u32,
+    needle_len: u32,
+    pos: u32,
+    out: &mut Vec<u8>,
+) {
+    // result block: j = 0; loop { if j >= needle_len -> push 1, break;
+    //   if hay[pos+j] != needle[j] -> push 0, break; j += 1; continue }
+    let j = ctx.add_local(WasmValType::I32);
+    out.push(0x41); // i32.const 0
+    write_sleb(out, 0);
+    set_local(out, j);
+    out.push(0x02); // block (result i32)
+    out.push(0x7f);
+    out.push(0x03); // loop (result i32)
+    out.push(0x7f);
+    // if j >= needle_len -> matched: push 1 and break out of both.
+    get_local(out, j);
+    get_local(out, needle_len);
+    out.push(0x4e); // i32.ge_s
+    out.push(0x04); // if (no result — a branch exits the enclosing blocks)
+    out.push(0x40);
+    out.push(0x41); // i32.const 1
+    write_sleb(out, 1);
+    out.push(0x0c); // br 2 (leave block with 1 on the stack)
+    write_uleb(out, 2);
+    out.push(0x0b); // end if
+    // if hay[pos + j] != needle[j] -> mismatch: push 0 and break.
+    get_local(out, hay_data);
+    get_local(out, pos);
+    out.push(0x6a); // i32.add
+    get_local(out, j);
+    out.push(0x6a); // i32.add -> hay_data + pos + j
+    emit_load8_u(out);
+    get_local(out, needle_data);
+    get_local(out, j);
+    out.push(0x6a); // i32.add -> needle_data + j
+    emit_load8_u(out);
+    out.push(0x47); // i32.ne
+    out.push(0x04); // if
+    out.push(0x40);
+    out.push(0x41); // i32.const 0
+    write_sleb(out, 0);
+    out.push(0x0c); // br 2 (leave block with 0)
+    write_uleb(out, 2);
+    out.push(0x0b); // end if
+    // j += 1; continue the loop.
+    get_local(out, j);
+    out.push(0x41); // i32.const 1
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, j);
+    out.push(0x0c); // br 0 (repeat loop)
+    write_uleb(out, 0);
+    out.push(0x0b); // end loop
+    out.push(0x0b); // end block -> i32 bool on the stack
+}
+
+/// Emit a scan for the FIRST byte position at which `needle` matches `hay`, storing
+/// that byte position into `found_pos` and a `1`/`0` flag into `found_flag`. Mirrors
+/// Rust's `str::find` at the byte level: it tries every start `pos` in
+/// `0..=(hay_len - needle_len)` and stops at the first full byte match. An empty
+/// needle matches at `pos = 0` (the match loop runs zero iterations), matching
+/// `"...".find("") == Some(0)`. When `needle_len > hay_len` the outer loop never
+/// runs and `found_flag` stays `0`. Returns `(found_pos, found_flag)`: fresh
+/// caller-visible `i32` locals holding the matched byte position and the found
+/// flag, initialized by this function.
+fn emit_byte_search(
+    ctx: &mut LowerCtx,
+    hay_data: u32,
+    hay_len: u32,
+    needle_data: u32,
+    needle_len: u32,
+    out: &mut Vec<u8>,
+) -> (u32, u32) {
+    let found_pos = ctx.add_local(WasmValType::I32);
+    let found_flag = ctx.add_local(WasmValType::I32);
+    // found_flag = 0; found_pos = 0.
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, found_flag);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, found_pos);
+    // limit = hay_len - needle_len (last valid start position, inclusive). When
+    // needle_len > hay_len this is negative, so the `pos <= limit` guard fails
+    // immediately and the search reports "not found".
+    let limit = ctx.add_local(WasmValType::I32);
+    get_local(out, hay_len);
+    get_local(out, needle_len);
+    out.push(0x6b); // i32.sub
+    set_local(out, limit);
+    // pos = 0; loop { if pos > limit break; if match_at(pos) { found; break }; pos += 1 }
+    let pos = ctx.add_local(WasmValType::I32);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, pos);
+    out.push(0x02); // block
+    out.push(0x40);
+    out.push(0x03); // loop
+    out.push(0x40);
+    // break when pos > limit (signed; limit may be negative).
+    get_local(out, pos);
+    get_local(out, limit);
+    out.push(0x4a); // i32.gt_s
+    out.push(0x0d); // br_if 1 (out of the block)
+    write_uleb(out, 1);
+    // if bytes_match_at(pos) { found_pos = pos; found_flag = 1; break }
+    emit_bytes_match_at(ctx, hay_data, needle_data, needle_len, pos, out);
+    out.push(0x04); // if
+    out.push(0x40);
+    get_local(out, pos);
+    set_local(out, found_pos);
+    out.push(0x41);
+    write_sleb(out, 1);
+    set_local(out, found_flag);
+    out.push(0x0c); // br 2 (out of the block)
+    write_uleb(out, 2);
+    out.push(0x0b); // end if
+    // pos += 1; continue.
+    get_local(out, pos);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, pos);
+    out.push(0x0c); // br 0 (repeat)
+    write_uleb(out, 0);
+    out.push(0x0b); // end loop
+    out.push(0x0b); // end block
+    (found_pos, found_flag)
+}
+
+/// Emit a loop that counts the number of UTF-8 characters in `data[0..byte_end)`
+/// and leaves that count (an `i32`) on the stack. A byte begins a character iff
+/// `(b & 0xC0) != 0x80` (it is not a continuation byte), so the char count is the
+/// number of non-continuation bytes in the range — exactly what
+/// `text[..byte_index].chars().count()` yields in the interpreters' `char_find`.
+/// `data` and `byte_end` are `i32` locals; `byte_end` is a byte offset relative to
+/// `data`.
+fn emit_char_count_upto(ctx: &mut LowerCtx, data: u32, byte_end: u32, out: &mut Vec<u8>) {
+    let count = ctx.add_local(WasmValType::I32);
+    let bi = ctx.add_local(WasmValType::I32);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, count);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, bi);
+    out.push(0x02); // block
+    out.push(0x40);
+    out.push(0x03); // loop
+    out.push(0x40);
+    // break when bi >= byte_end.
+    get_local(out, bi);
+    get_local(out, byte_end);
+    out.push(0x4e); // i32.ge_s
+    out.push(0x0d); // br_if 1
+    write_uleb(out, 1);
+    // if (mem[data + bi] & 0xC0) != 0x80 -> count += 1 (a char start).
+    get_local(out, data);
+    get_local(out, bi);
+    out.push(0x6a); // i32.add
+    emit_load8_u(out);
+    out.push(0x41); // i32.const 0xC0
+    write_sleb(out, 0xC0);
+    out.push(0x71); // i32.and
+    out.push(0x41); // i32.const 0x80
+    write_sleb(out, 0x80);
+    out.push(0x47); // i32.ne
+    out.push(0x04); // if
+    out.push(0x40);
+    get_local(out, count);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, count);
+    out.push(0x0b); // end if
+    // bi += 1; continue.
+    get_local(out, bi);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, bi);
+    out.push(0x0c); // br 0
+    write_uleb(out, 0);
+    out.push(0x0b); // end loop
+    out.push(0x0b); // end block
+    get_local(out, count); // leave the count on the stack
+}
+
+/// Emit a loop that advances a byte offset from the start of `data` past exactly
+/// `target_char` whole UTF-8 characters, storing the resulting byte offset into the
+/// caller-owned `i32` local `out_byte`. Each step moves past one lead byte and then
+/// over all following continuation bytes (`(b & 0xC0) == 0x80`). For
+/// `target_char == char_count` this lands on `byte_len` (one past the last byte).
+/// The string is well-formed UTF-8 and `target_char <= char_count` is guaranteed by
+/// the caller's bounds check, so the walk terminates in range.
+fn emit_char_index_to_byte(
+    ctx: &mut LowerCtx,
+    data: u32,
+    byte_len: u32,
+    target_char: u32,
+    out_byte: u32,
+    out: &mut Vec<u8>,
+) {
+    // bi = 0; c = 0; loop { if c >= target_char break; bi += 1;
+    //   while bi < byte_len and (mem[data+bi] & 0xC0)==0x80 { bi += 1 }; c += 1 }
+    let c = ctx.add_local(WasmValType::I32);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, out_byte); // bi
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, c);
+    out.push(0x02); // outer block
+    out.push(0x40);
+    out.push(0x03); // outer loop (over chars)
+    out.push(0x40);
+    // break when c >= target_char.
+    get_local(out, c);
+    get_local(out, target_char);
+    out.push(0x4e); // i32.ge_s
+    out.push(0x0d); // br_if 1 (out of outer block)
+    write_uleb(out, 1);
+    // bi += 1 (past the lead byte).
+    get_local(out, out_byte);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, out_byte);
+    // inner loop: while bi < byte_len and mem[data+bi] is a continuation byte { bi += 1 }
+    out.push(0x02); // inner block
+    out.push(0x40);
+    out.push(0x03); // inner loop
+    out.push(0x40);
+    // break inner when bi >= byte_len.
+    get_local(out, out_byte);
+    get_local(out, byte_len);
+    out.push(0x4e); // i32.ge_s
+    out.push(0x0d); // br_if 1 (out of inner block)
+    write_uleb(out, 1);
+    // break inner when NOT a continuation byte: (mem[data+bi] & 0xC0) != 0x80.
+    get_local(out, data);
+    get_local(out, out_byte);
+    out.push(0x6a); // i32.add
+    emit_load8_u(out);
+    out.push(0x41);
+    write_sleb(out, 0xC0);
+    out.push(0x71); // i32.and
+    out.push(0x41);
+    write_sleb(out, 0x80);
+    out.push(0x47); // i32.ne
+    out.push(0x0d); // br_if 1 (out of inner block — reached the next char start)
+    write_uleb(out, 1);
+    // bi += 1; continue inner.
+    get_local(out, out_byte);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, out_byte);
+    out.push(0x0c); // br 0 (repeat inner)
+    write_uleb(out, 0);
+    out.push(0x0b); // end inner loop
+    out.push(0x0b); // end inner block
+    // c += 1; continue outer.
+    get_local(out, c);
+    out.push(0x41);
+    write_sleb(out, 1);
+    out.push(0x6a); // i32.add
+    set_local(out, c);
+    out.push(0x0c); // br 0 (repeat outer)
+    write_uleb(out, 0);
+    out.push(0x0b); // end outer loop
+    out.push(0x0b); // end outer block
+}
+
+/// Lower `substring(s, start, end) -> string`: the char-indexed half-open
+/// `[start, end)` slice. Matches `builtin_substring` exactly: `start`/`end` are
+/// char indices; if `start < 0 || end < 0 || start > end || end > char_count` the
+/// range is out of bounds and the interpreters raise `L0413`, so the WASM path
+/// traps (`unreachable`) rather than producing a wrong value. Otherwise the slice's
+/// char indices are mapped to byte offsets by walking the UTF-8, a fresh
+/// `[char_len][byte_len][utf8]` record is allocated, and the byte range is
+/// `memory.copy`'d in.
+fn lower_substring(
+    ctx: &mut LowerCtx,
+    s: &IrExpr,
+    start: &IrExpr,
+    end: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    // Evaluate the source string into (data, byte_len); also read its char-count
+    // header for the bounds check.
+    lower_expr(ctx, s, out)?; // record pointer
+    let record = ctx.add_local(WasmValType::I32);
+    set_local(out, record);
+    let char_count = ctx.add_local(WasmValType::I32);
+    get_local(out, record);
+    emit_load_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+    set_local(out, char_count);
+    let byte_len = ctx.add_local(WasmValType::I32);
+    get_local(out, record);
+    emit_load_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+    set_local(out, byte_len);
+    let data = ctx.add_local(WasmValType::I32);
+    get_local(out, record);
+    emit_add_data_off(out);
+    set_local(out, data);
+
+    // start/end are i64 char indices; narrow to i32 for offset math (a valid char
+    // index fits in i32 — a string cannot hold more than 2^31 chars in a wasm32
+    // linear memory). Keep the i64 values for the bounds comparisons so a huge or
+    // negative index is rejected exactly like the interpreters.
+    let start64 = ctx.add_local(WasmValType::I64);
+    lower_expr(ctx, start, out)?;
+    set_local(out, start64);
+    let end64 = ctx.add_local(WasmValType::I64);
+    lower_expr(ctx, end, out)?;
+    set_local(out, end64);
+
+    // Bounds check (traps on failure): start < 0 || end < 0 || start > end ||
+    // end > char_count. char_count is an i32 count; extend it to i64 for the
+    // comparison.
+    // cond = (start < 0) | (end < 0) | (start > end) | (end > char_count)
+    get_local(out, start64);
+    out.push(0x42); // i64.const 0
+    write_sleb(out, 0);
+    out.push(0x53); // i64.lt_s -> start < 0
+    get_local(out, end64);
+    out.push(0x42);
+    write_sleb(out, 0);
+    out.push(0x53); // end < 0
+    out.push(0x72); // i32.or
+    get_local(out, start64);
+    get_local(out, end64);
+    out.push(0x55); // i64.gt_s -> start > end
+    out.push(0x72); // i32.or
+    get_local(out, end64);
+    get_local(out, char_count);
+    out.push(0xac); // i64.extend_i32_s (char_count -> i64)
+    out.push(0x55); // i64.gt_s -> end > char_count
+    out.push(0x72); // i32.or
+    out.push(0x04); // if (out-of-bounds) { unreachable }
+    out.push(0x40);
+    out.push(0x00); // unreachable (trap — mirrors the interpreters' L0413)
+    out.push(0x0b); // end if
+
+    // start_char / end_char as i32 char indices.
+    let start_char = ctx.add_local(WasmValType::I32);
+    get_local(out, start64);
+    out.push(0xa7); // i32.wrap_i64
+    set_local(out, start_char);
+    let end_char = ctx.add_local(WasmValType::I32);
+    get_local(out, end64);
+    out.push(0xa7); // i32.wrap_i64
+    set_local(out, end_char);
+
+    // Map char indices to byte offsets by walking the UTF-8.
+    let start_byte = ctx.add_local(WasmValType::I32);
+    emit_char_index_to_byte(ctx, data, byte_len, start_char, start_byte, out);
+    let end_byte = ctx.add_local(WasmValType::I32);
+    emit_char_index_to_byte(ctx, data, byte_len, end_char, end_byte, out);
+
+    // slice_bytes = end_byte - start_byte; slice_chars = end_char - start_char.
+    let slice_bytes = ctx.add_local(WasmValType::I32);
+    get_local(out, end_byte);
+    get_local(out, start_byte);
+    out.push(0x6b); // i32.sub
+    set_local(out, slice_bytes);
+
+    // dst = __alloc(STR_DATA_OFF + slice_bytes).
+    out.push(0x41); // i32.const STR_DATA_OFF
+    write_sleb(out, STR_DATA_OFF as i64);
+    get_local(out, slice_bytes);
+    out.push(0x6a); // i32.add
+    let dst = alloc_runtime(ctx, out);
+    // dst.char_len = end_char - start_char.
+    get_local(out, dst);
+    get_local(out, end_char);
+    get_local(out, start_char);
+    out.push(0x6b); // i32.sub
+    emit_store_at(WasmValType::I32, STR_CHAR_LEN_OFF, out);
+    // dst.byte_len = slice_bytes.
+    get_local(out, dst);
+    get_local(out, slice_bytes);
+    emit_store_at(WasmValType::I32, STR_BYTE_LEN_OFF, out);
+    // memory.copy(dst + STR_DATA_OFF, data + start_byte, slice_bytes).
+    get_local(out, dst);
+    emit_add_data_off(out); // dest
+    get_local(out, data);
+    get_local(out, start_byte);
+    out.push(0x6a); // i32.add -> src
+    get_local(out, slice_bytes); // size
+    emit_memory_copy(out);
+
+    get_local(out, dst); // the slice record's pointer is the value
+    Ok(())
+}
+
+/// Lower `find(haystack, needle) -> i64`: the CHAR index of the first byte-level
+/// occurrence of `needle`, or `-1` if absent. Matches `char_find` exactly: byte
+/// search for the first match, then count the UTF-8 characters preceding that byte
+/// offset (`text[..byte_index].chars().count()`). An empty needle finds at byte 0,
+/// whose preceding char count is 0, so `find(s, "") == 0` — matching Rust's
+/// `find("") == Some(0)`.
+fn lower_find(
+    ctx: &mut LowerCtx,
+    haystack: &IrExpr,
+    needle: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let (hay_data, hay_len) = lower_string_data_len(ctx, haystack, out)?;
+    let (needle_data, needle_len) = lower_string_data_len(ctx, needle, out)?;
+    let (found_pos, found_flag) =
+        emit_byte_search(ctx, hay_data, hay_len, needle_data, needle_len, out);
+    // if found_flag { char_count(hay[0..found_pos]) as i64 } else { -1 }
+    get_local(out, found_flag);
+    out.push(0x04); // if (result i64)
+    out.push(0x7e);
+    emit_char_count_upto(ctx, hay_data, found_pos, out); // i32 char index
+    out.push(0xac); // i64.extend_i32_s
+    out.push(0x05); // else
+    out.push(0x42); // i64.const -1
+    write_sleb(out, -1);
+    out.push(0x0b); // end if -> i64 on the stack
+    Ok(())
+}
+
+/// Lower `contains(s, sub) -> bool`: byte-exact substring test. Emits the same
+/// byte search as `find` and yields its found flag (`1`/`0`). An empty `sub` is
+/// contained (matches at byte 0), matching Rust's `str::contains("")`.
+fn lower_contains(
+    ctx: &mut LowerCtx,
+    s: &IrExpr,
+    sub: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let (hay_data, hay_len) = lower_string_data_len(ctx, s, out)?;
+    let (needle_data, needle_len) = lower_string_data_len(ctx, sub, out)?;
+    let (_found_pos, found_flag) =
+        emit_byte_search(ctx, hay_data, hay_len, needle_data, needle_len, out);
+    get_local(out, found_flag); // i32 bool result
+    Ok(())
+}
+
+/// Lower `starts_with(s, prefix) -> bool`: byte-exact prefix test. If
+/// `prefix_len > s_len` the result is `0`; otherwise it is whether the prefix bytes
+/// match at byte position 0. An empty prefix matches, mirroring
+/// `str::starts_with("")`.
+fn lower_starts_with(
+    ctx: &mut LowerCtx,
+    s: &IrExpr,
+    prefix: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let (hay_data, hay_len) = lower_string_data_len(ctx, s, out)?;
+    let (needle_data, needle_len) = lower_string_data_len(ctx, prefix, out)?;
+    // if needle_len > hay_len { 0 } else { bytes_match_at(pos = 0) }
+    get_local(out, needle_len);
+    get_local(out, hay_len);
+    out.push(0x4a); // i32.gt_s
+    out.push(0x04); // if (result i32)
+    out.push(0x7f);
+    out.push(0x41); // i32.const 0
+    write_sleb(out, 0);
+    out.push(0x05); // else
+    let pos = ctx.add_local(WasmValType::I32);
+    out.push(0x41);
+    write_sleb(out, 0);
+    set_local(out, pos);
+    emit_bytes_match_at(ctx, hay_data, needle_data, needle_len, pos, out);
+    out.push(0x0b); // end if -> i32 bool
+    Ok(())
+}
+
+/// Lower `ends_with(s, suffix) -> bool`: byte-exact suffix test. If
+/// `suffix_len > s_len` the result is `0`; otherwise it is whether the suffix bytes
+/// match at byte position `s_len - suffix_len`. An empty suffix matches, mirroring
+/// `str::ends_with("")`.
+fn lower_ends_with(
+    ctx: &mut LowerCtx,
+    s: &IrExpr,
+    suffix: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let (hay_data, hay_len) = lower_string_data_len(ctx, s, out)?;
+    let (needle_data, needle_len) = lower_string_data_len(ctx, suffix, out)?;
+    // if needle_len > hay_len { 0 } else { bytes_match_at(pos = hay_len - needle_len) }
+    get_local(out, needle_len);
+    get_local(out, hay_len);
+    out.push(0x4a); // i32.gt_s
+    out.push(0x04); // if (result i32)
+    out.push(0x7f);
+    out.push(0x41); // i32.const 0
+    write_sleb(out, 0);
+    out.push(0x05); // else
+    let pos = ctx.add_local(WasmValType::I32);
+    get_local(out, hay_len);
+    get_local(out, needle_len);
+    out.push(0x6b); // i32.sub
+    set_local(out, pos);
+    emit_bytes_match_at(ctx, hay_data, needle_data, needle_len, pos, out);
+    out.push(0x0b); // end if -> i32 bool
+    Ok(())
 }
 
 // -- to_string codegen -------------------------------------------------------
@@ -4889,6 +5493,111 @@ mod tests {
         assert!(
             find_subslice(&code, &[0x28, 0x02, 0x00, 0xac]).is_some(),
             "len of the concat reads the char-count header and extends to i64"
+        );
+    }
+
+    #[test]
+    fn substring_function_compiles_with_alloc_and_copy_codegen() {
+        // `substring(s, start, end)` on `string`/`i64`/`i64` parameters must COMPILE
+        // to WASM. The operands are parameters so the IR constant-folder cannot
+        // collapse the call, exercising the real char->byte mapping and the fresh
+        // record's alloc-and-copy.
+        let source = "fn slice s string a i64 b i64 -> string\n    substring(s, a, b)\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(
+            artifact.compiled,
+            vec!["slice".to_string()],
+            "substring should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // Allocates a fresh record via `call __alloc` (slice(0) then __alloc(1), so
+        // its shifted WASM index is IMPORT_FUNC_COUNT + 1).
+        let alloc_index = IMPORT_FUNC_COUNT as u8 + 1;
+        assert!(
+            find_subslice(&code, &[0x10, alloc_index]).is_some(),
+            "substring emits a `call __alloc` for the slice record"
+        );
+        // Copies the slice's byte range with the bulk-memory `memory.copy`.
+        assert!(
+            find_subslice(&code, &[0xfc, 0x0a, 0x00, 0x00]).is_some(),
+            "substring emits `memory.copy` for the slice byte range"
+        );
+        // The char->byte walk decodes UTF-8 lead bytes: it loads a byte
+        // (`i32.load8_u` = 0x2d) and tests `(b & 0xC0) != 0x80`, encoded as
+        // `i32.const 0xC0; i32.and; i32.const 0x80; i32.ne`.
+        assert!(
+            find_subslice(&code, &[0x2d]).is_some(),
+            "substring emits an `i32.load8_u` byte read for the UTF-8 walk"
+        );
+        assert!(
+            find_subslice(&code, &[0x41, 0xc0, 0x01, 0x71, 0x41, 0x80, 0x01, 0x47]).is_some(),
+            "substring emits the `(b & 0xC0) != 0x80` char-start test"
+        );
+    }
+
+    #[test]
+    fn find_function_compiles_with_char_decode_loop() {
+        // `find(haystack, needle)` on two `string` parameters must COMPILE to WASM.
+        // It returns a CHAR index, so it must decode UTF-8 to count the characters
+        // before the matched byte offset — the `(b & 0xC0) != 0x80` char-start test
+        // (`i32.load8_u`; `i32.const 0xC0`; `i32.and`; `i32.const 0x80`; `i32.ne`)
+        // must appear, and it extends the count to `i64` (`i64.extend_i32_s` = 0xac).
+        let source = "fn locate h string n string -> i64\n    find(h, n)\n";
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(
+            artifact.compiled,
+            vec!["locate".to_string()],
+            "find should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The byte search compares haystack/needle bytes with `i32.load8_u` (0x2d).
+        assert!(
+            find_subslice(&code, &[0x2d]).is_some(),
+            "find emits `i32.load8_u` byte comparisons"
+        );
+        // The char-index decode loop: `(b & 0xC0) != 0x80`.
+        assert!(
+            find_subslice(&code, &[0x41, 0xc0, 0x01, 0x71, 0x41, 0x80, 0x01, 0x47]).is_some(),
+            "find emits the `(b & 0xC0) != 0x80` char-start decode test"
+        );
+        // The char count is extended to i64 (the builtin's result type).
+        assert!(
+            find_subslice(&code, &[0xac]).is_some(),
+            "find extends the char-count result to i64"
+        );
+    }
+
+    #[test]
+    fn contains_and_prefix_ops_compile_without_char_decode() {
+        // `contains`/`starts_with`/`ends_with` are byte-exact: they scan bytes with
+        // `i32.load8_u` but need NO UTF-8 char decode (byte equality is
+        // char-position-independent). Each returns a `bool`.
+        let source = concat!(
+            "fn has s string sub string -> bool\n    contains(s, sub)\n\n",
+            "fn pre s string p string -> bool\n    starts_with(s, p)\n\n",
+            "fn suf s string x string -> bool\n    ends_with(s, x)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.skipped.is_empty(),
+            "byte-exact predicates should all compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert_eq!(
+            artifact.compiled,
+            vec!["has".to_string(), "pre".to_string(), "suf".to_string()],
+        );
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // Byte comparisons appear (`i32.load8_u`).
+        assert!(
+            find_subslice(&code, &[0x2d]).is_some(),
+            "byte-exact predicates emit `i32.load8_u` comparisons"
         );
     }
 
