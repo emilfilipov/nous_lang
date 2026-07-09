@@ -3259,7 +3259,7 @@ impl<'a> Runtime<'a> {
                 // Only user-thrown errors are recoverable; system errors propagate.
                 Err(error) if error.code == "L0420" => {
                     env.push_scope();
-                    env.define(catch_name.clone(), Value::String(error.message.clone()));
+                    env.define(catch_name.clone(), Value::String(error.message));
                     let result = self.eval_block(catch_body, env);
                     env.pop_scope();
                     result

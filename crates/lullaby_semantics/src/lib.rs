@@ -1422,9 +1422,7 @@ impl<'a> Checker<'a> {
                         }
                         declared.clone()
                     }
-                    None => value_type
-                        .clone()
-                        .unwrap_or_else(|| TypeRef::new("<unknown>")),
+                    None => value_type.unwrap_or_else(|| TypeRef::new("<unknown>")),
                 };
                 if ty.is_none() && binding_type.is_void() {
                     self.diagnostics.push(SemanticDiagnostic::at(
@@ -2033,7 +2031,7 @@ impl<'a> Checker<'a> {
                 match op {
                     BinaryOp::Add => {
                         let string_type = TypeRef::new("string");
-                        if let Some(numeric) = same_numeric.clone() {
+                        if let Some(numeric) = same_numeric {
                             Some(numeric)
                         } else if left_type.as_ref() == Some(&string_type)
                             && right_type.as_ref() == Some(&string_type)
@@ -2051,7 +2049,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
-                        if let Some(numeric) = same_numeric.clone() {
+                        if let Some(numeric) = same_numeric {
                             Some(numeric)
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
@@ -4510,7 +4508,7 @@ impl<'a> Checker<'a> {
             let dispatch = dispatch_type_name(&receiver_ty);
             match self
                 .impl_methods
-                .get(&(dispatch.clone(), method.to_string()))
+                .get(&(dispatch, method.to_string()))
                 .cloned()
             {
                 Some(resolved) => resolved,
