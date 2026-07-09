@@ -4860,6 +4860,101 @@ fn native_aarch64_links_and_runs_under_docker() {
     );
 }
 
+/// Whether Docker can run a native `linux/amd64` container (no QEMU needed).
+fn docker_amd64_available() -> bool {
+    Command::new("docker")
+        .args(["run", "--rm", "--platform", "linux/amd64", "alpine", "true"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// End-to-end x86-64 ELF verification: emit the Linux x86-64 ELF, link it with
+/// `ld.lld -m elf_x86_64`, run it under a native `linux/amd64` Docker container,
+/// and assert the process exit code equals the interpreter's `run` result mod
+/// 256. This proves the x86-64 ELF machine code + freestanding `exit`-syscall
+/// entry actually execute on Linux, not merely that the object is well-formed.
+/// Gated on Docker + `ld.lld`; skipped gracefully otherwise.
+#[test]
+fn native_elf_x86_64_links_and_runs_under_docker() {
+    let Some(lld) = ld_lld_path() else {
+        eprintln!("ld.lld not found in the Rust sysroot; skipping x86-64 ELF link+run");
+        return;
+    };
+    if !docker_amd64_available() {
+        eprintln!("Docker linux/amd64 unavailable; skipping x86-64 ELF link+run");
+        return;
+    }
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run interpreter");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let result: i64 = stdout(&run)
+        .lines()
+        .filter_map(|line| line.trim().parse::<i64>().ok())
+        .next_back()
+        .expect("interpreter prints an integer result");
+    let expected_code = result.rem_euclid(256) as i32;
+
+    let dir = std::env::temp_dir().join("lullaby_elf_x86_64_run");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let obj = dir.join("prog.o");
+    let exe = dir.join("prog");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-o",
+            obj.to_str().expect("obj path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("emit x86-64 ELF object");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    let link = Command::new(&lld)
+        .args([
+            "-m",
+            "elf_x86_64",
+            "-o",
+            exe.to_str().expect("exe path"),
+            obj.to_str().expect("obj path"),
+        ])
+        .output()
+        .expect("run ld.lld");
+    assert!(
+        link.status.success(),
+        "ld.lld failed: {}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let mount = format!("{}:/w", dir.display());
+    let run_exe = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--platform",
+            "linux/amd64",
+            "-v",
+            &mount,
+            "busybox",
+            "sh",
+            "-c",
+            "cp /w/prog /prog && chmod +x /prog && /prog",
+        ])
+        .output()
+        .expect("docker run amd64");
+    let code = run_exe.status.code().expect("container exit code");
+    assert_eq!(
+        code,
+        expected_code,
+        "x86-64 ELF exit {code} must equal interpreter result {result} mod 256 ({expected_code}); docker stderr: {}",
+        String::from_utf8_lossy(&run_exe.stderr)
+    );
+}
+
 /// An unknown `--target` triple is rejected with `L0347` and no object is
 /// produced.
 #[test]
