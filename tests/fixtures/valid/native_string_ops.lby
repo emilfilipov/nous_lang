@@ -1,0 +1,60 @@
+fn sub_af -> string
+    substring("café", 1, 3)
+
+fn sub_e -> string
+    substring("café", 3, 4)
+
+fn sub_full -> string
+    substring("café", 0, 4)
+
+fn sub_empty -> string
+    substring("café", 2, 2)
+
+fn find_present -> i64
+    find("café", "fé")
+
+fn find_absent -> i64
+    find("café", "x")
+
+fn find_empty -> i64
+    find("café", "")
+
+fn contains_true -> bool
+    contains("café", "fé")
+
+fn contains_false -> bool
+    contains("café", "xy")
+
+fn starts_true -> bool
+    starts_with("café", "ca")
+
+fn starts_false -> bool
+    starts_with("café", "af")
+
+fn ends_true -> bool
+    ends_with("café", "é")
+
+fn ends_false -> bool
+    ends_with("café", "f")
+
+fn bool_to_i64 b bool -> i64
+    if b
+        return 1
+    return 0
+
+fn main -> i64
+    let total i64 = 0
+    total += len(sub_af())
+    total += len(sub_e())
+    total += len(sub_full())
+    total += len(sub_empty())
+    total += find_present()
+    total += find_absent()
+    total += find_empty()
+    total += bool_to_i64(contains_true())
+    total += bool_to_i64(contains_false())
+    total += bool_to_i64(starts_true())
+    total += bool_to_i64(starts_false())
+    total += bool_to_i64(ends_true())
+    total += bool_to_i64(ends_false())
+    total

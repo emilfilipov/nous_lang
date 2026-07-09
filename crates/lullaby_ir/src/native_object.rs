@@ -1008,6 +1008,35 @@ const STR_FROM_BOOL_SYMBOL: &str = "__lullaby_str_from_bool";
 /// record holding that code point's UTF-8 encoding (1–4 bytes, `char_len = 1`).
 const STR_FROM_CHAR_SYMBOL: &str = "__lullaby_str_from_char";
 
+/// The char-indexed `substring` helper emitted in `.text`. Signature: the source
+/// string record pointer in `rcx`, the `start` char index (i64) in `rdx`, the
+/// `end` char index (i64) in `r8`; returns in `rax` a fresh `[char_len][byte_len]
+/// [utf8]` record holding the half-open `[start, end)` char slice. On an
+/// out-of-bounds range (`start < 0 || end < 0 || start > end || end > char_count`)
+/// it traps with `ud2`, mirroring the interpreters' `L0413`.
+const STR_SUBSTRING_SYMBOL: &str = "__lullaby_str_substring";
+
+/// The `find` helper emitted in `.text`. Signature: the haystack record pointer
+/// in `rcx`, the needle record pointer in `rdx`; returns in `rax` the CHAR index
+/// (i64) of the first byte-level occurrence of the needle, or `-1` if absent. An
+/// empty needle yields `0`. Matches the interpreters' `char_find`.
+const STR_FIND_SYMBOL: &str = "__lullaby_str_find";
+
+/// The `contains` helper emitted in `.text`. Signature: the string record pointer
+/// in `rcx`, the substring record pointer in `rdx`; returns `0`/`1` (bool) in
+/// `rax`. An empty substring is contained. Byte-exact, matching the interpreters.
+const STR_CONTAINS_SYMBOL: &str = "__lullaby_str_contains";
+
+/// The `starts_with` helper emitted in `.text`. Signature: the string record
+/// pointer in `rcx`, the prefix record pointer in `rdx`; returns `0`/`1` (bool) in
+/// `rax`. An empty prefix matches; a longer-than-haystack prefix does not.
+const STR_STARTS_WITH_SYMBOL: &str = "__lullaby_str_starts_with";
+
+/// The `ends_with` helper emitted in `.text`. Signature: the string record
+/// pointer in `rcx`, the suffix record pointer in `rdx`; returns `0`/`1` (bool) in
+/// `rax`. An empty suffix matches; a longer-than-haystack suffix does not.
+const STR_ENDS_WITH_SYMBOL: &str = "__lullaby_str_ends_with";
+
 /// Whether `ty` is the native heap `string` type. A string value is a single
 /// pointer word (like a list/map) but immutable, so it needs no deep copy.
 fn is_string_type(ty: &TypeRef) -> bool {
@@ -4321,6 +4350,55 @@ fn lower_native_expr(
                 emit_mov_rax_from_rax_disp(code, STR_CHAR_LEN_OFF);
                 return Ok(());
             }
+            // Index-based string operations over the heap `[char_len][byte_len]
+            // [utf8]` record. Each stages its string (and index) operands into the
+            // Win64 argument registers and calls a `.text` helper; the helper does
+            // the UTF-8-aware scanning and (for `substring`) allocation, exactly
+            // matching the interpreters' semantics (char-indexed `substring`/`find`,
+            // byte-wise `contains`/`starts_with`/`ends_with`). Guarded by the string
+            // operand type so a same-named user function still resolves as a call.
+            if name == "substring"
+                && args.len() == 3
+                && is_string_type(&args[0].ty)
+                && args[1].ty.name == "i64"
+                && args[2].ty.name == "i64"
+            {
+                return lower_string_substring(ctx, &args[0], &args[1], &args[2], code);
+            }
+            if name == "find"
+                && args.len() == 2
+                && is_string_type(&args[0].ty)
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(ctx, &args[0], &args[1], STR_FIND_SYMBOL, code);
+            }
+            if name == "contains"
+                && args.len() == 2
+                && is_string_type(&args[0].ty)
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(ctx, &args[0], &args[1], STR_CONTAINS_SYMBOL, code);
+            }
+            if name == "starts_with"
+                && args.len() == 2
+                && is_string_type(&args[0].ty)
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(
+                    ctx,
+                    &args[0],
+                    &args[1],
+                    STR_STARTS_WITH_SYMBOL,
+                    code,
+                );
+            }
+            if name == "ends_with"
+                && args.len() == 2
+                && is_string_type(&args[0].ty)
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(ctx, &args[0], &args[1], STR_ENDS_WITH_SYMBOL, code);
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"
@@ -5488,6 +5566,53 @@ fn lower_string_concat(
     Ok(())
 }
 
+/// Lower `substring(s, start, end) -> string`: evaluate the source record pointer
+/// into `rcx`, the `start`/`end` char indices (i64) into `rdx`/`r8`, then call
+/// `__lullaby_str_substring`, which bounds-checks (trapping on `L0413`), maps the
+/// char indices to byte offsets by walking the UTF-8, allocates a fresh record,
+/// and byte-copies the slice. The slice record pointer is left in `rax`. Operands
+/// are evaluated left-to-right and spilled, because each evaluation may itself be
+/// a call that clobbers the argument registers.
+fn lower_string_substring(
+    ctx: &mut NativeCtx,
+    s: &BytecodeExpr,
+    start: &BytecodeExpr,
+    end: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, s, code)?; // record pointer -> rax
+    code.push(0x50); // push rax (string record)
+    lower_native_expr(ctx, start, code)?; // start i64 -> rax
+    code.push(0x50); // push rax (start)
+    lower_native_expr(ctx, end, code)?; // end i64 -> rax
+    code.extend_from_slice(&[0x49, 0x89, 0xC0]); // mov r8, rax (end)
+    code.push(0x5A); // pop rdx (start)
+    code.push(0x59); // pop rcx (string record)
+    emit_call_symbol(ctx, STR_SUBSTRING_SYMBOL, code);
+    Ok(())
+}
+
+/// Lower a two-string operation (`find`/`contains`/`starts_with`/`ends_with`):
+/// evaluate the first string record pointer into `rcx` and the second into `rdx`,
+/// then call the named `.text` helper, which leaves its result (an `i64` char
+/// index for `find`, a `0`/`1` bool for the predicates) in `rax`. The operands are
+/// spilled because the right operand's evaluation may clobber the left's register.
+fn lower_string_binary_op(
+    ctx: &mut NativeCtx,
+    left: &BytecodeExpr,
+    right: &BytecodeExpr,
+    symbol: &str,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, left, code)?; // left record pointer -> rax
+    code.push(0x50); // push rax (left)
+    lower_native_expr(ctx, right, code)?; // right record pointer -> rax
+    code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (right)
+    code.push(0x59); // pop rcx (left)
+    emit_call_symbol(ctx, symbol, code);
+    Ok(())
+}
+
 /// Lower `to_string(x)` to a fresh heap string record pointer in `rax`, matching
 /// the interpreters' `Display`/`builtin_to_string`. An `f64`/`f32` argument
 /// (dtoa) is deferred and rejected so the enclosing function skips gracefully.
@@ -6163,6 +6288,11 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_FROM_INT_SYMBOL
                     | STR_FROM_BOOL_SYMBOL
                     | STR_FROM_CHAR_SYMBOL
+                    | STR_SUBSTRING_SYMBOL
+                    | STR_FIND_SYMBOL
+                    | STR_CONTAINS_SYMBOL
+                    | STR_STARTS_WITH_SYMBOL
+                    | STR_ENDS_WITH_SYMBOL
             )
         })
     })
@@ -7639,6 +7769,437 @@ fn emit_str_from_char_helper() -> HelperFunction {
     }
 }
 
+// -- Index-based string op helpers (native) ----------------------------------
+//
+// These five leaf-ish helpers implement the char/byte-aware string operations
+// over the heap `[char_len i64][byte_len i64][utf8]` record, matching the
+// interpreters and the WASM backend bit-for-bit:
+//   * `substring` is char-indexed (`[start, end)`), traps (`ud2`, mirroring
+//     `L0413`) on an out-of-bounds range, and maps char indices to byte offsets
+//     by walking the UTF-8 (a byte is a char boundary when `(b & 0xC0) != 0x80`);
+//   * `find` returns the CHAR index of the first BYTE-level match (or `-1`),
+//     counting the non-continuation bytes before the matched byte offset;
+//   * `contains`/`starts_with`/`ends_with` are BYTE-exact predicates.
+// Only `substring` allocates (it builds a fresh record), so only it needs a
+// stack frame kept 16-byte aligned at the internal `__lullaby_alloc` call; the
+// others are pure scans that preserve the callee-saved registers they use.
+
+/// Emit a byte-compare of `needle` against the haystack window whose first byte
+/// is addressed by `r11` (`hay_cur`). Reads `rdi` (needle_data) and `r12`
+/// (needle_len). Leaves `1` in `rax` if every needle byte matches, else `0`. An
+/// empty needle (`needle_len == 0`) yields `1` (the loop runs zero times),
+/// matching Rust's empty-prefix/substring semantics. Clobbers `rax`, `rcx`, `rdx`,
+/// `r9`. The caller guarantees the window has at least `needle_len` bytes.
+fn emit_str_match_at_into_rax(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9 (j = 0)
+    let loop_top = code.len();
+    // if j >= needle_len -> matched (rax = 1).
+    code.extend_from_slice(&[0x4D, 0x39, 0xE1]); // cmp r9, r12
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge matched (rel32)
+    let matched_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // cl = hay_cur[j]; dl = needle_data[j].
+    code.extend_from_slice(&[0x43, 0x8A, 0x0C, 0x0B]); // mov cl, [r11 + r9]
+    code.extend_from_slice(&[0x42, 0x8A, 0x14, 0x0F]); // mov dl, [rdi + r9]
+    code.extend_from_slice(&[0x38, 0xD1]); // cmp cl, dl
+    code.extend_from_slice(&[0x0F, 0x85]); // jne mismatch (rel32)
+    let mismatch_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
+    emit_jmp_to(code, loop_top); // jmp loop_top
+    // matched: rax = 1; jmp done.
+    patch_rel32(code, matched_site);
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0]); // mov rax, 1
+    code.extend_from_slice(&1i32.to_le_bytes());
+    code.extend_from_slice(&[0xE9]); // jmp done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // mismatch: rax = 0.
+    patch_rel32(code, mismatch_site);
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+    // done:
+    patch_rel32(code, done_site);
+}
+
+/// Emit the first-match byte search. Reads `rsi` (hay_data), `rdi` (needle_data),
+/// `r13` (hay_len), `r12` (needle_len). Leaves `1`/`0` in `rax` (found flag) and,
+/// when found, the matched byte position in `r8`. Tries every start
+/// `0..=(hay_len - needle_len)` and stops at the first full match; when
+/// `needle_len > hay_len` the limit is negative so no start is tried and the flag
+/// stays `0`. An empty needle matches at byte `0`. Clobbers `rax`, `rcx`, `rdx`,
+/// `r8`, `r9`, `r10`, `r11`.
+fn emit_str_byte_search(code: &mut Vec<u8>) {
+    // limit = hay_len - needle_len (last valid start, inclusive; may be negative).
+    code.extend_from_slice(&[0x4D, 0x89, 0xEA]); // mov r10, r13
+    code.extend_from_slice(&[0x4D, 0x29, 0xE2]); // sub r10, r12
+    code.extend_from_slice(&[0x4D, 0x31, 0xC0]); // xor r8, r8 (pos = 0)
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax (found = 0)
+    let outer = code.len();
+    code.extend_from_slice(&[0x4D, 0x39, 0xD0]); // cmp r8, r10
+    code.extend_from_slice(&[0x0F, 0x8F]); // jg done (pos > limit, rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // hay_cur = hay_data + pos.
+    code.extend_from_slice(&[0x49, 0x89, 0xF3]); // mov r11, rsi
+    code.extend_from_slice(&[0x4D, 0x01, 0xC3]); // add r11, r8
+    emit_str_match_at_into_rax(code); // rax = match_at(pos)
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x0F, 0x85]); // jnz done (found; rel32)
+    let found_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x49, 0xFF, 0xC0]); // inc r8 (pos += 1)
+    emit_jmp_to(code, outer); // jmp outer
+    // done: rax already holds the flag (1 from the matched branch, or 0).
+    patch_rel32(code, done_site);
+    patch_rel32(code, found_done_site);
+}
+
+/// Load a string record's `hay_data`/`needle_data`/lengths for a two-string op.
+/// After this, `rsi = a_data (a+DATA)`, `rdi = b_data (b+DATA)`, `r13 = a_byte_len`,
+/// `r12 = b_byte_len`, with `rcx = a` and `rdx = b` on entry.
+fn emit_load_two_string_operands(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x4C, 0x8B, 0x69, 0x08]); // mov r13, [rcx + 8] (a byte_len)
+    code.extend_from_slice(&[0x48, 0x8D, 0x71, 0x10]); // lea rsi, [rcx + 16] (a data)
+    code.extend_from_slice(&[0x4C, 0x8B, 0x62, 0x08]); // mov r12, [rdx + 8] (b byte_len)
+    code.extend_from_slice(&[0x48, 0x8D, 0x7A, 0x10]); // lea rdi, [rdx + 16] (b data)
+}
+
+/// `__lullaby_str_find(rcx = haystack, rdx = needle) -> rax = i64 char index`.
+///
+/// Byte-searches for the first needle occurrence; on a hit, counts the UTF-8
+/// characters before the matched byte offset (`text[..byte].chars().count()`) and
+/// returns that char index; on a miss returns `-1`. An empty needle matches at
+/// byte `0`, whose preceding char count is `0`. A leaf function (no allocation);
+/// preserves the callee-saved `rsi`/`rdi`/`r12`/`r13` it uses.
+fn emit_str_find_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    emit_load_two_string_operands(&mut code);
+    emit_str_byte_search(&mut code); // rax = found flag, r8 = byte pos
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x0F, 0x84]); // jz not_found (rel32)
+    let not_found_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Count non-continuation bytes in hay_data[0 .. r8) into rax.
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax (count)
+    code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9 (bi)
+    let cloop = code.len();
+    code.extend_from_slice(&[0x4D, 0x39, 0xC1]); // cmp r9, r8
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge count_done (rel32)
+    let count_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x42, 0x8A, 0x0C, 0x0E]); // mov cl, [rsi + r9]
+    code.extend_from_slice(&[0x80, 0xE1, 0xC0]); // and cl, 0xC0
+    code.extend_from_slice(&[0x80, 0xF9, 0x80]); // cmp cl, 0x80
+    code.extend_from_slice(&[0x0F, 0x84]); // je cskip (continuation byte; rel32)
+    let cskip_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax (count += 1)
+    patch_rel32(&mut code, cskip_site);
+    code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9 (bi += 1)
+    emit_jmp_to(&mut code, cloop); // jmp cloop
+    // not_found: rax = -1.
+    patch_rel32(&mut code, not_found_site);
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0]); // mov rax, -1
+    code.extend_from_slice(&(-1i32).to_le_bytes());
+    // count_done:
+    patch_rel32(&mut code, count_done_site);
+
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_FIND_SYMBOL.to_string(),
+        code,
+        relocations: Vec::new(),
+    }
+}
+
+/// `__lullaby_str_contains(rcx = s, rdx = sub) -> rax = 0/1`.
+///
+/// Byte-exact substring test: emits the same byte search as `find` and returns its
+/// found flag. An empty substring is contained. A leaf function; preserves the
+/// callee-saved registers it uses.
+fn emit_str_contains_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    emit_load_two_string_operands(&mut code);
+    emit_str_byte_search(&mut code); // rax = found flag (0/1) — the result
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_CONTAINS_SYMBOL.to_string(),
+        code,
+        relocations: Vec::new(),
+    }
+}
+
+/// `__lullaby_str_starts_with(rcx = s, rdx = prefix) -> rax = 0/1`.
+///
+/// If `prefix_len > s_len` the result is `0`; otherwise it is whether the prefix
+/// bytes match at byte position `0`. An empty prefix matches. A leaf function.
+fn emit_str_starts_with_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    emit_load_two_string_operands(&mut code);
+    // if needle_len (r12) > hay_len (r13) -> 0.
+    code.extend_from_slice(&[0x4D, 0x39, 0xEC]); // cmp r12, r13
+    code.extend_from_slice(&[0x0F, 0x8F]); // jg false (rel32)
+    let false_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // match_at(pos = 0): hay_cur = hay_data.
+    code.extend_from_slice(&[0x49, 0x89, 0xF3]); // mov r11, rsi
+    emit_str_match_at_into_rax(&mut code); // rax = match result
+    code.extend_from_slice(&[0xE9]); // jmp done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // false: rax = 0.
+    patch_rel32(&mut code, false_site);
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+    // done:
+    patch_rel32(&mut code, done_site);
+
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_STARTS_WITH_SYMBOL.to_string(),
+        code,
+        relocations: Vec::new(),
+    }
+}
+
+/// `__lullaby_str_ends_with(rcx = s, rdx = suffix) -> rax = 0/1`.
+///
+/// If `suffix_len > s_len` the result is `0`; otherwise it is whether the suffix
+/// bytes match at byte position `s_len - suffix_len`. An empty suffix matches. A
+/// leaf function.
+fn emit_str_ends_with_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    emit_load_two_string_operands(&mut code);
+    // if needle_len (r12) > hay_len (r13) -> 0.
+    code.extend_from_slice(&[0x4D, 0x39, 0xEC]); // cmp r12, r13
+    code.extend_from_slice(&[0x0F, 0x8F]); // jg false (rel32)
+    let false_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // match_at(pos = hay_len - needle_len): hay_cur = hay_data + hay_len - needle_len.
+    code.extend_from_slice(&[0x49, 0x89, 0xF3]); // mov r11, rsi
+    code.extend_from_slice(&[0x4D, 0x01, 0xEB]); // add r11, r13 (+ hay_len)
+    code.extend_from_slice(&[0x4D, 0x29, 0xE3]); // sub r11, r12 (- needle_len)
+    emit_str_match_at_into_rax(&mut code); // rax = match result
+    code.extend_from_slice(&[0xE9]); // jmp done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // false: rax = 0.
+    patch_rel32(&mut code, false_site);
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax
+    // done:
+    patch_rel32(&mut code, done_site);
+
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_ENDS_WITH_SYMBOL.to_string(),
+        code,
+        relocations: Vec::new(),
+    }
+}
+
+/// Emit the char-index-to-byte walk. Reads the target char index in `rax`, the
+/// data pointer in `rsi`, and the byte length in `r15`; advances a byte offset
+/// past exactly `target` whole UTF-8 characters and leaves that byte offset in
+/// `rax`. Each step moves past one lead byte then over all continuation bytes
+/// (`(b & 0xC0) == 0x80`). For `target == char_count` this lands on `byte_len`.
+/// The caller's bounds check guarantees `target <= char_count`, so the walk stays
+/// in range. Clobbers `rax`, `rcx`, `rdx`, `r9`.
+fn emit_char_to_byte_walk(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x49, 0x89, 0xC1]); // mov r9, rax (target, saved)
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax (bi = 0)
+    code.extend_from_slice(&[0x48, 0x31, 0xC9]); // xor rcx, rcx (c = 0)
+    let wouter = code.len();
+    code.extend_from_slice(&[0x4C, 0x39, 0xC9]); // cmp rcx, r9
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge wdone (c >= target; rel32)
+    let wdone_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax (bi += 1, past lead byte)
+    let winner = code.len();
+    code.extend_from_slice(&[0x4C, 0x39, 0xF8]); // cmp rax, r15
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge wccont (bi >= byte_len; rel32)
+    let winner_break_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x8A, 0x14, 0x06]); // mov dl, [rsi + rax]
+    code.extend_from_slice(&[0x80, 0xE2, 0xC0]); // and dl, 0xC0
+    code.extend_from_slice(&[0x80, 0xFA, 0x80]); // cmp dl, 0x80
+    code.extend_from_slice(&[0x0F, 0x85]); // jne wccont (not continuation; rel32)
+    let winner_break2_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax (bi += 1)
+    emit_jmp_to(code, winner); // jmp winner
+    // wccont: c += 1; continue outer.
+    patch_rel32(code, winner_break_site);
+    patch_rel32(code, winner_break2_site);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC1]); // inc rcx (c += 1)
+    emit_jmp_to(code, wouter); // jmp wouter
+    // wdone: bi in rax.
+    patch_rel32(code, wdone_site);
+}
+
+/// `__lullaby_str_substring(rcx = s, rdx = start, r8 = end) -> rax = record`.
+///
+/// Char-indexed `[start, end)` slice. Bounds-checks exactly like the interpreters
+/// (`start < 0 || end < 0 || start > end || end > char_count`) and traps (`ud2`,
+/// mirroring `L0413`) on a violation. Otherwise maps the char indices to byte
+/// offsets by walking the UTF-8, allocates a fresh `[char_len][byte_len][utf8]`
+/// record, writes the sliced headers, and byte-copies the slice. Uses eight
+/// callee-saved registers across the internal `__lullaby_alloc` call and keeps
+/// `rsp` 16-byte aligned at that call.
+fn emit_str_substring_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: preserve the eight callee-saved regs we hold across the alloc call;
+    // 8 pushes keep rsp%16 == 8 (return addr makes the count even), then `sub rsp,8`
+    // → %16 == 0 at the internal `call`.
+    //   rsi = data, r15 = byte_len, rbx = start_byte, rbp = end_byte,
+    //   r12 = start_char, r13 = end_char, r14 = dst record.
+    code.push(0x53); // push rbx
+    code.push(0x55); // push rbp
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    code.extend_from_slice(&[0x41, 0x56]); // push r14
+    code.extend_from_slice(&[0x41, 0x57]); // push r15
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
+
+    // Bounds check against char_count = [rcx + CHAR_LEN]. r9 = char_count.
+    code.extend_from_slice(&[0x4C, 0x8B, 0x49, 0x00]); // mov r9, [rcx + 0]
+    // start < 0 -> trap.
+    code.extend_from_slice(&[0x48, 0x85, 0xD2]); // test rdx, rdx
+    code.extend_from_slice(&[0x0F, 0x88]); // js trap (start < 0; rel32)
+    let trap1_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // end < 0 -> trap.
+    code.extend_from_slice(&[0x4D, 0x85, 0xC0]); // test r8, r8
+    code.extend_from_slice(&[0x0F, 0x88]); // js trap (end < 0; rel32)
+    let trap2_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // start > end -> trap.
+    code.extend_from_slice(&[0x49, 0x39, 0xD0]); // cmp r8, rdx  (r8 - rdx)
+    code.extend_from_slice(&[0x0F, 0x8C]); // jl trap (r8 < rdx, i.e. start > end; rel32)
+    let trap3_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // end > char_count -> trap.
+    code.extend_from_slice(&[0x4D, 0x39, 0xC8]); // cmp r8, r9  (r8 - r9)
+    code.extend_from_slice(&[0x0F, 0x8F]); // jg trap (end > char_count; rel32)
+    let trap4_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // In-bounds path. Save start_char/end_char and the data/byte_len.
+    code.extend_from_slice(&[0x49, 0x89, 0xD4]); // mov r12, rdx (start_char)
+    code.extend_from_slice(&[0x4D, 0x89, 0xC5]); // mov r13, r8 (end_char)
+    code.extend_from_slice(&[0x4C, 0x8B, 0x79, 0x08]); // mov r15, [rcx + 8] (byte_len)
+    code.extend_from_slice(&[0x48, 0x8D, 0x71, 0x10]); // lea rsi, [rcx + 16] (data)
+
+    // start_byte = walk(start_char); end_byte = walk(end_char).
+    code.extend_from_slice(&[0x4C, 0x89, 0xE0]); // mov rax, r12 (start_char)
+    emit_char_to_byte_walk(&mut code); // rax = start_byte
+    code.extend_from_slice(&[0x48, 0x89, 0xC3]); // mov rbx, rax (start_byte)
+    code.extend_from_slice(&[0x4C, 0x89, 0xE8]); // mov rax, r13 (end_char)
+    emit_char_to_byte_walk(&mut code); // rax = end_byte
+    code.extend_from_slice(&[0x48, 0x89, 0xC5]); // mov rbp, rax (end_byte)
+
+    // Allocate STR_DATA_OFF + slice_bytes. rcx = (rbp - rbx) + STR_DATA_OFF.
+    code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
+    code.extend_from_slice(&[0x48, 0x29, 0xD9]); // sub rcx, rbx (slice_bytes)
+    code.extend_from_slice(&[0x48, 0x81, 0xC1]); // add rcx, imm32
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+    code.extend_from_slice(&[0x49, 0x89, 0xC6]); // mov r14, rax (record base)
+
+    // char_len = end_char - start_char (r13 - r12).
+    code.extend_from_slice(&[0x4C, 0x89, 0xE9]); // mov rcx, r13
+    code.extend_from_slice(&[0x4C, 0x29, 0xE1]); // sub rcx, r12
+    code.extend_from_slice(&[0x49, 0x89, 0x8E]); // mov [r14 + CHAR_LEN], rcx
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    // byte_len = slice_bytes = rbp - rbx.
+    code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
+    code.extend_from_slice(&[0x48, 0x29, 0xD9]); // sub rcx, rbx
+    code.extend_from_slice(&[0x49, 0x89, 0x8E]); // mov [r14 + BYTE_LEN], rcx
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+
+    // Copy slice_bytes from data + start_byte to r14 + DATA.
+    code.extend_from_slice(&[0x49, 0x8D, 0xBE]); // lea rdi, [r14 + disp32] (dest)
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x01, 0xDE]); // add rsi, rbx (src = data + start_byte)
+    code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
+    code.extend_from_slice(&[0x48, 0x29, 0xD9]); // sub rcx, rbx (count)
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb
+
+    // rax = r14 (record base) — return value.
+    code.extend_from_slice(&[0x4C, 0x89, 0xF0]); // mov rax, r14
+    code.extend_from_slice(&[0xE9]); // jmp epilogue (rel32)
+    let epilogue_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // trap: out-of-bounds range (mirrors the interpreters' L0413).
+    patch_rel32(&mut code, trap1_site);
+    patch_rel32(&mut code, trap2_site);
+    patch_rel32(&mut code, trap3_site);
+    patch_rel32(&mut code, trap4_site);
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+
+    // epilogue:
+    patch_rel32(&mut code, epilogue_site);
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+    code.extend_from_slice(&[0x41, 0x5F]); // pop r15
+    code.extend_from_slice(&[0x41, 0x5E]); // pop r14
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5D); // pop rbp
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_SUBSTRING_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// Write the extended COFF object with `.text`, `.rdata`, and `.bss` sections.
 /// Used only when the program references string constants.
 fn write_object_with_data(
@@ -7772,6 +8333,11 @@ fn write_object_with_data(
         emit_str_from_int_helper(),
         emit_str_from_bool_helper(),
         emit_str_from_char_helper(),
+        emit_str_substring_helper(),
+        emit_str_find_helper(),
+        emit_str_contains_helper(),
+        emit_str_starts_with_helper(),
+        emit_str_ends_with_helper(),
     ] {
         append_code(
             &mut text,
@@ -7833,6 +8399,11 @@ fn write_object_with_data(
         STR_FROM_INT_SYMBOL,
         STR_FROM_BOOL_SYMBOL,
         STR_FROM_CHAR_SYMBOL,
+        STR_SUBSTRING_SYMBOL,
+        STR_FIND_SYMBOL,
+        STR_CONTAINS_SYMBOL,
+        STR_STARTS_WITH_SYMBOL,
+        STR_ENDS_WITH_SYMBOL,
     ] {
         symbols.push(SymbolDef {
             name: helper.to_string(),
@@ -10317,6 +10888,11 @@ mod native_program_tests {
             STR_FROM_INT_SYMBOL,
             STR_FROM_BOOL_SYMBOL,
             STR_FROM_CHAR_SYMBOL,
+            STR_SUBSTRING_SYMBOL,
+            STR_FIND_SYMBOL,
+            STR_CONTAINS_SYMBOL,
+            STR_STARTS_WITH_SYMBOL,
+            STR_ENDS_WITH_SYMBOL,
             HEAP_ALLOC_SYMBOL,
         ] {
             let (section, _storage) =
@@ -10354,6 +10930,90 @@ mod native_program_tests {
             coff_symbol(&program.bytes, STR_CONCAT_SYMBOL).is_some(),
             "the concat helper symbol must be present"
         );
+    }
+
+    #[test]
+    fn index_string_op_call_sites_call_their_helpers() {
+        // Each index-based string op lowers to a `call` of its `.text` helper, so a
+        // function using them all references every helper symbol via a relocation
+        // and compiles natively (never skips to the interpreters). The bool results
+        // are folded to i64 through a tiny helper so `main` stays i64-returning.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn b2i x bool -> i64\n",
+            "    if x\n",
+            "        return 1\n",
+            "    return 0\n\n",
+            "fn main -> i64\n",
+            "    let s string = \"café\"\n",
+            "    let head string = substring(s, 0, 2)\n",
+            "    let idx i64 = find(s, \"f\")\n",
+            "    let c i64 = b2i(contains(s, \"af\"))\n",
+            "    let sw i64 = b2i(starts_with(s, \"ca\"))\n",
+            "    let ew i64 = b2i(ends_with(s, \"é\"))\n",
+            "    len(head) + idx + c + sw + ew\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"main".to_string()),
+            "main must compile natively: skipped {:?}",
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        for symbol in [
+            STR_SUBSTRING_SYMBOL,
+            STR_FIND_SYMBOL,
+            STR_CONTAINS_SYMBOL,
+            STR_STARTS_WITH_SYMBOL,
+            STR_ENDS_WITH_SYMBOL,
+        ] {
+            let (section, _storage) = coff_symbol(&program.bytes, symbol)
+                .unwrap_or_else(|| panic!("missing helper symbol {symbol}"));
+            assert_eq!(section, 1, "{symbol} must be defined in .text");
+        }
+    }
+
+    #[test]
+    fn substring_helper_emits_the_l0413_trap() {
+        // The `substring` helper bounds-checks the char range and traps with `ud2`
+        // (0F 0B) on a violation, mirroring the interpreters' `L0413` — it must not
+        // silently produce a wrong slice. Assert the helper body carries a `ud2`.
+        let helper = emit_str_substring_helper();
+        assert!(
+            helper.code.windows(2).any(|w| w == [0x0F, 0x0B]),
+            "the substring helper must carry a `ud2` trap for out-of-bounds ranges"
+        );
+        // It allocates a fresh record, so it references the bump allocator.
+        assert!(
+            helper
+                .relocations
+                .iter()
+                .any(|r| r.symbol == HEAP_ALLOC_SYMBOL),
+            "the substring helper must call the bump allocator"
+        );
+    }
+
+    #[test]
+    fn index_string_scan_helpers_are_leaf_functions() {
+        // `find`/`contains`/`starts_with`/`ends_with` are pure scans: no allocation,
+        // so they carry no relocations, and each returns via a single `ret` (0xC3).
+        for helper in [
+            emit_str_find_helper(),
+            emit_str_contains_helper(),
+            emit_str_starts_with_helper(),
+            emit_str_ends_with_helper(),
+        ] {
+            assert!(
+                helper.relocations.is_empty(),
+                "{} must be a leaf (no calls/relocations)",
+                helper.name
+            );
+            assert_eq!(
+                helper.code.last(),
+                Some(&0xC3),
+                "{} must end in `ret`",
+                helper.name
+            );
+        }
     }
 
     #[test]
