@@ -2412,13 +2412,15 @@ fn wasm_emits_module_and_lists_functions() {
 #[test]
 fn wasm_reports_no_eligible_functions() {
     // A file whose only function uses a type outside the supported WASM value set
-    // (strings/structs/arrays/enums, scalar-element `list`s, and scalar-key/value
-    // `map`s are now supported): an enum with a HEAP payload — `result<i64, string>`
-    // — is still deferred, so nothing is eligible and the WASM backend reports
-    // L0338. `wasm` reuses the executable pipeline, which requires `main`; make
-    // `main` itself return `result<i64, string>` so nothing is eligible and the
-    // emitter reports L0338 rather than compiling anything.
-    let source = "fn main -> result<i64, string>\n    ok(1)\n";
+    // (strings/structs/arrays/enums, scalar- or string-element `list`s, scalar-key
+    // maps with a scalar or `string` value, and enums with scalar or `string`
+    // payloads are now supported): an enum with a MUTABLE heap payload —
+    // `result<i64, list<i64>>` — is still deferred, so nothing is eligible and the
+    // WASM backend reports L0338. `wasm` reuses the executable pipeline, which
+    // requires `main`; make `main` itself return `result<i64, list<i64>>` so
+    // nothing is eligible and the emitter reports L0338 rather than compiling
+    // anything.
+    let source = "fn main -> result<i64, list<i64>>\n    ok(1)\n";
     let tmp = std::env::temp_dir().join("lullaby_wasm_none.lby");
     std::fs::write(&tmp, source).expect("write temp");
     let output = lullaby()
@@ -3763,6 +3765,105 @@ fn wasm_map_value_semantics_execution_parity_with_node() {
     assert!(
         out_text.contains(&format!("main={interp_main}")),
         "WASM map value-semantics `main` must equal the interpreter ({interp_main}), got: {out_text}"
+    );
+}
+
+#[test]
+fn wasm_list_string_and_map_string_execution_parity_with_node() {
+    // The `string`-element/value step: a `list<string>` (built with `push` of
+    // literal, concatenated, and `to_string` strings, read with `get`/`len`, and
+    // passed to helpers) and a `map<i64, string>` (built with `map_set`, read with
+    // `map_get` matching the returned `option<string>`, plus `map_has`/`map_len`).
+    // A `string` element/value is an `i32` pointer stored in one slot exactly like
+    // a scalar and — because strings are immutable — is SHARED (not deep-recursed)
+    // on the value-semantic deep copy. `grow_probe` pushes to its list parameter
+    // and `main` re-reads the caller's list length to prove the caller is
+    // unaffected. All functions must compile to WASM and the exported `main` must
+    // equal each interpreter backend's ground truth bit-for-bit.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_list_string.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_list_string.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // Every function must COMPILE to WASM (list<string>/map<i64,string> lower to
+    // linear memory), not skip to the interpreters.
+    let verbose = stdout(&emit);
+    for func in [
+        "total_len",
+        "grow_probe",
+        "build_words",
+        "build_names",
+        "name_len",
+        "main",
+    ] {
+        assert!(
+            verbose.contains(&format!("compiled {func}")),
+            "`{func}` should compile to WASM (not skip), got: {verbose}"
+        );
+    }
+
+    // Interpreter ground truth for `main`, identical on all three interpreter
+    // backends (AST/IR/bytecode).
+    let mut interp_main = String::new();
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{}", stderr(&run));
+        let result = stdout(&run).trim().to_string();
+        if interp_main.is_empty() {
+            interp_main = result.clone();
+        }
+        assert_eq!(
+            result, interp_main,
+            "backend `{backend}` must match the other interpreter backends"
+        );
+    }
+    assert_eq!(interp_main, "13444740");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM list<string>/map<string> parity");
+        return;
+    }
+
+    let runner = std::env::temp_dir().join("lullaby_wasm_list_string_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           process.stdout.write('main='+r.instance.exports.main().toString());\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "WASM list<string>/map<string> `main` must equal the interpreter ({interp_main}), got: {out_text}"
     );
 }
 
