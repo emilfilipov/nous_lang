@@ -1443,7 +1443,43 @@ fn lower_if(
     out: &mut Vec<u8>,
     loops: &LoopCtx,
 ) -> Result<(), String> {
-    lower_if_from(ctx, branches, 0, else_body, out, loops)
+    // A value-producing tail `if`/`else` (every reachable branch, including the
+    // final `else`, ends in a value expression of the same type) must emit each
+    // WASM `if` with that value's block type so the branch value is left on the
+    // stack; a statement `if` (or one with no `else`) stays a void block.
+    let block_type = match if_result_type(ctx, branches, else_body)? {
+        Some(vt) => vt.byte(),
+        None => 0x40, // void block type
+    };
+    lower_if_from(ctx, branches, 0, else_body, block_type, out, loops)
+}
+
+/// The WASM value type an `if`/`else` yields, or `None` if it is a statement
+/// (void). Mirrors [`match_result_type`]: an `if` is value-producing only when it
+/// has an `else` and a branch/`else` body ends in a non-void tail expression; the
+/// type checker guarantees the remaining branches agree.
+fn if_result_type(
+    ctx: &LowerCtx,
+    branches: &[crate::IrIfBranch],
+    else_body: &[IrStmt],
+) -> Result<Option<WasmValType>, String> {
+    // Without an `else`, one path yields nothing, so the `if` cannot be a value.
+    if else_body.is_empty() {
+        return Ok(None);
+    }
+    for branch in branches {
+        if let Some(IrStmt::Expr(tail)) = branch.body.last()
+            && !tail.ty.is_void()
+        {
+            return expr_val_type(ctx, tail);
+        }
+    }
+    if let Some(IrStmt::Expr(tail)) = else_body.last()
+        && !tail.ty.is_void()
+    {
+        return expr_val_type(ctx, tail);
+    }
+    Ok(None)
 }
 
 fn lower_if_from(
@@ -1451,18 +1487,19 @@ fn lower_if_from(
     branches: &[crate::IrIfBranch],
     idx: usize,
     else_body: &[IrStmt],
+    block_type: u8,
     out: &mut Vec<u8>,
     loops: &LoopCtx,
 ) -> Result<(), String> {
     let branch = &branches[idx];
     lower_expr(ctx, &branch.condition, out)?; // condition (i32)
     out.push(0x04); // if
-    out.push(0x40); // void block type
+    out.push(block_type); // void (0x40) or the yielded value's block type
     let inner = loops.nest();
     lower_stmts(ctx, &branch.body, out, &inner)?;
     out.push(0x05); // else
     if idx + 1 < branches.len() {
-        lower_if_from(ctx, branches, idx + 1, else_body, out, &inner)?;
+        lower_if_from(ctx, branches, idx + 1, else_body, block_type, out, &inner)?;
     } else {
         lower_stmts(ctx, else_body, out, &inner)?;
     }

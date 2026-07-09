@@ -1,0 +1,23 @@
+# A value-producing tail `if`/`elif`/`else` (each branch yields a value used as
+# the function result). The WASM backend emits a typed `if` block so the branch
+# value is left on the stack; identical on every backend.
+fn sign_of n i64 -> i64
+    if n > 0
+        1
+    elif n < 0
+        0 - 1
+    else
+        0
+
+fn abs_or_zero n i64 -> i64
+    if n > 0
+        n
+    else
+        0 - n
+
+fn main -> i64
+    let a i64 = sign_of(7) * 100
+    let b i64 = sign_of(0 - 4) * 10
+    let c i64 = sign_of(0)
+    let d i64 = abs_or_zero(0 - 5)
+    a + b + c + d + 50
