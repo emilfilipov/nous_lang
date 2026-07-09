@@ -356,7 +356,7 @@ fn native_file(
 ) -> Result<(), String> {
     // Resolve the object-file target. `None` is the default Windows COFF target;
     // an explicit `--target` selects ELF (Linux) or Mach-O (macOS). An unknown or
-    // non-x86-64 triple is rejected up front with `L0427`.
+    // non-x86-64 triple is rejected up front with `L0347`.
     let target = match target_triple.as_deref() {
         None => native_target_for_triple("x86_64-pc-windows-msvc")
             .expect("default target is always known"),
