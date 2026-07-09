@@ -238,7 +238,32 @@ main()  # Auto-runs if not explicitly awaited
 
 ### I/O Multiplexing (Non-blocking Operations)
 
-Efficient handling of multiple I/O operations:
+**Delivered (std-only, portable).** Non-blocking socket I/O is implemented on the
+AST, IR, and bytecode interpreters (the backends that hold live OS handles). A
+socket is switched with `set_nonblocking(sock Socket, enabled bool) -> result<i64,
+string>`, and the non-blocking accept/read/recv builtins surface a would-block
+condition as `ok(none)` instead of blocking:
+
+- `tcp_accept_nb(listener Socket) -> result<option<Socket>, string>`
+- `tcp_read_nb(conn Socket, max i64) -> result<option<string>, string>`
+- `udp_recv_nb(sock Socket) -> result<option<string>, string>`
+
+`ok(some(v))` means data/connection is ready, `ok(none)` means it would block,
+and `err(message)` is a real error. For `tcp_read_nb`, a 0-byte read (peer closed)
+is `ok(some(""))`, matching blocking `tcp_read`. This is the correct std-only core
+for an event loop: put sockets into non-blocking mode and poll the `*_nb` builtins
+in a loop with a short backoff between empty passes, so one thread services many
+sockets without blocking on any one. `set_nonblocking` + would-block-as-`none`
+behave identically on Windows, Linux, and macOS through `std`. See
+`documents/standard_library.md` (Networking) for the full signatures.
+
+**Follow-up (post-1.0).** A `poll`/`select`-style readiness selector that parks
+the calling thread until one of many sockets becomes ready — the epoll/kqueue/IOCP
+multiplexer sketched below — is a deliberate follow-up. It avoids the
+poll-with-backoff pattern but requires platform syscalls or an external crate, so
+it is outside the std-only spanning set targeted for 1.0.
+
+Efficient handling of multiple I/O operations (planned readiness-selector API):
 ```lullaby
 # Create I/O event set
 

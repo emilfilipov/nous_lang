@@ -245,6 +245,25 @@ structural:
 
 ## 4. Non-blocking I/O / poll
 
+**Status.** The std-only, portable *core* of this subsystem is **delivered**: a
+socket can be switched into non-blocking mode with `set_nonblocking(sock Socket,
+enabled bool) -> result<i64, string>`, and non-blocking accept/read/recv builtins
+surface a would-block condition as `ok(none)` instead of blocking —
+`tcp_accept_nb(listener) -> result<option<Socket>, string>`,
+`tcp_read_nb(conn, max i64) -> result<option<string>, string>`, and
+`udp_recv_nb(sock) -> result<option<string>, string>`. These run on the AST, IR,
+and bytecode interpreters (the backends holding live OS handles) and behave
+identically on Windows/Linux/macOS through `std`. They let a single thread drive
+many sockets by polling with a short backoff between empty passes — the correct
+std-only floor for an event loop, and the 1.0 spanning-set answer for
+non-blocking I/O. See `documents/standard_library.md` (Networking).
+
+The **readiness selector below (`poll_*`) is the deliberate follow-up**: it parks
+the thread until a socket is ready (epoll/kqueue/IOCP), avoiding poll-with-backoff
+for high-fan-out servers. It requires platform syscalls or an external crate, so
+it sits outside the std-only spanning set and is scheduled after 1.0. The rest of
+this section is the design for that future primitive.
+
 The honest scope: a **minimal, correct, cross-platform readiness primitive**,
 not an async runtime. It answers one question efficiently — *of these handles,
 which are ready to read/write right now (or within a timeout)?* — so a single

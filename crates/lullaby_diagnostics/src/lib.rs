@@ -365,8 +365,8 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         code: "L0335",
         phase: DiagnosticPhase::Semantic,
         explanation: "A TCP/UDP socket builtin has an argument type or arity mismatch.",
-        root_cause: "A `tcp_connect`/`tcp_listen`/`tcp_accept`/`tcp_read`/`tcp_write`/`tcp_close`/`udp_bind`/`udp_send_to`/`udp_recv` call had the wrong number of arguments or an argument of the wrong type (a non-`string` host/data, a non-`i64` port, or a non-`Socket` handle).",
-        suggested_fix: "Pass a `string` host/data, an `i64` port, and a `Socket` handle produced by a socket builtin, matching the builtin's arity.",
+        root_cause: "A `tcp_connect`/`tcp_listen`/`tcp_accept`/`tcp_accept_nb`/`tcp_read`/`tcp_read_nb`/`tcp_write`/`tcp_close`/`set_nonblocking`/`udp_bind`/`udp_send_to`/`udp_recv`/`udp_recv_nb` call had the wrong number of arguments or an argument of the wrong type (a non-`string` host/data, a non-`i64` port/`max`, a non-`bool` flag, or a non-`Socket` handle).",
+        suggested_fix: "Pass a `string` host/data, an `i64` port/`max`, a `bool` flag, and a `Socket` handle produced by a socket builtin, matching the builtin's arity.",
     },
     DiagnosticEntry {
         code: "L0336",

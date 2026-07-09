@@ -536,6 +536,36 @@ fn runs_atomic_memory_orderings_fixture_on_all_backends() {
 }
 
 #[test]
+fn runs_non_blocking_socket_fixture_on_all_backends() {
+    // Exercises the non-blocking socket surface deterministically, with no
+    // timing race: a TCP listener and a UDP socket are bound to ephemeral
+    // loopback ports (`127.0.0.1:0`), put into non-blocking mode with
+    // `set_nonblocking` (ok = 100 each), then probed with no pending peer.
+    // `tcp_accept_nb` and `udp_recv_nb` must surface would-block as `ok(none)`
+    // immediately (accept none = 1, recv none = 10) rather than block or error,
+    // so the total is a fixed 211 (100 + 1 + 100 + 10) on AST, IR, and bytecode.
+    let fixture = workspace_root().join("tests/fixtures/valid/run_socket_nonblocking.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "211",
+            "{backend} result"
+        );
+    }
+}
+
+#[test]
 fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");

@@ -723,6 +723,19 @@ pub fn expect_i64(name: &str, value: Value) -> Result<i64, RuntimeError> {
     }
 }
 
+/// Unwrap a runtime `Value` expected to be a `bool`, reporting `L0417`
+/// otherwise. Shared by the AST interpreter and the IR interpreter so every
+/// backend extracts boolean builtin arguments identically.
+pub fn expect_bool(name: &str, value: Value) -> Result<bool, RuntimeError> {
+    match value {
+        Value::Bool(flag) => Ok(flag),
+        other => Err(RuntimeError::new(
+            "L0417",
+            format!("{name} expects a bool but got `{other}`"),
+        )),
+    }
+}
+
 /// Map a matched pair of `Char`/`Byte` values to comparable `u32` order keys
 /// (a char's code point, a byte's numeric value). Returns `None` for any other
 /// pair so ordering can fall through to the `i64` path.
@@ -2032,13 +2045,17 @@ impl<'a> Runtime<'a> {
             "tcp_connect" => self.builtin_tcp_connect(args),
             "tcp_listen" => self.builtin_tcp_listen(args),
             "tcp_accept" => self.builtin_tcp_accept(args),
+            "tcp_accept_nb" => self.builtin_tcp_accept_nb(args),
             "tcp_read" => self.builtin_tcp_read(args),
+            "tcp_read_nb" => self.builtin_tcp_read_nb(args),
             "tcp_write" => self.builtin_tcp_write(args),
             "tcp_shutdown" => self.builtin_tcp_shutdown(args),
             "tcp_close" => self.builtin_socket_close(args),
+            "set_nonblocking" => self.builtin_set_nonblocking(args),
             "udp_bind" => self.builtin_udp_bind(args),
             "udp_send_to" => self.builtin_udp_send_to(args),
             "udp_recv" => self.builtin_udp_recv(args),
+            "udp_recv_nb" => self.builtin_udp_recv_nb(args),
             "http_get" => Self::builtin_http_get(args),
             "http_post" => Self::builtin_http_post(args),
             "proc_spawn" => self.builtin_proc_spawn(args),
@@ -2655,6 +2672,36 @@ impl<'a> Runtime<'a> {
         }
     }
 
+    /// `tcp_accept_nb(listener Socket) -> result<option<Socket>, string>`:
+    /// non-blocking accept. Returns `ok(some(client))` when a connection is
+    /// pending, `ok(none)` when the listener would block (no pending connection),
+    /// and `err(message)` on a real error. The listener must first be put into
+    /// non-blocking mode with `set_nonblocking`.
+    fn builtin_tcp_accept_nb(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [listener]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("tcp_accept_nb", 1, args.len()))?;
+        let slot = self.socket_slot("tcp_accept_nb", &listener)?;
+        let accepted = match &self.sockets[slot] {
+            Some(SocketResource::Listener(listener)) => listener.accept(),
+            _ => {
+                return Ok(result_value(Err(Value::String(
+                    "tcp_accept_nb requires a listening socket".to_string(),
+                ))));
+            }
+        };
+        match accepted {
+            Ok((stream, _addr)) => {
+                let socket = self.register_socket(SocketResource::Stream(stream));
+                Ok(result_value(Ok(option_value(Some(socket)))))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(result_value(Ok(option_value(None))))
+            }
+            Err(error) => Ok(net_err(&error)),
+        }
+    }
+
     /// `tcp_read(conn Socket) -> result<string, string>`: read up to 4096 bytes
     /// and return them as a lossy UTF-8 string (empty on clean EOF).
     fn builtin_tcp_read(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -2676,6 +2723,45 @@ impl<'a> Runtime<'a> {
             Ok(count) => Ok(result_value(Ok(Value::String(
                 String::from_utf8_lossy(&buffer[..count]).into_owned(),
             )))),
+            Err(error) => Ok(net_err(&error)),
+        }
+    }
+
+    /// `tcp_read_nb(conn Socket, max i64) -> result<option<string>, string>`:
+    /// non-blocking read of up to `max` bytes, returned as a lossy UTF-8 string.
+    /// Returns `ok(some(data))` when bytes are available, `ok(some(""))` on a
+    /// clean EOF (the peer closed the connection — matching blocking `tcp_read`),
+    /// `ok(none)` when the stream would block (no data ready yet), and
+    /// `err(message)` on a real error. `max` must be positive. The stream must
+    /// first be put into non-blocking mode with `set_nonblocking`.
+    fn builtin_tcp_read_nb(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use std::io::Read;
+        let [conn, max]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("tcp_read_nb", 2, args.len()))?;
+        let slot = self.socket_slot("tcp_read_nb", &conn)?;
+        let max = expect_i64("tcp_read_nb", max)?;
+        if max <= 0 {
+            return Ok(result_value(Err(Value::String(
+                "tcp_read_nb requires a positive `max` byte count".to_string(),
+            ))));
+        }
+        let mut buffer = vec![0u8; max as usize];
+        let read = match &mut self.sockets[slot] {
+            Some(SocketResource::Stream(stream)) => stream.read(&mut buffer),
+            _ => {
+                return Ok(result_value(Err(Value::String(
+                    "tcp_read_nb requires a connected stream socket".to_string(),
+                ))));
+            }
+        };
+        match read {
+            Ok(count) => Ok(result_value(Ok(option_value(Some(Value::String(
+                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+            )))))),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(result_value(Ok(option_value(None))))
+            }
             Err(error) => Ok(net_err(&error)),
         }
     }
@@ -2748,6 +2834,34 @@ impl<'a> Runtime<'a> {
         }
     }
 
+    /// `set_nonblocking(sock Socket, enabled bool) -> result<i64, string>`: put a
+    /// socket (a listener, connected stream, or UDP socket) into or out of
+    /// non-blocking mode via std's `set_nonblocking`. In non-blocking mode,
+    /// accept/read/recv operations that would block instead surface as
+    /// `ErrorKind::WouldBlock`, which the `*_nb` builtins report as `ok(none)`.
+    /// Returns `ok(0)` on success or `err(message)` on failure.
+    fn builtin_set_nonblocking(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [sock, enabled]: [Value; 2] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("set_nonblocking", 2, args.len()))?;
+        let slot = self.socket_slot("set_nonblocking", &sock)?;
+        let enabled = expect_bool("set_nonblocking", enabled)?;
+        let outcome = match &self.sockets[slot] {
+            Some(SocketResource::Listener(listener)) => listener.set_nonblocking(enabled),
+            Some(SocketResource::Stream(stream)) => stream.set_nonblocking(enabled),
+            Some(SocketResource::Udp(socket)) => socket.set_nonblocking(enabled),
+            None => {
+                return Ok(result_value(Err(Value::String(
+                    "set_nonblocking requires an open socket".to_string(),
+                ))));
+            }
+        };
+        match outcome {
+            Ok(()) => Ok(result_value(Ok(Value::I64(0)))),
+            Err(error) => Ok(net_err(&error)),
+        }
+    }
+
     /// `udp_bind(host string, port i64) -> result<Socket, string>`.
     fn builtin_udp_bind(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [host, port]: [Value; 2] = args
@@ -2810,6 +2924,37 @@ impl<'a> Runtime<'a> {
             Ok((count, _addr)) => Ok(result_value(Ok(Value::String(
                 String::from_utf8_lossy(&buffer[..count]).into_owned(),
             )))),
+            Err(error) => Ok(net_err(&error)),
+        }
+    }
+
+    /// `udp_recv_nb(sock Socket) -> result<option<string>, string>`: non-blocking
+    /// receive of one datagram (sender address dropped), returned as a lossy
+    /// UTF-8 string. Returns `ok(some(data))` when a datagram is ready,
+    /// `ok(none)` when the socket would block (no datagram pending), and
+    /// `err(message)` on a real error. The socket must first be put into
+    /// non-blocking mode with `set_nonblocking`.
+    fn builtin_udp_recv_nb(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [sock]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("udp_recv_nb", 1, args.len()))?;
+        let slot = self.socket_slot("udp_recv_nb", &sock)?;
+        let mut buffer = [0u8; 4096];
+        let received = match &self.sockets[slot] {
+            Some(SocketResource::Udp(socket)) => socket.recv_from(&mut buffer),
+            _ => {
+                return Ok(result_value(Err(Value::String(
+                    "udp_recv_nb requires a UDP socket".to_string(),
+                ))));
+            }
+        };
+        match received {
+            Ok((count, _addr)) => Ok(result_value(Ok(option_value(Some(Value::String(
+                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+            )))))),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(result_value(Ok(option_value(None))))
+            }
             Err(error) => Ok(net_err(&error)),
         }
     }
@@ -5660,6 +5805,40 @@ mod tests {
     fn runs_function_calls_and_arithmetic() {
         let source = "fn add x i64 y i64 -> i64\n    x + y\n\nfn main -> i64\n    let value i64 = add(40, 2)\n    value\n";
         assert_eq!(run_source(source).expect("run"), Value::I64(42));
+    }
+
+    #[test]
+    fn non_blocking_recv_surfaces_would_block_as_none() {
+        // A UDP socket bound to an ephemeral loopback port and put into
+        // non-blocking mode reports "no datagram pending" as `ok(none)` — never
+        // blocking — so this is deterministic with no live peer. The fixture maps
+        // `set_nonblocking` ok to 100 and an `ok(none)` recv to 10, summing 110.
+        let source = concat!(
+            "fn probe s Socket -> i64\n",
+            "    let toggled result<i64, string> = set_nonblocking(s, true)\n",
+            "    let received result<option<string>, string> = udp_recv_nb(s)\n",
+            "    tcp_close(s)\n",
+            "    let a i64 = unwrap_toggle(toggled)\n",
+            "    let b i64 = unwrap_recv(received)\n",
+            "    a + b\n\n",
+            "fn unwrap_toggle r result<i64, string> -> i64\n",
+            "    match r\n",
+            "        ok(code) -> 100\n",
+            "        err(message) -> 0\n\n",
+            "fn unwrap_recv r result<option<string>, string> -> i64\n",
+            "    match r\n",
+            "        ok(maybe) ->\n",
+            "            match maybe\n",
+            "                some(data) -> 0\n",
+            "                none -> 10\n",
+            "        err(message) -> 0\n\n",
+            "fn main -> i64\n",
+            "    let bound result<Socket, string> = udp_bind(\"127.0.0.1\", 0)\n",
+            "    match bound\n",
+            "        ok(s) -> probe(s)\n",
+            "        err(message) -> 0\n",
+        );
+        assert_eq!(run_source(source).expect("run"), Value::I64(110));
     }
 
     #[test]

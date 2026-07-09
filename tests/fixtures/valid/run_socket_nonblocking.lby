@@ -1,0 +1,56 @@
+# Deterministic non-blocking socket I/O: a listener/socket bound to an ephemeral
+# loopback port, put into non-blocking mode, then probed with no pending peer.
+# `tcp_accept_nb`/`udp_recv_nb` must return `ok(none)` (would-block) immediately
+# rather than blocking or erroring, so the total is fixed with no timing race.
+# set_nonblocking ok = 100, an `ok(none)` accept = 1, an `ok(none)` recv = 10.
+
+fn toggle s Socket -> i64
+    let outcome result<i64, string> = set_nonblocking(s, true)
+    match outcome
+        ok(code) -> 100
+        err(message) -> 0
+
+fn accept_probe l Socket -> i64
+    let attempt result<option<Socket>, string> = tcp_accept_nb(l)
+    match attempt
+        ok(maybe) ->
+            match maybe
+                some(client) -> 0
+                none -> 1
+        err(message) -> 0
+
+fn recv_probe s Socket -> i64
+    let attempt result<option<string>, string> = udp_recv_nb(s)
+    match attempt
+        ok(maybe) ->
+            match maybe
+                some(data) -> 0
+                none -> 10
+        err(message) -> 0
+
+fn probe_listener l Socket -> i64
+    let toggled i64 = toggle(l)
+    let accepted i64 = accept_probe(l)
+    tcp_close(l)
+    toggled + accepted
+
+fn probe_udp s Socket -> i64
+    let toggled i64 = toggle(s)
+    let received i64 = recv_probe(s)
+    tcp_close(s)
+    toggled + received
+
+fn tcp_probe -> i64
+    let listener result<Socket, string> = tcp_listen("127.0.0.1", 0)
+    match listener
+        ok(l) -> probe_listener(l)
+        err(message) -> 0
+
+fn udp_probe -> i64
+    let bound result<Socket, string> = udp_bind("127.0.0.1", 0)
+    match bound
+        ok(s) -> probe_udp(s)
+        err(message) -> 0
+
+fn main -> i64
+    tcp_probe() + udp_probe()

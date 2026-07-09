@@ -861,9 +861,13 @@ fn main -> i64
             <tr><td><code>udp_bind(host string, port i64)</code></td><td><code>result&lt;Socket, string&gt;</code> — bind a datagram socket.</td></tr>
             <tr><td><code>udp_send_to(sock Socket, data string, host string, port i64)</code></td><td><code>result&lt;i64, string&gt;</code> — send one datagram, return the count.</td></tr>
             <tr><td><code>udp_recv(sock Socket)</code></td><td><code>result&lt;string, string&gt;</code> — receive one datagram (sender addr dropped).</td></tr>
+            <tr><td><code>set_nonblocking(sock Socket, enabled bool)</code></td><td><code>result&lt;i64, string&gt;</code> — toggle non-blocking mode on a listener/stream/UDP socket.</td></tr>
+            <tr><td><code>tcp_accept_nb(listener Socket)</code></td><td><code>result&lt;option&lt;Socket&gt;, string&gt;</code> — non-blocking accept: <code>some(stream)</code>, or <code>none</code> when there is no pending connection (would-block).</td></tr>
+            <tr><td><code>tcp_read_nb(conn Socket, max i64)</code></td><td><code>result&lt;option&lt;string&gt;, string&gt;</code> — non-blocking read: <code>some(data)</code>, or <code>none</code> on would-block.</td></tr>
+            <tr><td><code>udp_recv_nb(sock Socket)</code></td><td><code>result&lt;option&lt;string&gt;, string&gt;</code> — non-blocking datagram receive: <code>some(data)</code>, or <code>none</code> on would-block.</td></tr>
           </tbody>
         </table>
-        <p>Wrong argument types or arities report <code>L0335</code>.</p>
+        <p>Wrong argument types or arities report <code>L0335</code>. The <code>*_nb</code> variants surface <code>ErrorKind::WouldBlock</code> as <code>ok(none)</code>, so an event loop can poll without blocking; a readiness selector (<code>poll</code>/epoll/kqueue/IOCP) is a post-1.0 follow-up.</p>
         <pre data-fixture="tests/fixtures/valid/run_socket.lby" data-mode="run"><code>fn main -> i64
     let outcome result&lt;Socket, string&gt; = tcp_connect("127.0.0.1", 1)
     match outcome

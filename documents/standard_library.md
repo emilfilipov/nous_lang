@@ -544,8 +544,17 @@ bytecode backends.
     listen.
   - `tcp_accept(listener Socket) -> result<Socket, string>` — block for a
     connection and return a stream `Socket`.
+  - `tcp_accept_nb(listener Socket) -> result<option<Socket>, string>` —
+    non-blocking accept. `ok(some(client))` when a connection is pending,
+    `ok(none)` when it would block (no connection ready), `err(message)` on a
+    real error. Requires the listener to be in non-blocking mode first.
   - `tcp_read(conn Socket) -> result<string, string>` — read up to 4096 bytes as
     a UTF-8 string (empty string on clean EOF).
+  - `tcp_read_nb(conn Socket, max i64) -> result<option<string>, string>` —
+    non-blocking read of up to `max` bytes. `ok(some(data))` when bytes are
+    available, `ok(some(""))` on a clean EOF (the peer closed — matching blocking
+    `tcp_read`), `ok(none)` when it would block (no data ready), `err(message)`
+    on a real error. `max` must be positive. Requires non-blocking mode first.
   - `tcp_write(conn Socket, data string) -> result<i64, string>` — write the
     string's full byte buffer (short writes are retried) and flush; return the
     byte count.
@@ -561,6 +570,25 @@ bytecode backends.
     — send one datagram; return the byte count.
   - `udp_recv(sock Socket) -> result<string, string>` — receive one datagram as a
     string (the sender address is dropped in this increment).
+  - `udp_recv_nb(sock Socket) -> result<option<string>, string>` — non-blocking
+    receive. `ok(some(data))` when a datagram is ready, `ok(none)` when it would
+    block (no datagram pending), `err(message)` on a real error. Requires
+    non-blocking mode first.
+- Non-blocking I/O:
+  - `set_nonblocking(sock Socket, enabled bool) -> result<i64, string>` — put any
+    socket (listener, connected stream, or UDP socket) into (`true`) or out of
+    (`false`) non-blocking mode. Returns `ok(0)` on success or `err(message)` on
+    failure. In non-blocking mode, an accept/read/recv that would block surfaces
+    as `ok(none)` from the `*_nb` builtins instead of blocking the thread.
+  - This is the std-only, portable core of an event loop: put a socket into
+    non-blocking mode, then poll `tcp_accept_nb`/`tcp_read_nb`/`udp_recv_nb` in a
+    loop (with a short backoff sleep between empty passes) so a single thread can
+    service many sockets without blocking on any one. `set_nonblocking` +
+    would-block-as-`none` behave identically on Windows, Linux, and macOS via
+    `std`. A `poll`/`select`-style readiness selector (epoll/kqueue/IOCP) that
+    parks the thread until a socket is ready — avoiding the poll-with-backoff — is
+    a deliberate post-1.0 follow-up; it needs platform syscalls or a crate and so
+    is out of the std-only spanning set.
 - Wrong argument types or arities report `L0335`.
 - HTTP/1.1 client (built over `TcpStream`, no TLS):
   - `http_get(url string) -> result<string, string>` — perform an HTTP/1.1 GET

@@ -4196,6 +4196,47 @@ impl<'a> Checker<'a> {
                     &TypeRef::new("string"),
                 ))
             }
+            "set_nonblocking" => {
+                // `(sock Socket, enabled bool) -> result<i64, string>`: toggle a
+                // socket's non-blocking mode so the `*_nb` builtins can surface a
+                // would-block condition as `ok(none)` instead of blocking.
+                self.expect_socket_arg_count(name, args, 2, function)?;
+                self.expect_socket_arg_type(name, 1, &args[0], "Socket", scope, function)?;
+                self.expect_socket_arg_type(name, 2, &args[1], "bool", scope, function)?;
+                Some(result_type(&TypeRef::new("i64"), &TypeRef::new("string")))
+            }
+            "tcp_accept_nb" => {
+                // `(listener Socket) -> result<option<Socket>, string>`:
+                // non-blocking accept; `ok(none)` means would-block.
+                self.expect_socket_arg_count(name, args, 1, function)?;
+                self.expect_socket_arg_type(name, 1, &args[0], "Socket", scope, function)?;
+                Some(result_type(
+                    &option_type(&TypeRef::new("Socket")),
+                    &TypeRef::new("string"),
+                ))
+            }
+            "tcp_read_nb" => {
+                // `(conn Socket, max i64) -> result<option<string>, string>`:
+                // non-blocking read; `ok(none)` means would-block, `ok(some(""))`
+                // means a clean EOF.
+                self.expect_socket_arg_count(name, args, 2, function)?;
+                self.expect_socket_arg_type(name, 1, &args[0], "Socket", scope, function)?;
+                self.expect_socket_arg_type(name, 2, &args[1], "i64", scope, function)?;
+                Some(result_type(
+                    &option_type(&TypeRef::new("string")),
+                    &TypeRef::new("string"),
+                ))
+            }
+            "udp_recv_nb" => {
+                // `(sock Socket) -> result<option<string>, string>`:
+                // non-blocking receive; `ok(none)` means would-block.
+                self.expect_socket_arg_count(name, args, 1, function)?;
+                self.expect_socket_arg_type(name, 1, &args[0], "Socket", scope, function)?;
+                Some(result_type(
+                    &option_type(&TypeRef::new("string")),
+                    &TypeRef::new("string"),
+                ))
+            }
             "http_get" => {
                 // `(url string) -> result<string, string>`.
                 self.expect_http_arg_count(name, args, 1, function)?;
@@ -8513,6 +8554,109 @@ mod tests {
             "        err(message) -> 1\n",
         );
         let diagnostics = validate_source(source).expect_err("wrong socket arg type");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0335"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_non_blocking_socket_builtins() {
+        // `set_nonblocking` yields `result<i64, string>`; the `*_nb` reads yield
+        // a `result` whose `ok` arm is an `option` (a would-block `none`).
+        // `tcp_accept_nb` -> `result<option<Socket>, string>`, `tcp_read_nb` and
+        // `udp_recv_nb` -> `result<option<string>, string>`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let bound result<Socket, string> = udp_bind(\"127.0.0.1\", 0)\n",
+            "    match bound\n",
+            "        ok(sock) -> probe(sock)\n",
+            "        err(message) -> len(message)\n\n",
+            "fn probe sock Socket -> i64\n",
+            "    let toggled result<i64, string> = set_nonblocking(sock, true)\n",
+            "    let got result<option<string>, string> = udp_recv_nb(sock)\n",
+            "    tcp_close(sock)\n",
+            "    match got\n",
+            "        ok(maybe) ->\n",
+            "            match maybe\n",
+            "                some(data) -> len(data)\n",
+            "                none -> 0\n",
+            "        err(message) -> len(message)\n",
+        );
+        validate_source(source).expect("non-blocking socket builtins type-check");
+    }
+
+    #[test]
+    fn accepts_tcp_accept_nb_and_read_nb_option_results() {
+        // `tcp_accept_nb` threads an `option<Socket>` through the `ok` arm and
+        // `tcp_read_nb(conn, max i64)` an `option<string>`; both must type-check.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let listener result<Socket, string> = tcp_listen(\"127.0.0.1\", 0)\n",
+            "    match listener\n",
+            "        ok(l) -> serve(l)\n",
+            "        err(message) -> len(message)\n\n",
+            "fn serve l Socket -> i64\n",
+            "    let accepted result<option<Socket>, string> = tcp_accept_nb(l)\n",
+            "    match accepted\n",
+            "        ok(maybe) ->\n",
+            "            match maybe\n",
+            "                some(client) -> read_some(client)\n",
+            "                none -> 0\n",
+            "        err(message) -> len(message)\n\n",
+            "fn read_some client Socket -> i64\n",
+            "    let chunk result<option<string>, string> = tcp_read_nb(client, 1024)\n",
+            "    tcp_close(client)\n",
+            "    match chunk\n",
+            "        ok(maybe) ->\n",
+            "            match maybe\n",
+            "                some(data) -> len(data)\n",
+            "                none -> 0\n",
+            "        err(message) -> len(message)\n",
+        );
+        validate_source(source).expect("tcp accept/read nb type-check");
+    }
+
+    #[test]
+    fn rejects_set_nonblocking_non_bool_flag_with_l0335() {
+        // `set_nonblocking`'s second argument must be a `bool`; an i64 flag is a
+        // type error reported as L0335.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let bound result<Socket, string> = udp_bind(\"127.0.0.1\", 0)\n",
+            "    match bound\n",
+            "        ok(sock) -> flip(sock)\n",
+            "        err(message) -> len(message)\n\n",
+            "fn flip sock Socket -> i64\n",
+            "    let toggled result<i64, string> = set_nonblocking(sock, 1)\n",
+            "    match toggled\n",
+            "        ok(code) -> code\n",
+            "        err(message) -> len(message)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("non-bool set_nonblocking flag");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0335"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_tcp_accept_nb_wrong_arity_with_l0335() {
+        // `tcp_accept_nb` takes exactly one `Socket`; an extra argument is an
+        // arity error reported as L0335.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let listener result<Socket, string> = tcp_listen(\"127.0.0.1\", 0)\n",
+            "    match listener\n",
+            "        ok(l) -> bad(l)\n",
+            "        err(message) -> len(message)\n\n",
+            "fn bad l Socket -> i64\n",
+            "    let accepted result<option<Socket>, string> = tcp_accept_nb(l, 1)\n",
+            "    match accepted\n",
+            "        ok(maybe) -> 0\n",
+            "        err(message) -> len(message)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("tcp_accept_nb wrong arity");
         assert!(
             diagnostics.iter().any(|d| d.code == "L0335"),
             "{diagnostics:?}"
