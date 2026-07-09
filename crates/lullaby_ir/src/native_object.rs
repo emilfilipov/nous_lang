@@ -945,6 +945,75 @@ fn supported_map_kv(ty: &TypeRef) -> Option<(TypeRef, TypeRef)> {
     Some((key, value))
 }
 
+// -- Heap string layout (native) ---------------------------------------------
+//
+// A first-class `string` value is a heap pointer (one 8-byte word / register
+// value) to a record `[char_len: i64][byte_len: i64][utf8 bytes]`: the Unicode
+// scalar (char) count, the UTF-8 byte length, then the encoded bytes. This
+// mirrors the WASM backend's string record (which uses i32 headers); native uses
+// i64 headers so every field is a uniform 8-byte word, matching the native
+// list/map/struct slot discipline.
+//
+// Strings are IMMUTABLE, so — unlike lists and maps — a string value needs no
+// deep-copy when bound (`let b = a`), passed as an argument, or returned: sharing
+// the pointer is already value-equivalent (exactly the interpreters' behavior and
+// the WASM backend's, which also never copies a string argument). A string
+// therefore crosses a function boundary as a plain pointer word in an integer
+// register, never as a by-pointer aggregate.
+//
+// `len(s)` reads the `char_len` header for ANY string value. Runtime `+`
+// concatenation allocates a fresh record, sums the headers, and byte-copies both
+// operands' UTF-8 ranges. `to_string` builds a fresh record from an integer/
+// bool/char/byte (identity on a string). All records are bump-allocated (no
+// reclamation), like every other native heap value.
+
+/// Byte offset of a string record's `char_len` header (Unicode scalar count).
+const STR_CHAR_LEN_OFF: i32 = 0;
+
+/// Byte offset of a string record's `byte_len` header (UTF-8 byte length).
+const STR_BYTE_LEN_OFF: i32 = 8;
+
+/// Byte offset of a string record's first UTF-8 byte, past the two i64 headers.
+const STR_DATA_OFF: i32 = 16;
+
+/// The string-literal materialization helper emitted in `.text`. Signature: a
+/// pointer to a NUL-terminated `.rdata` byte string in `rcx`; returns in `rax` a
+/// fresh heap string record `[char_len][byte_len][utf8 bytes]` copied from those
+/// bytes (the byte length scanned to the terminator, the char count computed by
+/// decoding UTF-8 lead bytes). The `.rdata` layout is unchanged (raw
+/// NUL-terminated bytes, shared with the `len("literal")` path), so a string
+/// literal used as a value materializes through this helper at runtime.
+const STR_LIT_SYMBOL: &str = "__lullaby_str_lit";
+
+/// The string-concatenation helper emitted in `.text`. Signature: the left
+/// string record pointer in `rcx`, the right in `rdx`; returns in `rax` a fresh
+/// record whose char/byte headers are the summed operands' headers and whose
+/// bytes are the two operands' UTF-8 ranges concatenated.
+const STR_CONCAT_SYMBOL: &str = "__lullaby_str_concat";
+
+/// The integer-to-string helper emitted in `.text`. Signature: a signed 64-bit
+/// value in `rcx` and a signedness flag in `rdx` (0 = format as unsigned `u64`,
+/// nonzero = format as signed `i64`); returns in `rax` a fresh string record of
+/// the decimal digits (a leading `-` for a negative signed value). Matches the
+/// interpreters' `Display` for `i64`/fixed-width integers (`byte` uses the
+/// unsigned path).
+const STR_FROM_INT_SYMBOL: &str = "__lullaby_str_from_int";
+
+/// The bool-to-string helper emitted in `.text`. Signature: a 0/1 flag in `rcx`;
+/// returns in `rax` a fresh string record holding `"true"` or `"false"`.
+const STR_FROM_BOOL_SYMBOL: &str = "__lullaby_str_from_bool";
+
+/// The char-to-string helper emitted in `.text`. Signature: a Unicode scalar
+/// value (code point) in `rcx`; returns in `rax` a fresh single-character string
+/// record holding that code point's UTF-8 encoding (1–4 bytes, `char_len = 1`).
+const STR_FROM_CHAR_SYMBOL: &str = "__lullaby_str_from_char";
+
+/// Whether `ty` is the native heap `string` type. A string value is a single
+/// pointer word (like a list/map) but immutable, so it needs no deep copy.
+fn is_string_type(ty: &TypeRef) -> bool {
+    ty.name == "string"
+}
+
 /// `.rdata` section characteristics: initialized, read-only data.
 /// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ`.
 const RDATA_CHARACTERISTICS: u32 = 0x4000_0040;
@@ -1245,6 +1314,12 @@ fn native_signature_type_is_aggregate(
     if matches!(ty.name.as_str(), "f64" | "f32") {
         return Ok(false);
     }
+    // A heap `string` crosses a boundary as a single immutable pointer word in an
+    // integer register (by value; no deep copy, since strings are immutable). It
+    // is a scalar for the signature classification, not a by-pointer aggregate.
+    if ty.name == "string" {
+        return Ok(false);
+    }
     // A fixed array parameter/return is an aggregate. Its element layout must be a
     // native (non-heap) type; the length is not needed for the signature check
     // (the callee copies whole words by count derived from the caller's value at
@@ -1280,6 +1355,7 @@ fn native_signature_type_is_aggregate(
         NativeType::I64
         | NativeType::F64
         | NativeType::F32
+        | NativeType::String
         | NativeType::List { .. }
         | NativeType::Map { .. } => Ok(false),
         NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. } => Ok(true),
@@ -1674,6 +1750,13 @@ enum NativeType {
     /// bytes are meaningful; the value is kept rounded to single precision after
     /// every operation, matching the interpreter's real `f32` storage.
     F32,
+    /// A heap `string` value: a single 8-byte word holding a pointer to a
+    /// `[char_len i64][byte_len i64][utf8 bytes]` record. It passes/returns in an
+    /// integer register (by value, like a pointer). Unlike a list/map it is
+    /// IMMUTABLE, so it needs no deep copy on a binding, argument, or return —
+    /// sharing the pointer is value-equivalent, matching the interpreters and the
+    /// WASM backend.
+    String,
     /// A named struct whose fields are all supported native types, in order.
     Struct {
         name: String,
@@ -1740,10 +1823,11 @@ impl NativeType {
     /// The number of 8-byte words this value occupies on the stack.
     fn words(&self) -> usize {
         match self {
-            // A list or map is a single pointer word, like a scalar.
+            // A string, list, or map is a single pointer word, like a scalar.
             NativeType::I64
             | NativeType::F64
             | NativeType::F32
+            | NativeType::String
             | NativeType::List { .. }
             | NativeType::Map { .. } => 1,
             NativeType::Struct { fields, .. } => fields.iter().map(|(_, t)| t.words()).sum(),
@@ -1799,6 +1883,9 @@ fn resolve_native_type(
         // bytes meaningful but is stored in a full word for uniform layout.
         "f64" => Ok(NativeType::F64),
         "f32" => Ok(NativeType::F32),
+        // A heap `string`: a single pointer word to a `[char_len][byte_len][utf8]`
+        // record. Immutable, so it passes/returns by value (pointer) with no copy.
+        "string" => Ok(NativeType::String),
         name if name.starts_with("array<") => Err(format!(
             "array length for `{name}` is unknown from its type"
         )),
@@ -1854,6 +1941,21 @@ fn resolve_native_type(
                 if matches!(native, NativeType::F64 | NativeType::F32) {
                     return Err(format!(
                         "struct `{name}` field `{field_name}` is a float; float struct fields are not in the native subset"
+                    ));
+                }
+                // A heap-value field (`string`/`list`/`map`) inside an aggregate is
+                // deferred: the aggregate copy/pass paths move flat words and would
+                // share (not deep-copy) the referenced heap block, breaking value
+                // semantics for a mutable list/map field. A string field is
+                // immutable but still out of this increment's scope (aggregates of
+                // heap values are deferred), so reject it too — the function skips.
+                if matches!(
+                    native,
+                    NativeType::String | NativeType::List { .. } | NativeType::Map { .. }
+                ) {
+                    return Err(format!(
+                        "struct `{name}` field `{field_name}` is a heap value \
+                         (string/list/map); heap-value struct fields are not in the native subset"
                     ));
                 }
                 fields.push((field_name.clone(), native));
@@ -2689,7 +2791,15 @@ fn instruction_has_call(instruction: &BytecodeInstruction) -> bool {
 fn expr_has_call(expr: &BytecodeExpr) -> bool {
     match &expr.kind {
         BytecodeExprKind::Call { .. } => true,
-        BytecodeExprKind::Binary { left, right, .. } => expr_has_call(left) || expr_has_call(right),
+        // A string literal used as a value materializes through the
+        // `__lullaby_str_lit` runtime helper (a `call`), so it needs shadow space.
+        BytecodeExprKind::String(_) => true,
+        // A `string + string` concatenation calls `__lullaby_str_concat`, so a
+        // Binary whose result type is `string` issues a call even if neither
+        // operand does. (Any other Binary just recurses into its operands.)
+        BytecodeExprKind::Binary { left, right, .. } => {
+            is_string_type(&expr.ty) || expr_has_call(left) || expr_has_call(right)
+        }
         BytecodeExprKind::Unary { expr, .. } => expr_has_call(expr),
         _ => false,
     }
@@ -2794,13 +2904,17 @@ fn lower_native_function(
                     emit_mov_slot_from_rcx(&mut code, local.slot + word * 8);
                 }
             }
-            NativeType::I64 | NativeType::List { .. } | NativeType::Map { .. } => {
-                // An integer/pointer scalar parameter — or a list/map (a heap
+            NativeType::I64
+            | NativeType::String
+            | NativeType::List { .. }
+            | NativeType::Map { .. } => {
+                // An integer/pointer scalar parameter — or a string/list/map (a heap
                 // pointer word) — spills its register directly into its slot. A
-                // list/map parameter shares the caller's block by pointer, which is
-                // safe: their mutators (`push`/`set`/`pop`, `map_set`) deep-copy
-                // their source, so the callee cannot alter the caller's value
-                // through the shared pointer.
+                // string parameter shares the caller's record by pointer, which is
+                // safe because strings are immutable. A list/map parameter also
+                // shares by pointer safely: their mutators (`push`/`set`/`pop`,
+                // `map_set`) deep-copy their source, so the callee cannot alter the
+                // caller's value through the shared pointer.
                 code.extend_from_slice(PARAM_STORE[reg]);
                 code.extend_from_slice(&(-local.slot).to_le_bytes());
             }
@@ -2934,9 +3048,12 @@ fn lower_native_stmt(
             // xmm0 and stores the whole word; an aggregate `let` materializes each
             // flattened scalar word directly into its slots.
             match ctx.local(name)?.ty {
-                // An `i64` scalar or a list/map (a pointer word) uses the register
-                // path: evaluate into `rax` and store the whole word.
-                NativeType::I64 | NativeType::List { .. } | NativeType::Map { .. } => {
+                // An `i64` scalar or a string/list/map (a pointer word) uses the
+                // register path: evaluate into `rax` and store the whole word.
+                NativeType::I64
+                | NativeType::String
+                | NativeType::List { .. }
+                | NativeType::Map { .. } => {
                     lower_native_expr(ctx, value, code)?;
                     let slot = ctx.local_slot(name)?;
                     store_local(code, slot); // mov [rbp - slot], rax
@@ -3021,19 +3138,23 @@ fn lower_native_stmt(
                 let ty = ctx.local(name)?.ty.clone();
                 return lower_aggregate_init(ctx, base, &ty, value, code);
             }
-            // A path-less whole-value assignment to a list or map local
-            // (`l = push(l, x)`, `l = list_new()`, `m = map_set(m, k, v)`,
-            // `m = map_new()`, …) re-stores the pointer word through the register
-            // path. Only `Replace` is meaningful for a list/map (there is no `+=` on
-            // one); a compound op is a skip.
+            // A path-less whole-value assignment to a string, list, or map local
+            // (`s = a + b`, `l = push(l, x)`, `l = list_new()`,
+            // `m = map_set(m, k, v)`, `m = map_new()`, …) re-stores the pointer word
+            // through the register path. Only `Replace` is meaningful for such a
+            // pointer value; a compound op is a skip. (String `+` is concatenation,
+            // which yields a fresh record — a whole-value `Replace`, never a `+=`.)
             if path.is_empty()
                 && matches!(
                     ctx.local(name)?.ty,
-                    NativeType::List { .. } | NativeType::Map { .. }
+                    NativeType::String | NativeType::List { .. } | NativeType::Map { .. }
                 )
             {
                 if !matches!(op, AssignOp::Replace) {
-                    return Err("compound assignment on a list or map is not supported".to_string());
+                    return Err(
+                        "compound assignment on a string, list, or map is not supported"
+                            .to_string(),
+                    );
                 }
                 lower_native_expr(ctx, value, code)?;
                 let slot = ctx.local_slot(name)?;
@@ -3976,6 +4097,19 @@ fn lower_native_expr(
             emit_mov_rax_imm(code, *value);
             Ok(())
         }
+        // A `bool` literal is a `0`/`1` cell; a `char` literal is its Unicode
+        // scalar value (code point). Both are single normalized `i64` cells — the
+        // same representation the interpreters use — so they load as an immediate.
+        // These reach here mainly through `to_string(true)` / `to_string('x')`, but
+        // a bool/char value is a valid `i64`-cell scalar wherever one is expected.
+        BytecodeExprKind::Bool(value) => {
+            emit_mov_rax_imm(code, i64::from(*value));
+            Ok(())
+        }
+        BytecodeExprKind::Char(value) => {
+            emit_mov_rax_imm(code, i64::from(u32::from(*value)));
+            Ok(())
+        }
         BytecodeExprKind::Variable(name) => {
             let slot = ctx.local_slot(name)?;
             load_local(code, slot);
@@ -4027,6 +4161,21 @@ fn lower_native_expr(
                 // the bits unchanged.
                 lower_native_expr(ctx, &args[0], code)?;
                 return Ok(());
+            }
+            // `to_string(x)` produces a fresh heap string record (a pointer in
+            // `rax`), matching the interpreters' `Display`/`builtin_to_string`:
+            //   * an integer (`i64`/fixed-width) → decimal digits, signed or
+            //     unsigned by the argument's kind (`byte` prints its 0..=255 value);
+            //   * `bool` → `"true"`/`"false"`;
+            //   * `char` → the code point's UTF-8 encoding;
+            //   * `string` → identity (the argument's pointer is already the value).
+            // Float `to_string` (dtoa) is deferred and falls back to the
+            // interpreters (rejected here so the function skips gracefully).
+            if name == "to_string" {
+                if args.len() != 1 {
+                    return Err("`to_string` takes exactly one argument".to_string());
+                }
+                return lower_to_string(ctx, &args[0], code);
             }
             // Growable `list<T>` (scalar `T`) builtins. `list_new()` allocates a
             // fresh `[len=0][cap=LIST_INITIAL_CAP][slots]` heap block; `push`/`set`/
@@ -4162,6 +4311,16 @@ fn lower_native_expr(
                 });
                 return Ok(());
             }
+            // `len(s)` on any other string VALUE (a variable, a parameter, a
+            // concatenation result, a `to_string` result, …) reads the `char_len`
+            // header of the record the string pointer addresses. This gives the
+            // Unicode scalar count for arbitrary UTF-8 strings, not only ASCII
+            // literals.
+            if name == "len" && args.len() == 1 && is_string_type(&args[0].ty) {
+                lower_native_expr(ctx, &args[0], code)?; // string pointer -> rax
+                emit_mov_rax_from_rax_disp(code, STR_CHAR_LEN_OFF);
+                return Ok(());
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"
@@ -4249,10 +4408,26 @@ fn lower_native_expr(
             let place = resolve_read_place(ctx, expr)?;
             emit_load_place(ctx, &place, code)
         }
-        BytecodeExprKind::Bool(_)
-        | BytecodeExprKind::Float(_)
-        | BytecodeExprKind::Char(_)
-        | BytecodeExprKind::String(_)
+        // A string literal used as a general VALUE (not just `len`'s argument):
+        // materialize its `.rdata` bytes into a fresh heap string record at
+        // runtime and leave the record pointer in `rax`. The `.rdata` bytes stay
+        // NUL-terminated (shared with the `len("literal")` path); the
+        // `__lullaby_str_lit` helper computes the char/byte headers and copies the
+        // bytes into the record.
+        BytecodeExprKind::String(text) => {
+            let symbol = ctx.strings.intern(text);
+            // lea rcx, [rip + __str] ; the 4-byte rel32 is a REL32 relocation.
+            code.extend_from_slice(&[0x48, 0x8D, 0x0D]);
+            let site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            ctx.relocations.push(CodeRelocation {
+                offset: site as u32,
+                symbol,
+            });
+            emit_call_symbol(ctx, STR_LIT_SYMBOL, code);
+            Ok(())
+        }
+        BytecodeExprKind::Float(_)
         | BytecodeExprKind::Array(_)
         | BytecodeExprKind::Await { .. }
         // Closures are not in the native scalar subset: a function that
@@ -4617,6 +4792,12 @@ fn lower_native_binary(
             emit_mov_rax_imm(code, 1);
             patch_rel32(code, done_site);
             Ok(())
+        }
+        // String concatenation: `a + b` on two strings allocates a fresh record
+        // and byte-copies both operands' UTF-8 ranges. Detected by the result type
+        // being `string` (the type checker only allows `+` between two strings).
+        BinaryOp::Add if is_string_type(&left.ty) && is_string_type(&right.ty) => {
+            lower_string_concat(ctx, left, right, code)
         }
         _ => {
             // A float comparison (`f64`/`f32` operands, ordered relational or
@@ -5276,6 +5457,94 @@ fn emit_signed_idiv_r8(code: &mut Vec<u8>) {
     code.extend_from_slice(&[0x49, 0xF7, 0xF8]);
 }
 
+// -- String op lowering (native) ---------------------------------------------
+//
+// A `string` value is a heap pointer to `[char_len i64][byte_len i64][utf8]`. The
+// heavy lifting (allocate, header math, byte copies, itoa) lives in `.text`
+// helpers so each call site stays small; the inline codegen below stages
+// operands and calls them. Every helper call is a `call`, so the frame reserves
+// shadow space and stays 16-byte aligned (see `expr_has_call`, which reports a
+// string literal and a string `+` as calls so the planner reserves it).
+
+/// Lower `a + b` string concatenation: evaluate both operands to record pointers
+/// (`a` in `rcx`, `b` in `rdx`), then call `__lullaby_str_concat`, which
+/// allocates a fresh record, sums the headers, and byte-copies both UTF-8 ranges.
+/// The concatenated record pointer is left in `rax`.
+fn lower_string_concat(
+    ctx: &mut NativeCtx,
+    left: &BytecodeExpr,
+    right: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    // Evaluate the left operand and spill its pointer, then the right (its
+    // evaluation may itself be a call that clobbers registers), then load both
+    // into the helper's argument registers.
+    lower_native_expr(ctx, left, code)?;
+    code.push(0x50); // push rax (left pointer)
+    lower_native_expr(ctx, right, code)?; // right pointer -> rax
+    code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (right)
+    code.push(0x59); // pop rcx (left)
+    emit_call_symbol(ctx, STR_CONCAT_SYMBOL, code);
+    Ok(())
+}
+
+/// Lower `to_string(x)` to a fresh heap string record pointer in `rax`, matching
+/// the interpreters' `Display`/`builtin_to_string`. An `f64`/`f32` argument
+/// (dtoa) is deferred and rejected so the enclosing function skips gracefully.
+fn lower_to_string(
+    ctx: &mut NativeCtx,
+    arg: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    let type_name = arg.ty.name.as_str();
+    match type_name {
+        // Identity: a string is already a heap record pointer.
+        "string" => lower_native_expr(ctx, arg, code),
+        // `bool` -> "true"/"false".
+        "bool" => {
+            lower_native_expr(ctx, arg, code)?; // 0/1 -> rax
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+            emit_call_symbol(ctx, STR_FROM_BOOL_SYMBOL, code);
+            Ok(())
+        }
+        // `char` -> the code point's UTF-8 encoding (a one-char string).
+        "char" => {
+            lower_native_expr(ctx, arg, code)?; // code point -> rax
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+            emit_call_symbol(ctx, STR_FROM_CHAR_SYMBOL, code);
+            Ok(())
+        }
+        // `byte` (0..=255) -> unsigned decimal.
+        "byte" => lower_int_to_string(ctx, arg, false, code),
+        // `i64` and the fixed-width integers -> decimal, signed or unsigned by kind.
+        "i64" => lower_int_to_string(ctx, arg, true, code),
+        name => match fixed_int_kind(name) {
+            Some(kind) => lower_int_to_string(ctx, arg, !kind.is_unsigned(), code),
+            None => Err(format!(
+                "to_string of `{name}` is not in the native subset (float to_string is deferred)"
+            )),
+        },
+    }
+}
+
+/// Lower an integer `to_string(x)`: evaluate `x` into `rcx`, set `rdx` to the
+/// signedness flag (nonzero = signed `i64` formatting, zero = unsigned `u64`),
+/// then call `__lullaby_str_from_int`.
+fn lower_int_to_string(
+    ctx: &mut NativeCtx,
+    arg: &BytecodeExpr,
+    signed: bool,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, arg, code)?; // normalized cell -> rax
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (value)
+    // mov edx, signed_flag  (0 or 1; zero-extends into rdx)
+    code.push(0xBA);
+    code.extend_from_slice(&(i32::from(signed)).to_le_bytes());
+    emit_call_symbol(ctx, STR_FROM_INT_SYMBOL, code);
+    Ok(())
+}
+
 // -- Growable list op lowering (native) --------------------------------------
 //
 // A `list<T>` value is a heap pointer to `[len i64][cap i64][slots]`. The heavy
@@ -5863,20 +6132,21 @@ fn write_native_program_object(
     debug: Option<&DebugOptions>,
 ) -> Vec<u8> {
     // The heap path (bump allocator + `.bss` region + helpers) is needed when the
-    // program interns string constants OR references any growable-list runtime
-    // helper. A program using neither keeps the exact prior text-only layout.
-    if strings.is_empty() && !program_uses_list_helpers(functions) {
+    // program interns string constants OR references any growable-list/map or
+    // string runtime helper. A program using none keeps the exact prior text-only
+    // layout.
+    if strings.is_empty() && !program_uses_heap_helpers(functions) {
         write_text_only_object(functions, emit_stub, debug)
     } else {
         write_object_with_data(functions, strings, emit_stub, debug)
     }
 }
 
-/// Whether any lowered function references a growable-list or growable-map runtime
-/// helper (via a relocation against `__lullaby_list_new`/`_copy`/`_grow` or
-/// `__lullaby_map_new`/`_copy`/`_grow`/`_find`). Used to decide whether the object
-/// needs the heap sections + helpers even when it interns no string constants.
-fn program_uses_list_helpers(functions: &[LoweredNativeFunction]) -> bool {
+/// Whether any lowered function references a runtime heap helper (a growable-list
+/// or growable-map helper, or a string helper), which requires the heap sections +
+/// helper `.text` even when the program interns no `.rdata` string constants (e.g.
+/// a `to_string(i64)`-only program builds records without any literal).
+fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
     functions.iter().any(|f| {
         f.relocations.iter().any(|r| {
             matches!(
@@ -5888,6 +6158,11 @@ fn program_uses_list_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | MAP_COPY_SYMBOL
                     | MAP_GROW_SYMBOL
                     | MAP_FIND_SYMBOL
+                    | STR_LIT_SYMBOL
+                    | STR_CONCAT_SYMBOL
+                    | STR_FROM_INT_SYMBOL
+                    | STR_FROM_BOOL_SYMBOL
+                    | STR_FROM_CHAR_SYMBOL
             )
         })
     })
@@ -6811,6 +7086,559 @@ fn emit_map_find_helper() -> HelperFunction {
     }
 }
 
+// -- String runtime helpers (native) -----------------------------------------
+//
+// Each helper builds a heap `string` record `[char_len i64][byte_len i64][utf8]`
+// via `__lullaby_alloc`. They preserve the non-volatile registers they use
+// (`rsi`/`rdi`/`rbx`) and keep `rsp` 16-byte aligned at the internal `call`
+// (three 8-byte pushes + `sub rsp, 8` restores alignment, the return address on
+// entry making the fourth 8). The bump allocator never reclaims.
+
+/// Emit `call __lullaby_alloc` (a rel32 relocation) inside a helper body.
+fn emit_helper_call_alloc(code: &mut Vec<u8>, relocations: &mut Vec<CodeRelocation>) {
+    code.push(0xE8);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_ALLOC_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+}
+
+/// `__lullaby_str_lit(rcx = NUL-terminated .rdata ptr) -> rax = string record`.
+///
+/// Scans the source for its byte length and its UTF-8 char count (a byte is a
+/// char boundary when `(b & 0xC0) != 0x80`), allocates `STR_DATA_OFF + byte_len`,
+/// writes the two headers, and copies the bytes.
+fn emit_str_lit_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: preserve rsi/rdi/rbx; `sub rsp, 8` restores 16-byte alignment.
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.push(0x53); // push rbx
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
+
+    // rsi = src.
+    code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx
+
+    // Scan: rbx = byte_len, rdi = char_len. rax walks the bytes.
+    code.extend_from_slice(&[0x48, 0x89, 0xF0]); // mov rax, rsi
+    code.extend_from_slice(&[0x48, 0x31, 0xDB]); // xor rbx, rbx (byte_len)
+    code.extend_from_slice(&[0x48, 0x31, 0xFF]); // xor rdi, rdi (char_len)
+    let scan = code.len();
+    code.extend_from_slice(&[0x8A, 0x08]); // mov cl, [rax]
+    code.extend_from_slice(&[0x84, 0xC9]); // test cl, cl
+    // jz scan_done (rel32, patched).
+    code.extend_from_slice(&[0x0F, 0x84]);
+    let scan_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Is this byte a char boundary? (cl & 0xC0) != 0x80  => inc char_len.
+    code.extend_from_slice(&[0x88, 0xCA]); // mov dl, cl
+    code.extend_from_slice(&[0x80, 0xE2, 0xC0]); // and dl, 0xC0
+    code.extend_from_slice(&[0x80, 0xFA, 0x80]); // cmp dl, 0x80
+    // je skip_inc (rel8): skip the `inc rdi` (3 bytes) if a continuation byte.
+    code.extend_from_slice(&[0x74, 0x03]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi (char_len)
+    // skip_inc:
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    code.extend_from_slice(&[0x48, 0xFF, 0xC3]); // inc rbx (byte_len)
+    emit_jmp_to(&mut code, scan); // jmp scan (rel32)
+    // scan_done:
+    patch_rel32(&mut code, scan_done_site);
+
+    // Allocate STR_DATA_OFF + byte_len bytes. rcx = rbx + STR_DATA_OFF.
+    code.extend_from_slice(&[0x48, 0x8D, 0x8B]); // lea rcx, [rbx + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+
+    // Write headers: [rax + CHAR_LEN] = rdi (char_len); [rax + BYTE_LEN] = rbx.
+    code.extend_from_slice(&[0x48, 0x89, 0xB8]); // mov [rax + disp32], rdi
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0x98]); // mov [rax + disp32], rbx
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+
+    // Copy byte_len bytes from rsi (src) to rax + STR_DATA_OFF.
+    code.push(0x50); // push rax (save record base for return)
+    // rdi = rax + STR_DATA_OFF (dest).
+    code.extend_from_slice(&[0x48, 0x8D, 0xB8]); // lea rdi, [rax + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx (count)
+    // rsi already = src.
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb
+    code.push(0x58); // pop rax (record base)
+
+    // Epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+    code.push(0x5B); // pop rbx
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_LIT_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_concat(rcx = a, rdx = b) -> rax = fresh record`.
+///
+/// Allocates `STR_DATA_OFF + byte_a + byte_b`, sums the char/byte headers, and
+/// byte-copies each operand's UTF-8 range. Mirrors the WASM backend's concat.
+fn emit_str_concat_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Preserve non-volatiles; keep operand pointers/headers across the alloc call.
+    //   rsi = a, r15 = b, rbx = byte_a, rbp = byte_b, r12 = char_a, r13 = char_b,
+    //   r14 = dst (record base). 8 pushes (64 bytes) + return addr (8) = 72; a
+    //   `sub rsp, 8` restores 16-byte alignment at the internal `call`.
+    code.push(0x56); // push rsi
+    code.push(0x53); // push rbx
+    code.push(0x55); // push rbp
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    code.extend_from_slice(&[0x41, 0x56]); // push r14
+    code.extend_from_slice(&[0x41, 0x57]); // push r15
+    code.push(0x57); // push rdi (8th push; keeps count even and rsp aligned)
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
+
+    code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx (a)
+    code.extend_from_slice(&[0x49, 0x89, 0xD7]); // mov r15, rdx (b)
+
+    // Load headers.
+    code.extend_from_slice(&[0x48, 0x8B, 0x9E]); // rbx = [rsi + BYTE_LEN] (byte_a)
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0x8B, 0xAF]); // rbp = [r15 + BYTE_LEN] (byte_b)
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x8B, 0xA6]); // r12 = [rsi + CHAR_LEN] (char_a)
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4D, 0x8B, 0xAF]); // r13 = [r15 + CHAR_LEN] (char_b)
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+
+    // Allocate STR_DATA_OFF + byte_a + byte_b. rcx = rbx + rbp + STR_DATA_OFF.
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0x01, 0xE9]); // add rcx, rbp
+    code.extend_from_slice(&[0x48, 0x81, 0xC1]); // add rcx, imm32
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+    code.extend_from_slice(&[0x49, 0x89, 0xC6]); // mov r14, rax (save record base)
+
+    // Headers: char_len = r12 + r13; byte_len = rbx + rbp.
+    code.extend_from_slice(&[0x4C, 0x89, 0xE1]); // mov rcx, r12
+    code.extend_from_slice(&[0x4C, 0x01, 0xE9]); // add rcx, r13
+    code.extend_from_slice(&[0x49, 0x89, 0x8E]); // mov [r14 + CHAR_LEN], rcx
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0x01, 0xE9]); // add rcx, rbp
+    code.extend_from_slice(&[0x49, 0x89, 0x8E]); // mov [r14 + BYTE_LEN], rcx
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+
+    // Copy a's bytes: rdi = r14 + DATA (dest), rsi = a + DATA (src), rcx = byte_a.
+    code.extend_from_slice(&[0x49, 0x8D, 0xBE]); // lea rdi, [r14 + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x81, 0xC6]); // add rsi, imm32  (rsi = a + DATA)
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx (byte_a)
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb  (rdi advanced by byte_a)
+
+    // Copy b's bytes: rsi = b + DATA (rdi already at the append position),
+    // rcx = byte_b (rbp).
+    code.extend_from_slice(&[0x4C, 0x89, 0xFE]); // mov rsi, r15 (b)
+    code.extend_from_slice(&[0x48, 0x81, 0xC6]); // add rsi, imm32 (b + DATA)
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp (byte_b)
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb
+
+    // rax = r14 (record base) — return value.
+    code.extend_from_slice(&[0x4C, 0x89, 0xF0]); // mov rax, r14
+
+    // Epilogue (reverse of prologue).
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+    code.push(0x5F); // pop rdi
+    code.extend_from_slice(&[0x41, 0x5F]); // pop r15
+    code.extend_from_slice(&[0x41, 0x5E]); // pop r14
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5D); // pop rbp
+    code.push(0x5B); // pop rbx
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_CONCAT_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_from_int(rcx = value, rdx = signed_flag) -> rax = string record`.
+///
+/// Formats `value` in decimal. When `signed_flag` is nonzero the value is treated
+/// as a signed `i64` (a leading `-` for a negative value, magnitude computed as a
+/// `u64` so `i64::MIN` formats correctly); when zero it is an unsigned `u64`. Two
+/// passes: pass 1 counts the digits (so the exact record size is known), pass 2
+/// writes the digits backward directly into the freshly allocated heap record (no
+/// stack buffer). `char_len == byte_len` (all ASCII). Matches the interpreters'
+/// integer `Display`.
+fn emit_str_from_int_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: preserve rbx/rsi/rdi/r12/r13 (5 callee-saved pushes). On entry
+    // rsp%16 == 8; 5 pushes → %16 == 0; `sub rsp, 32` (shadow space) keeps %16 ==
+    // 0 at the internal alloc call.
+    //   rbx = magnitude, rdi = neg flag, r13 = digit count, r12 = byte_len / dst.
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
+
+    // rdi = neg flag (0/1); rbx = magnitude (u64).
+    code.extend_from_slice(&[0x48, 0x31, 0xFF]); // xor rdi, rdi
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (value/magnitude)
+    code.extend_from_slice(&[0x48, 0x85, 0xD2]); // test rdx, rdx (signed?)
+    code.extend_from_slice(&[0x74, 0x0D]); // jz Lu (skip 13 bytes)
+    code.extend_from_slice(&[0x48, 0x85, 0xDB]); // test rbx, rbx
+    code.extend_from_slice(&[0x7D, 0x08]); // jns Lu (skip 8 bytes)
+    code.extend_from_slice(&[0x48, 0xF7, 0xDB]); // neg rbx
+    code.push(0xBF); // mov edi, 1
+    code.extend_from_slice(&1i32.to_le_bytes());
+    // Lu:
+
+    // Pass 1: count digits into r13 (minimum 1), leaving rbx (magnitude) intact.
+    code.extend_from_slice(&[0x48, 0x89, 0xD8]); // mov rax, rbx (temp copy)
+    code.extend_from_slice(&[0x41, 0xBD]); // mov r13d, 1
+    code.extend_from_slice(&1i32.to_le_bytes());
+    code.push(0xB9); // mov ecx, 10
+    code.extend_from_slice(&10i32.to_le_bytes());
+    let count_loop = code.len();
+    code.extend_from_slice(&[0x48, 0x31, 0xD2]); // xor rdx, rdx
+    code.extend_from_slice(&[0x48, 0xF7, 0xF1]); // div rcx (rax /= 10)
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x74, 0x05]); // jz Lcount_done (skip inc r13 (3) + jmp (2) = 5)
+    code.extend_from_slice(&[0x49, 0xFF, 0xC5]); // inc r13
+    emit_short_jmp_back(&mut code, count_loop); // jmp count_loop (2 bytes)
+    // Lcount_done:
+
+    // byte_len (r12) = digit count (r13) + neg flag (rdi).
+    code.extend_from_slice(&[0x4D, 0x89, 0xEC]); // mov r12, r13
+    code.extend_from_slice(&[0x49, 0x01, 0xFC]); // add r12, rdi
+
+    // Allocate STR_DATA_OFF + byte_len. rcx = r12 + STR_DATA_OFF.
+    code.extend_from_slice(&[0x49, 0x8D, 0x8C, 0x24]); // lea rcx, [r12 + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+
+    // Headers: char_len = byte_len = r12. Save dst base by pushing rax.
+    code.extend_from_slice(&[0x4C, 0x89, 0xA0]); // mov [rax + CHAR_LEN], r12
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x89, 0xA0]); // mov [rax + BYTE_LEN], r12
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+    code.push(0x50); // push rax (record base)
+
+    // rsi = write cursor = rax + STR_DATA_OFF + byte_len (one past the last byte).
+    code.extend_from_slice(&[0x48, 0x8D, 0xB0]); // lea rsi, [rax + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x01, 0xE6]); // add rsi, r12
+
+    // Pass 2: write digits backward into the heap. rcx = 10 divisor.
+    code.push(0xB9); // mov ecx, 10
+    code.extend_from_slice(&10i32.to_le_bytes());
+    let write_loop = code.len();
+    code.extend_from_slice(&[0x48, 0x89, 0xD8]); // mov rax, rbx
+    code.extend_from_slice(&[0x48, 0x31, 0xD2]); // xor rdx, rdx
+    code.extend_from_slice(&[0x48, 0xF7, 0xF1]); // div rcx (rax=quot, rdx=rem)
+    code.extend_from_slice(&[0x48, 0x89, 0xC3]); // mov rbx, rax (quotient)
+    code.extend_from_slice(&[0x80, 0xC2, 0x30]); // add dl, '0'
+    code.extend_from_slice(&[0x48, 0xFF, 0xCE]); // dec rsi
+    code.extend_from_slice(&[0x88, 0x16]); // mov [rsi], dl
+    code.extend_from_slice(&[0x48, 0x85, 0xDB]); // test rbx, rbx
+    code.extend_from_slice(&[0x0F, 0x85]); // jnz write_loop (rel32)
+    let write_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    patch_rel32_to(&mut code, write_site, write_loop);
+
+    // If negative: dec rsi; [rsi] = '-'.
+    code.extend_from_slice(&[0x48, 0x85, 0xFF]); // test rdi, rdi
+    code.extend_from_slice(&[0x74, 0x06]); // jz Lns (skip dec rsi (3) + mov (3) = 6)
+    code.extend_from_slice(&[0x48, 0xFF, 0xCE]); // dec rsi
+    code.extend_from_slice(&[0xC6, 0x06, 0x2D]); // mov byte [rsi], '-'
+    // Lns:
+
+    code.push(0x58); // pop rax (record base) — return value
+    // Epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 32
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_FROM_INT_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_from_bool(rcx = 0/1) -> rax = "false"/"true" record`.
+///
+/// Builds a fresh 4- or 5-byte record. The bytes are materialized from immediates
+/// (no `.rdata` constant), so a bool-only program stays self-contained.
+fn emit_str_from_bool_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 1 push (rbx) makes rsp%16 == 0; a `sub rsp, 40` reserves shadow
+    // space and preserves alignment (%16 == 8 → the call sees %16 == 0 after the
+    // return-address push). rbx holds the 0/1 selector across the alloc call.
+    code.push(0x53); // push rbx
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (selector)
+
+    // byte_len = (selector != 0) ? 4 : 5. rcx = 5; if rbx != 0, rcx = 4.
+    code.push(0xB9);
+    code.extend_from_slice(&5i32.to_le_bytes()); // mov ecx, 5
+    code.extend_from_slice(&[0x48, 0x85, 0xDB]); // test rbx, rbx
+    code.extend_from_slice(&[0x74, 0x05]); // jz alloc (skip mov ecx,4)
+    code.push(0xB9);
+    code.extend_from_slice(&4i32.to_le_bytes()); // mov ecx, 4
+    // alloc: rcx += STR_DATA_OFF.
+    code.extend_from_slice(&[0x48, 0x81, 0xC1]); // add rcx, imm32
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+
+    // Write headers + bytes, branching on the selector with patched rel32 jumps.
+    code.extend_from_slice(&[0x48, 0x85, 0xDB]); // test rbx, rbx
+    // jz false_path (rel32, patched).
+    code.extend_from_slice(&[0x0F, 0x84]);
+    let to_false_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // true_path: char_len = byte_len = 4; bytes = "true".
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]); // mov qword [rax + CHAR_LEN], 4
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&4i32.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]); // mov qword [rax + BYTE_LEN], 4
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&4i32.to_le_bytes());
+    // mov dword [rax + STR_DATA_OFF], "true"
+    code.extend_from_slice(&[0xC7, 0x80]);
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(b"true");
+    // jmp done (rel32, patched).
+    code.push(0xE9);
+    let true_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // false_path: char_len = byte_len = 5; bytes = "false".
+    patch_rel32(&mut code, to_false_site);
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]); // mov qword [rax + CHAR_LEN], 5
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&5i32.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]); // mov qword [rax + BYTE_LEN], 5
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&5i32.to_le_bytes());
+    // mov dword [rax + STR_DATA_OFF], "fals"
+    code.extend_from_slice(&[0xC7, 0x80]);
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(b"fals");
+    // mov byte [rax + STR_DATA_OFF + 4], 'e'
+    code.extend_from_slice(&[0xC6, 0x80]);
+    code.extend_from_slice(&(STR_DATA_OFF + 4).to_le_bytes());
+    code.push(b'e');
+    // done:
+    patch_rel32(&mut code, true_done_site);
+
+    // Epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 32
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_FROM_BOOL_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_from_char(rcx = code point) -> rax = one-char string record`.
+///
+/// Encodes the Unicode scalar value in `rcx` as UTF-8 (1–4 bytes) directly into
+/// the record's data area, with `char_len = 1` and `byte_len` = the encoded
+/// length. Matches Rust's `char` Display (the interpreters' `to_string(char)`).
+/// The frontend guarantees a valid scalar value, so no range validation is done.
+fn emit_str_from_char_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: preserve rbx (code point) and rsi/rdi; `sub rsp, 8` aligns
+    // (3 pushes + ret = 32 → %16 == 0; sub 8 → still need %16 == 0 at the call:
+    // 3 pushes make rsp%16 == 8, sub 8 → %16 == 0). Wait: use 3 pushes + sub 8.
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (code point)
+
+    // Determine byte_len from the code point into rsi:
+    //   cp < 0x80        -> 1
+    //   cp < 0x800       -> 2
+    //   cp < 0x10000     -> 3
+    //   else             -> 4
+    code.push(0xBE);
+    code.extend_from_slice(&1i32.to_le_bytes()); // mov esi, 1
+    code.extend_from_slice(&[0x48, 0x81, 0xFB]); // cmp rbx, 0x80
+    code.extend_from_slice(&0x80i32.to_le_bytes());
+    code.extend_from_slice(&[0x0F, 0x8C]); // jl len_done (rel32)
+    let len1_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.push(0xBE);
+    code.extend_from_slice(&2i32.to_le_bytes()); // mov esi, 2
+    code.extend_from_slice(&[0x48, 0x81, 0xFB]); // cmp rbx, 0x800
+    code.extend_from_slice(&0x800i32.to_le_bytes());
+    code.extend_from_slice(&[0x0F, 0x8C]); // jl len_done
+    let len2_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.push(0xBE);
+    code.extend_from_slice(&3i32.to_le_bytes()); // mov esi, 3
+    code.extend_from_slice(&[0x48, 0x81, 0xFB]); // cmp rbx, 0x10000
+    code.extend_from_slice(&0x10000i32.to_le_bytes());
+    code.extend_from_slice(&[0x0F, 0x8C]); // jl len_done
+    let len3_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.push(0xBE);
+    code.extend_from_slice(&4i32.to_le_bytes()); // mov esi, 4
+    // len_done:
+    let len_done = code.len();
+    patch_rel32_to(&mut code, len1_site, len_done);
+    patch_rel32_to(&mut code, len2_site, len_done);
+    patch_rel32_to(&mut code, len3_site, len_done);
+
+    // Allocate STR_DATA_OFF + byte_len (rsi). rcx = rsi + STR_DATA_OFF.
+    code.extend_from_slice(&[0x48, 0x8D, 0x8E]); // lea rcx, [rsi + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+
+    // Headers: char_len = 1; byte_len = rsi.
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]); // mov qword [rax + CHAR_LEN], 1
+    code.extend_from_slice(&STR_CHAR_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&1i32.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xB0]); // mov [rax + BYTE_LEN], rsi
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+
+    // rdi = data pointer = rax + STR_DATA_OFF.
+    code.extend_from_slice(&[0x48, 0x8D, 0xB8]); // lea rdi, [rax + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    // Save record base for return (push rax; restored at the end).
+    code.push(0x50); // push rax
+
+    // Branch on byte_len (rsi) to the encoder. cp is in rbx; work in rcx/rdx.
+    // 1-byte: [rdi] = cp.
+    code.extend_from_slice(&[0x48, 0x83, 0xFE, 0x01]); // cmp rsi, 1
+    code.extend_from_slice(&[0x0F, 0x85]); // jne two_plus
+    let one_ne_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x88, 0x1F]); // mov [rdi], bl
+    code.push(0xE9); // jmp encode_done
+    let one_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // two_plus:
+    patch_rel32(&mut code, one_ne_site);
+    code.extend_from_slice(&[0x48, 0x83, 0xFE, 0x02]); // cmp rsi, 2
+    code.extend_from_slice(&[0x0F, 0x85]); // jne three_plus
+    let two_ne_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // 2-byte: b0 = 0xC0 | (cp >> 6); b1 = 0x80 | (cp & 0x3F).
+    // rcx = cp >> 6; or 0xC0; store.
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE9, 0x06]); // shr rcx, 6
+    code.extend_from_slice(&[0x80, 0xC9, 0xC0]); // or cl, 0xC0
+    code.extend_from_slice(&[0x88, 0x0F]); // mov [rdi], cl
+    // rcx = cp & 0x3F; or 0x80; store at [rdi+1].
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x80, 0xE1, 0x3F]); // and cl, 0x3F
+    code.extend_from_slice(&[0x80, 0xC9, 0x80]); // or cl, 0x80
+    code.extend_from_slice(&[0x88, 0x4F, 0x01]); // mov [rdi + 1], cl
+    code.push(0xE9); // jmp encode_done
+    let two_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // three_plus:
+    patch_rel32(&mut code, two_ne_site);
+    code.extend_from_slice(&[0x48, 0x83, 0xFE, 0x03]); // cmp rsi, 3
+    code.extend_from_slice(&[0x0F, 0x85]); // jne four
+    let three_ne_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // 3-byte: b0 = 0xE0 | (cp >> 12); b1 = 0x80 | ((cp >> 6) & 0x3F);
+    //         b2 = 0x80 | (cp & 0x3F).
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE9, 0x0C]); // shr rcx, 12
+    code.extend_from_slice(&[0x80, 0xC9, 0xE0]); // or cl, 0xE0
+    code.extend_from_slice(&[0x88, 0x0F]); // mov [rdi], cl
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE9, 0x06]); // shr rcx, 6
+    code.extend_from_slice(&[0x80, 0xE1, 0x3F]); // and cl, 0x3F
+    code.extend_from_slice(&[0x80, 0xC9, 0x80]); // or cl, 0x80
+    code.extend_from_slice(&[0x88, 0x4F, 0x01]); // mov [rdi + 1], cl
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x80, 0xE1, 0x3F]); // and cl, 0x3F
+    code.extend_from_slice(&[0x80, 0xC9, 0x80]); // or cl, 0x80
+    code.extend_from_slice(&[0x88, 0x4F, 0x02]); // mov [rdi + 2], cl
+    code.push(0xE9); // jmp encode_done
+    let three_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // four:
+    patch_rel32(&mut code, three_ne_site);
+    // 4-byte: b0 = 0xF0 | (cp >> 18); b1 = 0x80 | ((cp >> 12) & 0x3F);
+    //         b2 = 0x80 | ((cp >> 6) & 0x3F); b3 = 0x80 | (cp & 0x3F).
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE9, 0x12]); // shr rcx, 18
+    code.extend_from_slice(&[0x80, 0xC9, 0xF0]); // or cl, 0xF0
+    code.extend_from_slice(&[0x88, 0x0F]); // mov [rdi], cl
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE9, 0x0C]); // shr rcx, 12
+    code.extend_from_slice(&[0x80, 0xE1, 0x3F]); // and cl, 0x3F
+    code.extend_from_slice(&[0x80, 0xC9, 0x80]); // or cl, 0x80
+    code.extend_from_slice(&[0x88, 0x4F, 0x01]); // mov [rdi + 1], cl
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE9, 0x06]); // shr rcx, 6
+    code.extend_from_slice(&[0x80, 0xE1, 0x3F]); // and cl, 0x3F
+    code.extend_from_slice(&[0x80, 0xC9, 0x80]); // or cl, 0x80
+    code.extend_from_slice(&[0x88, 0x4F, 0x02]); // mov [rdi + 2], cl
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x80, 0xE1, 0x3F]); // and cl, 0x3F
+    code.extend_from_slice(&[0x80, 0xC9, 0x80]); // or cl, 0x80
+    code.extend_from_slice(&[0x88, 0x4F, 0x03]); // mov [rdi + 3], cl
+
+    // encode_done:
+    let encode_done = code.len();
+    patch_rel32_to(&mut code, one_done_site, encode_done);
+    patch_rel32_to(&mut code, two_done_site, encode_done);
+    patch_rel32_to(&mut code, three_done_site, encode_done);
+
+    code.push(0x58); // pop rax (record base)
+    // Epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_FROM_CHAR_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// Write the extended COFF object with `.text`, `.rdata`, and `.bss` sections.
 /// Used only when the program references string constants.
 fn write_object_with_data(
@@ -6934,6 +7762,26 @@ fn write_object_with_data(
             &map_helper.relocations,
         );
     }
+    // String runtime helpers (str_lit / str_concat / str_from_int / str_from_bool
+    // / str_from_char), emitted alongside the list/map helpers whenever the heap
+    // path runs. A program that never references them carries unused `.text`
+    // functions (dead-stripped by the linker).
+    for str_helper in [
+        emit_str_lit_helper(),
+        emit_str_concat_helper(),
+        emit_str_from_int_helper(),
+        emit_str_from_bool_helper(),
+        emit_str_from_char_helper(),
+    ] {
+        append_code(
+            &mut text,
+            &mut relocations,
+            &mut func_offsets,
+            &str_helper.name,
+            &str_helper.code,
+            &str_helper.relocations,
+        );
+    }
 
     // -- Build .rdata: NUL-terminated string constants -----------------------
     let mut rdata: Vec<u8> = Vec::new();
@@ -6980,6 +7828,11 @@ fn write_object_with_data(
         MAP_COPY_SYMBOL,
         MAP_GROW_SYMBOL,
         MAP_FIND_SYMBOL,
+        STR_LIT_SYMBOL,
+        STR_CONCAT_SYMBOL,
+        STR_FROM_INT_SYMBOL,
+        STR_FROM_BOOL_SYMBOL,
+        STR_FROM_CHAR_SYMBOL,
     ] {
         symbols.push(SymbolDef {
             name: helper.to_string(),
@@ -7830,9 +8683,12 @@ mod native_program_tests {
 
     #[test]
     fn skips_non_i64_functions_but_compiles_the_rest() {
-        // `greet` returns a string (skipped); `main` and `add` are i64 (compiled).
+        // `stringify` uses `to_string(f64)` (dtoa, deferred) so it is skipped;
+        // `main` and `add` are i64 (compiled). (Plain string values are now in the
+        // native subset, so the skipped example uses the still-deferred float
+        // `to_string` rather than an identity string function.)
         let program = emit_alpha1_native_program(&module_for(
-            "fn greet s string -> string\n    s\n\nfn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(1, 2)\n",
+            "fn stringify -> string\n    to_string(1.5)\n\nfn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(1, 2)\n",
         ))
         .expect("emit native program");
         assert_eq!(
@@ -7840,7 +8696,7 @@ mod native_program_tests {
             vec!["add".to_string(), "main".to_string()]
         );
         assert_eq!(program.skipped.len(), 1);
-        assert_eq!(program.skipped[0].name, "greet");
+        assert_eq!(program.skipped[0].name, "stringify");
     }
 
     #[test]
@@ -8196,9 +9052,12 @@ mod native_program_tests {
 
     #[test]
     fn errors_when_no_i64_scalar_function_is_eligible() {
-        // `main` itself returns a string, so nothing is eligible for native.
-        let err = emit_alpha1_native_program(&module_for("fn main -> string\n    \"hi\"\n"))
-            .expect_err("no eligible");
+        // `main` uses `to_string(f64)` (dtoa, deferred), so nothing is eligible for
+        // native. (Plain string values are now in the subset, so the not-eligible
+        // example uses the still-deferred float `to_string`.)
+        let err =
+            emit_alpha1_native_program(&module_for("fn main -> i64\n    len(to_string(1.5))\n"))
+                .expect_err("no eligible");
         assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
         assert!(err.skipped.iter().any(|s| s.name == "main"));
     }
@@ -9409,6 +10268,130 @@ mod native_program_tests {
                 .any(|s| s.name == "build" && s.reason.contains("map")),
             "the skip reason must cite the deferred map key/value: {:?}",
             err.skipped
+        );
+    }
+
+    #[test]
+    fn string_value_functions_compile_natively() {
+        // A program using first-class string values — a string literal as a value,
+        // `+` concatenation, `to_string`, `len` on a string, and a string
+        // parameter/return crossing a function boundary — compiles natively (not
+        // skipped) across all its functions.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn greeting name string -> string\n",
+            "    \"hi \" + name\n\n",
+            "fn measure s string -> i64\n",
+            "    len(s)\n\n",
+            "fn main -> i64\n",
+            "    let m string = greeting(\"x\")\n",
+            "    let labeled string = m + to_string(2)\n",
+            "    measure(labeled) + len(to_string(true))\n",
+        )))
+        .expect("emit native program");
+        for func in ["greeting", "measure", "main"] {
+            assert!(
+                program.compiled.contains(&func.to_string()),
+                "expected `{func}` compiled: {:?} / skipped {:?}",
+                program.compiled,
+                program.skipped
+            );
+        }
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+    }
+
+    #[test]
+    fn string_object_emits_string_runtime_helpers() {
+        // A string-using program emits the string runtime helpers + the bump
+        // allocator as external-defined `.text` symbols, proving the literal /
+        // concat / to_string codegen is present.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let s string = \"a\" + to_string(1)\n",
+            "    len(s)\n",
+        )))
+        .expect("emit native program");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        for symbol in [
+            STR_LIT_SYMBOL,
+            STR_CONCAT_SYMBOL,
+            STR_FROM_INT_SYMBOL,
+            STR_FROM_BOOL_SYMBOL,
+            STR_FROM_CHAR_SYMBOL,
+            HEAP_ALLOC_SYMBOL,
+        ] {
+            let (section, _storage) =
+                coff_symbol(&program.bytes, symbol).unwrap_or_else(|| panic!("missing {symbol}"));
+            assert_eq!(section, 1, "{symbol} must be defined in .text");
+        }
+        // The `.bss` heap region must be present for a string-using object.
+        assert!(
+            coff_symbol(&program.bytes, HEAP_BASE_SYMBOL).is_some(),
+            "the .bss heap region must be present for a string-using object"
+        );
+    }
+
+    #[test]
+    fn concat_call_site_calls_the_concat_helper() {
+        // A `s + t` concatenation lowers to a `call __lullaby_str_concat`, so a
+        // concatenating function carries a relocation against the concat helper.
+        // (The helper function is named `cat`, not `join`, to avoid the `join`
+        // builtin, whose registered signature would type the arguments as
+        // `array<string>`.)
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn cat a string b string -> string\n",
+            "    a + b\n\n",
+            "fn main -> i64\n",
+            "    len(cat(\"x\", \"y\"))\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"cat".to_string()),
+            "cat must compile: {:?}",
+            program.skipped
+        );
+        // The concat helper is emitted as a symbol (references it via a relocation).
+        assert!(
+            coff_symbol(&program.bytes, STR_CONCAT_SYMBOL).is_some(),
+            "the concat helper symbol must be present"
+        );
+    }
+
+    #[test]
+    fn to_string_of_float_skips_gracefully() {
+        // `to_string(f64)` needs dtoa, which is deferred: the function skips (runs
+        // on the interpreters) rather than miscompiling. With no other eligible
+        // function, the emitter returns the `L0339` no-eligible error naming the
+        // skip.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    len(to_string(1.5))\n",
+        )));
+        let err = program.expect_err("float to_string must not compile");
+        assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+        assert!(
+            err.skipped
+                .iter()
+                .any(|s| s.name == "main" && s.reason.contains("to_string")),
+            "the skip reason must cite the deferred float to_string: {:?}",
+            err.skipped
+        );
+    }
+
+    #[test]
+    fn string_is_not_a_by_pointer_aggregate() {
+        // A `string` is a single immutable pointer word, so it is classified as a
+        // scalar (register value), not a by-pointer aggregate — unlike a struct or
+        // enum. This keeps a string parameter/return in an integer register with no
+        // deep copy.
+        assert!(!NativeType::String.is_aggregate());
+        assert_eq!(NativeType::String.words(), 1);
+        let native =
+            resolve_native_type(&TypeRef::new("string"), &[], &[]).expect("resolve string");
+        assert_eq!(native, NativeType::String);
+        assert!(
+            !native_signature_type_is_aggregate(&TypeRef::new("string"), &[], &[])
+                .expect("string classifies"),
+            "a string signature slot is a scalar (register), not an aggregate"
         );
     }
 }

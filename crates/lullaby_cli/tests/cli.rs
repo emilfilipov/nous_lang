@@ -4301,7 +4301,10 @@ fn llvm_readobj_path() -> Option<PathBuf> {
 /// A file with no i64-scalar function eligible reports diagnostic `L0339`.
 #[test]
 fn native_reports_no_eligible_functions() {
-    let source = "fn main -> string\n    \"hi\"\n";
+    // `main` uses `to_string(f64)` (dtoa, deferred), so it skips and nothing is
+    // eligible for native. (Plain string values are now in the native subset, so
+    // the not-eligible example uses the still-deferred float `to_string`.)
+    let source = "fn main -> i64\n    len(to_string(1.5))\n";
     let tmp = std::env::temp_dir().join("lullaby_native_none.lby");
     std::fs::write(&tmp, source).expect("write temp");
     let output = lullaby()
@@ -4873,6 +4876,71 @@ fn native_strings_execution_parity_when_linkable() {
         eprintln!(
             "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
              skipping native strings link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// Best-effort execution parity for first-class native heap `string` values:
+/// native-compile a program that builds strings by concatenation (`+`), converts
+/// integers/bools with `to_string`, passes a string to a helper that returns its
+/// `len`, and derives a deterministic `i64 < 256`. The `.exe` exit code must equal
+/// the interpreter's `main` result (mod 256), proving native string literals,
+/// concatenation, `to_string`, `len`, and string params/returns agree with the
+/// interpreters bit-for-bit. Gated on `rust-lld` + `kernel32.lib`; the
+/// compile-not-skip and interpreter-truth assertions always run. Sources MSVC's
+/// `LIB` (via vcvars64) when unset so the link+run executes.
+#[test]
+fn native_string_build_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_string_build.lby");
+    let out = std::env::temp_dir().join("lullaby_native_string_build_parity.exe");
+
+    // Make MSVC's `LIB` available (source vcvars64 if unset) so the link+run runs.
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // All three functions (`greeting` returns a string, `measure` takes a string,
+    // `main` builds/concats/converts strings) must compile natively, not skip.
+    for func in ["compiled greeting", "compiled measure", "compiled main"] {
+        assert!(
+            stdout(&emit).contains(func),
+            "expected `{func}`: {}",
+            stdout(&emit)
+        );
+    }
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 17, "string_build fixture main computes 17");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native string_build link+run parity"
         );
         return;
     }

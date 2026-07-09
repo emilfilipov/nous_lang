@@ -1,0 +1,14 @@
+fn greeting name string -> string
+    "hi, " + name
+
+fn measure s string -> i64
+    len(s)
+
+fn main -> i64
+    let who string = "lby"
+    let msg string = greeting(who)
+    let count i64 = 3
+    let labeled string = msg + " x" + to_string(count)
+    let flag string = to_string(true)
+    let total i64 = measure(labeled) + len(flag) + len("abc")
+    total
