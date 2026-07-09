@@ -1,0 +1,81 @@
+struct Point
+    x i64
+    y i64
+
+fn point_sum p Point -> i64
+    p.x + p.y
+
+fn grow_probe xs list<Point> -> i64
+    let ys list<Point> = push(xs, Point(5, 6))
+    len(xs) * 10 + len(ys)
+
+fn build_points -> list<Point>
+    let ps list<Point> = list_new()
+    ps = push(ps, Point(1, 2))
+    ps = push(ps, Point(3, 4))
+    ps = push(ps, Point(5, 6))
+    ps
+
+fn nested_sum rows list<list<i64>> -> i64
+    let total i64 = 0
+    let i i64 = 0
+    while i < len(rows)
+        let row list<i64> = get(rows, i)
+        let j i64 = 0
+        while j < len(row)
+            total += get(row, j)
+            j += 1
+        i += 1
+    total
+
+fn build_nested -> list<list<i64>>
+    let a list<i64> = list_new()
+    a = push(a, 1)
+    a = push(a, 2)
+    let b list<i64> = list_new()
+    b = push(b, 3)
+    b = push(b, 4)
+    let rows list<list<i64>> = list_new()
+    rows = push(rows, a)
+    rows = push(rows, b)
+    rows
+
+fn map_point_value m map<i64, Point> k i64 -> i64
+    match map_get(m, k)
+        some(p) -> point_sum(p)
+        none -> 0
+
+fn build_map -> map<i64, Point>
+    let m map<i64, Point> = map_new()
+    m = map_set(m, 1, Point(2, 3))
+    m = map_set(m, 2, Point(4, 5))
+    m = map_set(m, 2, Point(6, 1))
+    m
+
+fn main -> i64
+    let ps list<Point> = build_points()
+    let count i64 = len(ps)
+    let first_sum i64 = point_sum(get(ps, 0))
+
+    let mutated Point = get(ps, 2)
+    mutated.x = 100
+    mutated.y = 100
+    let after_mutate Point = get(ps, 2)
+    let elem_unchanged i64 = point_sum(after_mutate)
+
+    let ps2 list<Point> = set(ps, 0, Point(9, 9))
+    let ps2_first i64 = point_sum(get(ps2, 0))
+    let ps_first_after_set i64 = point_sum(get(ps, 0))
+
+    let probe i64 = grow_probe(ps)
+
+    let rows list<list<i64>> = build_nested()
+    let nested i64 = nested_sum(rows)
+
+    let m map<i64, Point> = build_map()
+    let mlen i64 = map_len(m)
+    let mv1 i64 = map_point_value(m, 1)
+    let mv2 i64 = map_point_value(m, 2)
+    let mvx i64 = map_point_value(m, 9)
+
+    count + first_sum + elem_unchanged + ps2_first + ps_first_after_set + probe + nested + mlen + mv1 + mv2 + mvx

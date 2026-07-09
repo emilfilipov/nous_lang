@@ -810,6 +810,35 @@ const LIST_COPY_SYMBOL: &str = "__lullaby_list_copy";
 /// `LIST_INITIAL_CAP` from an empty list) and copies the live elements.
 const LIST_GROW_SYMBOL: &str = "__lullaby_list_grow";
 
+// -- Heap struct layout (native, collection-element representation) -----------
+//
+// A struct used as a MUTABLE-heap collection element/value/enum payload
+// (`list<struct>`, `map<K, struct>`, `option<struct>`) cannot be the stack-
+// flattened `NativeType::Struct` (that occupies many words); it must fit a single
+// element slot. So it is laid out on the HEAP: a header word `[nwords i64]`
+// followed by `nwords` field words (one 8-byte word per flattened field, in
+// declared order). The value in the element slot is a pointer to FIELD 0 — i.e.
+// `alloc_base + 8` — so field `k` lives at `[ptr + 8*k]` and the word count is at
+// `[ptr - STRUCT_HEADER_SIZE]`. Storing the count in the block lets a single
+// type-agnostic `__lullaby_struct_copy` helper deep-copy any heap struct (its
+// fields are always scalars/immutable strings at the one-level nesting bound, so a
+// flat word copy IS an exact deep copy). Because the header sits *below* field 0,
+// heap-struct field access (`p.x`) and the heap→stack bridge address fields at
+// `[ptr + 8*k]` with no header adjustment.
+
+/// Bytes of the heap-struct header (the `[nwords]` word), stored just below the
+/// field-0 pointer. The allocation is `STRUCT_HEADER_SIZE + nwords * 8` bytes and
+/// the value pointer is `alloc_base + STRUCT_HEADER_SIZE`.
+const STRUCT_HEADER_SIZE: i32 = 8;
+
+/// The generic heap-struct deep-copy helper emitted in `.text`. Signature: the
+/// source heap-struct pointer (to field 0) in `rcx`; returns in `rax` a fresh
+/// independent block's field-0 pointer. Reads the `[rcx - STRUCT_HEADER_SIZE]`
+/// word count, allocates `STRUCT_HEADER_SIZE + nwords * 8`, copies the header and
+/// every field word (a flat copy — heap-struct fields are scalars or shared
+/// immutable strings at the one-level nesting bound), and returns field-0 pointer.
+const STRUCT_COPY_SYMBOL: &str = "__lullaby_struct_copy";
+
 /// Builtins that construct or read growable lists, matched by name in call
 /// lowering (arity / element type are validated there against the IR types).
 const LIST_NEW_BUILTIN: &str = "list_new";
@@ -836,6 +865,89 @@ fn is_scalar_or_string_slot(ty: &TypeRef) -> bool {
         || ty.name == "string"
 }
 
+/// The maximum depth of MUTABLE-aggregate nesting a growable collection
+/// element/value/enum payload may reach before the native backend defers it.
+/// Depth 0 is the collection's own element/value slot; a struct field or a nested
+/// list element consumes one level. One level of mutable nesting (`list<struct>`,
+/// `list<list<scalar>>`, `map<K, struct>`, `option<struct>`) is supported; deeper
+/// cases (`list<list<list<…>>>`, `list<map<…>>`, a struct field that is itself a
+/// list/map/struct) are skipped gracefully (still run on the interpreters) rather
+/// than miscompiled. Mirrors the WASM backend's `MAX_COLLECTION_NEST_DEPTH`.
+const MAX_COLLECTION_NEST_DEPTH: u32 = 1;
+
+/// The native slot layout of a growable-collection element/value/enum payload at
+/// nesting `depth`, or `None` if the native backend cannot lay it out (so the
+/// enclosing function skips gracefully). This is the native mirror of the WASM
+/// backend's `collection_slot_type`, bounded to one mutable-aggregate level.
+/// Accepts, in order:
+///
+/// - a **scalar** — its own single-word layout, flat-copied on a deep copy;
+/// - a **`string`** — a single pointer word to the immutable record, SHARED on a
+///   deep copy (never deep-recursed) since strings are immutable;
+/// - a **mutable aggregate** (a named `struct` → [`NativeType::HeapStruct`], or a
+///   supported nested growable `list<T>` → [`NativeType::List`]) at
+///   `depth < MAX_COLLECTION_NEST_DEPTH` — a single pointer word that is itself
+///   DEEP-COPIED per element on the collection's value-semantic copy (see
+///   [`emit_heap_slot_deep_copy`]), matching the interpreters' recursive
+///   `Value::clone`. The nested aggregate's own fields/elements are classified one
+///   level deeper, so `list<list<scalar>>` is accepted but `list<list<list<…>>>`
+///   is deferred.
+///
+/// A nested `map` element/value (`list<map<…>>`, `map<K, map<…>>`), a fixed
+/// `array` element, and an `enum` element are DEFERRED (return `None`).
+fn native_collection_slot(
+    ty: &TypeRef,
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+    depth: u32,
+) -> Option<NativeType> {
+    if is_scalar_or_string_slot(ty) {
+        // A scalar or immutable-string element occupies one flat word.
+        return resolve_native_type(ty, structs, enums).ok();
+    }
+    if depth >= MAX_COLLECTION_NEST_DEPTH {
+        return None;
+    }
+    // A struct element/value: every field must itself be layable-out (a scalar, a
+    // `string`, or a mutable aggregate one level deeper). Laid out on the heap as a
+    // single pointer word (`HeapStruct`), deep-copied per element.
+    if let Some(def) = structs.iter().find(|s| s.name == ty.name) {
+        let mut fields = Vec::with_capacity(def.fields.len());
+        for (field_name, field_ty) in &def.fields {
+            let native = native_collection_slot(field_ty, structs, enums, depth + 1)?;
+            fields.push((field_name.clone(), native));
+        }
+        return Some(NativeType::HeapStruct {
+            name: ty.name.clone(),
+            fields,
+        });
+    }
+    // A nested growable `list<T>` element/value: its own element must be layable-out
+    // one level deeper (so `list<list<scalar>>` works, `list<list<list<…>>>` does
+    // not). The nested list is deep-copied per element on the outer copy.
+    if let Some(elem) = ty.list_element() {
+        let elem_native = native_collection_slot(&elem, structs, enums, depth + 1)?;
+        return Some(NativeType::List {
+            elem: Box::new(elem_native),
+        });
+    }
+    None
+}
+
+/// Whether a resolved `NativeType`, when it occupies a collection element / map
+/// value / enum payload slot, must be DEEP-COPIED (recursively) on a value-semantic
+/// copy rather than flat-word-copied. A scalar or immutable `string` is flat-copied
+/// (a `string`'s shared pointer IS its value-semantic copy); a `HeapStruct` or a
+/// nested `List`/`Map` element must be recursively deep-copied so mutating one copy
+/// is never observable through another (the interpreters' recursive `Value::clone`).
+/// Mirrors the WASM backend's `is_mutable_aggregate` for the element context.
+fn native_slot_needs_deep_copy(ty: &NativeType) -> bool {
+    matches!(
+        ty,
+        NativeType::HeapStruct { .. } | NativeType::List { .. } | NativeType::Map { .. }
+    )
+}
+
 /// The element type of a supported growable `list<T>`, or `None` if `ty` is not a
 /// list or its element is neither a native scalar nor a `string`. A `string`
 /// element is an immutable heap pointer stored in one slot and shared (not
@@ -844,13 +956,49 @@ fn is_scalar_or_string_slot(ty: &TypeRef) -> bool {
 /// are DEFERRED — the native backend does not yet recursively deep-copy mutable
 /// heap elements — so such a list is unsupported and its enclosing function skips
 /// (still runs on the interpreters).
+///
+/// A **one-level MUTABLE-aggregate element** — a named `struct` or a nested
+/// `list<scalar|string>` — is now also accepted (`list<struct>`,
+/// `list<list<i64>>`): such an element occupies one pointer word and is
+/// DEEP-COPIED per element on the value-semantic copy (see [`native_collection_slot`]
+/// and [`emit_heap_slot_deep_copy`]), matching the WASM backend and the
+/// interpreters' recursive `Value::clone`. Deeper nesting, a `map`/`array` element,
+/// or an `enum` element stays DEFERRED. This function is a **structural** accept
+/// (it does not re-validate a named element against the struct/enum tables — the
+/// eligibility gate's `resolve_native_type` already rejected an unresolvable element
+/// before any lowering guard consults this), so it takes only the `TypeRef`.
 fn supported_list_element(ty: &TypeRef) -> Option<TypeRef> {
     let elem = ty.list_element()?;
-    if is_scalar_or_string_slot(&elem) {
+    if is_native_collection_element_shape(&elem) {
         Some(elem)
     } else {
         None
     }
+}
+
+/// Structural shape test for a collection element / map value / enum payload: a
+/// scalar, a `string`, a named type (a struct — validated for real by
+/// `native_collection_slot`/`resolve_native_type`), or a nested `list<…>` whose own
+/// element is again a plausible shape. Bounded to one nested `list` level here (a
+/// `list<list<list<…>>>` element is a `list` whose element is a `list`, which this
+/// rejects) so the structural guard already excludes over-deep nesting; the full
+/// depth-and-table validation is `native_collection_slot`. A `map`/`array` element
+/// is rejected (deferred).
+fn is_native_collection_element_shape(ty: &TypeRef) -> bool {
+    if is_scalar_or_string_slot(ty) {
+        return true;
+    }
+    if let Some(inner) = ty.list_element() {
+        // A nested list: accept when its own element is a scalar or string (one
+        // mutable level). `list<list<list<…>>>` (inner is itself a list) is rejected.
+        return is_scalar_or_string_slot(&inner);
+    }
+    if ty.name.starts_with("map<") || ty.name.starts_with("array<") {
+        return false;
+    }
+    // A bare named type is a candidate struct; `native_collection_slot` validates it
+    // against the struct table and bounds its field nesting.
+    ty.list_element().is_none() && ty.option_element().is_none() && ty.result_args().is_none()
 }
 
 // -- Growable map layout (native) --------------------------------------------
@@ -954,8 +1102,11 @@ fn supported_map_kv(ty: &TypeRef) -> Option<(TypeRef, TypeRef)> {
     {
         return None;
     }
-    // Value may be any native scalar (including a float) or a `string` pointer.
-    if !is_scalar_or_string_slot(&value) {
+    // Value may be any native scalar (including a float), a `string` pointer, or a
+    // one-level MUTABLE aggregate (a `struct` or a nested `list<scalar|string>`),
+    // which is deep-copied per value on the map's value-semantic copy
+    // (`map<K, struct>` is now supported). A `map`/`array` value is DEFERRED.
+    if !is_native_collection_element_shape(&value) {
         return None;
     }
     Some((key, value))
@@ -1403,6 +1554,10 @@ fn native_signature_type_is_aggregate(
         | NativeType::String
         | NativeType::List { .. }
         | NativeType::Map { .. } => Ok(false),
+        // A `HeapStruct` is a collection-element-only representation and never
+        // reaches a top-level signature type; treat it as a register pointer word
+        // for completeness.
+        NativeType::HeapStruct { .. } => Ok(false),
         NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. } => Ok(true),
     }
 }
@@ -1803,6 +1958,22 @@ enum NativeType {
         name: String,
         fields: Vec<(String, NativeType)>,
     },
+    /// A named struct laid out **on the heap**: a single 8-byte word holding a
+    /// pointer to a `[field words...]` block (one 8-byte word per flattened field,
+    /// in declared order). This is the representation a struct takes when it is a
+    /// MUTABLE-heap collection element/value/enum payload (`list<struct>`,
+    /// `map<K, struct>`, `option<struct>`) — the element slot is one word, so the
+    /// struct value must be a pointer. Distinct from [`NativeType::Struct`], which
+    /// is the stack-flattened representation used for struct locals/params/returns.
+    /// The collection copy paths DEEP-COPY a `HeapStruct` element per value-semantic
+    /// copy (mirroring the interpreters' recursive `Value::clone`), and `get`/`match`
+    /// bridge a `HeapStruct` back into the stack-flattened `Struct` layout that field
+    /// access and the by-pointer call ABI expect. `fields` are the flattened field
+    /// (name, scalar/string/heap-aggregate layout) pairs, one word each.
+    HeapStruct {
+        name: String,
+        fields: Vec<(String, NativeType)>,
+    },
     /// A fixed-length array of a supported element type.
     Array { elem: Box<NativeType>, len: usize },
     /// A growable `list<T>` with a scalar element type. Represented as a single
@@ -1864,13 +2035,15 @@ impl NativeType {
     /// The number of 8-byte words this value occupies on the stack.
     fn words(&self) -> usize {
         match self {
-            // A string, list, or map is a single pointer word, like a scalar.
+            // A string, list, map, or heap struct is a single pointer word, like a
+            // scalar.
             NativeType::I64
             | NativeType::F64
             | NativeType::F32
             | NativeType::String
             | NativeType::List { .. }
-            | NativeType::Map { .. } => 1,
+            | NativeType::Map { .. }
+            | NativeType::HeapStruct { .. } => 1,
             NativeType::Struct { fields, .. } => fields.iter().map(|(_, t)| t.words()).sum(),
             NativeType::Array { elem, len } => elem.words() * len,
             // One tag word plus the shared payload region.
@@ -1936,11 +2109,15 @@ fn resolve_native_type(
         name if name.starts_with("list<") => {
             let elem = supported_list_element(ty).ok_or_else(|| {
                 format!(
-                    "list element of `{name}` is not a native scalar \
-                     (heap-element lists are deferred)"
+                    "list element of `{name}` is not a native scalar, `string`, \
+                     one-level struct, or one-level nested list \
+                     (deeper nesting and map/array elements are deferred)"
                 )
             })?;
-            let elem_native = resolve_native_type(&elem, structs, enums)?;
+            // Depth-0 element classification: a scalar/string flat word, a struct
+            // (`HeapStruct`), or a nested list — bounded to one mutable level.
+            let elem_native = native_collection_slot(&elem, structs, enums, 0)
+                .ok_or_else(|| format!("list element of `{name}` is not layable-out (deferred)"))?;
             Ok(NativeType::List {
                 elem: Box::new(elem_native),
             })
@@ -1952,12 +2129,15 @@ fn resolve_native_type(
         name if name.starts_with("map<") => {
             let (key, value) = supported_map_kv(ty).ok_or_else(|| {
                 format!(
-                    "map `{name}` key/value is not a supported native scalar \
-                     (heap keys/values and float keys are deferred)"
+                    "map `{name}` key/value is not a supported native type \
+                     (heap keys and float keys are deferred)"
                 )
             })?;
             let key_native = resolve_native_type(&key, structs, enums)?;
-            let value_native = resolve_native_type(&value, structs, enums)?;
+            // Value classification: a scalar/string flat word, a struct
+            // (`HeapStruct`), or a nested list — bounded to one mutable level.
+            let value_native = native_collection_slot(&value, structs, enums, 0)
+                .ok_or_else(|| format!("map value of `{name}` is not layable-out (deferred)"))?;
             Ok(NativeType::Map {
                 key: Box::new(key_native),
                 value: Box::new(value_native),
@@ -2079,28 +2259,44 @@ fn resolve_enum_type(
     for (tag, (name, payload_types)) in variant_specs.into_iter().enumerate() {
         let mut payload = Vec::with_capacity(payload_types.len());
         for payload_ty in &payload_types {
-            let native = resolve_native_type(payload_ty, structs, enums).map_err(|_| {
-                format!(
-                    "enum `{ctor}` variant `{name}` payload type `{}` is not a native scalar \
-                     (heap payloads and nested aggregates are deferred)",
-                    payload_ty.name
-                )
-            })?;
             // A scalar or `string` payload is supported: an `i64`/fixed-width/bool/
             // char/byte cell (`NativeType::I64`), a float (`F64`/`F32`), or a
             // `string` (`NativeType::String`, an immutable heap pointer in one
             // slot, shared on the flat word-copy deep copy since strings are
             // immutable — so `option<string>`, `result<i64, string>`, and user
-            // enums with a string payload are supported). A MUTABLE heap payload
-            // (nested struct/array/list/map) is out of scope and skips gracefully.
+            // enums with a string payload are supported). A one-level MUTABLE
+            // aggregate payload — a `struct` (`HeapStruct`) or a nested
+            // `list<scalar|string>` (`List`) — is now also supported: it occupies
+            // one payload pointer word and is DEEP-COPIED on the enum's
+            // value-semantic copy (so `option<struct>` — the `map_get` result on a
+            // `map<K, struct>` — and `result<i64, list<i64>>` lay out). Deeper
+            // nesting and a `map`/`array` payload stay deferred.
+            let native = if is_scalar_or_string_slot(payload_ty) {
+                resolve_native_type(payload_ty, structs, enums).map_err(|_| {
+                    format!(
+                        "enum `{ctor}` variant `{name}` payload type `{}` is not a native scalar",
+                        payload_ty.name
+                    )
+                })?
+            } else {
+                native_collection_slot(payload_ty, structs, enums, 0).ok_or_else(|| {
+                    format!(
+                        "enum `{ctor}` variant `{name}` payload type `{}` is not a native scalar, \
+                         `string`, or one-level mutable aggregate (deeper payloads are deferred)",
+                        payload_ty.name
+                    )
+                })?
+            };
             match native {
-                NativeType::I64 | NativeType::F64 | NativeType::F32 | NativeType::String => {
-                    payload.push(native)
-                }
+                NativeType::I64
+                | NativeType::F64
+                | NativeType::F32
+                | NativeType::String
+                | NativeType::HeapStruct { .. }
+                | NativeType::List { .. } => payload.push(native),
                 _ => {
                     return Err(format!(
-                        "enum `{ctor}` variant `{name}` has a non-scalar payload; \
-                         only scalar and `string` enum payloads are in the native subset"
+                        "enum `{ctor}` variant `{name}` has an unsupported payload type"
                     ));
                 }
             }
@@ -2595,13 +2791,25 @@ fn collect_native_locals(
                         }
                         for (binding, payload_ty) in bindings.iter().zip(variant.payload.iter()) {
                             if !locals.contains_key(binding) {
-                                let words = payload_ty.words() as i32;
+                                // A `HeapStruct` payload binds a STACK `Struct` local
+                                // (bridged from the heap pointer at bind time), so the
+                                // arm body's field access and by-pointer call ABI see
+                                // the flat stack layout. It therefore reserves the
+                                // struct's field words, not a single pointer word.
+                                let bound_ty = match payload_ty {
+                                    NativeType::HeapStruct { name, fields } => NativeType::Struct {
+                                        name: name.clone(),
+                                        fields: fields.clone(),
+                                    },
+                                    other => other.clone(),
+                                };
+                                let words = bound_ty.words() as i32;
                                 *next_slot += words * 8;
                                 locals.insert(
                                     binding.clone(),
                                     NativeLocal {
                                         slot: *next_slot - (words - 1) * 8,
-                                        ty: payload_ty.clone(),
+                                        ty: bound_ty,
                                     },
                                 );
                             }
@@ -3076,9 +3284,11 @@ fn lower_native_function(
             NativeType::I64
             | NativeType::String
             | NativeType::List { .. }
-            | NativeType::Map { .. } => {
-                // An integer/pointer scalar parameter — or a string/list/map (a heap
-                // pointer word) — spills its register (or its incoming stack word)
+            | NativeType::Map { .. }
+            | NativeType::HeapStruct { .. } => {
+                // An integer/pointer scalar parameter — or a string/list/map/heap
+                // struct (a heap pointer word) — spills its register (or its incoming
+                // stack word)
                 // directly into its slot. A string parameter shares the caller's
                 // record by pointer, which is safe because strings are immutable. A
                 // list/map parameter also shares by pointer safely: their mutators
@@ -3222,12 +3432,15 @@ fn lower_native_stmt(
             // xmm0 and stores the whole word; an aggregate `let` materializes each
             // flattened scalar word directly into its slots.
             match ctx.local(name)?.ty {
-                // An `i64` scalar or a string/list/map (a pointer word) uses the
-                // register path: evaluate into `rax` and store the whole word.
+                // An `i64` scalar or a string/list/map/heap-struct (a pointer word)
+                // uses the register path: evaluate into `rax` and store the whole
+                // word. (A `HeapStruct` never appears as a top-level local; kept in
+                // this arm for match exhaustiveness.)
                 NativeType::I64
                 | NativeType::String
                 | NativeType::List { .. }
-                | NativeType::Map { .. } => {
+                | NativeType::Map { .. }
+                | NativeType::HeapStruct { .. } => {
                     lower_native_expr(ctx, value, code)?;
                     let slot = ctx.local_slot(name)?;
                     store_local(code, slot); // mov [rbp - slot], rax
@@ -3496,6 +3709,39 @@ fn lower_aggregate_init(
     {
         return lower_map_get_into(ctx, base_slot, &value.ty, &args[0], &args[1], code);
     }
+    // A `get(list<struct>, i)` initializing a stack `Struct` local/scratch: the
+    // element is a HEAP struct; `lower_list_get` deep-copies it and leaves the fresh
+    // heap pointer in `rax`. Bridge it into the stack-flattened `Struct` layout by
+    // flat-copying each field word `[heap + 8*k]` -> `[base + 8*k]` (fields are one
+    // word each at the one-level bound). This is the heap->stack seam that lets field
+    // access (`p.x`) and the by-pointer call ABI consume a mutable-heap element.
+    if let (NativeType::Struct { fields, .. }, BytecodeExprKind::Call { name, args }) =
+        (ty, &value.kind)
+        && name == LIST_GET_BUILTIN
+        && args.len() == 2
+        && matches!(
+            native_collection_slot(
+                &args[0]
+                    .ty
+                    .list_element()
+                    .unwrap_or_else(|| args[0].ty.clone()),
+                ctx.structs,
+                ctx.enums,
+                0,
+            ),
+            Some(NativeType::HeapStruct { .. })
+        )
+    {
+        lower_list_get(ctx, &args[0], &args[1], code)?; // rax = fresh heap-struct ptr
+        code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (heap ptr)
+        for word in 0..fields.len() as i32 {
+            // rax = [rcx + 8*word] ; [rbp - (base + 8*word)] = rax.
+            code.extend_from_slice(&[0x48, 0x8B, 0x81]); // mov rax, [rcx + disp32]
+            code.extend_from_slice(&(word * 8).to_le_bytes());
+            store_local(code, base_slot + word * 8);
+        }
+        return Ok(());
+    }
     // A call to a compiled function that returns this aggregate: the callee writes
     // its result through a hidden pointer we supply. We could pass `base_slot`'s
     // address as that pointer directly, but the address must be computed relative
@@ -3611,7 +3857,20 @@ fn lower_enum_construction(
                 let width = lower_native_float_expr(ctx, arg, code)?;
                 store_float_local(code, word, width);
             }
-            _ => return Err("enum payload must be a native scalar or `string`".to_string()),
+            // A one-level MUTABLE-aggregate payload (`HeapStruct`/nested `List`/
+            // `Map`): build/deep-copy an INDEPENDENT value pointer (so the enum owns
+            // its own snapshot) and store it as the payload word.
+            NativeType::HeapStruct { .. } | NativeType::List { .. } | NativeType::Map { .. } => {
+                lower_heap_slot_value(ctx, field_ty, arg, code)?;
+                store_local(code, word);
+            }
+            _ => {
+                return Err(
+                    "enum payload must be a native scalar, `string`, or one-level \
+                     mutable aggregate"
+                        .to_string(),
+                );
+            }
         }
         word += field_ty.words() as i32 * 8;
     }
@@ -3992,8 +4251,31 @@ fn lower_native_match(
                             load_float_local(code, payload_word, width);
                             store_float_local(code, dst, width);
                         }
+                        // A `HeapStruct` payload is bound as a STACK `Struct` local:
+                        // load the payload's heap pointer, then flat-copy each field
+                        // word `[ptr + 8*k]` -> `[dst + 8*k]`. The bound value is a
+                        // fresh stack snapshot, so mutating it never touches the
+                        // source heap struct (value semantics, matching the
+                        // interpreters' cloned `match` binding).
+                        NativeType::HeapStruct { fields, .. } => {
+                            load_local(code, payload_word); // rax = heap-struct ptr
+                            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+                            for word in 0..fields.len() as i32 {
+                                code.extend_from_slice(&[0x48, 0x8B, 0x81]); // mov rax, [rcx+disp32]
+                                code.extend_from_slice(&(word * 8).to_le_bytes());
+                                store_local(code, dst + word * 8);
+                            }
+                        }
+                        // A nested `List`/`Map` payload binds its (deep-copied)
+                        // pointer word directly.
+                        NativeType::List { .. } | NativeType::Map { .. } => {
+                            load_local(code, payload_word);
+                            emit_heap_slot_deep_copy(ctx, field_ty, code);
+                            store_local(code, dst);
+                        }
                         _ => {
-                            return Err("enum payload binding is not a native scalar or `string`"
+                            return Err("enum payload binding is not a native scalar, `string`, \
+                                 or one-level mutable aggregate"
                                 .to_string());
                         }
                     }
@@ -5880,6 +6162,234 @@ fn emit_call_symbol(ctx: &mut NativeCtx, symbol: &str, code: &mut Vec<u8>) {
     });
 }
 
+/// Deep-copy the collection-slot value whose pointer is in `rax`, leaving a fresh
+/// independent value's pointer in `rax`. This is the native realization of the
+/// interpreters' recursive `Value::clone` on a MUTABLE-heap collection element /
+/// map value / enum payload, mirroring the WASM backend's `emit_deep_copy`:
+///
+/// - a **scalar or `string`** slot needs no copy — the word in `rax` is already the
+///   value (a `string`'s shared pointer IS its value-semantic clone since strings
+///   are immutable), so this is the identity;
+/// - a **`HeapStruct`** slot calls `__lullaby_struct_copy` (a fresh independent
+///   field block, deep at the one-level bound);
+/// - a nested **`List`** slot calls `__lullaby_list_copy` (its own elements are
+///   scalars/strings at this bound, so a flat copy is an exact deep copy);
+/// - a nested **`Map`** slot calls `__lullaby_map_copy`.
+///
+/// The call is emitted inline within a list/map op (a `Call` IR node), so the frame
+/// already reserves shadow space and keeps `rsp` 16-byte aligned at the `call`.
+fn emit_heap_slot_deep_copy(ctx: &mut NativeCtx, slot_ty: &NativeType, code: &mut Vec<u8>) {
+    match slot_ty {
+        NativeType::HeapStruct { .. } => {
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+            emit_call_symbol(ctx, STRUCT_COPY_SYMBOL, code);
+        }
+        NativeType::List { .. } => {
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+            emit_call_symbol(ctx, LIST_COPY_SYMBOL, code);
+        }
+        NativeType::Map { .. } => {
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+            emit_call_symbol(ctx, MAP_COPY_SYMBOL, code);
+        }
+        // Scalar or immutable string: the value in rax is already its own copy.
+        _ => {}
+    }
+}
+
+/// After a list has been flat-copied (via `__lullaby_list_copy`/`_grow`), walk its
+/// `len` live element slots and replace each with an INDEPENDENT deep copy of
+/// itself, so a mutable-aggregate element (`HeapStruct`/nested `List`/`Map`) is not
+/// shared between the source list and the copy. `list_slot`/`elem_ty`: the list
+/// pointer lives in a caller frame slot (so it survives the internal helper calls),
+/// and `elem_ty` is the element's resolved `NativeType`. A scalar/string element
+/// needs no fixup and this is a no-op. The fixup runs entirely on volatile registers
+/// plus the frame slot; each per-element deep copy keeps `rsp` aligned at its call.
+fn emit_list_deep_fixup(
+    ctx: &mut NativeCtx,
+    list_slot: i32,
+    elem_ty: &NativeType,
+    code: &mut Vec<u8>,
+) {
+    if !native_slot_needs_deep_copy(elem_ty) {
+        return;
+    }
+    // A per-element counter local and a saved list-pointer local keep state across
+    // the deep-copy calls (which clobber volatiles). Use two scratch frame slots.
+    let saved_scratch = ctx.scratch_next;
+    let i_slot = ctx.alloc_scratch(1);
+    // i = 0
+    emit_mov_rax_imm(code, 0);
+    store_local(code, i_slot);
+    let loop_top = code.len();
+    // if i >= len -> done. rcx = list; r8 = len = [rcx + LIST_LEN_OFF].
+    load_local(code, list_slot); // rax = list ptr
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    emit_mov_r8_from_rcx_disp(code, LIST_LEN_OFF); // r8 = len
+    load_local(code, i_slot); // rax = i
+    code.extend_from_slice(&[0x4C, 0x39, 0xC0]); // cmp rax, r8
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rax = [rcx + rax*8 + LIST_DATA_OFF]  (load element i pointer)
+    code.extend_from_slice(&[0x48, 0x8B, 0x84, 0xC1]); // mov rax, [rcx + rax*8 + disp32]
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    // rax = deep copy of the element.
+    emit_heap_slot_deep_copy(ctx, elem_ty, code);
+    // Store the fresh pointer back: [list + i*8 + LIST_DATA_OFF] = rax.
+    // rcx = list; rdx = i.
+    code.push(0x50); // push rax (fresh copy)
+    load_local(code, list_slot); // rax = list ptr
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    load_local(code, i_slot); // rax = i
+    code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax  (i)
+    code.push(0x58); // pop rax (fresh copy)
+    // lea r8, [rcx + rdx*8 + LIST_DATA_OFF] ; mov [r8], rax
+    code.extend_from_slice(&[0x4C, 0x8D, 0x84, 0xD1]); // lea r8, [rcx + rdx*8 + disp32]
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0x89, 0x00]); // mov [r8], rax
+    // i += 1
+    load_local(code, i_slot);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    store_local(code, i_slot);
+    emit_jmp_to(code, loop_top);
+    patch_rel32(code, done_site);
+    ctx.scratch_next = saved_scratch;
+}
+
+/// After a map has been flat-copied (via `__lullaby_map_copy`), walk its `len` live
+/// entries and replace each entry's VALUE word with an independent deep copy, so a
+/// mutable-aggregate value (`map<K, struct>`) is not shared between the source and
+/// the copy. Keys stay flat (they are integer-cell scalars). `map_slot`/`value_ty`
+/// mirror [`emit_list_deep_fixup`]. A scalar/string value needs no fixup (no-op).
+fn emit_map_deep_fixup(
+    ctx: &mut NativeCtx,
+    map_slot: i32,
+    value_ty: &NativeType,
+    code: &mut Vec<u8>,
+) {
+    if !native_slot_needs_deep_copy(value_ty) {
+        return;
+    }
+    let saved_scratch = ctx.scratch_next;
+    let i_slot = ctx.alloc_scratch(1);
+    emit_mov_rax_imm(code, 0);
+    store_local(code, i_slot);
+    let loop_top = code.len();
+    load_local(code, map_slot); // rax = map ptr
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    emit_mov_r8_from_rcx_disp(code, MAP_LEN_OFF); // r8 = len
+    load_local(code, i_slot); // rax = i
+    code.extend_from_slice(&[0x4C, 0x39, 0xC0]); // cmp rax, r8
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge done
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Entry value address = rcx + MAP_DATA_OFF + i*MAP_ENTRY_SIZE + MAP_VALUE_OFF.
+    // i*16 = i<<4. rax = i ; shl rax, 4 ; lea rdx, [rcx + rax + MAP_DATA_OFF+VALUE].
+    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x04]); // shl rax, 4
+    code.extend_from_slice(&[0x48, 0x8D, 0x94, 0x01]); // lea rdx, [rcx + rax + disp32]
+    code.extend_from_slice(&(MAP_DATA_OFF + MAP_VALUE_OFF).to_le_bytes());
+    // rax = [rdx]  (the entry value pointer)
+    code.extend_from_slice(&[0x48, 0x8B, 0x02]); // mov rax, [rdx]
+    emit_heap_slot_deep_copy(ctx, value_ty, code); // rax = fresh copy
+    // Recompute the value slot address (rcx/rdx clobbered by the copy) and store.
+    code.push(0x50); // push rax (fresh copy)
+    load_local(code, map_slot);
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    load_local(code, i_slot); // rax = i
+    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x04]); // shl rax, 4
+    code.extend_from_slice(&[0x48, 0x8D, 0x94, 0x01]); // lea rdx, [rcx + rax + disp32]
+    code.extend_from_slice(&(MAP_DATA_OFF + MAP_VALUE_OFF).to_le_bytes());
+    code.push(0x58); // pop rax (fresh copy)
+    code.extend_from_slice(&[0x48, 0x89, 0x02]); // mov [rdx], rax
+    load_local(code, i_slot);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    store_local(code, i_slot);
+    emit_jmp_to(code, loop_top);
+    patch_rel32(code, done_site);
+    ctx.scratch_next = saved_scratch;
+}
+
+/// Construct a heap struct from a `Name(field…)` constructor call, leaving the
+/// fresh field-0 pointer in `rax`. Allocates `STRUCT_HEADER_SIZE + nwords * 8`,
+/// writes the `[nwords]` header, and materializes each field word (a scalar/string
+/// through `rax`; a nested MUTABLE-aggregate field is out of the one-level bound and
+/// never reaches here). The block is freshly allocated, so the returned value is
+/// already an independent snapshot (no extra deep copy needed).
+fn lower_heap_struct_construct(
+    ctx: &mut NativeCtx,
+    fields: &[(String, NativeType)],
+    args: &[BytecodeExpr],
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    if args.len() != fields.len() {
+        return Err("heap struct constructor field-count mismatch".to_string());
+    }
+    let nwords = fields.len() as i32;
+    // rcx = STRUCT_HEADER_SIZE + nwords * 8 ; call __lullaby_alloc -> rax = base.
+    emit_mov_rcx_imm(code, (STRUCT_HEADER_SIZE + nwords * 8) as i64);
+    emit_call_symbol(ctx, HEAP_ALLOC_SYMBOL, code);
+    // Stash the base pointer in a scratch slot across the field evaluations.
+    let saved_scratch = ctx.scratch_next;
+    let base_slot = ctx.alloc_scratch(1);
+    store_local(code, base_slot);
+    // [base] = nwords (header word).
+    load_local(code, base_slot);
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    emit_mov_rax_imm(code, nwords as i64);
+    // mov [rcx], rax
+    code.extend_from_slice(&[0x48, 0x89, 0x01]);
+    // Each field word at [base + STRUCT_HEADER_SIZE + k*8].
+    for (k, (arg, (_, field_ty))) in args.iter().zip(fields.iter()).enumerate() {
+        // Evaluate the field value into rax. A field is a scalar or a `string`
+        // (immutable pointer); a float field is out of scope (structs reject floats).
+        if matches!(field_ty, NativeType::F64 | NativeType::F32) {
+            return Err("float heap-struct fields are not in the native subset".to_string());
+        }
+        lower_native_expr(ctx, arg, code)?;
+        code.push(0x50); // push rax (field value)
+        load_local(code, base_slot);
+        code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (base)
+        code.push(0x58); // pop rax (field value)
+        // mov [rcx + STRUCT_HEADER_SIZE + k*8], rax
+        code.extend_from_slice(&[0x48, 0x89, 0x81]);
+        code.extend_from_slice(&(STRUCT_HEADER_SIZE + k as i32 * 8).to_le_bytes());
+    }
+    // rax = field-0 pointer = base + STRUCT_HEADER_SIZE.
+    load_local(code, base_slot);
+    emit_add_rax_imm32(code, STRUCT_HEADER_SIZE);
+    ctx.scratch_next = saved_scratch;
+    Ok(())
+}
+
+/// Produce a fresh, INDEPENDENT collection-slot value pointer in `rax` for a
+/// MUTABLE-aggregate element/value being stored (by `push`/`set`/`map_set`).
+///
+/// - A **struct constructor** (`Point(1, 2)`) is built directly on the heap
+///   ([`lower_heap_struct_construct`]) — already independent.
+/// - A **nested-list literal or any other expression** yielding a `List`/`Map`/
+///   `HeapStruct` pointer is evaluated and then DEEP-COPIED, so a later mutation of
+///   the source binding never leaks into the collection (the interpreters clone the
+///   argument `Value` before storing it).
+fn lower_heap_slot_value(
+    ctx: &mut NativeCtx,
+    slot_ty: &NativeType,
+    value: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    if let (NativeType::HeapStruct { name, fields }, BytecodeExprKind::Call { name: cname, args }) =
+        (slot_ty, &value.kind)
+        && cname == name
+    {
+        // A direct constructor: build fresh on the heap (already independent).
+        return lower_heap_struct_construct(ctx, fields, args, code);
+    }
+    // Any other expression yields an existing aggregate pointer; deep-copy it.
+    lower_native_expr(ctx, value, code)?;
+    emit_heap_slot_deep_copy(ctx, slot_ty, code);
+    Ok(())
+}
+
 /// Lower `push(l, x) -> list<T>` (value-semantic append): deep-copy `l`, grow the
 /// copy if it is full, store `x` into slot `len`, bump `len`, and leave the fresh
 /// list pointer in `rax`. Because `push` always returns a NEW list,
@@ -5892,10 +6402,13 @@ fn lower_list_push(
 ) -> Result<(), String> {
     let elem = supported_list_element(&list.ty).ok_or_else(|| {
         format!(
-            "push expects a scalar-element list but got `{}`",
+            "push expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
+    let elem_ty = native_collection_slot(&elem, ctx.structs, ctx.enums, 0)
+        .ok_or_else(|| format!("list element `{}` is not layable-out", elem.name))?;
+    let deep_elem = native_slot_needs_deep_copy(&elem_ty);
     // rax = deep copy of the source list.
     lower_native_expr(ctx, list, code)?;
     code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (copy source)
@@ -5903,16 +6416,28 @@ fn lower_list_push(
     // Ensure room for one more element: rax = grow(copy) (a no-op when cap > len).
     code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
     emit_call_symbol(ctx, LIST_GROW_SYMBOL, code); // rax = grown copy
+    // For a MUTABLE-aggregate element, deep-copy the copied list's existing elements
+    // so they are independent of the source list (the flat helper copy shared them).
+    let saved_scratch = ctx.scratch_next;
+    let list_slot = ctx.alloc_scratch(1);
+    store_local(code, list_slot); // stash the (grown) list pointer
+    if deep_elem {
+        emit_list_deep_fixup(ctx, list_slot, &elem_ty, code);
+    }
+    load_local(code, list_slot); // rax = list ptr
     code.push(0x50); // push rax (save the list pointer across value evaluation)
-    // Evaluate the value to append into rax (a scalar or a float bit pattern).
-    // A float element is stored bit-for-bit through the GPR: move xmm0 into rax
-    // so the 8-byte word write preserves the exact bits (f32 keeps its low four).
+    // Evaluate the value to append into rax (a scalar, a float bit pattern, or a
+    // MUTABLE-aggregate pointer that is deep-copied so a later mutation of the
+    // source value never leaks into the list — matching the interpreters).
     if let Some(width) = FloatWidth::from_type_name(&elem.name) {
         lower_native_float_expr(ctx, value, code)?;
         emit_movq_rax_from_xmm0(code, width);
+    } else if deep_elem {
+        lower_heap_slot_value(ctx, &elem_ty, value, code)?;
     } else {
         lower_native_expr(ctx, value, code)?;
     }
+    ctx.scratch_next = saved_scratch;
     // rcx = list pointer (restored); the element value stays in rax.
     code.push(0x59); // pop rcx
     // r8 = len = [rcx + LIST_LEN_OFF]
@@ -5945,25 +6470,41 @@ fn lower_list_set(
 ) -> Result<(), String> {
     let elem = supported_list_element(&list.ty).ok_or_else(|| {
         format!(
-            "set expects a scalar-element list but got `{}`",
+            "set expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
+    let elem_ty = native_collection_slot(&elem, ctx.structs, ctx.enums, 0)
+        .ok_or_else(|| format!("list element `{}` is not layable-out", elem.name))?;
+    let deep_elem = native_slot_needs_deep_copy(&elem_ty);
     // rax = deep copy of the source list.
     lower_native_expr(ctx, list, code)?;
     code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
     emit_call_symbol(ctx, LIST_COPY_SYMBOL, code); // rax = fresh copy
+    // Deep-copy the copied list's existing elements so the returned list is fully
+    // independent of the source (the flat helper copy shared their pointers).
+    let saved_scratch = ctx.scratch_next;
+    let list_slot = ctx.alloc_scratch(1);
+    if deep_elem {
+        store_local(code, list_slot);
+        emit_list_deep_fixup(ctx, list_slot, &elem_ty, code);
+        load_local(code, list_slot);
+    }
     code.push(0x50); // push rax (the copy pointer)
     // rax = index (i64).
     lower_native_expr(ctx, index, code)?;
     code.push(0x50); // push rax (index)
-    // Evaluate the replacement value into rax (float via xmm0 -> rax).
+    // Evaluate the replacement value into rax (float via xmm0 -> rax; a MUTABLE
+    // aggregate is built/deep-copied fresh so it is independent of its source).
     if let Some(width) = FloatWidth::from_type_name(&elem.name) {
         lower_native_float_expr(ctx, value, code)?;
         emit_movq_rax_from_xmm0(code, width);
+    } else if deep_elem {
+        lower_heap_slot_value(ctx, &elem_ty, value, code)?;
     } else {
         lower_native_expr(ctx, value, code)?;
     }
+    ctx.scratch_next = saved_scratch;
     code.push(0x59); // pop rcx (index)
     code.push(0x5A); // pop rdx (list pointer)
     // Element slot address: rdx = rdx + LIST_DATA_OFF + rcx*8.
@@ -5994,15 +6535,27 @@ fn lower_list_pop(
     list: &BytecodeExpr,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
-    supported_list_element(&list.ty).ok_or_else(|| {
+    let elem = supported_list_element(&list.ty).ok_or_else(|| {
         format!(
-            "pop expects a scalar-element list but got `{}`",
+            "pop expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
+    let elem_ty = native_collection_slot(&elem, ctx.structs, ctx.enums, 0)
+        .ok_or_else(|| format!("list element `{}` is not layable-out", elem.name))?;
     lower_native_expr(ctx, list, code)?;
     code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
     emit_call_symbol(ctx, LIST_COPY_SYMBOL, code); // rax = fresh copy
+    // Deep-copy the copied list's remaining elements so the returned list is
+    // independent of the source (the flat helper copy shared their pointers).
+    if native_slot_needs_deep_copy(&elem_ty) {
+        let saved_scratch = ctx.scratch_next;
+        let list_slot = ctx.alloc_scratch(1);
+        store_local(code, list_slot);
+        emit_list_deep_fixup(ctx, list_slot, &elem_ty, code);
+        load_local(code, list_slot);
+        ctx.scratch_next = saved_scratch;
+    }
     // len -= 1: r8 = [rax + LIST_LEN_OFF]; r8 -= 1; [rax + LIST_LEN_OFF] = r8.
     // mov r8, [rax + LIST_LEN_OFF]
     code.extend_from_slice(&[0x4C, 0x8B, 0x80]);
@@ -6019,18 +6572,27 @@ fn lower_list_pop(
 /// float element is loaded back into `xmm0` by the float-expr path; this integer
 /// path loads the raw word into `rax` (a float `get` result is handled by
 /// `lower_native_float_expr`'s list-get case).
+///
+/// For a MUTABLE-aggregate element (`HeapStruct`/nested `List`/`Map`) the loaded
+/// element pointer is DEEP-COPIED (the interpreters' `values[i].clone()`), so the
+/// returned value is independent of the list: mutating the retrieved copy never
+/// touches the list's element. The result is a heap pointer word; a consumer that
+/// wants the stack-flattened struct (a `Struct`-typed local or call argument)
+/// bridges it via [`lower_aggregate_init`]'s heap-source path.
 fn lower_list_get(
     ctx: &mut NativeCtx,
     list: &BytecodeExpr,
     index: &BytecodeExpr,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
-    supported_list_element(&list.ty).ok_or_else(|| {
+    let elem = supported_list_element(&list.ty).ok_or_else(|| {
         format!(
-            "get expects a scalar-element list but got `{}`",
+            "get expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
+    let elem_ty = native_collection_slot(&elem, ctx.structs, ctx.enums, 0)
+        .ok_or_else(|| format!("list element `{}` is not layable-out", elem.name))?;
     // rax = index; push it; rax = list pointer; pop rcx = index.
     lower_native_expr(ctx, index, code)?;
     code.push(0x50); // push rax (index)
@@ -6039,6 +6601,10 @@ fn lower_list_get(
     // rax = [rax + rcx*8 + LIST_DATA_OFF]
     code.extend_from_slice(&[0x48, 0x8B, 0x84, 0xC8]); // mov rax, [rax + rcx*8 + disp32]
     code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    // A mutable-aggregate element is returned as an independent deep copy.
+    if native_slot_needs_deep_copy(&elem_ty) {
+        emit_heap_slot_deep_copy(ctx, &elem_ty, code);
+    }
     Ok(())
 }
 
@@ -6106,16 +6672,34 @@ fn lower_map_set(
             map.ty.name
         )
     })?;
+    let value_native = native_collection_slot(&value_ty, ctx.structs, ctx.enums, 0)
+        .ok_or_else(|| format!("map value `{}` is not layable-out", value_ty.name))?;
+    let deep_value = native_slot_needs_deep_copy(&value_native);
     // rax = deep copy of the source map (value semantics).
     lower_native_expr(ctx, map, code)?;
     code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
     emit_call_symbol(ctx, MAP_COPY_SYMBOL, code); // rax = fresh copy
+    // For a MUTABLE-aggregate value, deep-copy the copied map's existing entry
+    // values so the returned map is fully independent of the source (the flat helper
+    // copy shared their pointers).
+    let saved_scratch = ctx.scratch_next;
+    if deep_value {
+        let map_slot = ctx.alloc_scratch(1);
+        store_local(code, map_slot);
+        emit_map_deep_fixup(ctx, map_slot, &value_native, code);
+        load_local(code, map_slot);
+    }
     code.push(0x50); // push rax (the copy pointer)
     // Evaluate the key into a saved word (any nested call balances its own stack).
     lower_map_key(ctx, key, code)?;
     code.push(0x50); // push rax (key)
-    // Evaluate the value word (float via xmm0 -> rax) and save it.
-    lower_map_value_word(ctx, &value_ty, value, code)?;
+    // Evaluate the value word (float via xmm0 -> rax) and save it. A MUTABLE
+    // aggregate value is built/deep-copied fresh so it is independent of its source.
+    if deep_value {
+        lower_heap_slot_value(ctx, &value_native, value, code)?;
+    } else {
+        lower_map_value_word(ctx, &value_ty, value, code)?;
+    }
     code.push(0x50); // push rax (value)
     // Restore into stable non-argument-clobbered registers: r8 = value, rdx = key,
     // rcx = map copy. All three pops complete before the find call, so rsp is back
@@ -6185,6 +6769,7 @@ fn lower_map_set(
     code.extend_from_slice(&[0x48, 0x89, 0xC8]);
     // done:
     patch_rel32(code, done_site);
+    ctx.scratch_next = saved_scratch;
     Ok(())
 }
 
@@ -6236,12 +6821,11 @@ fn lower_map_get_into(
     key: &BytecodeExpr,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
-    supported_map_kv(&map.ty).ok_or_else(|| {
-        format!(
-            "map_get expects a scalar-key, scalar-value map but got `{}`",
-            map.ty.name
-        )
-    })?;
+    let (_k, value_ty) = supported_map_kv(&map.ty)
+        .ok_or_else(|| format!("map_get expects a supported map but got `{}`", map.ty.name))?;
+    let value_native = native_collection_slot(&value_ty, ctx.structs, ctx.enums, 0)
+        .ok_or_else(|| format!("map value `{}` is not layable-out", value_ty.name))?;
+    let deep_value = native_slot_needs_deep_copy(&value_native);
     // Resolve the option layout to get the `some`/`none` tags (some=0, none=1).
     let layout = resolve_native_type(result_ty, ctx.structs, ctx.enums)?;
     let NativeType::Enum { variants, .. } = &layout else {
@@ -6286,6 +6870,12 @@ fn lower_map_get_into(
     // rax = [r11 + MAP_VALUE_OFF]  (the value word); store it as the payload word.
     code.extend_from_slice(&[0x49, 0x8B, 0x83]); // mov rax, [r11 + disp32]
     code.extend_from_slice(&MAP_VALUE_OFF.to_le_bytes());
+    // A MUTABLE-aggregate value is returned as an INDEPENDENT deep copy (the
+    // interpreters' `values[i].clone()`), so mutating the retrieved `some` payload
+    // never touches the map's entry.
+    if deep_value {
+        emit_heap_slot_deep_copy(ctx, &value_native, code);
+    }
     store_local(code, base_slot + 8); // payload word (base_slot + 8)
     // tag word = some_tag at base_slot.
     emit_mov_rax_imm(code, some_tag);
@@ -6348,6 +6938,18 @@ fn emit_mov_rcx_disp_from_r8(code: &mut Vec<u8>, disp: i32) {
 fn emit_sub_rax_imm32(code: &mut Vec<u8>, imm: i32) {
     code.extend_from_slice(&[0x48, 0x2D]); // sub rax, imm32
     code.extend_from_slice(&imm.to_le_bytes());
+}
+
+/// `add rax, imm32`.
+fn emit_add_rax_imm32(code: &mut Vec<u8>, imm: i32) {
+    code.extend_from_slice(&[0x48, 0x05]); // add rax, imm32
+    code.extend_from_slice(&imm.to_le_bytes());
+}
+
+/// `mov rcx, imm64` (10-byte form).
+fn emit_mov_rcx_imm(code: &mut Vec<u8>, value: i64) {
+    code.extend_from_slice(&[0x48, 0xB9]); // mov rcx, imm64
+    code.extend_from_slice(&value.to_le_bytes());
 }
 
 // -- Small instruction helpers -----------------------------------------------
@@ -6472,6 +7074,7 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                 LIST_NEW_SYMBOL
                     | LIST_COPY_SYMBOL
                     | LIST_GROW_SYMBOL
+                    | STRUCT_COPY_SYMBOL
                     | MAP_NEW_SYMBOL
                     | MAP_COPY_SYMBOL
                     | MAP_GROW_SYMBOL
@@ -7160,6 +7763,73 @@ fn emit_list_grow_helper() -> HelperFunction {
     code.push(0xC3); // ret
     HelperFunction {
         name: LIST_GROW_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_struct_copy(rcx = src field-0 ptr) -> rax = fresh field-0 ptr`:
+/// deep-copy a heap struct. Reads the `[rcx - STRUCT_HEADER_SIZE]` word count,
+/// allocates `STRUCT_HEADER_SIZE + nwords * 8`, copies the header word and every
+/// field word (a flat 8-byte word copy — heap-struct fields are scalars or shared
+/// immutable strings at the one-level nesting bound, so the flat copy is an exact
+/// deep copy), and returns the fresh block's field-0 pointer (`alloc_base +
+/// STRUCT_HEADER_SIZE`). The independent block gives the struct value semantics:
+/// mutating one heap-struct copy is never observable through another.
+fn emit_struct_copy_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+    // Preserve non-volatiles rsi (src base), rdi (dst base), rbx (nwords).
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.push(0x53); // push rbx
+    emit_helper_shadow_prologue(&mut code); // sub rsp, 40 (keeps %16 at the call)
+    // rsi = src block base = rcx - STRUCT_HEADER_SIZE (points at the header word).
+    code.extend_from_slice(&[0x48, 0x8D, 0x71]); // lea rsi, [rcx + disp8]
+    code.push((-STRUCT_HEADER_SIZE) as i8 as u8);
+    // rbx = nwords = [rsi]  (the header word)
+    code.extend_from_slice(&[0x48, 0x8B, 0x1E]); // mov rbx, [rsi]
+    // alloc size = STRUCT_HEADER_SIZE + nwords * 8 -> rcx
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0xC1, 0xE1, 0x03]); // shl rcx, 3
+    code.extend_from_slice(&[0x48, 0x81, 0xC1]); // add rcx, imm32
+    code.extend_from_slice(&STRUCT_HEADER_SIZE.to_le_bytes());
+    // call __lullaby_alloc -> rax = dst base
+    code.push(0xE8);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_ALLOC_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rdi = dst base
+    code.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax
+    // Copy header + nwords fields: total (nwords + 1) words from rsi to rdi.
+    // rbx currently holds nwords; count = nwords + 1.
+    code.extend_from_slice(&[0x48, 0xFF, 0xC3]); // inc rbx (count = nwords + 1)
+    // for i in 0..count: [rdi + i*8] = [rsi + i*8].  Use rax as the index.
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax  (i = 0)
+    let loop_top = code.len();
+    code.extend_from_slice(&[0x48, 0x39, 0xD8]); // cmp rax, rbx
+    code.extend_from_slice(&[0x0F, 0x8D]); // jge done (rel32)
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // r10 = [rsi + rax*8]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x14, 0xC6]); // mov r10, [rsi + rax*8]
+    // [rdi + rax*8] = r10
+    code.extend_from_slice(&[0x4C, 0x89, 0x14, 0xC7]); // mov [rdi + rax*8], r10
+    code.extend_from_slice(&[0x48, 0xFF, 0xC0]); // inc rax
+    emit_jmp_to(&mut code, loop_top);
+    patch_rel32(&mut code, done_site);
+    // rax = dst field-0 pointer = rdi + STRUCT_HEADER_SIZE
+    code.extend_from_slice(&[0x48, 0x8D, 0x47]); // lea rax, [rdi + disp8]
+    code.push(STRUCT_HEADER_SIZE as i8 as u8);
+    emit_helper_shadow_epilogue(&mut code);
+    code.push(0x5B); // pop rbx
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+    HelperFunction {
+        name: STRUCT_COPY_SYMBOL.to_string(),
         code,
         relocations,
     }
@@ -8487,6 +9157,7 @@ fn write_object_with_data(
         emit_list_new_helper(),
         emit_list_copy_helper(),
         emit_list_grow_helper(),
+        emit_struct_copy_helper(),
     ] {
         append_code(
             &mut text,
@@ -8583,6 +9254,7 @@ fn write_object_with_data(
         LIST_NEW_SYMBOL,
         LIST_COPY_SYMBOL,
         LIST_GROW_SYMBOL,
+        STRUCT_COPY_SYMBOL,
         MAP_NEW_SYMBOL,
         MAP_COPY_SYMBOL,
         MAP_GROW_SYMBOL,
@@ -10699,36 +11371,209 @@ mod native_program_tests {
     }
 
     #[test]
-    fn defers_result_with_mutable_heap_payload_gracefully() {
-        // A `result<i64, list<i64>>` carries a MUTABLE heap payload in `err`; it
-        // would need a recursive per-payload deep copy, so it is still out of the
+    fn compiles_result_with_one_level_mutable_heap_payload() {
+        // A `result<i64, list<i64>>` carries a ONE-LEVEL mutable heap payload in
+        // `err`; the payload is deep-copied on the enum's value-semantic copy, so it
+        // is now IN the native subset (mirroring the WASM backend) and compiles.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn classify n i64 -> i64\n",
+            "    let xs list<i64> = list_new()\n",
+            "    let r result<i64, list<i64>> = err(push(xs, n))\n",
+            "    match r\n",
+            "        ok(v) -> v\n",
+            "        err(m) -> len(m)\n\n",
+            "fn main -> i64\n",
+            "    classify(3)\n",
+        )))
+        .expect("program with a one-level mutable enum payload compiles");
+        assert!(
+            program.compiled.iter().any(|n| n == "classify"),
+            "expected `classify` to compile: skipped {:?}",
+            program.skipped
+        );
+    }
+
+    #[test]
+    fn defers_enum_with_two_level_mutable_heap_payload_gracefully() {
+        // A `result<i64, list<list<list<i64>>>>` payload nests MUTABLE aggregates
+        // past the one-level bound (`list<list<list<…>>>`), so it is still out of the
         // native subset and the function skips gracefully rather than miscompiling.
         let program = emit_alpha1_native_program(&module_for(concat!(
             "fn classify n i64 -> i64\n",
-            "    let r result<i64, list<i64>> = ok(n)\n",
+            "    let r result<i64, list<list<list<i64>>>> = ok(n)\n",
             "    match r\n",
             "        ok(v) -> v\n",
             "        err(m) -> len(m)\n\n",
             "fn main -> i64\n",
             "    classify(3)\n",
         )));
-        // In this shape `main` calls the skipped `classify`, so nothing is eligible
-        // (error) — either way `classify` must appear as skipped.
         match program {
-            Err(err) => {
-                assert!(
-                    err.skipped.iter().any(|s| s.name == "classify"),
-                    "expected `classify` skipped for its mutable-heap payload: {:?}",
-                    err.skipped
-                );
-            }
-            Ok(program) => {
-                assert!(
-                    program.skipped.iter().any(|s| s.name == "classify"),
-                    "expected `classify` skipped for its mutable-heap payload: {:?}",
-                    program.skipped
-                );
-            }
+            Err(err) => assert!(
+                err.skipped.iter().any(|s| s.name == "classify"),
+                "expected `classify` skipped for its over-deep payload: {:?}",
+                err.skipped
+            ),
+            Ok(program) => assert!(
+                program.skipped.iter().any(|s| s.name == "classify"),
+                "expected `classify` skipped for its over-deep payload: {:?}",
+                program.skipped
+            ),
+        }
+    }
+
+    // -- Mutable-heap collection elements (list<struct>, list<list>, map<K,struct>) --
+
+    #[test]
+    fn compiles_list_of_structs_natively() {
+        // A `list<struct>` now COMPILES: each element is a heap-struct pointer,
+        // deep-copied per element on the list's value-semantic copy. `push`/`get`/
+        // `set` cross the heap<->stack bridge (a struct field-block behind a pointer
+        // for the element; a stack-flattened struct for the returned/consumed value).
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "struct Point\n",
+            "    x i64\n",
+            "    y i64\n\n",
+            "fn sum p Point -> i64\n",
+            "    p.x + p.y\n\n",
+            "fn build -> i64\n",
+            "    let ps list<Point> = list_new()\n",
+            "    ps = push(ps, Point(1, 2))\n",
+            "    ps = push(ps, Point(3, 4))\n",
+            "    sum(get(ps, 1))\n\n",
+            "fn main -> i64\n",
+            "    build()\n",
+        )))
+        .expect("emit native program for list<struct>");
+        assert!(
+            program.compiled.contains(&"build".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "list<struct> must compile: compiled {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        // The recursive per-element deep copy routes through the heap-struct copy
+        // helper, so the object references `__lullaby_struct_copy`.
+        assert!(
+            coff_symbol(&program.bytes, STRUCT_COPY_SYMBOL).is_some(),
+            "list<struct> deep copy must reference the heap-struct copy helper"
+        );
+    }
+
+    #[test]
+    fn compiles_nested_list_of_lists_natively() {
+        // A `list<list<i64>>` COMPILES: the outer element is a list pointer (already
+        // one word); the outer copy deep-copies each inner list via the list-copy
+        // helper (one mutable level, inner elements scalar). `get` returns an
+        // independent inner list.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn build -> i64\n",
+            "    let a list<i64> = list_new()\n",
+            "    a = push(a, 5)\n",
+            "    let rows list<list<i64>> = list_new()\n",
+            "    rows = push(rows, a)\n",
+            "    let r list<i64> = get(rows, 0)\n",
+            "    get(r, 0)\n\n",
+            "fn main -> i64\n",
+            "    build()\n",
+        )))
+        .expect("emit native program for list<list<i64>>");
+        assert!(
+            program.compiled.contains(&"build".to_string()),
+            "list<list<i64>> must compile: skipped {:?}",
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        assert!(
+            coff_symbol(&program.bytes, LIST_COPY_SYMBOL).is_some(),
+            "nested list deep copy must reference the list-copy helper"
+        );
+    }
+
+    #[test]
+    fn compiles_map_of_structs_natively() {
+        // A `map<i64, struct>` COMPILES: each entry value is a heap-struct pointer,
+        // deep-copied per value on the map's value-semantic copy; `map_get` returns
+        // `option<struct>` whose `some` payload is an independent heap struct.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "struct Point\n",
+            "    x i64\n",
+            "    y i64\n\n",
+            "fn sum p Point -> i64\n",
+            "    p.x + p.y\n\n",
+            "fn build -> i64\n",
+            "    let m map<i64, Point> = map_new()\n",
+            "    m = map_set(m, 1, Point(2, 3))\n",
+            "    match map_get(m, 1)\n",
+            "        some(p) -> sum(p)\n",
+            "        none -> 0\n\n",
+            "fn main -> i64\n",
+            "    build()\n",
+        )))
+        .expect("emit native program for map<K, struct>");
+        assert!(
+            program.compiled.contains(&"build".to_string()),
+            "map<i64, struct> must compile: skipped {:?}",
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        assert!(
+            coff_symbol(&program.bytes, STRUCT_COPY_SYMBOL).is_some(),
+            "map<K, struct> deep copy must reference the heap-struct copy helper"
+        );
+    }
+
+    #[test]
+    fn heap_struct_copy_helper_is_emitted_and_recurses_via_alloc() {
+        // The `__lullaby_struct_copy` helper is a real function in `.text` that calls
+        // the bump allocator (a fresh, independent block) — the machine-code proof
+        // that a heap-struct element deep copy is recursive, not a shared pointer.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "struct Cell\n",
+            "    v i64\n\n",
+            "fn read c Cell -> i64\n",
+            "    c.v\n\n",
+            "fn build -> i64\n",
+            "    let xs list<Cell> = list_new()\n",
+            "    xs = push(xs, Cell(7))\n",
+            "    read(get(xs, 0))\n\n",
+            "fn main -> i64\n",
+            "    build()\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            coff_symbol(&program.bytes, STRUCT_COPY_SYMBOL).is_some(),
+            "the heap-struct copy helper must be emitted"
+        );
+        assert!(
+            coff_symbol(&program.bytes, HEAP_ALLOC_SYMBOL).is_some(),
+            "the heap-struct copy helper allocates a fresh block via the bump allocator"
+        );
+    }
+
+    #[test]
+    fn defers_list_of_maps_gracefully() {
+        // A `list<map<i64, i64>>` element is a MUTABLE `map` — outside the accepted
+        // one-level struct/nested-list element set — so the function skips gracefully
+        // (still runs on the interpreters) rather than miscompiling.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn build -> i64\n",
+            "    let xs list<map<i64, i64>> = list_new()\n",
+            "    len(xs)\n\n",
+            "fn main -> i64\n",
+            "    build()\n",
+        )));
+        match program {
+            Err(err) => assert!(
+                err.skipped.iter().any(|s| s.name == "build"),
+                "list<map<..>> must skip: {:?}",
+                err.skipped
+            ),
+            Ok(program) => assert!(
+                program.skipped.iter().any(|s| s.name == "build"),
+                "list<map<..>> must skip: {:?}",
+                program.skipped
+            ),
         }
     }
 

@@ -5197,6 +5197,74 @@ fn native_list_execution_parity_when_linkable() {
     }
 }
 
+/// Best-effort execution parity for the native MUTABLE-heap collection-element
+/// subset: `list<struct>`, `list<list<i64>>`, `map<i64, struct>`, and the
+/// `option<struct>` that `map_get` returns. Native-compile a program that builds a
+/// `list<Point>` (push/get/set across a boundary), a `list<list<i64>>` (nested
+/// deep copy), a `map<i64, Point>` (insert + update-in-place + `map_get` matched),
+/// and — CRUCIALLY — a value-semantics probe (`get` a struct element, mutate the
+/// retrieved copy, re-`get` and confirm the original list element is unchanged).
+/// Assert every function compiles natively (not skipped) and the linked `.exe`'s
+/// exit code equals the interpreter's `main` result (96), which proves the
+/// recursive per-element deep copy matches the interpreters bit-for-bit. Sources
+/// MSVC's `LIB` when unset; gated on `rust-lld` + `kernel32.lib`.
+#[test]
+fn native_list_struct_execution_parity_when_linkable() {
+    ensure_msvc_env();
+    let name = "native_list_struct";
+    let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
+    let out = std::env::temp_dir().join(format!("lullaby_{name}_parity.exe"));
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{name}: {}", stderr(&emit));
+    // Every function — including the `list<struct>`, `list<list<i64>>`, and
+    // `map<i64, struct>` builders/consumers — compiles natively; nothing is skipped.
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "{name}: expected `main` compiled: {}",
+        stdout(&emit)
+    );
+    assert!(
+        !stdout(&emit).contains("skipped"),
+        "{name}: no mutable-heap-element function should be skipped: {}",
+        stdout(&emit)
+    );
+
+    // Interpreter ground truth for `main` (identical across ast/ir/bytecode).
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{name}: {}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native list<struct> link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "{name}: native mutable-heap-element exit code must equal the interpreter result (mod 256)"
+    );
+}
+
 /// Best-effort execution parity for the native growable `map<K, V>` (scalar
 /// key/value) subset: native-compile programs that build maps via `map_new`/
 /// `map_set` (insert, update-in-place of an existing key, capacity-doubling
