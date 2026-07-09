@@ -411,6 +411,168 @@ pub struct Closure {
     pub captured: Vec<(String, Value)>,
 }
 
+/// A hashable projection of a `map<K, V>` key. The type system restricts map
+/// keys to `i64` or `string` (both hashable) — see `map_key_ok` in
+/// `lullaby_semantics` — so this enum captures exactly those two kinds and lets
+/// [`OrderedMap`] index entries by key for O(1) lookup. Any other value kind
+/// (never produced for a well-typed program) has no projection; the map falls
+/// back to a linear scan so `Value` equality semantics are preserved exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum MapKey {
+    I64(i64),
+    Str(String),
+}
+
+impl MapKey {
+    fn from_value(value: &Value) -> Option<MapKey> {
+        match value {
+            Value::I64(n) => Some(MapKey::I64(*n)),
+            Value::String(s) => Some(MapKey::Str(s.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// An insertion-ordered `map<K, V>` value.
+///
+/// `entries` is the single source of truth for iteration order and value
+/// equality — it is byte-for-byte the old `Vec<(Value, Value)>` representation,
+/// so `map_keys`/`map_values` iterate in insertion order and `==` compares the
+/// entries element-wise in order, unchanged. `index` maps each hashable key to
+/// its position in `entries`, turning `map_get`/`map_has`/`map_set`-of-an-
+/// existing-key from an O(n) linear scan into an O(1) hash probe.
+///
+/// Only `entries` is observable, so `PartialEq` compares just that (`index` is a
+/// derived acceleration structure), and `Clone`/`Debug` are manual for the same
+/// reason — `Debug` renders as the entries vector so `Value`'s derived `Debug`
+/// output is identical to the previous `Map([..])` form.
+pub struct OrderedMap {
+    entries: Vec<(Value, Value)>,
+    index: HashMap<MapKey, usize>,
+}
+
+impl OrderedMap {
+    /// A fresh empty map.
+    pub fn new() -> Self {
+        OrderedMap {
+            entries: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    /// The number of entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the map has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The value mapped to `key`, if present. O(1) for the guaranteed
+    /// `i64`/`string` keys, with a linear-scan fallback for any other kind.
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        match MapKey::from_value(key) {
+            Some(mk) => self.index.get(&mk).map(|&i| &self.entries[i].1),
+            None => self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+        }
+    }
+
+    /// Whether `key` is present. O(1) for `i64`/`string` keys.
+    pub fn contains_key(&self, key: &Value) -> bool {
+        match MapKey::from_value(key) {
+            Some(mk) => self.index.contains_key(&mk),
+            None => self.entries.iter().any(|(k, _)| k == key),
+        }
+    }
+
+    /// Insert or overwrite `key -> value`, preserving the position of an
+    /// existing key. O(1) for `i64`/`string` keys.
+    pub fn insert(&mut self, key: Value, value: Value) {
+        match MapKey::from_value(&key) {
+            Some(mk) => match self.index.get(&mk) {
+                Some(&i) => self.entries[i].1 = value,
+                None => {
+                    let position = self.entries.len();
+                    self.entries.push((key, value));
+                    self.index.insert(mk, position);
+                }
+            },
+            None => match self.entries.iter_mut().find(|(k, _)| *k == key) {
+                Some(entry) => entry.1 = value,
+                None => self.entries.push((key, value)),
+            },
+        }
+    }
+
+    /// Remove `key` if present, preserving the order of the remaining entries.
+    /// O(n) (rare operation): the vector shift plus an index rebuild.
+    pub fn remove(&mut self, key: &Value) {
+        let position = match MapKey::from_value(key) {
+            Some(mk) => self.index.get(&mk).copied(),
+            None => self.entries.iter().position(|(k, _)| k == key),
+        };
+        if let Some(i) = position {
+            self.entries.remove(i);
+            self.reindex();
+        }
+    }
+
+    /// Rebuild `index` from `entries` after positions shift.
+    fn reindex(&mut self) {
+        self.index.clear();
+        self.index.reserve(self.entries.len());
+        for (i, (key, _)) in self.entries.iter().enumerate() {
+            if let Some(mk) = MapKey::from_value(key) {
+                self.index.insert(mk, i);
+            }
+        }
+    }
+
+    /// Iterate the entries in insertion order.
+    pub fn iter(&self) -> std::slice::Iter<'_, (Value, Value)> {
+        self.entries.iter()
+    }
+
+    /// Consume the map, yielding the entries in insertion order.
+    pub fn into_entries(self) -> Vec<(Value, Value)> {
+        self.entries
+    }
+}
+
+impl Default for OrderedMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for OrderedMap {
+    fn clone(&self) -> Self {
+        OrderedMap {
+            entries: self.entries.clone(),
+            index: self.index.clone(),
+        }
+    }
+}
+
+// Only the entries are observable; the index is a derived acceleration
+// structure, so equality compares entries alone. This is byte-for-byte the old
+// `Vec<(Value, Value)>` element-wise, in-order comparison.
+impl PartialEq for OrderedMap {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+// Render as the entries vector so `Value`'s derived `Debug` output stays
+// identical to the previous `Map([(k, v), ..])` representation.
+impl fmt::Debug for OrderedMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.entries.fmt(formatter)
+    }
+}
+
 // `Eq` is intentionally omitted: `Value::F64` holds an `f64`, which is not `Eq`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -445,9 +607,10 @@ pub enum Value {
         variant: String,
         payload: Vec<Value>,
     },
-    /// A `map<K, V>`: an insertion-ordered association list. Lookup and insert
-    /// are linear scans using `Value` equality.
-    Map(Vec<(Value, Value)>),
+    /// A `map<K, V>`: an insertion-ordered association list ([`OrderedMap`])
+    /// backed by a hash index, so `map_get`/`map_has`/`map_set`-of-an-existing-
+    /// key are O(1) while iteration order and `==` remain those of the entries.
+    Map(OrderedMap),
     /// A first-class function value: a handle to a top-level function by name.
     /// No environment is captured in this increment.
     Func(String),
@@ -1045,7 +1208,7 @@ pub fn builtin_fence(args: Vec<Value>) -> Result<Value, RuntimeError> {
 }
 
 /// Unwrap a runtime `Value` expected to be a map, reporting `L0417` otherwise.
-pub fn expect_map(name: &str, value: Value) -> Result<Vec<(Value, Value)>, RuntimeError> {
+pub fn expect_map(name: &str, value: Value) -> Result<OrderedMap, RuntimeError> {
     match value {
         Value::Map(entries) => Ok(entries),
         other => Err(RuntimeError::new(
@@ -4669,39 +4832,37 @@ impl<'a> Runtime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_new", 0, args.len()))?;
-        Ok(Value::Map(Vec::new()))
+        Ok(Value::Map(OrderedMap::new()))
     }
 
     /// `map_set(m, k, v) -> map<K, V>`: a new map with `k` mapped to `v`.
+    /// Overwriting an existing key or appending a new one is O(1).
     fn builtin_map_set(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [map, key, value]: [Value; 3] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_set", 3, args.len()))?;
         let mut entries = expect_map("map_set", map)?;
-        match entries.iter_mut().find(|(k, _)| *k == key) {
-            Some(entry) => entry.1 = value,
-            None => entries.push((key, value)),
-        }
+        entries.insert(key, value);
         Ok(Value::Map(entries))
     }
 
-    /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`.
+    /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`. O(1).
     fn builtin_map_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [map, key]: [Value; 2] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_get", 2, args.len()))?;
         let entries = expect_map("map_get", map)?;
-        let found = entries.into_iter().find(|(k, _)| *k == key).map(|(_, v)| v);
+        let found = entries.get(&key).cloned();
         Ok(option_value(found))
     }
 
-    /// `map_has(m, k) -> bool`.
+    /// `map_has(m, k) -> bool`. O(1).
     fn builtin_map_has(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [map, key]: [Value; 2] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_has", 2, args.len()))?;
         let entries = expect_map("map_has", map)?;
-        Ok(Value::Bool(entries.iter().any(|(k, _)| *k == key)))
+        Ok(Value::Bool(entries.contains_key(&key)))
     }
 
     /// `map_len(m) -> i64`.
@@ -4719,7 +4880,9 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_keys", 1, args.len()))?;
         let entries = expect_map("map_keys", map)?;
-        Ok(Value::Array(entries.into_iter().map(|(k, _)| k).collect()))
+        Ok(Value::Array(
+            entries.into_entries().into_iter().map(|(k, _)| k).collect(),
+        ))
     }
 
     /// `map_values(m) -> list<V>`: the values in insertion order.
@@ -4728,7 +4891,9 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_values", 1, args.len()))?;
         let entries = expect_map("map_values", map)?;
-        Ok(Value::Array(entries.into_iter().map(|(_, v)| v).collect()))
+        Ok(Value::Array(
+            entries.into_entries().into_iter().map(|(_, v)| v).collect(),
+        ))
     }
 
     /// `map_del(m, k) -> map<K, V>`: a new map without key `k`.
@@ -4737,7 +4902,7 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_del", 2, args.len()))?;
         let mut entries = expect_map("map_del", map)?;
-        entries.retain(|(k, _)| *k != key);
+        entries.remove(&key);
         Ok(Value::Map(entries))
     }
 

@@ -11,9 +11,9 @@ use lullaby_parser::{
     TypeRef, UnaryOp, function_type, generic_type,
 };
 use lullaby_runtime::{
-    ArithOp, Closure, Future, IntKind, MEMORY_ORDER_VARIANTS, OverflowMode, ProcessResource,
-    ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource, Task, Value,
-    apply_compound, asm_interpreter_error, await_future, builtin_atomic_add_ordered,
+    ArithOp, Closure, Future, IntKind, MEMORY_ORDER_VARIANTS, OrderedMap, OverflowMode,
+    ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource, Task,
+    Value, apply_compound, asm_interpreter_error, await_future, builtin_atomic_add_ordered,
     builtin_atomic_and_ordered, builtin_atomic_cas_ordered, builtin_atomic_load_ordered,
     builtin_atomic_or_ordered, builtin_atomic_store_ordered, builtin_atomic_sub_ordered,
     builtin_atomic_swap_ordered, builtin_atomic_xor_ordered, builtin_fence, char_find,
@@ -6576,39 +6576,37 @@ impl<'a> IrRuntime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_new", 0, args.len()))?;
-        Ok(Value::Map(Vec::new()))
+        Ok(Value::Map(OrderedMap::new()))
     }
 
     /// `map_set(m, k, v) -> map<K, V>`: a new map with `k` mapped to `v`.
+    /// Overwriting an existing key or appending a new one is O(1).
     fn builtin_map_set(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [map, key, value]: [Value; 3] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_set", 3, args.len()))?;
         let mut entries = expect_map("map_set", map)?;
-        match entries.iter_mut().find(|(k, _)| *k == key) {
-            Some(entry) => entry.1 = value,
-            None => entries.push((key, value)),
-        }
+        entries.insert(key, value);
         Ok(Value::Map(entries))
     }
 
-    /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`.
+    /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`. O(1).
     fn builtin_map_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [map, key]: [Value; 2] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_get", 2, args.len()))?;
         let entries = expect_map("map_get", map)?;
-        let found = entries.into_iter().find(|(k, _)| *k == key).map(|(_, v)| v);
+        let found = entries.get(&key).cloned();
         Ok(option_value(found))
     }
 
-    /// `map_has(m, k) -> bool`.
+    /// `map_has(m, k) -> bool`. O(1).
     fn builtin_map_has(args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [map, key]: [Value; 2] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_has", 2, args.len()))?;
         let entries = expect_map("map_has", map)?;
-        Ok(Value::Bool(entries.iter().any(|(k, _)| *k == key)))
+        Ok(Value::Bool(entries.contains_key(&key)))
     }
 
     /// `map_len(m) -> i64`.
@@ -6626,7 +6624,9 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_keys", 1, args.len()))?;
         let entries = expect_map("map_keys", map)?;
-        Ok(Value::Array(entries.into_iter().map(|(k, _)| k).collect()))
+        Ok(Value::Array(
+            entries.into_entries().into_iter().map(|(k, _)| k).collect(),
+        ))
     }
 
     /// `map_values(m) -> list<V>`: the values in insertion order.
@@ -6635,7 +6635,9 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_values", 1, args.len()))?;
         let entries = expect_map("map_values", map)?;
-        Ok(Value::Array(entries.into_iter().map(|(_, v)| v).collect()))
+        Ok(Value::Array(
+            entries.into_entries().into_iter().map(|(_, v)| v).collect(),
+        ))
     }
 
     /// `map_del(m, k) -> map<K, V>`: a new map without key `k`.
@@ -6644,7 +6646,7 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_del", 2, args.len()))?;
         let mut entries = expect_map("map_del", map)?;
-        entries.retain(|(k, _)| *k != key);
+        entries.remove(&key);
         Ok(Value::Map(entries))
     }
 
