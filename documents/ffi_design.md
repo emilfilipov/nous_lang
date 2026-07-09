@@ -16,10 +16,15 @@ callbacks, C-header export, the safety model, and the diagnostics. FFI is a
 **native-only** feature: the AST/IR/bytecode interpreters cannot execute real C
 FFI and reject it with a clear diagnostic (see [[interpreter parity]] below).
 
-The first two increments — calling C (`extern fn`) and exposing Lullaby to C
-(`export fn`) for the i64-scalar Win64 case — are **delivered** and recorded in
-[native_backend_contract.md](native_backend_contract.md). This document is the
-full design those increments are the first slice of; sections tagged
+Calling C (`extern fn`) and exposing Lullaby to C (`export fn`) are **delivered**
+and recorded in [native_backend_contract.md](native_backend_contract.md). The
+delivered `extern`-call marshalling now spans the full scalar set, **raw pointers
+(`ptr<T>`)**, the **`cstr`** string-argument marker, a **`void`** return, and
+**more than four arguments** (Win64 stack spill) — the FFI reaches beyond scalars
+to the universal OS-API escape hatch. Struct-by-value parameters/returns and
+callbacks (function-pointer parameters) are the deferred FFI tail (§10), rejected
+cleanly at check time with `L0424` rather than shipped unverified. This document
+is the full design those increments are slices of; sections tagged
 **(delivered)** match shipped behavior, and sections tagged **(planned)**
 specify the intended extension.
 
@@ -331,7 +336,14 @@ Rules:
 - Lullaby `char` is deliberately a 32-bit Unicode scalar, distinct from C
   `char` (a byte). Use `byte`/`u8` for a C `char*` byte, not `char`.
 
-### 5.2 Raw pointers
+### 5.2 Raw pointers (delivered)
+
+Raw pointer parameters and returns are **delivered** for `extern` calls on Win64:
+a `ptr<T>` (or the legacy `ptr_T` spelling `alloc` produces) is a single 64-bit
+machine-address word passed/returned in a GPR. Native pointers are real
+bump-heap/`malloc` addresses, so a Lullaby-held pointer round-trips through C
+unchanged — verified end to end by `tests/fixtures/native_only/ffi_ptr_roundtrip.lby`
+(`malloc`→`strcpy`→`strlen`).
 
 - `ptr<T>` maps to `T*` (C pointer to the marshalled `T`). `ptr<void>` maps to
   `void*`. Pointer size/alignment is 8 on all current targets.
@@ -388,6 +400,18 @@ no register classification and lands before by-value struct passing.
 
 Lullaby `string` is a length-prefixed, UTF-8, runtime-owned handle; C strings
 are NUL-terminated `char*`. The mapping is explicit and ownership is spelled out.
+
+**Delivered:** the outbound `string`→`cstr` parameter direction. A `cstr`
+parameter in an `extern` signature accepts a Lullaby `string` argument; the native
+caller evaluates the string to its heap record pointer and calls the
+`__lullaby_to_cstr` runtime helper, which bump-allocates `byte_len + 1` bytes,
+copies the UTF-8 bytes, and appends a NUL — a `const char*` the callee borrows for
+the call. Verified by `tests/fixtures/native_only/ffi_cstr_strlen.lby`
+(`strlen("lullaby")` → `7`). An interior NUL is copied verbatim, so C sees the
+truncated C-string prefix (standard `char*` semantics). `cstr` is a
+**parameter-only** marker: an inbound C string is received as `ptr<byte>` and
+copied explicitly. The inbound `cstr`/`owned_cstr`→`string` conversions and the
+`L0430`/`L0431` runtime checks below remain **planned**.
 
 - `cstr` is an FFI-only marshalling type meaning "a borrowed, NUL-terminated,
   UTF-8 `const char*`". It is the type you write in an `extern`/`export`
@@ -608,25 +632,29 @@ Invariants the FFI caller must uphold (documented, not machine-checked):
 
 ### 9.2 Proposed diagnostics
 
-These extend the existing registry ranges (semantic `L03xx`, runtime `L04xx`)
-**consistently**; they are proposed here and must be added to
-[diagnostic_registry.md](diagnostic_registry.md) when implemented (this design
-does not edit the registry). Delivered codes (`L0423`, `L0424`, `L0426`) are
-listed for completeness.
+Delivered codes come from the registry (semantic `L03xx`, runtime `L04xx`); the
+remaining rows are *proposals for future increments*. **Important:** the specific
+numbers `L0427`–`L0434` proposed in earlier drafts were subsequently assigned to
+**unrelated** features in [diagnostic_registry.md](diagnostic_registry.md) (the
+`?` operator, raw-memory layout builtins, atomic ordering), so a future FFI code
+must claim the next genuinely-free number rather than these. Crucially, the
+**unsupported-`extern`/`export`-signature** case (non-marshallable parameter/return:
+`list`/`map`/`string`/non-`repr(C)` struct-by-value/callback, or a generic FFI
+function) is **delivered under `L0424`** — the shared FFI-signature family — not a
+new code; `check_extern_signature` in `crates/lullaby_semantics/src/lib.rs` emits
+it. The interior-NUL / inbound-UTF-8 runtime checks below remain unimplemented.
 
 | Code | Phase | Meaning | Status |
 | :--- | :--- | :--- | :--- |
 | `L0423` | runtime | Cannot call an `extern fn` on an interpreter. | delivered |
-| `L0424` | semantic | Unsupported `export fn` signature (outside the marshalling set). | delivered |
+| `L0424` | semantic | Unsupported `extern`/`export fn` (C-ABI) signature (non-marshallable parameter/return, or generic). | delivered |
 | `L0426` | ir | `--freestanding` conflicts with an `extern fn`'s C-runtime need. | delivered |
-| `L0427` | parser | An `extern fn` has an indented body (it must be body-less). | proposed |
-| `L0428` | semantic | A non-`repr(C)` (or zero-field/packed-unsafe) struct crosses the FFI boundary. | proposed |
-| `L0429` | semantic | An `extern fn` parameter/return uses a non-marshallable type (`list`/`map`/non-`repr(C)` struct/etc.). | proposed |
-| `L0430` | runtime | A `string` marshalled to `cstr` contains an interior NUL. | proposed |
-| `L0431` | runtime | An inbound `cstr` is not valid UTF-8 when converted to `string`. | proposed |
-| `L0432` | resource | Native link failed to resolve an FFI symbol or library (names the target triple). | proposed |
-| `L0433` | semantic | An `extern fn` call (or static callback thunk) used outside `unsafe`. | proposed (or fold into `L0330`) |
-| `L0434` | semantic | Invalid FFI attribute/clause (`abi`, `symbol`, `from`, `repr`) shape or unknown value. | proposed |
+| interior-NUL check | runtime | A `string` marshalled to `cstr` contains an interior NUL (currently copied verbatim → C truncation). | not implemented (documented as `char*` semantics) |
+| inbound UTF-8 check | runtime | An inbound `cstr` is not valid UTF-8 when converted to `string`. | planned (inbound conversion deferred) |
+| unsafe-gate | semantic | An `extern fn` call used outside `unsafe`. | not enforced (extern calls are not `unsafe`-gated in the delivered increment) |
+
+(Earlier drafts numbered these `L0427`–`L0434`; those numbers are now taken by
+other features and must not be reused for FFI.)
 
 Each diagnostic carries the standard JSON fields (see
 [diagnostic_registry.md](diagnostic_registry.md)) and, for target-specific link
@@ -659,34 +687,44 @@ and independently testable, matching the delivered native slices.
    (`double sqrt(double)`) and `ldexp` (`double ldexp(double, int)`, mixed
    float/int).
 
-**First production-complete FFI increment (this design's near-term target):**
+5. **Beyond-scalar `extern`-call marshalling.** **Raw pointers** (`ptr<T>` →
+   C `T*`, a machine-address word), the **`cstr`** string-argument marker
+   (`string` → NUL-terminated `const char*` via `__lullaby_to_cstr`), a **`void`**
+   return, and **more than four arguments** (the 5th+ spilling onto the stack
+   above the shadow space, reusing the internal stack-argument ABI). Verified end
+   to end against `ucrt`: `strlen(cstr)` (`7`), a `malloc`→`strcpy`→`strlen`
+   pointer round-trip (`5`), and a six-`i64` `extern` call linked against a
+   six-`i64` `export fn` object (`63`). Non-marshallable extern signatures
+   (struct-by-value, callbacks, `string`/`list`/`map`, generic) are rejected at
+   check time with `L0424`.
 
-- Full scalar marshalling (§5.1: all int widths, `f32`/`f64`, `bool`,
-  `char`/`byte`) for `extern` and `export` on Win64. **Extern-call integer
-  widths + `bool`/`char`/`byte` are delivered (item 3 above); `f32`/`f64` scalar
-  marshalling — positional `xmm0..3` arguments and the `xmm0` return, for both
-  extern calls and `export fn` — is now delivered (item 4 below). Widening the
-  `export` direction to the full integer-width set remains.**
-- `ptr<T>` parameters/returns (§5.2) and `repr(C)` structs passed **by pointer**
-  (§5.3), including nested/array fields.
-- `string`↔`cstr` marshalling with the ownership rules and `L0430`/`L0431`
-  (§5.5).
+**Remaining near-term FFI targets:**
+
+- `repr(C)` structs passed **by pointer** (`ptr<Rect>`) — blocked on `repr(C)`
+  parsing first (§5.3).
 - Top-level-function callbacks (§7 first bullet).
 - C-header generation (`--emit-header`, §8).
 - CLI link surface (`-l`/`-L`/static-dynamic, `from`/`symbol`/`abi` clauses,
   manifest `native.link`) (§6.3), with graceful degradation.
-- Diagnostics `L0427`–`L0434` (§9.2).
+- Widening the `export` direction to the full integer-width set and to pointers.
 
-**Deferred (later tickets, dependency-ordered):**
+**Deferred — the ABI-fiddly FFI tail (not verifiable on this Windows host without
+guesswork, so deferred rather than shipped unverified):**
 
-- By-value `repr(C)` struct passing/returning with register classification per
-  target (§4.2/§4.3/§5.3) — depends on aggregate-argument support in the native
-  emitter.
-- System V AMD64 (Linux/macOS) and AArch64 AAPCS64 ABIs and ELF/Mach-O object
-  emission — depends on the cross-platform object-writer work already noted as
-  deferred in the native contract.
-- Capturing-closure callbacks via `user_data` trampolines (§7) — depends on the
-  closure increment in [closures_design.md](closures_design.md).
+- **By-value `repr(C)` struct passing/returning** with register/eightbyte
+  classification per target (§4.2/§4.3/§5.3) — depends on aggregate-argument
+  support in the native emitter *and* on `repr(C)` layout being parseable;
+  verifying it needs a discovered C toolchain producing/consuming matching
+  structs. Rejected today with `L0424`.
+- **Callbacks** — passing a Lullaby `fn` as a C function pointer (e.g. to
+  `qsort`). The top-level (non-capturing) case is address-taken with no
+  trampoline, but verifying a real callback needs stock C symbols that call back
+  (or a discovered C compiler); the capturing-closure case additionally needs the
+  `user_data` trampoline and lifetime model from
+  [closures_design.md](closures_design.md). Rejected today with `L0424`.
+- An inbound owned `cstr`/`owned_cstr`→`string` conversion with the interior-NUL
+  and UTF-8 runtime checks (§5.5).
+- System V AMD64 (Linux/macOS) and AArch64 AAPCS64 ABIs and ELF/Mach-O link+run.
 - A narrow fixed-prototype variadic mode; automatic `bindgen`-style binding
   generation from C headers; `stdcall`/32-bit targets; macOS frameworks and
   `@rpath`/`install_name`.

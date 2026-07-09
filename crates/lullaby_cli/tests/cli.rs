@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn workspace_root() -> PathBuf {
@@ -6455,6 +6455,263 @@ fn ffi_calls_c_ldexp_mixed_scalars_when_linkable() {
     let exe = Command::new(&out).output().expect("run native exe");
     let exit = exe.status.code().expect("native exit code");
     assert_eq!(exit, 12, "ldexp(1.5, 3)==12.0 via C FFI must exit 12");
+}
+
+/// Assert every interpreter backend rejects an extern-call fixture with `L0423`
+/// (FFI is native-only), then native-compile it and assert `main` compiled. The
+/// shared preamble for the pointer/cstr/many-arg FFI link+run tests below.
+fn assert_ffi_native_only_and_compiles(fixture: &Path) {
+    let check = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(check.status.success(), "{}", stderr(&check));
+
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(
+            !run.status.success(),
+            "extern call must fail on the {backend} interpreter"
+        );
+        let rendered = format!("{}{}", stdout(&run), stderr(&run));
+        assert!(
+            rendered.contains("L0423"),
+            "expected L0423 on {backend}: {rendered}"
+        );
+    }
+}
+
+/// C-ABI FFI (`cstr` string marshalling): `extern fn strlen s cstr -> usize` is
+/// called with a Lullaby `string` literal `"lullaby"`. The FFI boundary
+/// materializes a NUL-terminated UTF-8 copy (`__lullaby_to_cstr`) and passes its
+/// `const char*` to the real C `strlen`, which returns 7 — so the `.exe` exits 7.
+/// This proves a Lullaby `string` round-trips to C as a `char*`. On the
+/// interpreters the extern call is `L0423`. Gated on `rust-lld` + `kernel32.lib` +
+/// `ucrt.lib`; sources MSVC's `LIB` when unset so the link+run executes.
+#[test]
+fn ffi_cstr_marshals_string_to_c_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/native_only/ffi_cstr_strlen.lby");
+    assert_ffi_native_only_and_compiles(&fixture);
+
+    ensure_msvc_env();
+    let out = std::env::temp_dir().join("lullaby_ffi_cstr_strlen.exe");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() || !ucrt_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib/ucrt.lib not available; skipping cstr FFI link+run"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(exit, 7, "strlen(\"lullaby\") via cstr FFI must exit 7");
+}
+
+/// C-ABI FFI (raw pointer arguments/returns + round-trip): a Lullaby-controlled C
+/// pointer round-trips through three C functions —
+/// `malloc(16) -> ptr<byte>`, `strcpy(p, "hello") -> ptr<byte>` (a `cstr` source),
+/// `strlen(p) -> usize`. `strlen` reads the buffer `strcpy` filled through the
+/// `malloc`'d pointer, returning 5, so the `.exe` exits 5. This proves a
+/// pointer alloc'd through C passes back into C by its raw machine address across
+/// several calls. On the interpreters the extern call is `L0423`. Gated on
+/// `rust-lld` + `kernel32.lib` + `ucrt.lib`; sources MSVC's `LIB` when unset.
+#[test]
+fn ffi_pointer_round_trips_through_c_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/native_only/ffi_ptr_roundtrip.lby");
+    assert_ffi_native_only_and_compiles(&fixture);
+
+    ensure_msvc_env();
+    let out = std::env::temp_dir().join("lullaby_ffi_ptr_roundtrip.exe");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "expected `main` compiled: {}",
+        stdout(&emit)
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() || !ucrt_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib/ucrt.lib not available; skipping pointer FFI link+run"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 5,
+        "malloc+strcpy(\"hello\")+strlen round-trip must exit 5"
+    );
+}
+
+/// C-ABI FFI (>4 extern arguments, Win64 stack spill): a caller object declares
+/// `extern fn lullaby_sum6 a..f i64 -> i64` and calls it with six arguments
+/// (`1+2+4+8+16+32 = 63`); a separate library object *exports* the same six-`i64`
+/// function. Linking the two objects across the C ABI resolves the extern to the
+/// export, so the `.exe` exits 63. This verifies the extern caller spills its 5th
+/// and 6th arguments to the stack above the shadow space exactly where the export
+/// callee reads them — end to end, without a C compiler (rust-lld links the two
+/// Lullaby objects). On the interpreters the extern call is `L0423`. Gated on
+/// `rust-lld` + `kernel32.lib` + `ucrt.lib`; sources MSVC's `LIB` when unset.
+#[test]
+fn ffi_extern_call_with_stack_args_when_linkable() {
+    let caller = workspace_root().join("tests/fixtures/native_only/ffi_extern_sum6.lby");
+    let callee = workspace_root().join("tests/fixtures/native_only/ffi_export_sum6.lby");
+
+    // The caller (an extern call) is native-only and rejected by every interpreter.
+    assert_ffi_native_only_and_compiles(&caller);
+
+    // The callee is a C-callable library object (export only, no `main`); `check`
+    // validates its export signature.
+    let callee_check = lullaby()
+        .args(["check", callee.to_str().expect("callee path")])
+        .output()
+        .expect("run cli");
+    assert!(callee_check.status.success(), "{}", stderr(&callee_check));
+
+    ensure_msvc_env();
+
+    // Emit both objects. The CLI derives each `.obj` from the `-o` `.exe` stem and
+    // writes it unconditionally (the caller's own self-link fails on the
+    // unresolved export symbol, but the object is still produced — the reliable
+    // floor).
+    let caller_exe = std::env::temp_dir().join("lullaby_ffi_extern_sum6.exe");
+    let callee_exe = std::env::temp_dir().join("lullaby_ffi_export_sum6.exe");
+    let caller_obj = caller_exe.with_extension("obj");
+    let callee_obj = callee_exe.with_extension("obj");
+    let _ = std::fs::remove_file(&caller_obj);
+    let _ = std::fs::remove_file(&callee_obj);
+    for (src, exe) in [(&caller, &caller_exe), (&callee, &callee_exe)] {
+        let emit = lullaby()
+            .args([
+                "native",
+                "--verbose",
+                "-o",
+                exe.to_str().expect("out path"),
+                src.to_str().expect("src path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(emit.status.success(), "{}", stderr(&emit));
+    }
+    // The caller's `main` and the callee's six-parameter export both compile
+    // natively (the stack-argument ABI keeps the >4-arg extern call in the subset).
+    let caller_emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            caller_exe.to_str().expect("out path"),
+            caller.to_str().expect("caller path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(
+        stdout(&caller_emit).contains("compiled main"),
+        "expected caller `main` compiled: {}",
+        stdout(&caller_emit)
+    );
+    assert!(caller_obj.is_file(), "expected caller object");
+    assert!(callee_obj.is_file(), "expected callee object");
+
+    if rust_lld_path().is_none() || !kernel32_available() || !ucrt_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib/ucrt.lib not available; skipping >4-arg extern link+run"
+        );
+        return;
+    }
+
+    // Link the two Lullaby objects into one executable. The caller supplies the
+    // entry stub (`_lullaby_start`); the extern `lullaby_sum6` resolves to the
+    // library object's exported symbol. `ucrt.lib` is on the line for the caller's
+    // recorded C-runtime dependency (unused for this intra-Lullaby symbol).
+    let lld = rust_lld_path().expect("rust-lld present (gate checked)");
+    let linked = std::env::temp_dir().join("lullaby_ffi_sum6_linked.exe");
+    let _ = std::fs::remove_file(&linked);
+    let mut command = Command::new(&lld);
+    command.args(["-flavor", "link", "/nologo", "/subsystem:console"]);
+    command.arg("/entry:_lullaby_start");
+    command.arg(format!("/out:{}", linked.display()));
+    for dir in lib_dirs_from_env() {
+        command.arg(format!("/libpath:{}", dir.display()));
+    }
+    command.arg(&caller_obj);
+    command.arg(&callee_obj);
+    command.arg("kernel32.lib");
+    command.arg("ucrt.lib");
+    let link = command.output().expect("run rust-lld");
+    assert!(
+        link.status.success(),
+        "two-object link failed: {}{}",
+        String::from_utf8_lossy(&link.stdout),
+        String::from_utf8_lossy(&link.stderr)
+    );
+
+    assert!(
+        linked.is_file(),
+        "expected linked exe at {}",
+        linked.display()
+    );
+    let exe = Command::new(&linked).output().expect("run linked exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 63,
+        "lullaby_sum6(1,2,4,8,16,32) via a >4-arg C-ABI extern call must exit 63"
+    );
+}
+
+/// The MSVC library search directories named by the `LIB` environment variable
+/// (set in a Developer Command Prompt or by `ensure_msvc_env`). Used to build the
+/// `/libpath:` arguments for a direct two-object `rust-lld` link.
+fn lib_dirs_from_env() -> Vec<PathBuf> {
+    std::env::var("LIB")
+        .ok()
+        .into_iter()
+        .flat_map(|lib| {
+            lib.split(';')
+                .filter(|d| !d.is_empty())
+                .map(|d| PathBuf::from(d.trim()))
+                .collect::<Vec<_>>()
+        })
+        .filter(|d| d.is_dir())
+        .collect()
 }
 
 /// Inline assembly: a `main` whose `unsafe` `asm` block emits the seven bytes of

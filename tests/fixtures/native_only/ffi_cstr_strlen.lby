@@ -1,0 +1,4 @@
+extern fn strlen s cstr -> usize
+
+fn main -> i64
+    to_i64(strlen("lullaby"))

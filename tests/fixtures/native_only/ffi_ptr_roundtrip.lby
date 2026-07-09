@@ -1,0 +1,10 @@
+extern fn malloc n usize -> ptr<byte>
+
+extern fn strcpy dst ptr<byte> src cstr -> ptr<byte>
+
+extern fn strlen s ptr<byte> -> usize
+
+fn main -> i64
+    let p ptr<byte> = malloc(to_usize(16))
+    strcpy(p, "hello")
+    to_i64(strlen(p))

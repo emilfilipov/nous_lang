@@ -1212,6 +1212,15 @@ const STR_DATA_OFF: i32 = 16;
 /// literal used as a value materializes through this helper at runtime.
 const STR_LIT_SYMBOL: &str = "__lullaby_str_lit";
 
+/// The `string`→`cstr` FFI materialization helper emitted in `.text`. Signature: a
+/// heap string record pointer (`[char_len][byte_len][utf8]`) in `rcx`; returns in
+/// `rax` a freshly bump-allocated `byte_len + 1` buffer holding the record's UTF-8
+/// bytes followed by a NUL terminator — a `const char*` a C function borrows for
+/// the duration of the call. Used to pass a Lullaby `string` to an extern's `cstr`
+/// parameter. An interior NUL is copied verbatim, so a C reader sees the truncated
+/// C-string prefix (standard `char*` semantics), matching the ffi_design contract.
+const TO_CSTR_SYMBOL: &str = "__lullaby_to_cstr";
+
 /// The string-concatenation helper emitted in `.text`. Signature: the left
 /// string record pointer in `rcx`, the right in `rdx`; returns in `rax` a fresh
 /// record whose char/byte headers are the summed operands' headers and whose
@@ -2198,6 +2207,13 @@ fn resolve_native_type(
         // A heap `string`: a single pointer word to a `[char_len][byte_len][utf8]`
         // record. Immutable, so it passes/returns by value (pointer) with no copy.
         "string" => Ok(NativeType::String),
+        // A raw pointer `ptr<T>` (or the legacy `ptr_T` spelling that `alloc`
+        // produces) is a single 64-bit machine-address word. It flows through the
+        // native backend exactly like an `i64` scalar — one stack word, passed and
+        // returned in a GPR — so modeling it as `I64` reuses every scalar path
+        // unchanged. Its only distinguished behavior is at the FFI boundary, where
+        // it marshals to a C `T*` (see `emit_extern_call`).
+        name if is_raw_pointer_type_name(name) => Ok(NativeType::I64),
         name if name.starts_with("array<") => Err(format!(
             "array length for `{name}` is unknown from its type"
         )),
@@ -3086,8 +3102,9 @@ fn max_call_arg_scratch_words(
 /// aggregate) are passed in registers; arguments 5, 6, … spill onto the stack
 /// above the 32-byte shadow space. The caller must reserve `8 * this` bytes of
 /// outgoing space (plus 32 bytes shadow) in its frame so those stack words have a
-/// home at each `call`. Extern (C-ABI) calls stage their own spill inline and are
-/// not counted here (they never exceed four arguments in the delivered subset).
+/// home at each `call`. An extern (C-ABI) call spills its 5th+ arguments into the
+/// same outgoing area (see `emit_extern_call`), so it is counted here too, using
+/// its raw argument count (an extern has no internal signature).
 fn max_outgoing_stack_words(
     body: &[BytecodeInstruction],
     signatures: &HashMap<String, NativeSignature>,
@@ -3108,11 +3125,17 @@ fn max_outgoing_stack_words(
     fn expr_words(expr: &BytecodeExpr, signatures: &HashMap<String, NativeSignature>) -> usize {
         let mut here = 0usize;
         if let BytecodeExprKind::Call { name, args } = &expr.kind {
-            // Only compiled (internal) callees use the stack-spill convention; an
-            // extern/builtin call has no native signature and stages inline.
-            if signatures.contains_key(name.as_str()) {
-                here = call_stack_words(name, args.len(), signatures);
-            }
+            // A compiled (internal) callee uses the stack-spill convention with a
+            // possible hidden aggregate-return pointer. An extern (C-ABI) call also
+            // spills its 5th+ arguments into the same outgoing area, so it must be
+            // counted too; it has no native signature, so use its raw argument
+            // count. (Native builtins never exceed four arguments, so this
+            // over-reserves nothing in practice.)
+            here = if signatures.contains_key(name.as_str()) {
+                call_stack_words(name, args.len(), signatures)
+            } else {
+                args.len().saturating_sub(4)
+            };
             for arg in args {
                 here = here.max(expr_words(arg, signatures));
             }
@@ -5026,7 +5049,7 @@ fn lower_native_expr(
             if let Some(sig) = ctx.extern_sigs.get(name.as_str()) {
                 let sig = *sig;
                 match emit_extern_call(ctx, name, sig, args, code)? {
-                    FfiScalarClass::Int(Some(fixed)) => {
+                    Some(FfiScalarClass::Int(Some(fixed))) => {
                         // The Win64 ABI leaves the upper bits of a narrow integer
                         // return undefined, so a returned `i8`/`i16`/`i32`/`u8`/
                         // `u16`/`u32` is re-normalized (sign/zero extended) so
@@ -5034,8 +5057,11 @@ fn lower_native_expr(
                         // interpreters produce.
                         emit_normalize_rax(code, fixed);
                     }
-                    FfiScalarClass::Int(None) => {}
-                    FfiScalarClass::Float(_) => {
+                    // An `i64`/`u64`/`isize`/`usize`/pointer return already fills the
+                    // cell; a `void` return leaves no value (the call is a discarded
+                    // statement). Nothing to normalize in either case.
+                    Some(FfiScalarClass::Int(None)) | None => {}
+                    Some(FfiScalarClass::Float(_)) => {
                         return Err(format!(
                             "float-returning extern `{name}` cannot be used in an \
                              integer-scalar context on the native backend"
@@ -5225,11 +5251,42 @@ enum FfiScalarClass {
     Float(FloatWidth),
 }
 
-/// Classify a Lullaby type name as a marshallable FFI scalar (integer/pointer or
-/// float), or `None` for a type outside the scalar marshalling set
-/// (pointers-to-aggregate, `string`/`list`/`map`, non-`repr(C)` structs), which
-/// demotes the extern caller so it runs on the interpreters.
+/// One `extern fn` parameter's marshalling class across the Win64 C ABI: a scalar
+/// value (integer/pointer/float, routed by [`FfiScalarClass`]), or a `cstr` — a
+/// Lullaby `string` the boundary materializes into a fresh NUL-terminated C buffer
+/// (`__lullaby_to_cstr`) whose pointer is then routed like any pointer word.
+#[derive(Clone, Copy)]
+enum FfiParam {
+    Scalar(FfiScalarClass),
+    Cstr,
+}
+
+impl FfiParam {
+    /// A `cstr` argument occupies a pointer word in an integer register; a scalar
+    /// float occupies an SSE register. This selects the register class at a
+    /// given argument position.
+    fn is_float(self) -> bool {
+        matches!(self, FfiParam::Scalar(FfiScalarClass::Float(_)))
+    }
+}
+
+/// Whether a Lullaby type name spells a raw pointer: the modern `ptr<T>` form or
+/// the legacy `ptr_T` form that `alloc` produces. A raw pointer is a single
+/// machine-address word (a C `T*`) at the FFI boundary.
+fn is_raw_pointer_type_name(name: &str) -> bool {
+    name.starts_with("ptr<") || name.starts_with("ptr_")
+}
+
+/// Classify a Lullaby type name as a marshallable FFI scalar (integer, raw
+/// pointer, or float), or `None` for a type outside the scalar marshalling set
+/// (`string`/`list`/`map`, non-`repr(C)` structs, callbacks), which demotes the
+/// extern caller so it runs on the interpreters. A raw pointer `ptr<T>` marshals
+/// to a C `T*`: a 64-bit address passed/returned in a GPR with no narrow-return
+/// normalization, i.e. the same class as `i64` (`Int(None)`).
 fn ffi_scalar_class(type_name: &str) -> Option<FfiScalarClass> {
+    if is_raw_pointer_type_name(type_name) {
+        return Some(FfiScalarClass::Int(None));
+    }
     if let Some(kind) = ffi_scalar_int_kind(type_name) {
         return Some(FfiScalarClass::Int(kind));
     }
@@ -5246,15 +5303,17 @@ fn ffi_scalar_class(type_name: &str) -> Option<FfiScalarClass> {
 /// float return is left in `xmm0`. Returns the return-value class so the caller
 /// can finish the return normalization for its result context.
 ///
-/// At most four arguments are supported (the four positional register slots);
-/// more, or any non-scalar parameter/return, demotes the caller gracefully.
+/// There is no fixed argument-count cap: the first four arguments use the Win64
+/// argument registers and the 5th+ spill onto the stack above the callee's 32-byte
+/// shadow space (the outgoing area the frame reserved). A non-marshallable
+/// parameter/return type demotes the caller gracefully.
 fn emit_extern_call(
     ctx: &mut NativeCtx,
     name: &str,
     sig: &crate::IrExternSignature,
     args: &[BytecodeExpr],
     code: &mut Vec<u8>,
-) -> Result<FfiScalarClass, String> {
+) -> Result<Option<FfiScalarClass>, String> {
     if args.len() != sig.params.len() {
         return Err(format!(
             "extern `{name}` expects {} argument(s) but got {}",
@@ -5262,66 +5321,108 @@ fn emit_extern_call(
             args.len()
         ));
     }
-    if args.len() > 4 {
-        return Err(format!(
-            "extern `{name}` has {} arguments; the native FFI supports at most four \
-             (stack/XMM spill for >4 is deferred)",
-            args.len()
-        ));
-    }
-    // Classify each parameter and the return type. Any non-scalar demotes the
-    // caller to the interpreters (which reject the extern call with `L0423`).
-    let param_classes: Vec<FfiScalarClass> = sig
+    // Classify each parameter and the return type. Any non-marshallable type
+    // demotes the caller to the interpreters (which reject the extern call with
+    // `L0423`). A `cstr` parameter materializes a NUL-terminated C buffer from a
+    // Lullaby `string`; a raw pointer / scalar routes by its Win64 register class.
+    let param_classes: Vec<FfiParam> = sig
         .params
         .iter()
         .map(|param_ty| {
-            ffi_scalar_class(&param_ty.name).ok_or_else(|| {
-                format!(
-                    "extern `{name}` parameter type `{}` is not a native FFI scalar \
-                     (pointers/aggregates/strings are deferred)",
-                    param_ty.name
-                )
-            })
+            if param_ty.name == "cstr" {
+                return Ok(FfiParam::Cstr);
+            }
+            ffi_scalar_class(&param_ty.name)
+                .map(FfiParam::Scalar)
+                .ok_or_else(|| {
+                    format!(
+                        "extern `{name}` parameter type `{}` is not a native FFI \
+                         parameter (aggregates/callbacks are deferred)",
+                        param_ty.name
+                    )
+                })
         })
         .collect::<Result<_, _>>()?;
-    let return_class = ffi_scalar_class(&sig.return_type.name).ok_or_else(|| {
-        format!(
-            "extern `{name}` return type `{}` is not a native FFI scalar \
-             (pointers/aggregates/strings are deferred)",
-            sig.return_type.name
-        )
-    })?;
+    // A `cstr` cannot be *returned* (an inbound C string is received as `ptr<byte>`
+    // and copied explicitly), so the return type is `void` (no value) or a plain
+    // FFI scalar/pointer.
+    if sig.return_type.name == "cstr" {
+        return Err(format!(
+            "extern `{name}` returns `cstr`; an inbound C string must be typed \
+             `ptr<byte>` (owned-string conversion is deferred)"
+        ));
+    }
+    let return_class = if sig.return_type.is_void() {
+        None
+    } else {
+        Some(ffi_scalar_class(&sig.return_type.name).ok_or_else(|| {
+            format!(
+                "extern `{name}` return type `{}` is not a native FFI scalar/pointer \
+                 (aggregates/strings are deferred)",
+                sig.return_type.name
+            )
+        })?)
+    };
 
     // Stage each argument onto the machine stack as one 8-byte word, left to
-    // right. An integer argument evaluates into `rax` and is `push`ed; a float
-    // argument evaluates into `xmm0` and is spilled into a reserved 8-byte word.
-    // After the loop, argument at position i sits at `[rsp + 8*(n-1-i)]` (the
-    // first-pushed argument is deepest). Staging first, then loading registers,
-    // avoids one argument's evaluation clobbering an already-loaded register.
+    // right. An integer/pointer argument evaluates into `rax` and is `push`ed; a
+    // float argument evaluates into `xmm0` and is spilled into a reserved 8-byte
+    // word; a `cstr` argument evaluates its `string` into a record pointer, then
+    // `__lullaby_to_cstr` materializes a NUL-terminated buffer whose pointer is
+    // pushed. After the loop, argument at position i sits at `[rsp + 8*(n-1-i)]`
+    // (the first-pushed argument is deepest). Staging first, then loading
+    // registers, avoids one argument's evaluation clobbering an already-loaded
+    // register.
     for (arg, class) in args.iter().zip(param_classes.iter()) {
         match class {
-            FfiScalarClass::Int(_) => {
+            FfiParam::Scalar(FfiScalarClass::Int(_)) => {
                 lower_native_expr(ctx, arg, code)?;
                 code.push(0x50); // push rax
             }
-            FfiScalarClass::Float(_) => {
+            FfiParam::Scalar(FfiScalarClass::Float(_)) => {
                 lower_native_float_expr(ctx, arg, code)?;
                 // sub rsp, 8 ; movsd [rsp], xmm0  (spill one 8-byte float word).
                 code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]);
                 code.extend_from_slice(&[0xF2, 0x0F, 0x11, 0x04, 0x24]);
             }
+            FfiParam::Cstr => {
+                // Evaluate the `string` argument into a heap record pointer, then
+                // materialize a fresh NUL-terminated UTF-8 buffer. The helper only
+                // calls the leaf bump allocator, so it tolerates the mid-staging
+                // (possibly unaligned) `rsp`; the real C `call` below is realigned.
+                lower_native_expr(ctx, arg, code)?; // rax = string record ptr
+                code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+                emit_call_symbol(ctx, TO_CSTR_SYMBOL, code); // rax = C buffer ptr
+                code.push(0x50); // push rax
+            }
         }
     }
     let n = args.len();
-    // Load each staged word into the register chosen by its position and class.
+    // Distribute each staged word to its Win64 position. Positions 0..4 load into
+    // the argument register selected by position and class (GPR for int/pointer/
+    // cstr, XMM for float); position 4+ copies into the outgoing stack-argument
+    // area above the 32-byte shadow space, exactly where the callee reads it. The
+    // staged words are still on the stack here (they are discarded after), so a
+    // stack slot sits at `[rsp + 8*n + 32 + 8*(pos-4)]`.
     for (i, class) in param_classes.iter().enumerate() {
-        let disp = 8 * (n - 1 - i) as i32;
-        match class {
-            FfiScalarClass::Int(_) => emit_load_gpr_from_rsp_disp(code, i as u8, disp),
-            FfiScalarClass::Float(_) => emit_load_xmm_from_rsp_disp(code, i as u8, disp),
+        let staged_disp = 8 * (n - 1 - i) as i32;
+        if i < 4 {
+            if class.is_float() {
+                emit_load_xmm_from_rsp_disp(code, i as u8, staged_disp);
+            } else {
+                emit_load_gpr_from_rsp_disp(code, i as u8, staged_disp);
+            }
+        } else {
+            let out_disp = 8 * n as i32 + 32 + 8 * (i as i32 - 4);
+            // mov rax, [rsp + staged_disp] ; mov [rsp + out_disp], rax.
+            code.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24]); // mov rax, [rsp + disp32]
+            code.extend_from_slice(&staged_disp.to_le_bytes());
+            code.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]); // mov [rsp + disp32], rax
+            code.extend_from_slice(&out_disp.to_le_bytes());
         }
     }
-    // Discard the staged words: add rsp, 8*n.
+    // Discard the staged words: add rsp, 8*n. `rsp` returns to the frame's
+    // call-ready position (16-byte aligned, 32-byte shadow + outgoing area below).
     if n > 0 {
         emit_add_rsp(code, 8 * n as i32);
     }
@@ -5621,9 +5722,9 @@ fn lower_native_float_expr(
             if let Some(sig) = ctx.extern_sigs.get(name.as_str()) {
                 let sig = *sig;
                 return match emit_extern_call(ctx, name, sig, args, code)? {
-                    FfiScalarClass::Float(width) => Ok(width),
-                    FfiScalarClass::Int(_) => Err(format!(
-                        "extern `{name}` returns an integer, not a float, so it \
+                    Some(FfiScalarClass::Float(width)) => Ok(width),
+                    Some(FfiScalarClass::Int(_)) | None => Err(format!(
+                        "extern `{name}` does not return a float, so it \
                          cannot be used in a float context"
                     )),
                 };
@@ -7789,6 +7890,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
         emit_str_ends_with_helper(),
+        emit_to_cstr_helper(),
     ]
 }
 
@@ -7819,6 +7921,7 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_CONTAINS_SYMBOL
                     | STR_STARTS_WITH_SYMBOL
                     | STR_ENDS_WITH_SYMBOL
+                    | TO_CSTR_SYMBOL
             )
         })
     })
@@ -8905,6 +9008,56 @@ fn emit_str_lit_helper() -> HelperFunction {
     }
 }
 
+/// `__lullaby_to_cstr(rcx = string record ptr) -> rax = NUL-terminated C buffer`.
+///
+/// Reads `byte_len` from the record, bump-allocates `byte_len + 1` bytes, copies
+/// the record's UTF-8 bytes, and writes a trailing NUL. The returned buffer is the
+/// `const char*` a C function borrows for the duration of an FFI call. Preserves
+/// the non-volatile `rsi`/`rdi`/`rbx` it uses; it only calls the leaf bump
+/// allocator, so it tolerates any incoming `rsp` alignment.
+fn emit_to_cstr_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: preserve rsi/rdi/rbx; `sub rsp, 8` keeps the frame balanced.
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.push(0x53); // push rbx
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
+
+    // rsi = record ptr; rbx = byte_len = [rsi + STR_BYTE_LEN_OFF].
+    code.extend_from_slice(&[0x48, 0x89, 0xCE]); // mov rsi, rcx
+    code.extend_from_slice(&[0x48, 0x8B, 0x9E]); // mov rbx, [rsi + disp32]
+    code.extend_from_slice(&STR_BYTE_LEN_OFF.to_le_bytes());
+
+    // Allocate byte_len + 1 bytes (the extra byte is the NUL terminator).
+    code.extend_from_slice(&[0x48, 0x8D, 0x4B, 0x01]); // lea rcx, [rbx + 1]
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst
+
+    // Copy byte_len bytes from record+DATA to the buffer; save the base to return.
+    code.push(0x50); // push rax (buffer base, returned)
+    code.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax (dest)
+    code.extend_from_slice(&[0x48, 0x81, 0xC6]); // add rsi, imm32 (rsi = record + DATA)
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx (count = byte_len)
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb (rdi ends at dst + byte_len)
+    code.extend_from_slice(&[0xC6, 0x07, 0x00]); // mov byte [rdi], 0 (NUL terminator)
+    code.push(0x58); // pop rax (buffer base = return value)
+
+    // Epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+    code.push(0x5B); // pop rbx
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: TO_CSTR_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// `__lullaby_str_concat(rcx = a, rdx = b) -> rax = fresh record`.
 ///
 /// Allocates `STR_DATA_OFF + byte_a + byte_b`, sums the char/byte headers, and
@@ -9932,6 +10085,7 @@ fn write_object_with_data(
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
         emit_str_ends_with_helper(),
+        emit_to_cstr_helper(),
     ] {
         append_code(
             &mut text,
@@ -9999,6 +10153,7 @@ fn write_object_with_data(
         STR_CONTAINS_SYMBOL,
         STR_STARTS_WITH_SYMBOL,
         STR_ENDS_WITH_SYMBOL,
+        TO_CSTR_SYMBOL,
     ] {
         symbols.push(SymbolDef {
             name: helper.to_string(),
@@ -11193,6 +11348,97 @@ mod native_program_tests {
             text.windows(5)
                 .any(|w| w[..3] == [0xF2, 0x0F, 0x10] && w[3] == 0x4C && w[4] == 0x24),
             "expected the position-1 float argument loaded into xmm1"
+        );
+    }
+
+    #[test]
+    fn cstr_extern_materializes_string_and_emits_helper() {
+        // An `extern fn` with a `cstr` parameter accepts a Lullaby `string`: the
+        // caller evaluates the string to a record pointer, then calls
+        // `__lullaby_to_cstr` to materialize a NUL-terminated buffer before the C
+        // `call`. The distinctive tail of that helper is the NUL-terminator write
+        // `mov byte [rdi], 0` (`C6 07 00`); its presence proves the helper is
+        // emitted into `.text`.
+        let program = emit_alpha1_native_program(&module_for(
+            "extern fn strlen s cstr -> usize\n\nfn main -> i64\n    to_i64(strlen(\"hi\"))\n",
+        ))
+        .expect("cstr extern compiles natively");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        assert_eq!(
+            program.import_libs,
+            vec![C_RUNTIME_IMPORT_LIB.to_string()],
+            "a cstr extern call requires the C runtime import library"
+        );
+        // The `__lullaby_to_cstr` helper symbol is a defined external in the object.
+        assert!(
+            program
+                .bytes
+                .windows(TO_CSTR_SYMBOL.len())
+                .any(|w| w == TO_CSTR_SYMBOL.as_bytes()),
+            "expected the `__lullaby_to_cstr` helper symbol in the object"
+        );
+        let text = text_bytes(&program);
+        // The helper's NUL-terminator write (`mov byte [rdi], 0`).
+        assert!(
+            text.windows(3).any(|w| w == [0xC6, 0x07, 0x00]),
+            "expected the cstr NUL-terminator write in `__lullaby_to_cstr`"
+        );
+    }
+
+    #[test]
+    fn pointer_extern_param_and_return_compile() {
+        // Raw pointers cross the FFI boundary as machine-address words: `malloc`
+        // returns a `ptr<byte>` bound to a native local, and `free` takes a
+        // `ptr<byte>` parameter. Both compile natively (a pointer is an `i64`-class
+        // word), so the caller is not demoted.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "extern fn malloc n usize -> ptr<byte>\n\n",
+            "extern fn free p ptr<byte> -> void\n\n",
+            "fn main -> i64\n",
+            "    let p ptr<byte> = malloc(to_usize(8))\n",
+            "    free(p)\n",
+            "    0\n",
+        )))
+        .expect("pointer extern params/returns compile natively");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        // Both C symbols are undefined externals in the object.
+        assert!(
+            program.bytes.windows(7).any(|w| w == b"malloc\0"),
+            "expected a `malloc` external symbol record"
+        );
+        assert!(
+            program.bytes.windows(5).any(|w| w == b"free\0"),
+            "expected a `free` external symbol record"
+        );
+    }
+
+    #[test]
+    fn six_arg_extern_call_spills_fifth_and_sixth_to_stack() {
+        // An `extern fn` with six arguments spills its 5th and 6th (0-indexed
+        // positions 4 and 5) into the outgoing stack-argument area above the 32-byte
+        // shadow space, exactly like an internal call. During staging (six pushed
+        // words), position 4's outgoing slot is `[rsp + 8*6 + 32 + 0] = [rsp+0x50]`;
+        // the write is `mov [rsp+0x50], rax` (`48 89 84 24 50 00 00 00`).
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "extern fn take6 a i64 b i64 c i64 d i64 e i64 f i64 -> i64\n\n",
+            "fn main -> i64\n",
+            "    take6(1, 2, 3, 4, 5, 6)\n",
+        )))
+        .expect("a >4-arg extern call compiles natively");
+        assert_eq!(program.compiled, vec!["main".to_string()]);
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        let text = text_bytes(&program);
+        assert!(
+            text.windows(8)
+                .any(|w| w == [0x48, 0x89, 0x84, 0x24, 0x50, 0x00, 0x00, 0x00]),
+            "expected the 5th argument written to the outgoing stack slot `[rsp+0x50]`"
+        );
+        assert!(
+            text.windows(8)
+                .any(|w| w == [0x48, 0x89, 0x84, 0x24, 0x58, 0x00, 0x00, 0x00]),
+            "expected the 6th argument written to the outgoing stack slot `[rsp+0x58]`"
         );
     }
 

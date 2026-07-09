@@ -741,10 +741,13 @@ impl<'a> Checker<'a> {
         self.collect_signatures();
         self.collect_impls();
         for function in &self.program.functions {
-            // Extern (C-ABI) declarations are body-less: there is nothing to
-            // check beyond the signature, which `collect_signatures` already
-            // registered so call sites type-check.
+            // Extern (C-ABI) declarations are body-less: there is no body to
+            // check, but their C-marshallable signature is validated so an
+            // unmarshallable parameter/return type (`list`/`map`/non-`repr(C)`
+            // struct/callback/`string`) is rejected up front with `L0424`
+            // rather than silently demoted at native codegen.
             if function.is_extern {
+                self.check_extern_signature(function);
                 continue;
             }
             // An `export fn` is exposed under its plain C name as a native symbol.
@@ -817,6 +820,90 @@ impl<'a> Checker<'a> {
     /// scalar/aggregate marshalling for exports is deferred.
     fn is_exportable_scalar(type_name: &str) -> bool {
         matches!(type_name, "i64" | "f64" | "f32")
+    }
+
+    /// Check that a body-less `extern fn` has a C-marshallable signature. The
+    /// delivered `extern`-call marshalling set is: every fixed-width scalar
+    /// (`i8`…`u64`, `isize`/`usize`, `bool`, `char`, `byte`, `f32`, `f64`), a raw
+    /// pointer `ptr<T>` (a machine address, passed/returned by value), and — for a
+    /// **parameter only** — the FFI-only `cstr` marker (a Lullaby `string` is
+    /// materialized into a NUL-terminated buffer across the boundary). A return
+    /// type may additionally be `void`. Anything else — a `string`, `list`/`map`,
+    /// non-`repr(C)` struct/enum, callback (`fn(...) -> R`), array, or a `cstr`
+    /// return — is not yet marshallable and is rejected with `L0424` (the shared
+    /// FFI-signature family) rather than silently demoted at native codegen. A
+    /// generic extern is rejected (a C symbol is monomorphic).
+    fn check_extern_signature(&mut self, function: &Function) {
+        if !function.type_params.is_empty() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0424",
+                format!(
+                    "`extern fn {}` cannot be generic; an imported C symbol is monomorphic",
+                    function.name
+                ),
+                Some(function.name.clone()),
+                function.span,
+            ));
+        }
+        for param in &function.params {
+            if !Self::is_extern_param_type(&param.ty) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0424",
+                    format!(
+                        "`extern fn {}` parameter `{}` has type `{}`; an extern parameter must be a C scalar (`i8`…`u64`/`isize`/`usize`/`bool`/`char`/`byte`/`f32`/`f64`), a raw pointer `ptr<T>`, or `cstr` (structs by value, callbacks, `string`, `list`/`map` are not yet marshallable)",
+                        function.name, param.name, param.ty.name
+                    ),
+                    Some(function.name.clone()),
+                    function.span,
+                ));
+            }
+        }
+        if !Self::is_extern_return_type(&function.return_type) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0424",
+                format!(
+                    "`extern fn {}` returns `{}`; an extern return must be `void`, a C scalar, or a raw pointer `ptr<T>` (`cstr`, structs by value, `string`, `list`/`map` returns are not yet marshallable)",
+                    function.name, function.return_type.name
+                ),
+                Some(function.name.clone()),
+                function.span,
+            ));
+        }
+    }
+
+    /// A C scalar type marshallable across the FFI boundary in either direction:
+    /// every fixed-width integer plus `bool`/`char`/`byte` and the floats.
+    fn is_ffi_scalar(type_name: &str) -> bool {
+        matches!(
+            type_name,
+            "i8" | "i16"
+                | "i32"
+                | "i64"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "isize"
+                | "usize"
+                | "bool"
+                | "char"
+                | "byte"
+                | "f32"
+                | "f64"
+        )
+    }
+
+    /// Whether a type is valid as an `extern fn` **parameter**: a C scalar, a raw
+    /// pointer `ptr<T>`, or the FFI-only `cstr` marker (a materialized C string).
+    fn is_extern_param_type(ty: &TypeRef) -> bool {
+        Self::is_ffi_scalar(&ty.name) || ty.name == "cstr" || ty.is_raw_pointer()
+    }
+
+    /// Whether a type is valid as an `extern fn` **return**: `void`, a C scalar, or
+    /// a raw pointer `ptr<T>`. `cstr` is not a returnable value type (an inbound C
+    /// string is received as `ptr<byte>` and copied explicitly).
+    fn is_extern_return_type(ty: &TypeRef) -> bool {
+        ty.is_void() || Self::is_ffi_scalar(&ty.name) || ty.is_raw_pointer()
     }
 
     /// Collect trait declarations into the trait table and the trait-method
@@ -1213,6 +1300,7 @@ impl<'a> Checker<'a> {
                         .map(|tp| tp.bounds.clone())
                         .collect(),
                     is_async: function.is_async,
+                    is_extern: function.is_extern,
                 },
             );
         }
@@ -4321,6 +4409,17 @@ impl<'a> Checker<'a> {
                         args.iter().zip(signature.params.iter()).enumerate()
                     {
                         let actual = self.check_expr_expected(arg, Some(expected), scope, function);
+                        // An extern's `cstr` parameter is not a Lullaby value type:
+                        // the caller supplies a `string`, which the FFI boundary
+                        // materializes into a NUL-terminated buffer. Accept exactly a
+                        // `string` there; any other argument type falls through to
+                        // the mismatch report below.
+                        if signature.is_extern
+                            && expected.name == "cstr"
+                            && actual.as_ref().map(|ty| ty.name.as_str()) == Some("string")
+                        {
+                            continue;
+                        }
                         if actual.as_ref() != Some(expected) {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0313",
@@ -5710,6 +5809,11 @@ pub struct Signature {
     /// `Future<return_type>` rather than `return_type` directly, resolved by
     /// `await`.
     pub is_async: bool,
+    /// True when the function is a body-less `extern fn` (an imported C symbol).
+    /// A `cstr` parameter of an extern accepts a Lullaby `string` argument (the
+    /// caller materializes a NUL-terminated copy across the FFI boundary); no
+    /// other call path admits `string` where a `cstr` is declared.
+    pub is_extern: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5894,6 +5998,57 @@ mod tests {
             .expect("extern function present");
         assert!(extern_fn.is_extern, "llabs is marked extern");
         assert!(extern_fn.body.is_empty(), "extern function has no body");
+    }
+
+    #[test]
+    fn validates_extern_with_pointer_and_cstr_signature() {
+        // An extern parameter/return may be a C scalar, a raw pointer `ptr<T>`, or
+        // (parameter only) the `cstr` marker; a Lullaby `string` argument passed to
+        // a `cstr` parameter type-checks (the FFI boundary materializes it), and a
+        // `ptr<byte>` return binds to a `ptr<byte>` local.
+        let source = concat!(
+            "extern fn strlen s cstr -> usize\n\n",
+            "extern fn malloc n usize -> ptr<byte>\n\n",
+            "extern fn free p ptr<byte> -> void\n\n",
+            "fn main -> i64\n",
+            "    let p ptr<byte> = malloc(to_usize(8))\n",
+            "    free(p)\n",
+            "    to_i64(strlen(\"hello\"))\n",
+        );
+        let checked = validate_source(source).expect("pointer/cstr extern type-checks");
+        assert!(
+            checked
+                .program
+                .functions
+                .iter()
+                .any(|f| f.name == "strlen" && f.is_extern),
+            "expected the cstr extern registered"
+        );
+    }
+
+    #[test]
+    fn rejects_extern_with_nonmarshallable_param() {
+        // A `list<i64>` extern parameter is not C-marshallable; the declaration is
+        // rejected with `L0424` (the shared FFI-signature family) rather than
+        // silently demoted at native codegen.
+        let source = "extern fn bad xs list<i64> -> i64\n\nfn main -> i64\n    0\n";
+        let diagnostics = validate_source(source).expect_err("non-marshallable extern rejected");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0424"),
+            "expected L0424 for a non-marshallable extern parameter: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_extern_callback_parameter() {
+        // A function-pointer (callback) extern parameter is deferred and rejected
+        // with `L0424` — never miscompiled.
+        let source = "extern fn run cb fn(i32) -> i32 -> i32\n\nfn main -> i64\n    0\n";
+        let diagnostics = validate_source(source).expect_err("callback extern rejected");
+        assert!(
+            diagnostics.iter().any(|d| d.code == "L0424"),
+            "expected L0424 for a callback extern parameter: {diagnostics:?}"
+        );
     }
 
     #[test]

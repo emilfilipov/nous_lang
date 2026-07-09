@@ -1,0 +1,4 @@
+extern fn lullaby_sum6 a i64 b i64 c i64 d i64 e i64 f i64 -> i64
+
+fn main -> i64
+    lullaby_sum6(1, 2, 4, 8, 16, 32)
