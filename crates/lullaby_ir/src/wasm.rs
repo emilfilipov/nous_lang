@@ -400,36 +400,45 @@ impl EnumLayout {
 /// Resolve the [`EnumLayout`] of an enum-typed `TypeRef`, or `None` if `ty` is
 /// not an enum the WASM backend can lay out. The supported enums are the
 /// built-in `option<T>` (variants `some(T)`, `none`) and `result<T, E>`
-/// (variants `ok(T)`, `err(E)`) with scalar `T`/`E`, and any user enum whose
-/// every variant payload is a scalar. An enum with a heap payload
-/// (`string`/`list`/`array`/`map`) — notably `result<i64, string>` — is NOT
-/// supported and yields `None` so the enclosing function is skipped.
+/// (variants `ok(T)`, `err(E)`), and any user enum, where every variant payload
+/// is a scalar or a `string`. A `string` payload occupies one 8-byte slot as an
+/// `i32` pointer to the immutable string record; because strings are immutable it
+/// is copied by SHARING its pointer on the flat word-copy deep copy (see
+/// [`emit_deep_copy_enum`]), exactly like a scalar. An enum with a MUTABLE heap
+/// payload (`list`/`array`/`map`/`struct`) is still NOT supported and yields
+/// `None` so the enclosing function is skipped (it would need a recursive
+/// per-payload deep copy).
 fn enum_layout(ty: &TypeRef, enums: &HashMap<String, IrEnumDef>) -> Option<EnumLayout> {
     // Built-in `option<T>`: variants `some(T)`, `none`, in that order. `?` bails
-    // (unsupported enum) when `T` is not a scalar (e.g. a heap payload).
+    // (unsupported enum) when `T` is neither a scalar nor a `string` (e.g. a
+    // mutable heap payload). `option<string>` — the result of `map_get` on a
+    // `map<K, string>` — is supported: the `some` payload slot is the string
+    // pointer.
     if let Some(inner) = ty.option_element() {
-        scalar_val_type(&inner)?;
+        scalar_or_string_slot_type(&inner)?;
         return Some(build_layout(vec![
             ("some".to_string(), vec![inner]),
             ("none".to_string(), Vec::new()),
         ]));
     }
-    // Built-in `result<T, E>`: variants `ok(T)`, `err(E)`, in that order. Both
-    // payload types must be scalar; `?` bails on a heap payload.
+    // Built-in `result<T, E>`: variants `ok(T)`, `err(E)`, in that order. Each
+    // payload type must be a scalar or a `string`; `?` bails on a mutable heap
+    // payload.
     if let Some((ok, err)) = ty.result_args() {
-        scalar_val_type(&ok)?;
-        scalar_val_type(&err)?;
+        scalar_or_string_slot_type(&ok)?;
+        scalar_or_string_slot_type(&err)?;
         return Some(build_layout(vec![
             ("ok".to_string(), vec![ok]),
             ("err".to_string(), vec![err]),
         ]));
     }
-    // A user enum: every variant payload must be a scalar (`?` bails otherwise).
+    // A user enum: every variant payload must be a scalar or a `string` (`?` bails
+    // otherwise).
     let def = enums.get(&ty.name)?;
     let mut variants = Vec::with_capacity(def.variants.len());
     for variant in &def.variants {
         for payload_ty in &variant.payload {
-            scalar_val_type(payload_ty)?;
+            scalar_or_string_slot_type(payload_ty)?;
         }
         variants.push((variant.name.clone(), variant.payload.clone()));
     }
@@ -549,30 +558,53 @@ fn is_pointer_type(
     false
 }
 
-/// The scalar `(K, V)` key/value types of a supported growable `map<K, V>`, or
-/// `None` if `ty` is not a map or its key/value are not both scalars. Maps with a
-/// heap key or value (`map<string, V>`, `map<K, string>`, `map<K, list<…>>`, …)
-/// are DEFERRED this increment — the WASM backend only lays out scalar-key,
-/// scalar-value maps — so such a map is unsupported and its enclosing function is
-/// skipped (still runs on the interpreters). String keys are deferred here
-/// because the interpreters compare keys by `Value` content equality, which for
-/// a `string` means comparing decoded bytes rather than the interned pointer.
+/// The WASM slot type for a supported growable-collection element/value: a scalar
+/// (its own value type) or a `string` (an `i32` pointer to the immutable
+/// `[char_len][byte_len][utf8]` record). `None` for any other type. A `string`
+/// element/value occupies a single 8-byte slot exactly like a scalar and, because
+/// strings are immutable, is copied by SHARING its pointer on a value-semantic
+/// deep copy (never deep-recursed) — so the flat word copy in
+/// [`emit_list_copy_elems`]/[`emit_map_copy_entries`] is already an exact deep
+/// copy. Other heap elements (`struct`/`array`/`list`/`map`) are DEFERRED because
+/// they would need a recursive per-element deep copy.
+fn scalar_or_string_slot_type(ty: &TypeRef) -> Option<WasmValType> {
+    if let Some(vt) = scalar_val_type(ty) {
+        return Some(vt);
+    }
+    if ty.name == "string" {
+        return Some(WasmValType::I32);
+    }
+    None
+}
+
+/// The `(K, V)` key/value types of a supported growable `map<K, V>`, or `None` if
+/// `ty` is not a map, its key is not a scalar, or its value is neither a scalar
+/// nor a `string`. The value may be a `string` (an `i32` pointer stored in one
+/// slot, shared on deep copy since strings are immutable). Maps with a heap KEY
+/// (`map<string, V>`, `map<list<…>, V>`) or a non-string heap value
+/// (`map<K, list<…>>`, `map<K, struct>`) are DEFERRED this increment — such a map
+/// is unsupported and its enclosing function is skipped (still runs on the
+/// interpreters). String keys are deferred here because the interpreters compare
+/// keys by `Value` content equality, which for a `string` means comparing decoded
+/// bytes rather than the interned pointer.
 fn supported_map_kv(ty: &TypeRef) -> Option<(TypeRef, TypeRef)> {
     let (key, value) = ty.map_args()?;
     scalar_val_type(&key)?;
-    scalar_val_type(&value)?;
+    scalar_or_string_slot_type(&value)?;
     Some((key, value))
 }
 
-/// The scalar element type of a supported growable `list<T>`, or `None` if `ty` is
-/// not a list or its element is not a scalar. Lists of heap elements
-/// (`list<string>`/`list<struct>`/`list<list<…>>`/`list<map<…>>`) are DEFERRED —
-/// the WASM backend only lays out scalar-element lists this increment — so such a
-/// list is unsupported and its enclosing function is skipped (still runs on the
+/// The element type of a supported growable `list<T>`, or `None` if `ty` is not a
+/// list or its element is neither a scalar nor a `string`. A `string` element is
+/// an `i32` pointer stored in one slot and shared on deep copy (strings are
+/// immutable). Lists of other heap elements
+/// (`list<struct>`/`list<list<…>>`/`list<map<…>>`) are DEFERRED — the WASM backend
+/// does not yet recursively deep-copy mutable-heap elements — so such a list is
+/// unsupported and its enclosing function is skipped (still runs on the
 /// interpreters).
 fn supported_list_element(ty: &TypeRef) -> Option<TypeRef> {
     let elem = ty.list_element()?;
-    scalar_val_type(&elem)?;
+    scalar_or_string_slot_type(&elem)?;
     Some(elem)
 }
 
@@ -1819,14 +1851,15 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             if name == ENDS_WITH_BUILTIN && args.len() == 2 && args[0].ty.name == "string" {
                 return lower_ends_with(ctx, &args[0], &args[1], out);
             }
-            // Growable `list<T>` (scalar `T`) builtins. `list_new()` allocates an
-            // empty header; `push`/`get`/`set`/`pop` operate on a `list`-typed
-            // first argument (checked so these names cannot shadow a user function
-            // or an array op). `len(l)` is NOT special-cased here — a list's `len`
-            // shares offset 0 with the string/array length header, so the generic
-            // `len` path below reads it. A list op whose element is a heap type is
-            // deferred: `supported_list_element` returns `None`, so lowering errors
-            // and the function is demoted to the interpreters.
+            // Growable `list<T>` (scalar or `string` `T`) builtins. `list_new()`
+            // allocates an empty header; `push`/`get`/`set`/`pop` operate on a
+            // `list`-typed first argument (checked so these names cannot shadow a
+            // user function or an array op). `len(l)` is NOT special-cased here — a
+            // list's `len` shares offset 0 with the string/array length header, so
+            // the generic `len` path below reads it. A list op whose element is a
+            // MUTABLE heap type is deferred: `supported_list_element` returns
+            // `None`, so lowering errors and the function is demoted to the
+            // interpreters.
             if name == LIST_NEW_BUILTIN {
                 return lower_list_new(ctx, args, out);
             }
@@ -1842,15 +1875,16 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             if name == LIST_POP_BUILTIN && args.len() == 1 && args[0].ty.list_element().is_some() {
                 return lower_list_pop(ctx, &args[0], out);
             }
-            // Growable `map<K, V>` (scalar `K`/`V`) builtins. `map_new()` allocates
-            // an empty `[len][cap][entries]` header; `map_set`/`map_get`/`map_has`/
-            // `map_len` operate on a `map`-typed first argument. These names are not
-            // shared with any array/list op, so they dispatch on name directly (the
-            // arity/key/value types are validated in each lowering). A map op whose
-            // key or value is a heap type is deferred: `supported_map_kv` returns
-            // `None`, so lowering errors and the function is demoted to the
-            // interpreters. `map_len(m)` shares offset 0 with the length header, but
-            // (unlike lists) it is spelled `map_len`, so it routes here explicitly.
+            // Growable `map<K, V>` (scalar `K`; scalar or `string` `V`) builtins.
+            // `map_new()` allocates an empty `[len][cap][entries]` header;
+            // `map_set`/`map_get`/`map_has`/`map_len` operate on a `map`-typed first
+            // argument. These names are not shared with any array/list op, so they
+            // dispatch on name directly (the arity/key/value types are validated in
+            // each lowering). A map op whose key is a heap type, or whose value is a
+            // MUTABLE heap type, is deferred: `supported_map_kv` returns `None`, so
+            // lowering errors and the function is demoted to the interpreters.
+            // `map_len(m)` shares offset 0 with the length header, but (unlike
+            // lists) it is spelled `map_len`, so it routes here explicitly.
             if name == MAP_NEW_BUILTIN {
                 return lower_map_new(ctx, args, out);
             }
@@ -3588,11 +3622,12 @@ fn emit_deep_copy_struct(
     Ok(())
 }
 
-/// Deep-copy an enum: the source pointer is on the stack. Enum payloads are always
-/// scalar (see [`enum_layout`]), so the `[tag][payload slots]` record contains no
-/// nested aggregate pointer; copying every 8-byte word of `size_bytes()` (the tag,
-/// padded to a slot, plus each payload slot) is an exact deep copy. Leaves the
-/// fresh pointer on the stack.
+/// Deep-copy an enum: the source pointer is on the stack. Enum payloads are a
+/// scalar or a `string` pointer (see [`enum_layout`]), and a `string` is immutable
+/// so sharing its pointer IS its value-semantic copy; the `[tag][payload slots]`
+/// record therefore contains no MUTABLE nested aggregate pointer, so copying every
+/// 8-byte word of `size_bytes()` (the tag, padded to a slot, plus each payload
+/// slot) is an exact deep copy. Leaves the fresh pointer on the stack.
 fn emit_deep_copy_enum(
     ctx: &mut LowerCtx,
     layout: &EnumLayout,
@@ -3732,9 +3767,10 @@ fn emit_list_block_size(cap_local: u32, out: &mut Vec<u8>) {
 /// Copy the first `count` element slots (each `SLOT_SIZE` bytes) from `src` to
 /// `dst` list backing blocks in a runtime loop. `count` is an `i32` local; `src`
 /// and `dst` are `i32` locals holding list base pointers. Element slots are copied
-/// word-for-word by `SLOT_SIZE`-aligned `i64` load/store — list elements are
-/// always scalar (see [`supported_list_element`]), so a flat word copy is an exact
-/// deep copy and needs no per-element type dispatch.
+/// word-for-word by `SLOT_SIZE`-aligned `i64` load/store — a list element is a
+/// scalar or a `string` pointer (see [`supported_list_element`]), and a `string`
+/// is immutable so sharing its pointer IS its value-semantic copy, so a flat word
+/// copy is an exact deep copy and needs no per-element type dispatch.
 fn emit_list_copy_elems(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out: &mut Vec<u8>) {
     let i = ctx.add_local(WasmValType::I32);
     out.push(0x41); // i32.const 0
@@ -3852,7 +3888,7 @@ fn lower_list_push(
             list.ty.name
         )
     })?;
-    let slot_ty = scalar_val_type(&elem_ty)
+    let slot_ty = scalar_or_string_slot_type(&elem_ty)
         .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
     // Deep-copy the source list into a fresh, independent block (value semantics).
     lower_expr(ctx, list, out)?;
@@ -3956,7 +3992,7 @@ fn lower_list_get(
             list.ty.name
         )
     })?;
-    let slot_ty = scalar_val_type(&elem_ty)
+    let slot_ty = scalar_or_string_slot_type(&elem_ty)
         .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
     lower_expr(ctx, list, out)?; // base pointer
     emit_list_elem_offset(ctx, index, out)?; // += LIST_DATA_OFF + index * SLOT_SIZE
@@ -3981,7 +4017,7 @@ fn lower_list_set(
             list.ty.name
         )
     })?;
-    let slot_ty = scalar_val_type(&elem_ty)
+    let slot_ty = scalar_or_string_slot_type(&elem_ty)
         .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
     lower_expr(ctx, list, out)?;
     emit_list_deep_copy(ctx, out)?;
@@ -4076,9 +4112,10 @@ fn emit_map_entry_addr(base: u32, entry: u32, out: &mut Vec<u8>) {
 
 /// Copy the first `count` entry records (each `MAP_ENTRY_SIZE` = two `SLOT_SIZE`
 /// words) from `src` to `dst` map backing blocks in a runtime loop. `count`,
-/// `src`, and `dst` are `i32` locals. Map keys and values are always scalar (see
-/// [`supported_map_kv`]), so a flat word copy of both slots is an exact deep copy
-/// and needs no per-entry type dispatch.
+/// `src`, and `dst` are `i32` locals. A map key is a scalar and a value is a
+/// scalar or a `string` pointer (see [`supported_map_kv`]); a `string` is
+/// immutable so sharing its pointer IS its value-semantic copy, so a flat word
+/// copy of both slots is an exact deep copy and needs no per-entry type dispatch.
 fn emit_map_copy_entries(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out: &mut Vec<u8>) {
     let i = ctx.add_local(WasmValType::I32);
     out.push(0x41); // i32.const 0
@@ -4280,7 +4317,7 @@ fn lower_map_set(
     })?;
     let key_slot = scalar_val_type(&key_ty)
         .ok_or_else(|| format!("map key type `{}` is unsupported", key_ty.name))?;
-    let value_slot = scalar_val_type(&value_ty)
+    let value_slot = scalar_or_string_slot_type(&value_ty)
         .ok_or_else(|| format!("map value type `{}` is unsupported", value_ty.name))?;
 
     // Deep-copy the source map into a fresh, independent block (value semantics).
@@ -4405,7 +4442,7 @@ fn lower_map_get(
     })?;
     let key_slot = scalar_val_type(&key_ty)
         .ok_or_else(|| format!("map key type `{}` is unsupported", key_ty.name))?;
-    let value_slot = scalar_val_type(&value_ty)
+    let value_slot = scalar_or_string_slot_type(&value_ty)
         .ok_or_else(|| format!("map value type `{}` is unsupported", value_ty.name))?;
     // The result `option<V>` enum layout: variant `some(V)` is tag 0, `none` tag 1.
     let layout = enum_layout(result_ty, ctx.enums).ok_or_else(|| {
@@ -5381,13 +5418,14 @@ mod tests {
 
     #[test]
     fn scalar_and_nonscalar_split() {
-        // `add` is scalar; `tally` returns `map<i64, string>` (a HEAP-value map),
-        // still outside the WASM value set (strings/structs/arrays/enums,
-        // scalar-element `list`s, and scalar-key/value `map`s are supported; a map
-        // with a heap value is not), so it is skipped.
+        // `add` is scalar; `tally` returns `map<i64, array<i64>>` (a MUTABLE
+        // heap-value map), still outside the WASM value set (strings/structs/
+        // arrays/enums, scalar- or string-element `list`s, and scalar-key maps with
+        // a scalar or `string` value are supported; a map with a mutable heap value
+        // is not), so it is skipped.
         let source = concat!(
             "fn add a i64 b i64 -> i64\n    a + b\n\n",
-            "fn tally n i64 -> map<i64, string>\n    map_set(map_new(), n, \"x\")\n",
+            "fn tally -> map<i64, array<i64>>\n    map_new()\n",
         );
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         assert_eq!(artifact.compiled, vec!["add".to_string()]);
@@ -5754,19 +5792,59 @@ mod tests {
     }
 
     #[test]
-    fn list_of_heap_element_is_skipped() {
-        // A `list<string>` (heap element) is DEFERRED: `supported_list_element`
-        // rejects a non-scalar element, so the function's signature is ineligible
-        // and it is skipped (still runs on the interpreters), never miscompiled.
+    fn list_of_string_element_compiles() {
+        // A `list<string>` COMPILES: a `string` element is an `i32` pointer stored
+        // in one slot exactly like a scalar, and — because strings are immutable —
+        // is shared (not deep-recursed) on the flat word-copy deep copy. `push`
+        // appends the pointer; `get` loads it back with an `i32.load`.
         let source = concat!(
             "fn names -> list<string>\n",
             "    push(list_new(), \"a\")\n\n",
+            "fn head l list<string> -> string\n",
+            "    get(l, 0)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"names".to_string())
+                && artifact.compiled.contains(&"head".to_string()),
+            "list<string> functions should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The deep-copy element loop still copies each slot as one 8-byte word
+        // (`i64.load` 0x29 then `i64.store` 0x37) — the string pointer is copied by
+        // value (shared), NOT deep-recursed into the string record.
+        assert!(
+            find_subslice(&code, &[0x29, 0x03, 0x00, 0x37, 0x03, 0x00]).is_some(),
+            "list<string> copy shares the element pointer via an 8-byte word copy"
+        );
+        // `get` loads the element slot as an `i32` pointer (`i32.load` at offset 0,
+        // the slot address is fully computed on the stack), not an `i64`, because a
+        // `string` element occupies the low word of the slot.
+        assert!(
+            find_subslice(&code, &[0x28, 0x02, 0x00]).is_some(),
+            "get on a list<string> loads the element slot as an i32 pointer"
+        );
+    }
+
+    #[test]
+    fn list_of_mutable_heap_element_is_skipped() {
+        // A `list<array<i64>>` (MUTABLE heap element) is still DEFERRED:
+        // `supported_list_element` rejects a non-scalar, non-`string` element (it
+        // would need a recursive per-element deep copy), so the function's
+        // signature is ineligible and it is skipped (still runs on the
+        // interpreters), never miscompiled.
+        let source = concat!(
+            "fn grid -> list<array<i64>>\n",
+            "    list_new()\n\n",
             "fn ok n i64 -> i64\n    n + 1\n",
         );
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
         assert_eq!(artifact.compiled, vec!["ok".to_string()]);
         assert_eq!(artifact.skipped.len(), 1);
-        assert_eq!(artifact.skipped[0].name, "names");
+        assert_eq!(artifact.skipped[0].name, "grid");
     }
 
     // -- Growable `map<K, V>` (scalar key/value) -------------------------------
@@ -5861,15 +5939,63 @@ mod tests {
     }
 
     #[test]
-    fn map_with_heap_key_or_value_is_skipped() {
-        // A `map<string, i64>` (heap key) and a `map<i64, string>` (heap value) are
-        // DEFERRED: `supported_map_kv` rejects a non-scalar key or value, so the
-        // signature is ineligible and the function is skipped (still runs on the
-        // interpreters), never miscompiled.
+    fn map_of_string_value_function_compiles() {
+        // A `map<i64, string>` (scalar key, `string` value) COMPILES: the value
+        // slot holds an `i32` string pointer, shared on the flat two-word entry
+        // copy since strings are immutable. `map_set` inserts/updates the pointer,
+        // `map_get` returns `option<string>` (the `some` payload slot is the string
+        // pointer), and `map_has`/`map_len` work unchanged.
+        let source = concat!(
+            "fn build n i64 -> map<i64, string>\n",
+            "    let m map<i64, string> = map_new()\n",
+            "    m = map_set(m, 1, \"a\")\n",
+            "    m = map_set(m, 2, to_string(n))\n",
+            "    m = map_set(m, 1, \"z\")\n",
+            "    m\n\n",
+            "fn probe n i64 -> i64\n",
+            "    let m map<i64, string> = build(n)\n",
+            "    let seen i64 = 0\n",
+            "    if map_has(m, 2)\n",
+            "        seen = 1\n",
+            "    match map_get(m, 1)\n",
+            "        some(s) -> len(s) + seen + map_len(m)\n",
+            "        none -> 0 - 1\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"build".to_string())
+                && artifact.compiled.contains(&"probe".to_string()),
+            "map<i64, string> build/probe functions should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // The entry copy still copies each entry as two 8-byte words (`i64.load`
+        // 0x29 then `i64.store` 0x37) — the string value pointer is copied by value
+        // (shared), NOT deep-recursed into the string record.
+        assert!(
+            find_subslice(&code, &[0x29, 0x03, 0x00, 0x37, 0x03, 0x00]).is_some(),
+            "map<i64, string> copy shares the value pointer via an 8-byte word copy"
+        );
+        // The lookup still compares the scalar `i64` key with `i64.eq` (0x51).
+        assert!(
+            find_subslice(&code, &[0x51]).is_some(),
+            "map<i64, string> lookup emits an `i64.eq` key comparison in the scan"
+        );
+    }
+
+    #[test]
+    fn map_with_heap_key_or_mutable_value_is_skipped() {
+        // A `map<string, i64>` (heap key) and a `map<i64, array<i64>>` (MUTABLE heap
+        // value) are DEFERRED: `supported_map_kv` rejects a heap key or a
+        // non-scalar, non-`string` value, so the signature is ineligible and the
+        // function is skipped (still runs on the interpreters), never miscompiled.
+        // String keys stay deferred (content equality is separate work).
         let source = concat!(
             "fn by_name -> map<string, i64>\n",
             "    map_new()\n\n",
-            "fn to_name -> map<i64, string>\n",
+            "fn rows -> map<i64, array<i64>>\n",
             "    map_new()\n\n",
             "fn ok n i64 -> i64\n    n + 1\n",
         );
@@ -5877,7 +6003,7 @@ mod tests {
         assert_eq!(artifact.compiled, vec!["ok".to_string()]);
         let skipped: Vec<&str> = artifact.skipped.iter().map(|s| s.name.as_str()).collect();
         assert!(skipped.contains(&"by_name"));
-        assert!(skipped.contains(&"to_name"));
+        assert!(skipped.contains(&"rows"));
     }
 
     // -- Aggregates across call boundaries (params/returns) --------------------
@@ -5994,11 +6120,12 @@ mod tests {
 
     #[test]
     fn no_eligible_functions_errors() {
-        // `result<i64, string>` is an enum with a HEAP payload, still outside the
-        // supported WASM value set, so nothing is eligible and the backend reports
-        // L0338. (Scalar-element `list<i64>` and scalar-key/value `map<i64, i64>`
-        // ARE supported now — see the growable-list/map tests above.)
-        let source = "fn tally n i64 -> result<i64, string>\n    ok(n)\n";
+        // `result<i64, list<i64>>` is an enum with a MUTABLE heap payload, still
+        // outside the supported WASM value set, so nothing is eligible and the
+        // backend reports L0338. (Scalar-element `list<i64>`, `string` payloads
+        // like `result<i64, string>`, and scalar-key maps with a scalar or `string`
+        // value ARE supported now — see the growable-list/map and string tests.)
+        let source = "fn tally n i64 -> result<i64, list<i64>>\n    ok(n)\n";
         let err = emit_wasm_module(&module_for(source)).expect_err("no eligible");
         assert_eq!(err.code, "L0338");
         assert_eq!(err.skipped.len(), 1);
@@ -6400,12 +6527,30 @@ mod tests {
     }
 
     #[test]
-    fn enum_with_heap_payload_is_skipped() {
-        // `result<i64, string>` has a heap (`string`) payload, which the WASM
-        // backend defers: the function is skipped (runs on the interpreters), never
-        // miscompiled. With no other eligible function, emission reports L0338.
+    fn enum_with_string_payload_compiles() {
+        // `result<i64, string>` has a `string` payload, which the WASM backend now
+        // supports: the payload slot holds the immutable string pointer, matched
+        // and read back with an `i32` slot load. The function COMPILES (it is not
+        // skipped and does not fall back to the interpreters).
         let source = concat!(
             "fn describe r result<i64, string> -> i64\n",
+            "    match r\n",
+            "        ok(v) -> v\n",
+            "        err(m) -> len(m)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["describe".to_string()]);
+        assert!(artifact.skipped.is_empty());
+    }
+
+    #[test]
+    fn enum_with_mutable_heap_payload_is_skipped() {
+        // `result<i64, list<i64>>` has a MUTABLE heap (`list`) payload, which the
+        // WASM backend defers (it would need a recursive per-payload deep copy): the
+        // function is skipped (runs on the interpreters), never miscompiled. With no
+        // other eligible function, emission reports L0338.
+        let source = concat!(
+            "fn describe r result<i64, list<i64>> -> i64\n",
             "    match r\n",
             "        ok(v) -> v\n",
             "        err(m) -> len(m)\n",
@@ -6414,7 +6559,7 @@ mod tests {
         assert_eq!(error.code, "L0338");
         assert!(
             error.skipped.iter().any(|s| s.name == "describe"),
-            "the heap-payload enum function is recorded as skipped: {:?}",
+            "the mutable-heap-payload enum function is recorded as skipped: {:?}",
             error.skipped
         );
     }
@@ -6457,10 +6602,15 @@ mod tests {
         assert_eq!(shape.tag_of("Empty"), Some(2));
         assert_eq!(shape.slot_count, 2, "widest variant `Rect` has two slots");
 
-        // A heap payload makes the enum unsupported for WASM.
+        // A `string` payload IS supported (shared immutable pointer in one slot).
         assert!(
-            enum_layout(&TypeRef::new("result<i64, string>"), &enums).is_none(),
-            "heap-payload result is not a supported WASM enum"
+            enum_layout(&TypeRef::new("result<i64, string>"), &enums).is_some(),
+            "string-payload result is a supported WASM enum"
+        );
+        // A MUTABLE heap payload (`list`) makes the enum unsupported for WASM.
+        assert!(
+            enum_layout(&TypeRef::new("result<i64, list<i64>>"), &enums).is_none(),
+            "mutable-heap-payload result is not a supported WASM enum"
         );
     }
 }

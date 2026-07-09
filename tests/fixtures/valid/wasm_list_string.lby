@@ -1,0 +1,55 @@
+fn total_len xs list<string> -> i64
+    let n i64 = len(xs)
+    let sum i64 = 0
+    let i i64 = 0
+    while i < n
+        sum = sum + len(get(xs, i))
+        i = i + 1
+    sum
+
+fn grow_probe xs list<string> -> i64
+    let ys list<string> = push(xs, "appended")
+    len(xs) * 100 + len(ys)
+
+fn build_words n i64 -> list<string>
+    let w list<string> = list_new()
+    w = push(w, "ab")
+    w = push(w, "cde")
+    w = push(w, "ab" + "cd")
+    w = push(w, to_string(n))
+    w
+
+fn build_names -> map<i64, string>
+    let m map<i64, string> = map_new()
+    m = map_set(m, 1, "one")
+    m = map_set(m, 2, "two")
+    m = map_set(m, 3, "th" + "ree")
+    m = map_set(m, 2, "TWO")
+    m
+
+fn name_len m map<i64, string> k i64 -> i64
+    match map_get(m, k)
+        some(s) -> len(s)
+        none -> 0 - 1
+
+fn main -> i64
+    let w list<string> = build_words(1234)
+    let list_sum i64 = total_len(w)
+    let get_len i64 = len(get(w, 2))
+    let list_n i64 = len(w)
+    let probe i64 = grow_probe(w)
+    let after_probe i64 = len(w)
+
+    let m map<i64, string> = build_names()
+    let map_n i64 = map_len(m)
+    let len2 i64 = name_len(m, 2)
+    let len3 i64 = name_len(m, 3)
+    let missing i64 = name_len(m, 42)
+    let has1 i64 = 0
+    if map_has(m, 1)
+        has1 = 1
+    let has99 i64 = 0
+    if map_has(m, 99)
+        has99 = 1
+
+    list_sum * 1000000 + get_len * 100000 + list_n * 10000 + after_probe * 1000 + probe + map_n * 100 + len2 * 10 + len3 + missing + has1 - has99

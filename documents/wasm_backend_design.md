@@ -195,7 +195,7 @@ a pointer (nested strings/structs/arrays).
   address; non-final hops load the nested pointer, the final hop leaves the slot
   address for the store (or a load-op-store for compound assignment).
 
-- **Enums (scalar payloads):** an enum value is a pointer to
+- **Enums (scalar or `string` payloads):** an enum value is a pointer to
   `[tag: i32 (padded to 8)][slot0][slot1]...]`: an `i32` discriminant (the
   variant's index in declaration order, matching the interpreters) plus one
   8-byte payload slot per position, sized for the widest variant. Construction
@@ -206,8 +206,13 @@ a pointer (nested strings/structs/arrays).
   `if`/`else` blocks — a `Wildcard` arm is the final `else`, and with
   exhaustiveness guaranteed the last variant arm is emitted unconditionally so a
   value match always leaves a value — binding each arm's payload slots into locals
-  before its body. This covers the built-in `option<T>`/`result<T, E>` when
-  `T`/`E` are scalar and user enums whose every variant payload is scalar.
+  before its body. A payload slot is a scalar (its own value type) or a `string`
+  (an `i32` pointer to the immutable string record, stored/loaded/copied exactly
+  like a scalar word). This covers the built-in `option<T>`/`result<T, E>` and
+  user enums when every variant payload is a scalar or a `string` — notably
+  `option<string>`, the result of `map_get` on a `map<K, string>`, and
+  `result<i64, string>`. An enum with a **mutable** heap payload
+  (`list`/`array`/`map`/`struct`) is still deferred.
 
 ### Aggregates across call boundaries (landed)
 
@@ -228,9 +233,12 @@ recursive `Value::clone` bit-for-bit. Specifics:
   the header, and copy each element in a runtime loop (recursing for nested
   aggregate elements).
 - **enum:** copy the `[tag][payload slots]` record word-for-word — enum payloads
-  are always scalar, so a flat copy is an exact deep copy.
+  are a scalar or a `string` pointer, and a `string` is immutable so sharing its
+  pointer IS its value-semantic copy, so a flat copy is an exact deep copy.
 - **string:** NOT copied. Strings are immutable, so sharing the pointer is already
-  value-equivalent to the interpreters' clone.
+  value-equivalent to the interpreters' clone. This is why a `string` **element**
+  of a `list<string>`, **value** of a `map<K, string>`, or enum payload is copied
+  as a shared pointer word (never deep-recursed) on the collection's deep copy.
 
 A **returned** aggregate is the callee's own fresh record, so no extra copy is
 needed on return. Fixtures `wasm_aggregate_args.lby` and
@@ -238,27 +246,39 @@ needed on return. Fixtures `wasm_aggregate_args.lby` and
 probes (a callee mutates its parameter; the caller's copy is verified unchanged),
 node-gated against the interpreter.
 
-**Deferred:** aggregates containing heap values the backend does not lay out (a
-`list` with a heap element, or `map`, or an enum with a heap payload); enums with
-a **heap** payload (`string`/`list`/`array`/`map` — notably `result<i64,
-string>`); the `map` collection and lists of heap elements; `to_string` of a
+**Deferred:** aggregates containing values the backend does not lay out — a
+`list`/`map` with a **mutable** heap element/value (`list<struct>`,
+`list<list<…>>`, `map<K, list<…>>`, nested collections), or an enum with a
+**mutable** heap payload (`list`/`array`/`map`/`struct`); a `map` with a
+**`string` key** (deferred until content-equality keying lands); `to_string` of a
 **float** (`f32`/`f64`) and the string builders not yet lowered — `replace`,
 `upper`/`lower`, `split`/`join`, `chars`/`string_from_chars` (the `+` concat,
 `to_string`, `substring`, `find`, `contains`, `starts_with`, and `ends_with` DO
 compile); and a free-list allocator (`__alloc` never frees this increment).
+(`string` **elements** of a `list<string>`, `string` **values** of a
+`map<K, string>`, and `string` enum payloads DO compile — see below.)
 Functions using any of these are skipped with a reason and still run on the
 interpreters.
 
-### Growable `list<T>` — scalar elements (landed)
+### Growable `list<T>` — scalar and `string` elements (landed)
 
 The growable, value-semantic `list<T>` collection compiles to linear memory for
 **scalar element types** (`i64`, the fixed-width ints `i8`…`usize`, `f32`/`f64`,
-`bool`, `char`, `byte`). A `list<T>` is an **`i32` pointer** to a header
-`[len: i32][cap: i32][elem slots...]`: the live element count, the allocated
+`bool`, `char`, `byte`) **and `string`**. A `list<T>` is an **`i32` pointer** to a
+header `[len: i32][cap: i32][elem slots...]`: the live element count, the allocated
 capacity, then `cap` uniform 8-byte element slots (`SLOT_SIZE`, like struct/array
 elements, so a scalar element stays naturally aligned and element `i` lives at
 `LIST_DATA_OFF + i * SLOT_SIZE`). The `len` field shares offset 0 with the
 string/array length header, so `len(l)` reuses the array length path unchanged.
+
+A **`string` element** occupies a single slot as an `i32` pointer to the immutable
+`[char_len][byte_len][utf8]` record — the SAME slot representation as a scalar, so
+`push`/`get`/`set` store and load it exactly like a scalar (with an `i32.store` /
+`i32.load` slot op). Because strings are immutable, a `string` element is copied by
+**sharing its pointer** on the value-semantic deep copy (the flat 8-byte word copy
+already does this — the pointer word is copied, never deep-recursed into the string
+record), which is the value semantics the interpreters give (a `Value::String`
+clone is a cheap shared clone with no observable aliasing).
 
 - **`list_new() -> list<T>`** `__alloc`s an empty header `[len=0][cap=4][slots]`
   (a small initial capacity so the first few pushes do not each realloc) and
@@ -282,9 +302,11 @@ string/array length header, so `len(l)` reuses the array length path unchanged.
   `i32.wrap_i64`, like array indexing). **`len(l) -> i64`** loads the leading
   `i32` and sign-extends to `i64`.
 
-**Value semantics.** A `list<T>` (scalar element) is classified as a **mutable
-aggregate**, so it is deep-copied when it crosses a call boundary — a callee
-pushing to its parameter cannot alter the caller's list. Combined with the
+**Value semantics.** A `list<T>` (scalar or `string` element) is classified as a
+**mutable aggregate**, so it is deep-copied when it crosses a call boundary — a
+callee pushing to its parameter cannot alter the caller's list. A `string` element
+is copied as a shared pointer word (the string itself is immutable), not
+deep-recursed. Combined with the
 copy-on-`push`/`set`/`pop` discipline, `let b = a` (which shares the `i32`
 pointer) is safe: any later `push`/`set`/`pop` on either binding produces a fresh
 block and reassigns that binding, so the other still points at the untouched
@@ -300,12 +322,13 @@ linear-memory access (a consistent, documented behavior) rather than returning a
 poisoned value. In-bounds programs — the common case, and what every parity
 fixture exercises — agree bit-for-bit.
 
-**Out of scope (deferred):** lists of **heap** elements
-(`list<string>`/`list<struct>`/`list<list<…>>`/`list<map<…>>`) — the element must
-be scalar this increment, so `supported_list_element` rejects a heap element and
-the enclosing function is skipped (still runs on the interpreters) rather than
-miscompiled. `__alloc` still never frees, so a grown or copied list orphans its
-old block (a free-list allocator is future work).
+**Out of scope (deferred):** lists of **mutable** heap elements
+(`list<struct>`/`list<list<…>>`/`list<map<…>>`) — a mutable-heap element would need
+a recursive per-element deep copy, so `supported_list_element` rejects it and the
+enclosing function is skipped (still runs on the interpreters) rather than
+miscompiled. (`list<string>` is NO LONGER deferred — a `string` element is a shared
+immutable pointer.) `__alloc` still never frees, so a grown or copied list orphans
+its old block (a free-list allocator is future work).
 
 Fixtures `wasm_list_build.lby` (build via `push` crossing the initial capacity to
 trigger a grow+copy, then `get`/`len`/`set`/`pop`, `main` = 5879) and
@@ -313,20 +336,34 @@ trigger a grow+copy, then `get`/`len`/`set`/`pop`, `main` = 5879) and
 set-derived list, and a callee that pushes to its parameter, `main` = 334211) run
 on all interpreters and, under node, their exported `main` matches the interpreter
 (`crates/lullaby_cli/tests/cli.rs::wasm_list_build_execution_parity_with_node` and
-`wasm_list_value_semantics_execution_parity_with_node`).
+`wasm_list_value_semantics_execution_parity_with_node`). The `string`-element/value
+fixture `wasm_list_string.lby` (a `list<string>` of literal/concatenated/`to_string`
+strings read with `get`/`len` and passed to helpers, a `map<i64, string>` with
+`map_set`/`map_get`/`map_has`/`map_len`, and a `grow_probe` that pushes to its list
+parameter to prove the caller's list is unaffected; `main` = 13444740) runs on all
+three interpreter backends and, under node, matches
+(`crates/lullaby_cli/tests/cli.rs::wasm_list_string_and_map_string_execution_parity_with_node`).
 
-### Growable `map<K, V>` — scalar keys and values (landed)
+### Growable `map<K, V>` — scalar keys, scalar or `string` values (landed)
 
-The value-semantic `map<K, V>` collection compiles to linear memory for **scalar
-key and value types** (`i64`, the fixed-width ints `i8`…`usize`, `f32`/`f64`,
-`bool`, `char`, `byte`). A `map<K, V>` is an **`i32` pointer** to a header
-`[len: i32][cap: i32][(key, value) slot pairs...]`: the live entry count, the
-allocated capacity (in entries), then `cap` entry records. Each entry is two
-uniform 8-byte slots — the key slot then the value slot (`MAP_ENTRY_SIZE =
+The value-semantic `map<K, V>` collection compiles to linear memory for a **scalar
+key** (`i64`, the fixed-width ints `i8`…`usize`, `f32`/`f64`, `bool`, `char`,
+`byte`) and a **scalar or `string` value**. A `map<K, V>` is an **`i32` pointer**
+to a header `[len: i32][cap: i32][(key, value) slot pairs...]`: the live entry
+count, the allocated capacity (in entries), then `cap` entry records. Each entry is
+two uniform 8-byte slots — the key slot then the value slot (`MAP_ENTRY_SIZE =
 2 * SLOT_SIZE`) — so entry `i` lives at `MAP_DATA_OFF + i * MAP_ENTRY_SIZE`, its
 key at offset `0` and its value at `MAP_VALUE_OFF`. Uniform 8-byte slots keep
 every scalar key/value naturally aligned. `len` shares offset 0 with the
 string/array/list length header.
+
+A **`string` value** occupies the value slot as an `i32` pointer to the immutable
+string record — the SAME slot representation as a scalar, so `map_set` stores and
+`map_get` loads it exactly like a scalar (an `i32` slot op). Because strings are
+immutable, a `string` value is copied by **sharing its pointer** on the deep copy
+(the flat two-word entry copy already does this). `map_get` on a `map<K, string>`
+returns `option<string>` — the same option/enum layout with the string pointer in
+the `some` payload slot.
 
 This mirrors the interpreters' `Value::Map` — an **insertion-ordered association
 list** scanned linearly with `Value` content equality — bit-for-bit:
@@ -354,14 +391,15 @@ list** scanned linearly with `Value` content equality — bit-for-bit:
 - **`map_len(m) -> i64`** loads the leading `i32` `len` header and sign-extends to
   `i64`.
 
-**Value semantics.** A scalar-key/value `map<K, V>` is classified as a **mutable
-aggregate**, so it is deep-copied when it crosses a call boundary — a callee
-inserting into its parameter cannot alter the caller's map. Combined with the
-copy-on-`map_set` discipline, `let b = a` (which shares the `i32` pointer) is safe:
-any later `map_set` on either binding produces a fresh block and reassigns that
-binding, so the other still points at the untouched original. `emit_map_deep_copy`
-duplicates the `[len][cap][entries]` block (both words of every live entry); map
-keys and values are always scalar, so a flat word copy is an exact deep copy.
+**Value semantics.** A supported `map<K, V>` (scalar key; scalar or `string`
+value) is classified as a **mutable aggregate**, so it is deep-copied when it
+crosses a call boundary — a callee inserting into its parameter cannot alter the
+caller's map. Combined with the copy-on-`map_set` discipline, `let b = a` (which
+shares the `i32` pointer) is safe: any later `map_set` on either binding produces a
+fresh block and reassigns that binding, so the other still points at the untouched
+original. `emit_map_deep_copy` duplicates the `[len][cap][entries]` block (both
+words of every live entry); a key is a scalar and a value is a scalar or a `string`
+pointer (immutable, so shared), so a flat word copy is an exact deep copy.
 
 **Lookup/ordering fidelity.** The scan visits entries in insertion order and
 compares keys with the slot-typed equality opcode (`i64.eq` for `i64`/fixed-width
@@ -370,16 +408,18 @@ the interpreters compare `Value` keys by content. In-bounds programs agree
 bit-for-bit; there is no out-of-bounds trap surface because every access is a
 header-bounded scan.
 
-**Out of scope (deferred):** maps with a **heap** key or value
-(`map<string, V>`, `map<K, string>`, `map<K, list<…>>`, `map<K, struct>`, …) — the
-key and value must both be scalar this increment, so `supported_map_kv` rejects a
-heap key/value and the enclosing function is skipped (still runs on the
-interpreters) rather than miscompiled. String keys are deferred specifically
-because the interpreters compare keys by decoded **content**, not the interned
-pointer; content comparison of two strings in linear memory is future work.
-`map_keys`/`map_values` (which the interpreters return as `Value::Array`) and
-`map_del` are also deferred to a later increment. `__alloc` still never frees, so a
-grown or copied map orphans its old block.
+**Out of scope (deferred):** maps with a **string key**
+(`map<string, V>`) or a **mutable** heap value (`map<K, list<…>>`,
+`map<K, struct>`, nested collections) — such a key/value would need content-keyed
+equality or a recursive per-value deep copy, so `supported_map_kv` rejects it and
+the enclosing function is skipped (still runs on the interpreters) rather than
+miscompiled. (`map<K, string>` is NO LONGER deferred — a `string` value is a shared
+immutable pointer.) String keys are deferred specifically because the interpreters
+compare keys by decoded **content**, not the interned pointer; content comparison of
+two strings in linear memory is future work. `map_keys`/`map_values` (which the
+interpreters return as `Value::Array`) and `map_del` are also deferred to a later
+increment. `__alloc` still never frees, so a grown or copied map orphans its old
+block.
 
 Fixtures `wasm_map_build.lby` (build via `map_set` with an in-place key update,
 crossing the initial capacity to trigger a grow+copy, then `map_get` matched
@@ -411,25 +451,26 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
-- A function that uses a `list` or `map` with a heap element/key/value, an enum
-  with a heap payload, a runtime string builder other than `+` concat, or any type
-  still outside the supported set is **rejected for WASM** with a clear diagnostic
-  (it still runs on the interpreters). Note: later increments added enum values and
-  `match` for scalar-payload enums (`option`/`result`/user enums), the growable
-  `list<T>` collection for scalar element types, the `map<K, V>` collection for
-  scalar key/value types, and runtime `string` `+` concatenation — see the
-  linear-memory sections above. The allowed builtins are
-  `wasm_log(x i64) -> void` (the host log import above), `console_log(s string) ->
-  void` and `dom_set_text(id string, text string) -> void` (the JS/DOM host imports
-  above), `len(string|array|list) -> i64`, the scalar-element `list` builtins
-  `list_new`/`push`/`get`/`set`/`pop`, the scalar-key/value `map` builtins
-  `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, `to_string` (non-float
-  arguments), and the index-based string operations `substring`/`find`/`contains`/
-  `starts_with`/`ends_with` (see **Heap types (landed)** above); every other
-  builtin is still rejected. Strings, structs, fixed arrays, scalar-element lists,
-  and
-  scalar-key/value maps are now supported — see **Heap types (landed)**, **Growable
-  `list<T>` (landed)**, and **Growable `map<K, V>` (landed)** above.
+- A function that uses a `list`/`map` with a **mutable** heap element/value, a
+  `map` with a **string key**, an enum with a **mutable** heap payload, a runtime
+  string builder other than `+` concat, or any type still outside the supported set
+  is **rejected for WASM** with a clear diagnostic (it still runs on the
+  interpreters). Note: later increments added enum values and `match` for
+  scalar-or-`string`-payload enums (`option`/`result`/user enums), the growable
+  `list<T>` collection for scalar and `string` element types, the `map<K, V>`
+  collection for a scalar key and a scalar or `string` value, and runtime `string`
+  `+` concatenation — see the linear-memory sections above. The allowed builtins
+  are `wasm_log(x i64) -> void` (the host log import above), `console_log(s string)
+  -> void` and `dom_set_text(id string, text string) -> void` (the JS/DOM host
+  imports above), `len(string|array|list) -> i64`, the `list` builtins
+  `list_new`/`push`/`get`/`set`/`pop` (scalar or `string` element), the `map`
+  builtins `map_new`/`map_set`/`map_get`/`map_has`/`map_len` (scalar key, scalar or
+  `string` value), `to_string` (non-float arguments), and the index-based string
+  operations `substring`/`find`/`contains`/`starts_with`/`ends_with` (see **Heap
+  types (landed)** above); every other builtin is still rejected. Strings, structs,
+  fixed arrays, scalar- and `string`-element lists, and scalar-key maps with a
+  scalar or `string` value are now supported — see **Heap types (landed)**,
+  **Growable `list<T>` (landed)**, and **Growable `map<K, V>` (landed)** above.
 
 ## From IR to WASM
 
@@ -505,21 +546,24 @@ on `/classify`. It reuses the delivered imports without any backend change; the
 CLI tests `fullstack_frontend_wasm_matches_shared_logic` (WASM emit + node-gated
 render/score parity, `main` = 4) and `fullstack_shared_logic_round_trip` (real
 HTTP client on all three backends) prove both sides agree with the interpreter.
-Enum values and `match` for scalar-payload enums (`option`/`result`/user enums,
-tag+payload linear-memory records, branch-on-tag dispatch) now compile and are
-node-parity-tested
+Enum values and `match` for scalar-or-`string`-payload enums
+(`option`/`result`/user enums, tag+payload linear-memory records, branch-on-tag
+dispatch) now compile and are node-parity-tested
 (`crates/lullaby_cli/tests/cli.rs::wasm_enum_match_execution_parity_with_node`,
 fixture `tests/fixtures/valid/wasm_enum_match.lby`). Growable `list<T>` for
-**scalar element types** (`[len][cap][slots]` linear-memory blocks with
-value-semantic `list_new`/`push`/`get`/`set`/`len`/`pop` and capacity-doubling
-grow+copy) now compiles and is node-parity-tested — see **Growable `list<T>`
-(landed)** above (fixtures `wasm_list_build.lby`, `wasm_list_value_semantics.lby`).
-Growable `map<K, V>` for **scalar key/value types** (`[len][cap][(k,v) pairs]`
-linear-memory blocks — an insertion-ordered association list with value-semantic
-`map_new`/`map_set`/`map_get`/`map_has`/`map_len`, in-place key updates, and
-capacity-doubling grow+copy, mirroring the interpreters' `Value::Map`) now compiles
-and is node-parity-tested — see **Growable `map<K, V>` (landed)** above (fixtures
-`wasm_map_build.lby`, `wasm_map_value_semantics.lby`). Runtime `string` `+`
+**scalar and `string` element types** (`[len][cap][slots]` linear-memory blocks
+with value-semantic `list_new`/`push`/`get`/`set`/`len`/`pop` and capacity-doubling
+grow+copy; a `string` element is a shared immutable pointer word) now compiles and
+is node-parity-tested — see **Growable `list<T>` (landed)** above (fixtures
+`wasm_list_build.lby`, `wasm_list_value_semantics.lby`, `wasm_list_string.lby`).
+Growable `map<K, V>` for a **scalar key and a scalar or `string` value**
+(`[len][cap][(k,v) pairs]` linear-memory blocks — an insertion-ordered association
+list with value-semantic `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, in-place
+key updates, and capacity-doubling grow+copy, mirroring the interpreters'
+`Value::Map`; a `string` value is a shared immutable pointer and `map_get` returns
+`option<string>`) now compiles and is node-parity-tested — see **Growable
+`map<K, V>` (landed)** above (fixtures `wasm_map_build.lby`,
+`wasm_map_value_semantics.lby`, `wasm_list_string.lby`). Runtime `string` `+`
 concatenation now compiles: the string record gained a second `byte_len` header
 (`[char_len][byte_len][utf8]`) so a fresh record can be `__alloc`'d and the two
 operands' UTF-8 byte ranges `memory.copy`'d in, handling multi-byte text — see
