@@ -269,18 +269,6 @@ pub enum ArithOp {
     Mul,
 }
 
-impl ArithOp {
-    /// Apply the operation over the wide `i128` domain (never overflows for
-    /// operands drawn from any fixed-width kind, whose product fits `i128`).
-    pub fn apply_i128(self, left: i128, right: i128) -> i128 {
-        match self {
-            ArithOp::Add => left + right,
-            ArithOp::Sub => left - right,
-            ArithOp::Mul => left * right,
-        }
-    }
-}
-
 /// Signedness-aware quotient of two normalized `i64` cells tagged `ty`; the
 /// caller guarantees a non-zero divisor. Unsigned kinds divide on the `u64`
 /// reinterpretation so 64-bit unsigned values above `i64::MAX` divide correctly.
@@ -372,20 +360,42 @@ pub fn overflow_arith(
             format!("{name} operands must have the same integer type"),
         ));
     }
-    let wide = op.apply_i128(ta.value_to_i128(la), ta.value_to_i128(lb));
+    // The exact result in `i128`. Add/Sub of any two fixed-width operands always
+    // fit `i128`; only unsigned 64-bit `Mul` can exceed it (`u64::MAX^2` is just
+    // over `i128::MAX`). Because unsigned operands are non-negative, such a
+    // product is unambiguously above `max`, so `checked_mul` returning `None`
+    // exactly IS the overflow signal — no `i128` multiply ever panics.
+    let (la128, lb128) = (ta.value_to_i128(la), ta.value_to_i128(lb));
+    let exact = match op {
+        ArithOp::Add => la128.checked_add(lb128),
+        ArithOp::Sub => la128.checked_sub(lb128),
+        ArithOp::Mul => la128.checked_mul(lb128),
+    };
     let (min, max) = ta.range_i128();
     Ok(match mode {
-        // `wide as i64` keeps the low 64 bits (wrapping mod 2^64); `Value::int`
-        // then wraps to the kind's width.
-        OverflowMode::Wrapping => Value::int(wide as i64, ta),
-        OverflowMode::Saturating => Value::int(ta.i128_to_cell(wide.clamp(min, max)), ta),
-        OverflowMode::Checked => {
-            if wide < min || wide > max {
-                option_value(None)
-            } else {
+        // Two's-complement wrap on the raw normalized cells (bit-level identical
+        // for signed/unsigned add/sub/mul); `Value::int` then re-normalizes to the
+        // kind's width. This is total even when the exact `i128` would overflow.
+        OverflowMode::Wrapping => {
+            let low = match op {
+                ArithOp::Add => la.wrapping_add(lb),
+                ArithOp::Sub => la.wrapping_sub(lb),
+                ArithOp::Mul => la.wrapping_mul(lb),
+            };
+            Value::int(low, ta)
+        }
+        OverflowMode::Saturating => match exact {
+            Some(wide) => Value::int(ta.i128_to_cell(wide.clamp(min, max)), ta),
+            // Only unsigned 64-bit mul reaches `None`; the true product is
+            // positive and above `max`, so saturation clamps to `max`.
+            None => Value::int(ta.i128_to_cell(max), ta),
+        },
+        OverflowMode::Checked => match exact {
+            Some(wide) if wide >= min && wide <= max => {
                 option_value(Some(Value::int(ta.i128_to_cell(wide), ta)))
             }
-        }
+            _ => option_value(None),
+        },
     })
 }
 

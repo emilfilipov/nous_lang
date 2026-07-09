@@ -59,6 +59,59 @@ fn to_int_conversion_kind(name: &str) -> Option<IntKind> {
     }
 }
 
+/// The arithmetic operation of an overflow-aware builtin (`checked_*`/
+/// `saturating_*`/`wrapping_*`). Maps to the corresponding wrapping [`BinaryOp`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+impl OverflowOp {
+    /// The wrapping [`BinaryOp`] this operation shares with the default `+`/`-`/`*`
+    /// (used to route the `wrapping_*` builtins through the existing fixed-width
+    /// binary-op emitter).
+    fn binary_op(self) -> BinaryOp {
+        match self {
+            OverflowOp::Add => BinaryOp::Add,
+            OverflowOp::Sub => BinaryOp::Subtract,
+            OverflowOp::Mul => BinaryOp::Multiply,
+        }
+    }
+}
+
+/// The overflow behaviour of an overflow-aware builtin: `wrapping_*` (wrap modulo
+/// the width — the default arithmetic), `saturating_*` (clamp to `T`'s bounds),
+/// or `checked_*` (`option<T>`, `none` on overflow). Mirrors the interpreters'
+/// `OverflowMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowMode {
+    Wrapping,
+    Saturating,
+    Checked,
+}
+
+/// Recognize an overflow-aware arithmetic builtin name (`checked_add`,
+/// `saturating_mul`, `wrapping_sub`, …), returning its `(op, mode)`. Any other
+/// name yields `None`.
+fn overflow_builtin(name: &str) -> Option<(OverflowOp, OverflowMode)> {
+    let (mode, op) = name.split_once('_')?;
+    let mode = match mode {
+        "checked" => OverflowMode::Checked,
+        "saturating" => OverflowMode::Saturating,
+        "wrapping" => OverflowMode::Wrapping,
+        _ => return None,
+    };
+    let op = match op {
+        "add" => OverflowOp::Add,
+        "sub" => OverflowOp::Sub,
+        "mul" => OverflowOp::Mul,
+        _ => return None,
+    };
+    Some((op, mode))
+}
+
 /// Emit the re-normalization of the value in `rax` into `kind`'s canonical cell,
 /// matching [`IntKind::normalize`] exactly: truncate to the kind's width, then
 /// sign-extend (signed kinds) or zero-extend (unsigned kinds) back into the
@@ -3754,6 +3807,17 @@ fn lower_aggregate_init(
     {
         return lower_map_get_into(ctx, base_slot, &value.ty, &args[0], &args[1], code);
     }
+    // `checked_<op>(a, b) -> option<T>` is a builtin producing an aggregate:
+    // materialize the `some(result)`/`none` option directly into `base_slot`.
+    if let BytecodeExprKind::Call { name, args } = &value.kind
+        && let Some((ovf_op, OverflowMode::Checked)) = overflow_builtin(name)
+        && args.len() == 2
+        && let Some(kind) = fixed_int_kind(args[0].ty.name.as_str())
+    {
+        return lower_native_checked_into(
+            ctx, base_slot, &value.ty, ovf_op, kind, &args[0], &args[1], code,
+        );
+    }
     // A `get(list<struct>, i)` initializing a stack `Struct` local/scratch: the
     // element is a HEAP struct; `lower_list_get` deep-copies it and leaves the fresh
     // heap pointer in `rax`. Bridge it into the stack-flattened `Struct` layout by
@@ -4194,6 +4258,30 @@ fn lower_native_match(
             let words = 1 + payload_words;
             let base = ctx.alloc_scratch(words);
             lower_map_get_into(ctx, base, &scrutinee.ty, &args[0], &args[1], code)?;
+            base
+        }
+        BytecodeExprKind::Call { name, args }
+            if matches!(overflow_builtin(name), Some((_, OverflowMode::Checked)))
+                && args.len() == 2
+                && fixed_int_kind(args[0].ty.name.as_str()).is_some() =>
+        {
+            // `match checked_<op>(a, b)`: materialize the builtin's `option<T>`
+            // result (tag + payload words) directly into scratch, then dispatch on
+            // it, exactly like a `map_get` option scrutinee.
+            let (ovf_op, _) = overflow_builtin(name).expect("guarded overflow builtin");
+            let kind = fixed_int_kind(args[0].ty.name.as_str()).expect("guarded fixed-width kind");
+            let words = 1 + payload_words;
+            let base = ctx.alloc_scratch(words);
+            lower_native_checked_into(
+                ctx,
+                base,
+                &scrutinee.ty,
+                ovf_op,
+                kind,
+                &args[0],
+                &args[1],
+                code,
+            )?;
             base
         }
         BytecodeExprKind::Call { name, .. }
@@ -4881,6 +4969,31 @@ fn lower_native_expr(
                 && is_string_type(&args[1].ty)
             {
                 return lower_string_binary_op(ctx, &args[0], &args[1], STR_ENDS_WITH_SYMBOL, code);
+            }
+            // Overflow-aware arithmetic builtins. `wrapping_*` reuses the default
+            // fixed-width `+`/`-`/`*` (wrap then normalize); `saturating_*` clamps
+            // to `T`'s bounds. `checked_*` yields `option<T>` (an aggregate) and is
+            // lowered in the aggregate positions (binding/return via
+            // `lower_aggregate_init`, or a `match` scrutinee), never as a scalar,
+            // so it is not handled here. Guarded by a fixed-width first operand so
+            // the names cannot shadow a user function of the same spelling.
+            if let Some((ovf_op, mode)) = overflow_builtin(name)
+                && args.len() == 2
+                && let Some(kind) = fixed_int_kind(args[0].ty.name.as_str())
+            {
+                match mode {
+                    OverflowMode::Wrapping => {
+                        lower_native_expr(ctx, &args[0], code)?;
+                        code.push(0x50); // push rax (left)
+                        lower_native_expr(ctx, &args[1], code)?; // right in rax
+                        emit_fixed_binop_from_stack(code, ovf_op.binary_op(), kind)?;
+                        return Ok(());
+                    }
+                    OverflowMode::Saturating => {
+                        return lower_native_saturating(ctx, ovf_op, kind, &args[0], &args[1], code);
+                    }
+                    OverflowMode::Checked => {}
+                }
             }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
@@ -5952,6 +6065,287 @@ fn emit_fixed_binop_from_stack(
             return Err("logical and/or must be short-circuited".to_string());
         }
     }
+    Ok(())
+}
+
+// -- Overflow-aware arithmetic (checked/saturating/wrapping) -----------------
+//
+// The overflow-aware builtins operate on two operands of the same fixed-width
+// kind `T` (`i8`…`u64`/`isize`/`usize`; `i64` is excluded by the type checker).
+// `wrapping_*` reuses the default fixed-width `+`/`-`/`*` (wrap then normalize).
+// `saturating_*` and `checked_*` share [`emit_overflow_core`], which computes the
+// wrapped result plus an overflow flag and a saturation target using hardware
+// carry/overflow flags for the 64-bit kinds and exact-then-range-check for the
+// narrow kinds — producing results bit-identical to the interpreters'
+// `overflow_arith` for every width and sign. No division is used, so no case can
+// trap.
+
+/// x86-64 GPR indices for the raw encoders below.
+const REG_RAX: u8 = 0;
+const REG_RCX: u8 = 1;
+const REG_RDX: u8 = 2;
+const REG_R8: u8 = 8;
+const REG_R9: u8 = 9;
+const REG_R10: u8 = 10;
+
+/// `(rex_extension_bit, low_three_bits)` for a GPR index (`0`=rax … `15`=r15).
+fn gpr_bits(reg: u8) -> (u8, u8) {
+    (u8::from(reg >= 8), reg & 0x7)
+}
+
+/// `mov <reg>, imm64` (the full 10-byte form; REX.W, plus REX.B for r8..r15).
+fn emit_mov_reg_imm64(code: &mut Vec<u8>, reg: u8, imm: i64) {
+    let (ext, low) = gpr_bits(reg);
+    code.push(0x48 | ext);
+    code.push(0xB8 | low);
+    code.extend_from_slice(&imm.to_le_bytes());
+}
+
+/// `mov <dest>, <src>` (register to register, REX.W).
+fn emit_mov_reg_reg(code: &mut Vec<u8>, dest: u8, src: u8) {
+    let (dext, dlow) = gpr_bits(dest);
+    let (sext, slow) = gpr_bits(src);
+    // 89 /r: r/m <- reg, so reg field = src, r/m field = dest.
+    code.push(0x48 | (sext << 2) | dext);
+    code.push(0x89);
+    code.push(0xC0 | (slow << 3) | dlow);
+}
+
+/// A register-to-register ALU op (`opcode` is the `r/m, r` form: `01`=add,
+/// `29`=sub, `31`=xor), computing `dest <op>= src` (REX.W).
+fn emit_alu_reg_reg(code: &mut Vec<u8>, opcode: u8, dest: u8, src: u8) {
+    let (dext, dlow) = gpr_bits(dest);
+    let (sext, slow) = gpr_bits(src);
+    code.push(0x48 | (sext << 2) | dext);
+    code.push(opcode);
+    code.push(0xC0 | (slow << 3) | dlow);
+}
+
+/// `test <reg>, <reg>` (REX.W), setting SF/ZF for a following conditional jump.
+fn emit_test_reg(code: &mut Vec<u8>, reg: u8) {
+    let (ext, low) = gpr_bits(reg);
+    code.push(0x48 | (ext << 2) | ext);
+    code.push(0x85);
+    code.push(0xC0 | (low << 3) | low);
+}
+
+/// `mov r8b, 1` — set the low byte of the (already-zeroed) overflow register.
+fn emit_set_r8b_one(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x41, 0xB0, 0x01]);
+}
+
+/// Emit a `jcc rel32` with a placeholder displacement, returning the patch site.
+/// `cc` is the low opcode byte (`0x82`=jb/jc, `0x83`=jae/jnc, `0x84`=je/jz,
+/// `0x80`=jo, `0x81`=jno, `0x86`=jbe, `0x88`=js, `0x89`=jns, `0x8C`=jl, `0x8F`=jg).
+fn emit_jcc(code: &mut Vec<u8>, cc: u8) -> usize {
+    code.extend_from_slice(&[0x0F, cc]);
+    let site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    site
+}
+
+/// Emit a `jmp rel32` placeholder, returning the patch site.
+fn emit_jmp(code: &mut Vec<u8>) -> usize {
+    code.push(0xE9);
+    let site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    site
+}
+
+/// Compute the overflow-aware result of `a <op> b` for fixed-width `kind`.
+///
+/// Precondition: `a` (left) in `rax`, `b` (right) in `rcx`.
+/// Postcondition: `rax` = the wrapped result normalized to `kind` (identical to
+/// `wrapping_<op>`); `r8` = the overflow flag (`0`/`1`, full register);
+/// `r9` = the saturation target (`T`'s `MAX`/`MIN`/`0`, valid iff `r8 == 1`).
+///
+/// The 64-bit kinds use the hardware `CF`/`OF` flags after `add`/`sub` and the
+/// widening `mul`/`imul` (high half in `rdx`, or `OF` for signed) to detect
+/// overflow exactly. The narrow kinds compute the exact 64-bit result (which
+/// cannot overflow a 64-bit register) and range-check it against `[min, max]`.
+fn emit_overflow_core(code: &mut Vec<u8>, op: OverflowOp, kind: IntKind) {
+    let (min_i128, max_i128) = kind.range_i128();
+    let min = min_i128 as i64;
+    let max = max_i128 as i64;
+    let w64 = matches!(kind, IntKind::U64 | IntKind::Usize | IntKind::Isize);
+    let unsigned = kind.is_unsigned();
+
+    if w64 {
+        // Clear the overflow flag before the arithmetic (xor also clears CF/OF).
+        emit_alu_reg_reg(code, 0x31, REG_R8, REG_R8); // xor r8, r8
+        match op {
+            OverflowOp::Add => emit_alu_reg_reg(code, 0x01, REG_RAX, REG_RCX), // add rax, rcx
+            OverflowOp::Sub => emit_alu_reg_reg(code, 0x29, REG_RAX, REG_RCX), // sub rax, rcx
+            OverflowOp::Mul => {
+                if unsigned {
+                    // mul rcx: rdx:rax = rax * rcx (unsigned). Overflow iff rdx != 0.
+                    code.extend_from_slice(&[0x48, 0xF7, 0xE1]);
+                } else {
+                    // Signed: product sign = sign(a) ^ sign(b); capture it in r10
+                    // before `imul` overwrites rax.
+                    emit_mov_reg_reg(code, REG_R10, REG_RAX); // r10 = a
+                    emit_alu_reg_reg(code, 0x31, REG_R10, REG_RCX); // r10 ^= b
+                    // imul rcx (one-operand): rdx:rax = rax * rcx (signed); OF set
+                    // when the full product does not fit 64-bit signed.
+                    code.extend_from_slice(&[0x48, 0xF7, 0xE9]);
+                }
+            }
+        }
+        // Branch to `done` when there is no overflow, else set r8 = 1 and the
+        // saturation target r9.
+        let no_ovf = match op {
+            OverflowOp::Mul if unsigned => {
+                emit_test_reg(code, REG_RDX); // test rdx, rdx
+                emit_jcc(code, 0x84) // jz -> no overflow
+            }
+            _ if unsigned => emit_jcc(code, 0x83), // jnc -> no overflow (add/sub carry)
+            _ => emit_jcc(code, 0x81),             // jno -> no overflow (signed OF)
+        };
+        emit_set_r8b_one(code);
+        match (op, unsigned) {
+            // Unsigned add/mul saturate up to MAX; unsigned sub saturates to 0.
+            (OverflowOp::Sub, true) => emit_alu_reg_reg(code, 0x31, REG_R9, REG_R9), // r9 = 0
+            (_, true) => emit_mov_reg_imm64(code, REG_R9, max),
+            // Signed mul: target sign from r10 (product sign). Add/sub: from the
+            // wrapped result's sign (a signed overflow flips the true sign).
+            (OverflowOp::Mul, false) => {
+                emit_mov_reg_imm64(code, REG_R9, max);
+                emit_test_reg(code, REG_R10);
+                let keep = emit_jcc(code, 0x89); // jns -> product >= 0, keep MAX
+                emit_mov_reg_imm64(code, REG_R9, min);
+                patch_rel32(code, keep);
+            }
+            (_, false) => {
+                emit_mov_reg_imm64(code, REG_R9, max);
+                emit_test_reg(code, REG_RAX);
+                let keep = emit_jcc(code, 0x88); // js -> wrapped < 0, keep MAX
+                emit_mov_reg_imm64(code, REG_R9, min);
+                patch_rel32(code, keep);
+            }
+        }
+        patch_rel32(code, no_ovf);
+    } else {
+        // Narrow kinds: the exact 64-bit result cannot overflow the register.
+        match op {
+            OverflowOp::Add => emit_alu_reg_reg(code, 0x01, REG_RAX, REG_RCX), // add rax, rcx
+            OverflowOp::Sub => emit_alu_reg_reg(code, 0x29, REG_RAX, REG_RCX), // sub rax, rcx
+            OverflowOp::Mul => code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC1]), // imul rax, rcx
+        }
+        emit_alu_reg_reg(code, 0x31, REG_R8, REG_R8); // xor r8, r8 (default no overflow)
+        if unsigned {
+            match op {
+                // Unsigned subtraction underflows iff the exact result is negative;
+                // it saturates to 0.
+                OverflowOp::Sub => {
+                    emit_test_reg(code, REG_RAX);
+                    let no_ovf = emit_jcc(code, 0x89); // jns -> >= 0, no underflow
+                    emit_set_r8b_one(code);
+                    emit_alu_reg_reg(code, 0x31, REG_R9, REG_R9); // r9 = 0
+                    patch_rel32(code, no_ovf);
+                }
+                // Unsigned add/mul overflow iff the exact result exceeds MAX; they
+                // saturate up to MAX.
+                _ => {
+                    emit_cmp_rax_imm(code, max);
+                    let no_ovf = emit_jcc(code, 0x86); // jbe -> <= max, no overflow
+                    emit_set_r8b_one(code);
+                    emit_mov_reg_imm64(code, REG_R9, max);
+                    patch_rel32(code, no_ovf);
+                }
+            }
+        } else {
+            // Signed: overflow iff the exact result is outside [min, max]; the
+            // saturation target is the bound it crossed.
+            emit_cmp_rax_imm(code, max);
+            let pos = emit_jcc(code, 0x8F); // jg -> above max
+            emit_cmp_rax_imm(code, min);
+            let neg = emit_jcc(code, 0x8C); // jl -> below min
+            let done_ok = emit_jmp(code);
+            patch_rel32(code, pos);
+            emit_set_r8b_one(code);
+            emit_mov_reg_imm64(code, REG_R9, max);
+            let done_pos = emit_jmp(code);
+            patch_rel32(code, neg);
+            emit_set_r8b_one(code);
+            emit_mov_reg_imm64(code, REG_R9, min);
+            patch_rel32(code, done_ok);
+            patch_rel32(code, done_pos);
+        }
+        // Normalize the wrapped result to the kind's width (identity when the
+        // result is in range, which is the only case saturating/checked read it).
+        emit_normalize_rax(code, kind);
+    }
+}
+
+/// Lower `saturating_<op>(a, b) -> T`: compute the clamped result into `rax`.
+fn lower_native_saturating(
+    ctx: &mut NativeCtx,
+    op: OverflowOp,
+    kind: IntKind,
+    left: &BytecodeExpr,
+    right: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, left, code)?;
+    code.push(0x50); // push rax (a)
+    lower_native_expr(ctx, right, code)?; // rax = b
+    emit_mov_reg_reg(code, REG_RCX, REG_RAX); // rcx = b
+    code.push(0x58); // pop rax (a)
+    emit_overflow_core(code, op, kind);
+    // result = overflow ? target : wrapped.
+    emit_test_reg(code, REG_R8);
+    let keep = emit_jcc(code, 0x84); // jz -> no overflow, keep wrapped
+    emit_mov_reg_reg(code, REG_RAX, REG_R9); // rax = saturation target
+    patch_rel32(code, keep);
+    Ok(())
+}
+
+/// Lower `checked_<op>(a, b) -> option<T>` into the enum record at `base_slot`:
+/// tag word = `some`/`none` per overflow, payload word = the wrapped result
+/// (read only in the `some` case). Mirrors [`lower_map_get_into`]'s option build.
+#[allow(clippy::too_many_arguments)]
+fn lower_native_checked_into(
+    ctx: &mut NativeCtx,
+    base_slot: i32,
+    result_ty: &TypeRef,
+    op: OverflowOp,
+    kind: IntKind,
+    left: &BytecodeExpr,
+    right: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    let layout = resolve_native_type(result_ty, ctx.structs, ctx.enums)?;
+    let NativeType::Enum { variants, .. } = &layout else {
+        return Err(format!(
+            "checked_* result type `{}` is not a supported option enum",
+            result_ty.name
+        ));
+    };
+    let some_tag = variants
+        .iter()
+        .find(|v| v.name == "some")
+        .map(|v| v.tag)
+        .ok_or_else(|| "checked_* result option layout missing `some` variant".to_string())?;
+    let none_tag = variants
+        .iter()
+        .find(|v| v.name == "none")
+        .map(|v| v.tag)
+        .ok_or_else(|| "checked_* result option layout missing `none` variant".to_string())?;
+    lower_native_expr(ctx, left, code)?;
+    code.push(0x50); // push rax (a)
+    lower_native_expr(ctx, right, code)?; // rax = b
+    emit_mov_reg_reg(code, REG_RCX, REG_RAX); // rcx = b
+    code.push(0x58); // pop rax (a)
+    emit_overflow_core(code, op, kind);
+    // Payload word = the wrapped result (rax) at base_slot + 8.
+    store_local(code, base_slot + 8);
+    // Tag word = overflow ? none : some, at base_slot.
+    emit_mov_rax_imm(code, some_tag);
+    emit_test_reg(code, REG_R8);
+    let store = emit_jcc(code, 0x84); // jz -> no overflow, keep `some`
+    emit_mov_rax_imm(code, none_tag);
+    patch_rel32(code, store);
+    store_local(code, base_slot);
     Ok(())
 }
 
@@ -10607,23 +11001,26 @@ mod native_program_tests {
     }
 
     #[test]
-    fn skips_saturating_builtin_gracefully() {
-        // `saturating_add` returns a plain integer but is deferred on the native
-        // backend (it is not emitted inline); a `main` using it skips gracefully.
-        let err = emit_alpha1_native_program(&module_for(concat!(
+    fn compiles_overflow_builtins() {
+        // The overflow-aware builtins are now emitted natively (not deferred):
+        // `wrapping_*`/`saturating_*` produce a fixed-width scalar and `checked_*`
+        // an `option<T>` matched in place. A `main` exercising all three compiles.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn chk m i8 n i8 -> i64\n",
+            "    match checked_add(m, n)\n",
+            "        some(v) -> to_i64(v)\n",
+            "        none -> 0 - 1\n\n",
             "fn main -> i64\n",
             "    let s u8 = saturating_add(to_u8(200), to_u8(100))\n",
-            "    to_i64(s)\n",
+            "    let w u8 = wrapping_mul(to_u8(16), to_u8(16))\n",
+            "    to_i64(s) + to_i64(w) + chk(to_i8(127), to_i8(1))\n",
         )))
-        .expect_err("saturating builtin is deferred");
-        assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
-        assert!(
-            err.skipped
-                .iter()
-                .any(|s| s.name == "main" && s.reason.contains("saturating_add")),
-            "skip reason should name the deferred builtin: {:?}",
-            err.skipped
+        .expect("overflow builtins compile natively");
+        assert_eq!(
+            program.compiled,
+            vec!["chk".to_string(), "main".to_string()]
         );
+        assert!(program.skipped.is_empty(), "nothing should skip");
     }
 
     #[test]

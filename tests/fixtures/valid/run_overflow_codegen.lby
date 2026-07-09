@@ -1,0 +1,82 @@
+# Overflow-aware fixed-width arithmetic exercised end to end for the native and
+# WASM code generators (and the interpreters). Covers checked_* (option<T>, none
+# on overflow / some in range), saturating_* (clamp to both bounds), and
+# wrapping_* (wrap at the boundary) across narrow (i8/u8/u32/i32) and 64-bit
+# (u64/usize/isize) kinds, signed and unsigned. Deterministic i64 result on every
+# backend.
+
+# Reduce a wide i64 to its low byte so the final combination cannot overflow i64
+# (whose default `+` traps on overflow) while still depending on the full value.
+fn low8 v i64 -> i64
+    to_i64(to_u8(v))
+
+fn checked_i8 m i8 n i8 -> i64
+    match checked_add(m, n)
+        some(v) -> to_i64(v)
+        none -> 0 - 1
+
+fn checked_usize_mul m usize n usize -> i64
+    match checked_mul(m, n)
+        some(v) -> to_i64(v)
+        none -> 0 - 7
+
+fn main -> i64
+    # --- narrow signed i8 ---
+    # 127 + 1 overflows i8 -> none -> -1
+    let a i64 = checked_i8(to_i8(127), to_i8(1))
+    # 100 + 20 stays in range -> some(120)
+    let b i64 = checked_i8(to_i8(100), to_i8(20))
+    # saturating_add clamps to i8::MAX (100 + 100 -> 127)
+    let c i8 = saturating_add(to_i8(100), to_i8(100))
+    # saturating_sub clamps to i8::MIN (-100 - 100 -> -128)
+    let d i8 = saturating_sub(to_i8(0 - 100), to_i8(100))
+    # wrapping_add at the boundary (127 + 1 -> -128)
+    let e i8 = wrapping_add(to_i8(127), to_i8(1))
+
+    # --- narrow unsigned u8 ---
+    # saturating_sub underflow -> 0
+    let f u8 = saturating_sub(to_u8(10), to_u8(20))
+    # saturating_add overflow -> 255
+    let g u8 = saturating_add(to_u8(200), to_u8(100))
+    # wrapping_mul at the boundary (16 * 16 = 256 -> 0)
+    let h u8 = wrapping_mul(to_u8(16), to_u8(16))
+
+    # --- narrow unsigned u32 ---
+    # saturating_mul overflow -> u32::MAX (4294967295)
+    let i u32 = saturating_mul(to_u32(100000), to_u32(100000))
+
+    # --- narrow signed i32 ---
+    # saturating_mul clamps to i32::MAX (2147483647)
+    let j i32 = saturating_mul(to_i32(100000), to_i32(100000))
+    # saturating_mul negative -> i32::MIN (-2147483648)
+    let k i32 = saturating_mul(to_i32(0 - 100000), to_i32(100000))
+
+    # --- 64-bit unsigned u64 ---
+    # build 2^64 - 2 without overflow, then saturating_add over the top -> u64::MAX
+    let big u64 = wrapping_add(to_u64(9223372036854775807), to_u64(9223372036854775807))
+    let l u64 = saturating_add(big, to_u64(2))
+    # saturating_sub underflow -> 0
+    let m u64 = saturating_sub(to_u64(3), to_u64(5))
+
+    # --- 64-bit unsigned usize (mul path) ---
+    # 2^40 * 2^40 = 2^80 overflows u64 -> checked none -> -7
+    let n i64 = checked_usize_mul(to_usize(1099511627776), to_usize(1099511627776))
+    # saturating_mul overflow -> u64::MAX (as i64 cell: -1)
+    let o usize = saturating_mul(to_usize(1099511627776), to_usize(1099511627776))
+
+    # --- 64-bit signed isize ---
+    # saturating_add overflow: 2^62 + 2^62 = 2^63 > i64::MAX -> i64::MAX
+    let p isize = saturating_add(to_isize(4611686018427387904), to_isize(4611686018427387904))
+    # saturating_mul negative overflow -> i64::MIN
+    let q isize = saturating_mul(to_isize(0 - 4611686018427387904), to_isize(4))
+    # saturating_sub underflow: -2^62 - i64::MAX < i64::MIN -> i64::MIN
+    let r isize = saturating_sub(to_isize(0 - 4611686018427387904), to_isize(9223372036854775807))
+
+    # Deterministic combination of every result.
+    let s1 i64 = a + b + to_i64(c) + to_i64(d) + to_i64(e)
+    let s2 i64 = to_i64(f) + to_i64(g) + to_i64(h) + to_i64(i)
+    let s3 i64 = to_i64(j) + to_i64(k) + low8(to_i64(l)) + to_i64(m)
+    let s4 i64 = n + low8(to_i64(o)) + low8(to_i64(p)) + low8(to_i64(q)) + low8(to_i64(r))
+    # Reduce to a byte so the native exit code (a 32-bit truncation on Windows) and
+    # every backend's value agree without the sum exceeding a process exit code.
+    low8(s1 + s2 + s3 + s4)

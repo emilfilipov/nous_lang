@@ -2092,6 +2092,24 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             if name == LEN_BUILTIN {
                 return lower_len(ctx, args, out);
             }
+            // Overflow-aware arithmetic builtins (`checked_*`/`saturating_*`/
+            // `wrapping_*`). `wrapping_*` reuses the default fixed-width `+`/`-`/`*`;
+            // `saturating_*` clamps to `T`'s bounds; `checked_*` builds an
+            // `option<T>` record. Guarded by a fixed-width first operand so the
+            // names cannot shadow a user function of the same spelling.
+            if let Some((ovf_op, mode)) = overflow_builtin(name)
+                && args.len() == 2
+                && let Some(kind) = fixed_int_kind(args[0].ty.name.as_str())
+            {
+                if mode == OverflowMode::Wrapping {
+                    lower_expr(ctx, &args[0], out)?;
+                    lower_expr(ctx, &args[1], out)?;
+                    return emit_fixed_binop(ctx, ovf_op.binary_op(), kind, out);
+                }
+                return lower_wasm_overflow(
+                    ctx, ovf_op, mode, kind, &expr.ty, &args[0], &args[1], out,
+                );
+            }
             // A call whose name is a declared struct is a struct construction: the
             // IR lowerer emits struct literals as positional `Call`s.
             if ctx.structs.contains_key(name) {
@@ -3710,6 +3728,369 @@ fn emit_fixed_binop(
         }
     }
     Ok(())
+}
+
+// -- Overflow-aware arithmetic (checked/saturating/wrapping) -----------------
+//
+// The overflow-aware builtins operate on two operands of the same fixed-width
+// kind `T` (`i8`…`u64`/`isize`/`usize`; `i64` is excluded by the type checker).
+// `wrapping_*` reuses the default fixed-width `+`/`-`/`*` (wrap then normalize).
+// `saturating_*` and `checked_*` detect overflow with comparison-only formulas
+// on the normalized operands (no host carry flags exist in WASM), producing the
+// same clamp/`none`/`some` result as the interpreters' `overflow_arith` for every
+// width and sign. Division appears only in the 64-bit `mul` overflow tests and is
+// always guarded (by a structured `if` on a zero divisor, plus the signed
+// `MIN / -1` guard) so no case can trap.
+
+/// The arithmetic operation of an overflow-aware builtin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+impl OverflowOp {
+    /// The wrapping [`BinaryOp`] this operation shares with the default `+`/`-`/`*`
+    /// (used to route `wrapping_*` through the fixed-width binary-op emitter).
+    fn binary_op(self) -> BinaryOp {
+        match self {
+            OverflowOp::Add => BinaryOp::Add,
+            OverflowOp::Sub => BinaryOp::Subtract,
+            OverflowOp::Mul => BinaryOp::Multiply,
+        }
+    }
+
+    /// The bare `i64.add`/`i64.sub`/`i64.mul` opcode.
+    fn wasm_opcode(self) -> u8 {
+        match self {
+            OverflowOp::Add => 0x7c,
+            OverflowOp::Sub => 0x7d,
+            OverflowOp::Mul => 0x7e,
+        }
+    }
+}
+
+/// The overflow behaviour of an overflow-aware builtin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowMode {
+    Wrapping,
+    Saturating,
+    Checked,
+}
+
+/// Recognize an overflow-aware arithmetic builtin name (`checked_add`,
+/// `saturating_mul`, `wrapping_sub`, …), returning its `(op, mode)`.
+fn overflow_builtin(name: &str) -> Option<(OverflowOp, OverflowMode)> {
+    let (mode, op) = name.split_once('_')?;
+    let mode = match mode {
+        "checked" => OverflowMode::Checked,
+        "saturating" => OverflowMode::Saturating,
+        "wrapping" => OverflowMode::Wrapping,
+        _ => return None,
+    };
+    let op = match op {
+        "add" => OverflowOp::Add,
+        "sub" => OverflowOp::Sub,
+        "mul" => OverflowOp::Mul,
+        _ => return None,
+    };
+    Some((op, mode))
+}
+
+/// `i64.const v`.
+fn push_i64_const(out: &mut Vec<u8>, v: i64) {
+    out.push(0x42);
+    write_sleb(out, v);
+}
+
+/// `i32.const v`.
+fn push_i32_const(out: &mut Vec<u8>, v: i32) {
+    out.push(0x41);
+    write_sleb(out, i64::from(v));
+}
+
+/// Push an `i32` boolean (`1` iff `a <op> b` overflows `kind`), leaving it on the
+/// stack. `a`/`b` are the normalized operands; `wrapped` is `normalize(a op b)`
+/// (used by the 64-bit signed `mul` division test). Comparison-only, matching
+/// [`lullaby_runtime`]'s `overflow_arith` exactly.
+fn push_wasm_overflow_flag(
+    ctx: &mut LowerCtx,
+    op: OverflowOp,
+    kind: IntKind,
+    a: u32,
+    b: u32,
+    wrapped: u32,
+    out: &mut Vec<u8>,
+) {
+    let (min_i128, max_i128) = kind.range_i128();
+    let min = min_i128 as i64;
+    let max = max_i128 as i64;
+    let w64 = matches!(kind, IntKind::U64 | IntKind::Usize | IntKind::Isize);
+    let unsigned = kind.is_unsigned();
+    match op {
+        OverflowOp::Add if unsigned => {
+            // a >u (MAX - b)
+            get_local(out, a);
+            push_i64_const(out, max);
+            get_local(out, b);
+            out.push(0x7d); // i64.sub
+            out.push(0x56); // i64.gt_u
+        }
+        OverflowOp::Add => {
+            // pos = (b > 0) & (a > MAX - b)
+            get_local(out, b);
+            push_i64_const(out, 0);
+            out.push(0x55); // i64.gt_s
+            get_local(out, a);
+            push_i64_const(out, max);
+            get_local(out, b);
+            out.push(0x7d); // i64.sub
+            out.push(0x55); // i64.gt_s
+            out.push(0x71); // i32.and
+            // neg = (b < 0) & (a < MIN - b)
+            get_local(out, b);
+            push_i64_const(out, 0);
+            out.push(0x53); // i64.lt_s
+            get_local(out, a);
+            push_i64_const(out, min);
+            get_local(out, b);
+            out.push(0x7d); // i64.sub
+            out.push(0x53); // i64.lt_s
+            out.push(0x71); // i32.and
+            out.push(0x72); // i32.or
+        }
+        OverflowOp::Sub if unsigned => {
+            // a <u b
+            get_local(out, a);
+            get_local(out, b);
+            out.push(0x54); // i64.lt_u
+        }
+        OverflowOp::Sub => {
+            // pos = (b < 0) & (a > MAX + b)
+            get_local(out, b);
+            push_i64_const(out, 0);
+            out.push(0x53); // i64.lt_s
+            get_local(out, a);
+            push_i64_const(out, max);
+            get_local(out, b);
+            out.push(0x7c); // i64.add
+            out.push(0x55); // i64.gt_s
+            out.push(0x71); // i32.and
+            // neg = (b > 0) & (a < MIN + b)
+            get_local(out, b);
+            push_i64_const(out, 0);
+            out.push(0x55); // i64.gt_s
+            get_local(out, a);
+            push_i64_const(out, min);
+            get_local(out, b);
+            out.push(0x7c); // i64.add
+            out.push(0x53); // i64.lt_s
+            out.push(0x71); // i32.and
+            out.push(0x72); // i32.or
+        }
+        OverflowOp::Mul if !w64 => {
+            // Narrow: the exact product fits i64; range-check it against [min, max].
+            if unsigned {
+                get_local(out, a);
+                get_local(out, b);
+                out.push(0x7e); // i64.mul
+                push_i64_const(out, max);
+                out.push(0x56); // i64.gt_u
+            } else {
+                let prod = ctx.add_local(WasmValType::I64);
+                get_local(out, a);
+                get_local(out, b);
+                out.push(0x7e); // i64.mul
+                set_local(out, prod);
+                get_local(out, prod);
+                push_i64_const(out, max);
+                out.push(0x55); // i64.gt_s
+                get_local(out, prod);
+                push_i64_const(out, min);
+                out.push(0x53); // i64.lt_s
+                out.push(0x72); // i32.or
+            }
+        }
+        OverflowOp::Mul if unsigned => {
+            // 64-bit unsigned: overflow iff a*b > MAX iff (b != 0) & (a > MAX/u b).
+            // Guard the divide-by-zero with a structured `if` (WASM `i32.and` does
+            // not short-circuit).
+            get_local(out, b);
+            out.push(0x50); // i64.eqz
+            out.push(0x04); // if
+            out.push(0x7f); // result i32
+            push_i32_const(out, 0);
+            out.push(0x05); // else
+            get_local(out, a);
+            push_i64_const(out, max);
+            get_local(out, b);
+            out.push(0x80); // i64.div_u
+            out.push(0x56); // i64.gt_u
+            out.push(0x0b); // end
+        }
+        OverflowOp::Mul => {
+            // 64-bit signed (isize): if a == 0 no overflow, else overflow iff the
+            // wrapped product divided by `a` does not recover `b` — plus the
+            // `-1 * MIN` case the wrapping division cannot distinguish. The guarded
+            // signed division avoids the `MIN / -1` trap; `a != 0` avoids div-by-0.
+            get_local(out, a);
+            out.push(0x50); // i64.eqz
+            out.push(0x04); // if
+            out.push(0x7f); // result i32
+            push_i32_const(out, 0);
+            out.push(0x05); // else
+            // (a == -1) & (b == MIN)
+            get_local(out, a);
+            push_i64_const(out, -1);
+            out.push(0x51); // i64.eq
+            get_local(out, b);
+            push_i64_const(out, min);
+            out.push(0x51); // i64.eq
+            out.push(0x71); // i32.and
+            // (guarded_div_s(wrapped, a) != b)
+            get_local(out, wrapped);
+            get_local(out, a);
+            emit_i64_signed_div_guarded(ctx, out);
+            get_local(out, b);
+            out.push(0x52); // i64.ne
+            out.push(0x72); // i32.or
+            out.push(0x0b); // end
+        }
+    }
+}
+
+/// Push the `i64` saturation target for `a <op> b` (the bound the true result
+/// crosses on overflow). Read only when the overflow flag is set.
+fn push_wasm_saturation_target(
+    op: OverflowOp,
+    kind: IntKind,
+    a: u32,
+    b: u32,
+    wrapped: u32,
+    out: &mut Vec<u8>,
+) {
+    let (min_i128, max_i128) = kind.range_i128();
+    let min = min_i128 as i64;
+    let max = max_i128 as i64;
+    let unsigned = kind.is_unsigned();
+    match (op, unsigned) {
+        // Unsigned subtraction underflows to the minimum (0); unsigned add/mul
+        // saturate up to the maximum.
+        (OverflowOp::Sub, true) => push_i64_const(out, min),
+        (_, true) => push_i64_const(out, max),
+        // Signed multiply: the true product's sign is sign(a) ^ sign(b); a negative
+        // product saturates to MIN, else MAX. `select(MIN, MAX, (a ^ b) < 0)`.
+        (OverflowOp::Mul, false) => {
+            push_i64_const(out, min);
+            push_i64_const(out, max);
+            get_local(out, a);
+            get_local(out, b);
+            out.push(0x85); // i64.xor
+            push_i64_const(out, 0);
+            out.push(0x53); // i64.lt_s
+            out.push(0x1b); // select
+        }
+        // Signed add/sub: a signed overflow flips the wrapped result's sign, so a
+        // negative wrapped value means positive overflow (target MAX), else MIN.
+        // `select(MAX, MIN, wrapped < 0)`.
+        (_, false) => {
+            push_i64_const(out, max);
+            push_i64_const(out, min);
+            get_local(out, wrapped);
+            push_i64_const(out, 0);
+            out.push(0x53); // i64.lt_s
+            out.push(0x1b); // select
+        }
+    }
+}
+
+/// Lower an overflow-aware arithmetic builtin. `wrapping_*` leaves the wrapped
+/// `T` value on the stack; `saturating_*` the clamped `T`; `checked_*` a fresh
+/// `option<T>` record pointer (`some(result)`/`none`).
+#[allow(clippy::too_many_arguments)]
+fn lower_wasm_overflow(
+    ctx: &mut LowerCtx,
+    op: OverflowOp,
+    mode: OverflowMode,
+    kind: IntKind,
+    result_ty: &TypeRef,
+    left: &IrExpr,
+    right: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    // Evaluate both operands into `i64` locals so the overflow tests can read them
+    // several times.
+    lower_expr(ctx, left, out)?;
+    let a = ctx.add_local(WasmValType::I64);
+    set_local(out, a);
+    lower_expr(ctx, right, out)?;
+    let b = ctx.add_local(WasmValType::I64);
+    set_local(out, b);
+    // wrapped = normalize(a op b) — the wrapping result and the `some` payload.
+    let wrapped = ctx.add_local(WasmValType::I64);
+    get_local(out, a);
+    get_local(out, b);
+    out.push(op.wasm_opcode());
+    emit_normalize_i64(kind, out);
+    set_local(out, wrapped);
+
+    match mode {
+        OverflowMode::Wrapping => {
+            get_local(out, wrapped);
+            Ok(())
+        }
+        OverflowMode::Saturating => {
+            let ovf = ctx.add_local(WasmValType::I32);
+            push_wasm_overflow_flag(ctx, op, kind, a, b, wrapped, out);
+            set_local(out, ovf);
+            // result = ovf ? target : wrapped.
+            push_wasm_saturation_target(op, kind, a, b, wrapped, out);
+            get_local(out, wrapped);
+            get_local(out, ovf);
+            out.push(0x1b); // select
+            Ok(())
+        }
+        OverflowMode::Checked => {
+            let ovf = ctx.add_local(WasmValType::I32);
+            push_wasm_overflow_flag(ctx, op, kind, a, b, wrapped, out);
+            set_local(out, ovf);
+            // Build the `option<T>` record: tag = ovf ? none : some, payload = wrapped.
+            let inner = result_ty.option_element().ok_or_else(|| {
+                format!(
+                    "checked_* result type `{}` is not an `option<T>` enum",
+                    result_ty.name
+                )
+            })?;
+            let slot_ty = slot_val_type(&inner, ctx.structs, ctx.enums).ok_or_else(|| {
+                format!("checked_* option payload `{}` is unsupported", inner.name)
+            })?;
+            let layout = build_layout(vec![
+                ("some".to_string(), vec![inner]),
+                ("none".to_string(), Vec::new()),
+            ]);
+            let some_tag = layout
+                .tag_of("some")
+                .ok_or_else(|| "checked_* option layout missing `some` variant".to_string())?;
+            let none_tag = layout
+                .tag_of("none")
+                .ok_or_else(|| "checked_* option layout missing `none` variant".to_string())?;
+            let opt = alloc_bytes(ctx, layout.size_bytes(), out);
+            // tag = select(none, some, ovf).
+            get_local(out, opt);
+            push_i32_const(out, none_tag as i32);
+            push_i32_const(out, some_tag as i32);
+            get_local(out, ovf);
+            out.push(0x1b); // select
+            emit_store_at(WasmValType::I32, 0, out);
+            // payload slot = wrapped.
+            get_local(out, opt);
+            get_local(out, wrapped);
+            emit_store_at(slot_ty, ENUM_PAYLOAD_BASE, out);
+            get_local(out, opt);
+            Ok(())
+        }
+    }
 }
 
 /// Emit a bitwise/shift binary op on plain `i64` operands already on the stack
@@ -7008,23 +7389,26 @@ mod tests {
     }
 
     #[test]
-    fn saturating_builtin_function_skips_gracefully() {
-        // `saturating_add` is out of scope (matches native, which skips it): the
-        // function is demoted to skipped, and the eligible companion still compiles.
+    fn overflow_builtins_compile() {
+        // The overflow-aware builtins now compile on the WASM backend (matching
+        // native): `saturating_*`/`wrapping_*` yield a fixed-width scalar and
+        // `checked_*` an `option<T>`. Every function is compiled, none skipped.
         let source = concat!(
-            "fn s a u8 b u8 -> u8\n",
+            "fn sat a u8 b u8 -> u8\n",
             "    saturating_add(a, b)\n\n",
-            "fn plain a u8 b u8 -> u8\n",
-            "    a + b\n",
+            "fn wrap a u8 b u8 -> u8\n",
+            "    wrapping_mul(a, b)\n\n",
+            "fn chk a i8 b i8 -> i64\n",
+            "    match checked_add(a, b)\n",
+            "        some(v) -> to_i64(v)\n",
+            "        none -> 0 - 1\n",
         );
         let artifact = emit_wasm_module(&module_for(source)).expect("emit");
-        assert_eq!(artifact.compiled, vec!["plain".to_string()]);
-        assert!(
-            artifact
-                .skipped
-                .iter()
-                .any(|s| s.name == "s" && s.reason.contains("saturating_add"))
+        assert_eq!(
+            artifact.compiled,
+            vec!["sat".to_string(), "wrap".to_string(), "chk".to_string()]
         );
+        assert!(artifact.skipped.is_empty(), "nothing should skip");
     }
 
     #[test]

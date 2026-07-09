@@ -1,0 +1,16 @@
+# Regression: u64::MAX * u64::MAX exceeds i128, which used to overflow the
+# interpreters' i128 overflow-check (panic in debug). Now checked_mul reports
+# overflow (none), saturating clamps to u64::MAX, and wrapping is exact — all
+# agreeing with the native/WASM codegen bit-for-bit.
+fn checked_square n u64 -> i64
+    match checked_mul(n, n)
+        some(v) -> to_i64(v)
+        none -> 0 - 5
+
+fn main -> i64
+    let m u64 = to_u64(0 - 1)
+    let wrap i64 = to_i64(wrapping_mul(m, m))
+    let sat i64 = to_i64(saturating_mul(m, m))
+    let chk i64 = checked_square(m)
+    # wrap: (2^64-1)^2 mod 2^64 = 1; sat: u64::MAX -> to_i64 = -1; chk: none -> -5
+    wrap + sat + chk + 10

@@ -5252,6 +5252,136 @@ fn native_enum_match_execution_parity_when_linkable() {
     }
 }
 
+/// Overflow-aware fixed-width arithmetic — `checked_*` (`option<T>`),
+/// `saturating_*`, and `wrapping_*` for add/sub/mul across narrow (i8/u8/u32/i32)
+/// and 64-bit (u64/usize/isize) kinds, signed and unsigned — now compiles on the
+/// native backend (previously deferred). `--verbose` proves `main` and its helpers
+/// compile natively; the linked `.exe`'s exit code equals the interpreter's `main`
+/// result (mod 256). Sources MSVC's `LIB` when unset; gated on `rust-lld` +
+/// `kernel32.lib` like the other native parity tests.
+#[test]
+fn native_overflow_arith_execution_parity_when_linkable() {
+    ensure_msvc_env();
+    let fixture = workspace_root().join("tests/fixtures/valid/run_overflow_codegen.lby");
+    let out = std::env::temp_dir().join("lullaby_native_overflow_codegen.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // Every function — including the overflow-builtin helpers and `main` — compiles
+    // natively; none is deferred to the interpreters.
+    for func in ["low8", "checked_i8", "checked_usize_mul", "main"] {
+        assert!(
+            stdout(&emit).contains(&format!("compiled {func}")),
+            "expected `{func}` compiled natively: {}",
+            stdout(&emit)
+        );
+    }
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 233, "fixture main result");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native overflow-arith link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// The same overflow-aware arithmetic fixture compiled to WASM: `--verbose` proves
+/// every function compiles (none deferred), and — when `node` is available — the
+/// module's `main` export returns the interpreter's exact `i64` result.
+#[test]
+fn wasm_overflow_arith_execution_parity_with_node() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_overflow_codegen.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_overflow_codegen.wasm");
+
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    for func in ["low8", "checked_i8", "checked_usize_mul", "main"] {
+        assert!(
+            stdout(&emit).contains(&format!("compiled {func}")),
+            "expected `{func}` compiled on WASM: {}",
+            stdout(&emit)
+        );
+    }
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "233");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM overflow-arith execution parity");
+        return;
+    }
+
+    let runner = std::env::temp_dir().join("lullaby_wasm_overflow_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           process.stdout.write('main='+r.instance.exports.main().toString());\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "WASM `main` must equal the interpreter result: {out_text}"
+    );
+}
+
 /// Best-effort execution parity for the native `string`-carrying growable
 /// collections and enums: native-compile a `list<string>` (literal/concat/
 /// `to_string` elements, `get`/`len`/`set`/`pop`, a value-semantics probe across a

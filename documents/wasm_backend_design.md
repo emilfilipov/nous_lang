@@ -529,6 +529,30 @@ the per-element deep copy. It runs on all three interpreter backends (`main` =
 503411108) and, under node, its exported `main` matches
 (`crates/lullaby_cli/tests/cli.rs::wasm_list_struct_and_nested_and_map_struct_execution_parity_with_node`).
 
+### Overflow-aware arithmetic (landed)
+
+The overflow-aware builtins `checked_<op>`, `saturating_<op>`, and `wrapping_<op>`
+for `add`/`sub`/`mul` compile on every fixed-width kind (`i8`…`u64`,
+`isize`/`usize`; `i64` is excluded by the type checker), signed and unsigned:
+
+- **`wrapping_*`** reuses the default fixed-width `+`/`-`/`*` (`i64.add`/`sub`/`mul`
+  then re-normalize to the width) — the wrapping result.
+- **`saturating_*`** and **`checked_*`** compute the wrapped result plus an overflow
+  boolean using **comparison-only formulas** on the normalized operands (WASM has no
+  host carry/overflow flags): e.g. unsigned add overflows iff `a >u MAX - b`, signed
+  add iff `(b > 0 & a > MAX - b) | (b < 0 & a < MIN - b)`. The narrow multiply
+  range-checks the exact product; the 64-bit multiply uses a **guarded division**
+  test (`i64.div_u`/the guarded `div_s`) wrapped in a structured `if` on a zero
+  divisor, so no case can trap. `saturating_*` selects the clamped bound with
+  `select`; `checked_*` builds an `option<T>` record in linear memory (`some(result)`
+  tag + payload, or `none`) reusing the enum/option layout — matched in place like a
+  `map_get` result.
+
+Results are bit-identical to the interpreters' `overflow_arith` for every width and
+sign; node-parity-tested by
+`crates/lullaby_cli/tests/cli.rs::wasm_overflow_arith_execution_parity_with_node`
+(shared fixture `tests/fixtures/valid/run_overflow_codegen.lby`, `main` = 233).
+
 ## First increment — the scalar subset
 
 WASM has a clean core (functions, `i32`/`i64`/`f32`/`f64`, structured control
@@ -566,9 +590,12 @@ second phase. So the first increment compiles the **scalar subset** only:
   string) -> void` (the JS/DOM host imports above), `len(string|array|list) -> i64`,
   the `list` builtins `list_new`/`push`/`get`/`set`/`pop`, the `map` builtins
   `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, `to_string` (non-float
-  arguments), and the index-based string operations
+  arguments), the index-based string operations
   `substring`/`find`/`contains`/`starts_with`/`ends_with` (see **Heap types
-  (landed)** above); every other builtin is still rejected. Strings, structs, fixed
+  (landed)** above), and the overflow-aware arithmetic builtins
+  `checked_<op>`/`saturating_<op>`/`wrapping_<op>` for `add`/`sub`/`mul` on the
+  fixed-width kinds (see **Overflow-aware arithmetic (landed)** below); every other
+  builtin is still rejected. Strings, structs, fixed
   arrays, lists of scalar/`string`/`struct`/nested-list elements, and maps with a
   scalar or `string` key and a scalar, `string`, or `struct` value are now supported
   — see **Heap types (landed)**, **Growable `list<T>` (landed)**, **Growable
