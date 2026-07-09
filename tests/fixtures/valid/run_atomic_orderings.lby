@@ -1,0 +1,13 @@
+fn main -> i64
+    let a atomic_i64 = atomic_new(10)
+    atomic_store_ordered(a, 20, release)
+    let l0 i64 = atomic_load_ordered(a, acquire)
+    let p0 i64 = atomic_add_ordered(a, 5, relaxed)
+    let l1 i64 = atomic_load_ordered(a, seq_cst)
+    let c0 i64 = atomic_cas_ordered(a, 25, 99, acq_rel, acquire)
+    let l2 i64 = atomic_load_ordered(a, relaxed)
+    let s0 i64 = atomic_swap_ordered(a, 7, seq_cst)
+    let sub0 i64 = atomic_sub_ordered(a, 2, relaxed)
+    fence(seq_cst)
+    let last i64 = atomic_load_ordered(a, acquire)
+    l0 + p0 + l1 + c0 + l2 + s0 + sub0 + last

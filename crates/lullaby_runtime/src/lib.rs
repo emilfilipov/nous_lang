@@ -821,6 +821,206 @@ pub fn expect_atomic(name: &str, value: Value) -> Result<SharedAtomic, RuntimeEr
     }
 }
 
+/// The five `MemoryOrder` enum variant names, in strengthening order. Registered
+/// as a compiler-provided nominal enum so `relaxed`/`acquire`/`release`/
+/// `acq_rel`/`seq_cst` construct `MemoryOrder` unit-variant values that the
+/// ordering-taking atomic builtins and `fence` decode into real
+/// `std::sync::atomic::Ordering` values.
+pub const MEMORY_ORDER_VARIANTS: [&str; 5] =
+    ["relaxed", "acquire", "release", "acq_rel", "seq_cst"];
+
+/// Decode a `MemoryOrder` unit-variant runtime value into the corresponding
+/// `std::sync::atomic::Ordering`. Semantics guarantees the argument type, so a
+/// non-`MemoryOrder` value here indicates an interpreter bug and reports
+/// `L0432`.
+pub fn expect_memory_order(name: &str, value: Value) -> Result<Ordering, RuntimeError> {
+    match value {
+        Value::Enum {
+            enum_name, variant, ..
+        } if enum_name == "MemoryOrder" => match variant.as_str() {
+            "relaxed" => Ok(Ordering::Relaxed),
+            "acquire" => Ok(Ordering::Acquire),
+            "release" => Ok(Ordering::Release),
+            "acq_rel" => Ok(Ordering::AcqRel),
+            "seq_cst" => Ok(Ordering::SeqCst),
+            other => Err(RuntimeError::new(
+                "L0432",
+                format!("{name} received an unknown MemoryOrder variant `{other}`"),
+            )),
+        },
+        other => Err(RuntimeError::new(
+            "L0432",
+            format!("{name} expects a MemoryOrder but got `{other}`"),
+        )),
+    }
+}
+
+/// Guard that `order` is a legal ordering for an atomic *load* (or a CAS failure
+/// ordering): `relaxed`, `acquire`, or `seq_cst`. `release`/`acq_rel` would
+/// panic inside `std`, so they are rejected with `L0432` first.
+fn load_ordering(name: &str, order: Ordering) -> Result<Ordering, RuntimeError> {
+    match order {
+        Ordering::Relaxed | Ordering::Acquire | Ordering::SeqCst => Ok(order),
+        _ => Err(RuntimeError::new(
+            "L0432",
+            format!("{name} cannot use a `release`/`acq_rel` ordering for a load"),
+        )),
+    }
+}
+
+/// Guard that `order` is a legal ordering for an atomic *store*: `relaxed`,
+/// `release`, or `seq_cst`. `acquire`/`acq_rel` would panic inside `std`.
+fn store_ordering(name: &str, order: Ordering) -> Result<Ordering, RuntimeError> {
+    match order {
+        Ordering::Relaxed | Ordering::Release | Ordering::SeqCst => Ok(order),
+        _ => Err(RuntimeError::new(
+            "L0432",
+            format!("{name} cannot use an `acquire`/`acq_rel` ordering for a store"),
+        )),
+    }
+}
+
+/// Guard that `order` is a legal ordering for a `fence`: `acquire`, `release`,
+/// `acq_rel`, or `seq_cst`. `relaxed` would panic inside `std`.
+fn fence_ordering(name: &str, order: Ordering) -> Result<Ordering, RuntimeError> {
+    match order {
+        Ordering::Acquire | Ordering::Release | Ordering::AcqRel | Ordering::SeqCst => Ok(order),
+        _ => Err(RuntimeError::new(
+            "L0432",
+            format!("{name} cannot use a `relaxed` ordering"),
+        )),
+    }
+}
+
+/// Build the `L0405` arity error for a free-standing ordering builtin.
+fn ordering_arity(name: &str, expected: usize, actual: usize) -> RuntimeError {
+    RuntimeError::new(
+        "L0405",
+        format!("function `{name}` expects {expected} arguments but got {actual}"),
+    )
+}
+
+/// `atomic_load_ordered(a atomic_i64, order MemoryOrder) -> i64`: read the cell
+/// under `order` (`relaxed`/`acquire`/`seq_cst`), mapping to the real
+/// `std::sync::atomic::Ordering`.
+pub fn builtin_atomic_load_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let name = "atomic_load_ordered";
+    let [atomic, order]: [Value; 2] = args
+        .try_into()
+        .map_err(|args: Vec<Value>| ordering_arity(name, 2, args.len()))?;
+    let atomic = expect_atomic(name, atomic)?;
+    let order = load_ordering(name, expect_memory_order(name, order)?)?;
+    Ok(Value::I64(atomic.cell.load(order)))
+}
+
+/// `atomic_store_ordered(a atomic_i64, v i64, order MemoryOrder) -> void`: write
+/// the cell under `order` (`relaxed`/`release`/`seq_cst`).
+pub fn builtin_atomic_store_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let name = "atomic_store_ordered";
+    let [atomic, value, order]: [Value; 3] = args
+        .try_into()
+        .map_err(|args: Vec<Value>| ordering_arity(name, 3, args.len()))?;
+    let atomic = expect_atomic(name, atomic)?;
+    let value = expect_i64(name, value)?;
+    let order = store_ordering(name, expect_memory_order(name, order)?)?;
+    atomic.cell.store(value, order);
+    Ok(Value::Void)
+}
+
+/// Shared decode for the ordered read-modify-write family: an atomic handle, an
+/// `i64` operand, and any of the five orderings (all are valid for an RMW).
+fn atomic_rmw_ordered_args(
+    name: &str,
+    args: Vec<Value>,
+) -> Result<(SharedAtomic, i64, Ordering), RuntimeError> {
+    let [atomic, value, order]: [Value; 3] = args
+        .try_into()
+        .map_err(|args: Vec<Value>| ordering_arity(name, 3, args.len()))?;
+    let atomic = expect_atomic(name, atomic)?;
+    let value = expect_i64(name, value)?;
+    let order = expect_memory_order(name, order)?;
+    Ok((atomic, value, order))
+}
+
+/// `atomic_swap_ordered(a atomic_i64, v i64, order MemoryOrder) -> i64`: store
+/// `v`, return the previous value, under any of the five orderings.
+pub fn builtin_atomic_swap_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let (atomic, value, order) = atomic_rmw_ordered_args("atomic_swap_ordered", args)?;
+    Ok(Value::I64(atomic.cell.swap(value, order)))
+}
+
+/// `atomic_add_ordered(a atomic_i64, v i64, order MemoryOrder) -> i64`:
+/// fetch-and-add returning the previous value, under any of the five orderings.
+pub fn builtin_atomic_add_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let (atomic, value, order) = atomic_rmw_ordered_args("atomic_add_ordered", args)?;
+    Ok(Value::I64(atomic.cell.fetch_add(value, order)))
+}
+
+/// `atomic_sub_ordered(a atomic_i64, v i64, order MemoryOrder) -> i64`:
+/// fetch-and-sub returning the previous value, under any of the five orderings.
+pub fn builtin_atomic_sub_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let (atomic, value, order) = atomic_rmw_ordered_args("atomic_sub_ordered", args)?;
+    Ok(Value::I64(atomic.cell.fetch_sub(value, order)))
+}
+
+/// `atomic_and_ordered(a atomic_i64, v i64, order MemoryOrder) -> i64`:
+/// fetch-and-and returning the previous value, under any of the five orderings.
+pub fn builtin_atomic_and_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let (atomic, value, order) = atomic_rmw_ordered_args("atomic_and_ordered", args)?;
+    Ok(Value::I64(atomic.cell.fetch_and(value, order)))
+}
+
+/// `atomic_or_ordered(a atomic_i64, v i64, order MemoryOrder) -> i64`:
+/// fetch-and-or returning the previous value, under any of the five orderings.
+pub fn builtin_atomic_or_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let (atomic, value, order) = atomic_rmw_ordered_args("atomic_or_ordered", args)?;
+    Ok(Value::I64(atomic.cell.fetch_or(value, order)))
+}
+
+/// `atomic_xor_ordered(a atomic_i64, v i64, order MemoryOrder) -> i64`:
+/// fetch-and-xor returning the previous value, under any of the five orderings.
+pub fn builtin_atomic_xor_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let (atomic, value, order) = atomic_rmw_ordered_args("atomic_xor_ordered", args)?;
+    Ok(Value::I64(atomic.cell.fetch_xor(value, order)))
+}
+
+/// `atomic_cas_ordered(a atomic_i64, expected i64, new i64, success MemoryOrder,
+/// failure MemoryOrder) -> i64`: strong compare-and-swap returning the observed
+/// value. `success` may be any of the five orderings; `failure` must be a valid
+/// load ordering (`relaxed`/`acquire`/`seq_cst`), exactly as `std` requires.
+pub fn builtin_atomic_cas_ordered(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let name = "atomic_cas_ordered";
+    let [atomic, expected, new, success, failure]: [Value; 5] = args
+        .try_into()
+        .map_err(|args: Vec<Value>| ordering_arity(name, 5, args.len()))?;
+    let atomic = expect_atomic(name, atomic)?;
+    let expected = expect_i64(name, expected)?;
+    let new = expect_i64(name, new)?;
+    let success = expect_memory_order(name, success)?;
+    let failure = load_ordering(name, expect_memory_order(name, failure)?)?;
+    let observed = match atomic
+        .cell
+        .compare_exchange(expected, new, success, failure)
+    {
+        Ok(prev) => prev,
+        Err(current) => current,
+    };
+    Ok(Value::I64(observed))
+}
+
+/// `fence(order MemoryOrder) -> void`: a standalone memory fence mapping to
+/// `std::sync::atomic::fence(order)`. `order` must be `acquire`/`release`/
+/// `acq_rel`/`seq_cst` (a `relaxed` fence is meaningless and `std` panics on it).
+pub fn builtin_fence(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let name = "fence";
+    let [order]: [Value; 1] = args
+        .try_into()
+        .map_err(|args: Vec<Value>| ordering_arity(name, 1, args.len()))?;
+    let order = fence_ordering(name, expect_memory_order(name, order)?)?;
+    std::sync::atomic::fence(order);
+    Ok(Value::Void)
+}
+
 /// Unwrap a runtime `Value` expected to be a map, reporting `L0417` otherwise.
 pub fn expect_map(name: &str, value: Value) -> Result<Vec<(Value, Value)>, RuntimeError> {
     match value {
@@ -1530,6 +1730,13 @@ impl<'a> Runtime<'a> {
         variants.insert("none", "option");
         variants.insert("ok", "result");
         variants.insert("err", "result");
+        // Compiler-provided `MemoryOrder` enum: its five unit variants construct
+        // the ordering values consumed by the ordering-taking atomic builtins and
+        // `fence`. Registered like `option`/`result` so bare `acquire`/`seq_cst`/…
+        // build `Value::Enum` through the shared unit-variant path.
+        for variant in MEMORY_ORDER_VARIANTS {
+            variants.insert(variant, "MemoryOrder");
+        }
         for declaration in &program.enums {
             for variant in &declaration.variants {
                 variants.insert(variant.name.as_str(), declaration.name.as_str());
@@ -1812,6 +2019,16 @@ impl<'a> Runtime<'a> {
             "atomic_and" => Self::builtin_atomic_and(args),
             "atomic_or" => Self::builtin_atomic_or(args),
             "atomic_xor" => Self::builtin_atomic_xor(args),
+            "atomic_load_ordered" => builtin_atomic_load_ordered(args),
+            "atomic_store_ordered" => builtin_atomic_store_ordered(args),
+            "atomic_swap_ordered" => builtin_atomic_swap_ordered(args),
+            "atomic_cas_ordered" => builtin_atomic_cas_ordered(args),
+            "atomic_add_ordered" => builtin_atomic_add_ordered(args),
+            "atomic_sub_ordered" => builtin_atomic_sub_ordered(args),
+            "atomic_and_ordered" => builtin_atomic_and_ordered(args),
+            "atomic_or_ordered" => builtin_atomic_or_ordered(args),
+            "atomic_xor_ordered" => builtin_atomic_xor_ordered(args),
+            "fence" => builtin_fence(args),
             "tcp_connect" => self.builtin_tcp_connect(args),
             "tcp_listen" => self.builtin_tcp_listen(args),
             "tcp_accept" => self.builtin_tcp_accept(args),
@@ -5920,6 +6137,89 @@ mod tests {
         );
         // 10 + 15 + 15 + 99 + 99 + 7 + 5 + 4 + 5 + 2 = 261.
         assert_eq!(run_source(source).expect("run"), Value::I64(261));
+    }
+
+    #[test]
+    fn ordered_atomics_run_deterministically() {
+        // Mirrors the `run_atomic_orderings.lby` parity fixture: a `release`
+        // store, `acquire`/`relaxed`/`seq_cst` loads, a `relaxed` fetch-and-add,
+        // an `acq_rel`/`acquire` CAS, a `seq_cst` swap, a `relaxed` fetch-and-sub,
+        // and a `seq_cst` fence. Single-threaded, so the ordering does not change
+        // the produced value: the deterministic total is 300.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(10)\n",
+            "    atomic_store_ordered(a, 20, release)\n", // cell 20
+            "    let l0 i64 = atomic_load_ordered(a, acquire)\n", // 20
+            "    let p0 i64 = atomic_add_ordered(a, 5, relaxed)\n", // prev 20, cell 25
+            "    let l1 i64 = atomic_load_ordered(a, seq_cst)\n", // 25
+            "    let c0 i64 = atomic_cas_ordered(a, 25, 99, acq_rel, acquire)\n", // 25, cell 99
+            "    let l2 i64 = atomic_load_ordered(a, relaxed)\n", // 99
+            "    let s0 i64 = atomic_swap_ordered(a, 7, seq_cst)\n", // prev 99, cell 7
+            "    let sub0 i64 = atomic_sub_ordered(a, 2, relaxed)\n", // prev 7, cell 5
+            "    fence(seq_cst)\n",
+            "    let last i64 = atomic_load_ordered(a, acquire)\n", // 5
+            "    l0 + p0 + l1 + c0 + l2 + s0 + sub0 + last\n",
+        );
+        // 20 + 20 + 25 + 25 + 99 + 99 + 7 + 5 = 300.
+        assert_eq!(run_source(source).expect("run"), Value::I64(300));
+    }
+
+    #[test]
+    fn expect_memory_order_maps_each_variant_to_std_ordering() {
+        // The five `MemoryOrder` unit variants decode to the exact std ordering,
+        // proving the interpreter selects the real hardware/std ordering rather
+        // than seq_cst for everything.
+        let order = |name: &str| {
+            expect_memory_order(
+                "t",
+                Value::Enum {
+                    enum_name: "MemoryOrder".to_string(),
+                    variant: name.to_string(),
+                    payload: Vec::new(),
+                },
+            )
+            .expect("decode")
+        };
+        assert_eq!(order("relaxed"), Ordering::Relaxed);
+        assert_eq!(order("acquire"), Ordering::Acquire);
+        assert_eq!(order("release"), Ordering::Release);
+        assert_eq!(order("acq_rel"), Ordering::AcqRel);
+        assert_eq!(order("seq_cst"), Ordering::SeqCst);
+    }
+
+    #[test]
+    fn ordered_atomic_builtins_guard_invalid_orderings_without_panicking() {
+        // A dynamically supplied ordering that is illegal for the op returns a
+        // clean `L0432` runtime error instead of panicking inside `std`.
+        let atomic = || {
+            Value::Atomic(SharedAtomic {
+                cell: Arc::new(AtomicI64::new(0)),
+            })
+        };
+        let order = |name: &str| Value::Enum {
+            enum_name: "MemoryOrder".to_string(),
+            variant: name.to_string(),
+            payload: Vec::new(),
+        };
+        // A `release` load is illegal.
+        let load = builtin_atomic_load_ordered(vec![atomic(), order("release")]);
+        assert_eq!(load.expect_err("guard").code, "L0432");
+        // An `acquire` store is illegal.
+        let store = builtin_atomic_store_ordered(vec![atomic(), Value::I64(1), order("acquire")]);
+        assert_eq!(store.expect_err("guard").code, "L0432");
+        // A `relaxed` fence is illegal.
+        let fence = builtin_fence(vec![order("relaxed")]);
+        assert_eq!(fence.expect_err("guard").code, "L0432");
+        // A `release` CAS failure ordering is illegal.
+        let cas = builtin_atomic_cas_ordered(vec![
+            atomic(),
+            Value::I64(0),
+            Value::I64(1),
+            order("seq_cst"),
+            order("release"),
+        ]);
+        assert_eq!(cas.expect_err("guard").code, "L0432");
     }
 
     #[test]

@@ -11,14 +11,18 @@ use lullaby_parser::{
     TypeRef, UnaryOp, function_type, generic_type,
 };
 use lullaby_runtime::{
-    ArithOp, Closure, Future, IntKind, OverflowMode, ProcessResource, ResolvedPlace, RuntimeError,
-    SharedAtomic, SharedMutex, SocketResource, Task, Value, apply_compound, asm_interpreter_error,
-    await_future, char_find, expect_atomic, expect_chan, expect_future, expect_i64, expect_list,
-    expect_map, expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64, get_place,
-    http_exchange, int_cmp, int_div, int_shl, int_shr, join_task, list_extreme, list_sum_values,
-    monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes, overflow_arith,
-    process_exit_code, result_value, scalar_order_keys, set_place, shift_left, shift_right,
-    sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
+    ArithOp, Closure, Future, IntKind, MEMORY_ORDER_VARIANTS, OverflowMode, ProcessResource,
+    ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource, Task, Value,
+    apply_compound, asm_interpreter_error, await_future, builtin_atomic_add_ordered,
+    builtin_atomic_and_ordered, builtin_atomic_cas_ordered, builtin_atomic_load_ordered,
+    builtin_atomic_or_ordered, builtin_atomic_store_ordered, builtin_atomic_sub_ordered,
+    builtin_atomic_swap_ordered, builtin_atomic_xor_ordered, builtin_fence, char_find,
+    expect_atomic, expect_chan, expect_future, expect_i64, expect_list, expect_map, expect_mutex,
+    expect_string, expect_task, extern_call_error, gcd_i64, get_place, http_exchange, int_cmp,
+    int_div, int_shl, int_shr, join_task, list_extreme, list_sum_values, monotonic_now_nanos,
+    net_err, new_chan, option_value, os_random_bytes, overflow_arith, process_exit_code,
+    result_value, scalar_order_keys, set_place, shift_left, shift_right, sleep_millis,
+    sort_scalar_list, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -3813,6 +3817,12 @@ impl<'a> IrRuntime<'a> {
         variants.insert("none", "option");
         variants.insert("ok", "result");
         variants.insert("err", "result");
+        // Compiler-provided `MemoryOrder` enum, registered like `option`/`result`
+        // so bare `acquire`/`seq_cst`/… build the ordering `Value::Enum` consumed
+        // by the ordering-taking atomic builtins and `fence`.
+        for variant in MEMORY_ORDER_VARIANTS {
+            variants.insert(variant, "MemoryOrder");
+        }
         for declaration in &module.enums {
             for variant in &declaration.variants {
                 variants.insert(variant.name.as_str(), declaration.name.as_str());
@@ -4084,6 +4094,16 @@ impl<'a> IrRuntime<'a> {
             "atomic_and" => Self::builtin_atomic_and(args),
             "atomic_or" => Self::builtin_atomic_or(args),
             "atomic_xor" => Self::builtin_atomic_xor(args),
+            "atomic_load_ordered" => builtin_atomic_load_ordered(args),
+            "atomic_store_ordered" => builtin_atomic_store_ordered(args),
+            "atomic_swap_ordered" => builtin_atomic_swap_ordered(args),
+            "atomic_cas_ordered" => builtin_atomic_cas_ordered(args),
+            "atomic_add_ordered" => builtin_atomic_add_ordered(args),
+            "atomic_sub_ordered" => builtin_atomic_sub_ordered(args),
+            "atomic_and_ordered" => builtin_atomic_and_ordered(args),
+            "atomic_or_ordered" => builtin_atomic_or_ordered(args),
+            "atomic_xor_ordered" => builtin_atomic_xor_ordered(args),
+            "fence" => builtin_fence(args),
             "tcp_connect" => self.builtin_tcp_connect(args),
             "tcp_listen" => self.builtin_tcp_listen(args),
             "tcp_accept" => self.builtin_tcp_accept(args),
@@ -7435,6 +7455,12 @@ impl<'a> Lowerer<'a> {
 
     /// If `name` is a known enum variant, the owning enum's name.
     fn enum_of_variant(&self, name: &str) -> Option<String> {
+        // The compiler-provided `MemoryOrder` enum is not part of the user
+        // program's declarations, so resolve its unit variants explicitly (as
+        // semantics and the interpreters do).
+        if MEMORY_ORDER_VARIANTS.contains(&name) {
+            return Some("MemoryOrder".to_string());
+        }
         self.program.enums.iter().find_map(|declaration| {
             declaration
                 .variants
@@ -8732,9 +8758,23 @@ impl<'a> Lowerer<'a> {
             // Atomic (`atomic_i64`) builtins: the constructor yields the handle,
             // `atomic_store` is `void`, and every access/RMW yields `i64`.
             "atomic_new" => TypeRef::new("atomic_i64"),
-            "atomic_store" => TypeRef::new("void"),
-            "atomic_load" | "atomic_swap" | "atomic_cas" | "atomic_add" | "atomic_sub"
-            | "atomic_and" | "atomic_or" | "atomic_xor" => TypeRef::new("i64"),
+            "atomic_store" | "atomic_store_ordered" | "fence" => TypeRef::new("void"),
+            "atomic_load"
+            | "atomic_swap"
+            | "atomic_cas"
+            | "atomic_add"
+            | "atomic_sub"
+            | "atomic_and"
+            | "atomic_or"
+            | "atomic_xor"
+            | "atomic_load_ordered"
+            | "atomic_swap_ordered"
+            | "atomic_cas_ordered"
+            | "atomic_add_ordered"
+            | "atomic_sub_ordered"
+            | "atomic_and_ordered"
+            | "atomic_or_ordered"
+            | "atomic_xor_ordered" => TypeRef::new("i64"),
             "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" | "atan" | "exp" | "ln"
             | "log10" | "atan2" | "to_f64" => TypeRef::new("f64"),
             // Bit intrinsics on i64: rotations, popcount, leading/trailing zero

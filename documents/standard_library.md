@@ -465,11 +465,10 @@ Lock-free shared atomics:
   `Chan`/`Mutex` it has reference semantics: cloning the value shares the same
   underlying cell, so two threads holding copies see each other's writes. It is
   backed by `std::sync::atomic::AtomicI64`, so cross-thread updates are wait-free
-  with no lost increments. Every operation below uses **sequentially consistent
-  (`SeqCst`) ordering** — the always-correct default; weaker orderings
-  (`relaxed`/`acquire`/`release`/`acqrel`) are a documented future optimization
-  and are not part of this increment (see
-  [concurrency_design.md](concurrency_design.md)).
+  with no lost increments. The bare operations below use **sequentially
+  consistent (`seq_cst`) ordering** — the always-correct default; the
+  `*_ordered` variants and `fence` (below) select any of the five standard
+  orderings explicitly.
 - `atomic_new(v i64) -> atomic_i64` allocates a fresh atomic cell initialized to
   `v`.
 - `atomic_load(a atomic_i64) -> i64` reads the current value.
@@ -487,14 +486,47 @@ Lock-free shared atomics:
   local op away). `add`/`sub` wrap on overflow.
 - Wrong arity or a wrong-typed argument (a non-`atomic_i64` handle, or a
   non-`i64` operand) to any atomic builtin reports `L0337`.
-- Atomics run identically on the AST, IR, and bytecode backends. Because the
-  fixed `spawn(Chan, i64)` worker shape cannot yet hand an atomic to a Lullaby
-  worker, cross-thread atomicity is exercised through runtime tests that share
-  one cell across OS threads (proving no lost updates); passing an atomic into a
-  worker waits on capturing closures, like `Mutex`. Weaker memory orderings,
-  fences, the other atomic widths (`atomic_i32`/`atomic_u64`/…), `atomic_bool`,
-  and weak CAS remain deferred; see
-  [concurrency_design.md](concurrency_design.md).
+
+Memory orderings and fences (delivered):
+
+- `MemoryOrder` is a compiler-provided enum (registered like `option`/`result`)
+  with five unit variants spelled as bare lowercase keywords: `relaxed`,
+  `acquire`, `release`, `acq_rel`, and `seq_cst`. They map straight onto
+  `std::sync::atomic::Ordering` (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`),
+  so an `acquire` load genuinely executes an `Ordering::Acquire` load on every
+  interpreter — the ordering argument selects the real hardware/std ordering, not
+  seq_cst for everything.
+- Every access has an ordering-taking variant that adds a trailing
+  `order MemoryOrder` argument (the bare `atomic_load` etc. remain the
+  `seq_cst`-default convenience forms):
+  - `atomic_load_ordered(a atomic_i64, order MemoryOrder) -> i64` — a load may use
+    `relaxed`/`acquire`/`seq_cst`.
+  - `atomic_store_ordered(a atomic_i64, v i64, order MemoryOrder) -> void` — a
+    store may use `relaxed`/`release`/`seq_cst`.
+  - `atomic_swap_ordered`, `atomic_add_ordered`, `atomic_sub_ordered`,
+    `atomic_and_ordered`, `atomic_or_ordered`, `atomic_xor_ordered`, each
+    `(a atomic_i64, v i64, order MemoryOrder) -> i64` — a read-modify-write accepts
+    all five orderings.
+  - `atomic_cas_ordered(a atomic_i64, expected i64, new i64, success MemoryOrder,
+    failure MemoryOrder) -> i64` — `success` accepts any ordering; `failure` is a
+    load and must be `relaxed`/`acquire`/`seq_cst`.
+- `fence(order MemoryOrder) -> void` is a standalone thread fence mapping to
+  `std::sync::atomic::fence(order)`; a fence accepts
+  `acquire`/`release`/`acq_rel`/`seq_cst` (a `relaxed` fence is meaningless).
+- Passing an ordering an operation does not permit (a `release` load, an
+  `acquire` store, a CAS `failure` ordering of `release`/`acq_rel`, or a `relaxed`
+  fence) is rejected with `L0432` — statically when the ordering is a literal
+  keyword, and guarded at runtime for a `MemoryOrder` chosen dynamically through a
+  variable.
+- Atomics run identically on the AST, IR, and bytecode backends (the
+  ordering-taking variants included; single-threaded programs produce the same
+  value regardless of ordering). Because the fixed `spawn(Chan, i64)` worker shape
+  cannot yet hand an atomic to a Lullaby worker, cross-thread atomicity is
+  exercised through runtime tests that share one cell across OS threads (proving
+  no lost updates); passing an atomic into a worker waits on capturing closures,
+  like `Mutex`. The other atomic widths (`atomic_i32`/`atomic_u64`/…),
+  `atomic_bool`, and weak CAS remain deferred; see
+  [atomics_design.md](atomics_design.md).
 
 ## Networking
 
