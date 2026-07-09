@@ -4681,6 +4681,81 @@ fn native_aggregates_execution_parity_when_linkable() {
     );
 }
 
+/// Best-effort execution parity for the native **stack-argument** ABI:
+/// native-compile a program whose functions take more than four scalar
+/// parameters (six and eight `i64`, plus a mixed int/float six-parameter
+/// signature), so their 5th+ arguments are passed on the stack above the shadow
+/// space. Assert every such function compiles natively (not skipped), the
+/// interpreter result agrees across AST/IR/bytecode, and — when linkable — the
+/// `.exe` exit code equals the interpreter's `main` result (mod 256). Sources
+/// MSVC's `LIB` (via vcvars64) when unset so the link+run executes.
+#[test]
+fn native_many_args_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_many_args.lby");
+    let out = std::env::temp_dir().join("lullaby_native_many_args_parity.exe");
+
+    // Make MSVC's `LIB` available (source vcvars64 if unset) so the link+run runs.
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // Every >4-parameter function — and `main` — must compile natively (the
+    // stack-argument ABI keeps them in the native subset, no longer demoted).
+    let emit_out = stdout(&emit);
+    for name in ["six", "eight", "scale", "main"] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile natively (stack args), got: {emit_out}"
+        );
+    }
+    assert!(
+        !emit_out.contains("skipped"),
+        "no >4-parameter function should be skipped: {emit_out}"
+    );
+
+    // Interpreter ground truth for `main`, identical across every backend.
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(interp, 98, "{backend}: many-args fixture main computes 98");
+    }
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native many-args link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 98,
+        "native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
 /// Best-effort execution parity for the native **aggregate-boundary** ABI:
 /// native-compile programs that pass, return, and mutate scalar-field aggregates
 /// (structs, fixed arrays, scalar-payload enums) across function boundaries, then
