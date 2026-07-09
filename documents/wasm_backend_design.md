@@ -586,6 +586,13 @@ resolved. A new crate/module (e.g. `crates/lullaby_wasm` or a `wasm` module in
 - Emit the function body as a stack-machine instruction sequence (an expression
   pushes its value; a binary op emits its operands then the op; `if`/loops use
   structured control flow with explicit result types).
+- A **value-producing tail `if`/`elif`/`else`** (every reachable branch, including
+  the final `else`, ends in a value expression of the same type) emits each WASM
+  `if` with that value's **block result type** so the branch value is left on the
+  stack (mirroring the typed-`if` chain used by value-producing `match`). A
+  statement `if`, or one with no `else`, keeps the void (`0x40`) block type. The
+  value-vs-statement decision comes from the IR branch bodies' tails
+  (`if_result_type`), matching how the interpreters and native backend decide.
 - Emit a **binary `.wasm` module** directly (no external crate): the standard
   encoding — magic + version, then the Type, Import, Function, Memory, Global,
   Export, Code, and Data sections in canonical id order, with LEB128-encoded

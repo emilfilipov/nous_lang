@@ -3092,6 +3092,68 @@ fn wasm_to_string_execution_parity_with_node() {
 }
 
 #[test]
+fn wasm_value_if_execution_parity_with_node() {
+    // A value-producing tail `if`/`elif`/`else` (each branch yields the function's
+    // result value) now compiles to WASM: the `if` emits a typed block so the
+    // branch value is left on the stack. Previously such functions were skipped.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_value_if.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_value_if.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    let emit_out = stdout(&emit);
+    for name in ["sign_of", "abs_or_zero", "main"] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` (value-producing `if`) to compile to WASM, got: {emit_out}"
+        );
+    }
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "145");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM value-if execution parity");
+        return;
+    }
+    let runner = std::env::temp_dir().join("lullaby_wasm_value_if_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           process.stdout.write('main='+r.instance.exports.main().toString());\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(out_text.contains("main=145"), "{out_text}");
+}
+
+#[test]
 fn wasm_aggregate_args_execution_parity_with_node() {
     // Aggregates across call boundaries: a `main -> i64` that passes a struct to a
     // function reading its fields, receives a struct another function returns, and
