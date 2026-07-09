@@ -1,0 +1,85 @@
+struct Point
+    x i64
+    y i64
+
+fn point_sum p Point -> i64
+    p.x + p.y
+
+fn grow_probe xs list<Point> -> i64
+    let ys list<Point> = push(xs, Point(50, 60))
+    len(xs) * 100 + len(ys)
+
+fn build_points -> list<Point>
+    let ps list<Point> = list_new()
+    ps = push(ps, Point(1, 2))
+    ps = push(ps, Point(3, 4))
+    ps = push(ps, Point(5, 6))
+    ps = push(ps, Point(7, 8))
+    ps = push(ps, Point(9, 10))
+    ps
+
+fn nested_sum rows list<list<i64>> -> i64
+    let total i64 = 0
+    let i i64 = 0
+    while i < len(rows)
+        let row list<i64> = get(rows, i)
+        let j i64 = 0
+        while j < len(row)
+            total += get(row, j)
+            j += 1
+        i += 1
+    total
+
+fn build_nested -> list<list<i64>>
+    let a list<i64> = list_new()
+    a = push(a, 10)
+    a = push(a, 20)
+    let b list<i64> = list_new()
+    b = push(b, 30)
+    b = push(b, 40)
+    b = push(b, 50)
+    let rows list<list<i64>> = list_new()
+    rows = push(rows, a)
+    rows = push(rows, b)
+    rows
+
+fn map_point_value m map<i64, Point> k i64 -> i64
+    match map_get(m, k)
+        some(p) -> point_sum(p)
+        none -> 0 - 1
+
+fn build_map -> map<i64, Point>
+    let m map<i64, Point> = map_new()
+    m = map_set(m, 1, Point(11, 12))
+    m = map_set(m, 2, Point(21, 22))
+    m = map_set(m, 3, Point(31, 32))
+    m = map_set(m, 2, Point(99, 1))
+    m
+
+fn main -> i64
+    let ps list<Point> = build_points()
+    let count i64 = len(ps)
+    let first_sum i64 = point_sum(get(ps, 0))
+
+    let mutated Point = get(ps, 2)
+    mutated.x = 1000
+    mutated.y = 2000
+    let after_mutate Point = get(ps, 2)
+    let elem_unchanged i64 = point_sum(after_mutate)
+
+    let ps2 list<Point> = set(ps, 0, Point(100, 200))
+    let ps2_first i64 = point_sum(get(ps2, 0))
+    let ps_first_after_set i64 = point_sum(get(ps, 0))
+
+    let probe i64 = grow_probe(ps)
+
+    let rows list<list<i64>> = build_nested()
+    let nested i64 = nested_sum(rows)
+
+    let m map<i64, Point> = build_map()
+    let m_len i64 = map_len(m)
+    let mv1 i64 = map_point_value(m, 1)
+    let mv2 i64 = map_point_value(m, 2)
+    let mvx i64 = map_point_value(m, 42)
+
+    count * 100000000 + first_sum * 1000000 + elem_unchanged * 10000 + ps2_first * 1000 + ps_first_after_set * 100 + nested + m_len * 10 + mv1 + mv2 + probe + mvx

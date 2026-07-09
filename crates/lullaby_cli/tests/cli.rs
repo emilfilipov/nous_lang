@@ -2412,15 +2412,15 @@ fn wasm_emits_module_and_lists_functions() {
 #[test]
 fn wasm_reports_no_eligible_functions() {
     // A file whose only function uses a type outside the supported WASM value set
-    // (strings/structs/arrays/enums, scalar- or string-element `list`s, scalar-key
-    // maps with a scalar or `string` value, and enums with scalar or `string`
-    // payloads are now supported): an enum with a MUTABLE heap payload —
-    // `result<i64, list<i64>>` — is still deferred, so nothing is eligible and the
-    // WASM backend reports L0338. `wasm` reuses the executable pipeline, which
-    // requires `main`; make `main` itself return `result<i64, list<i64>>` so
-    // nothing is eligible and the emitter reports L0338 rather than compiling
-    // anything.
-    let source = "fn main -> result<i64, list<i64>>\n    ok(1)\n";
+    // (strings/structs/arrays/enums, scalar-/string-/struct-/nested-list-element
+    // `list`s, maps with a scalar or `string` value or a `struct` value, and enums
+    // with scalar/`string`/one-level-mutable payloads are now supported): a map
+    // whose VALUE is itself a map — `map<i64, map<i64, i64>>` — nests a collection
+    // the backend does not lay out, so nothing is eligible and the WASM backend
+    // reports L0338. `wasm` reuses the executable pipeline, which requires `main`;
+    // make `main` itself return that type so nothing is eligible and the emitter
+    // reports L0338 rather than compiling anything.
+    let source = "fn main -> map<i64, map<i64, i64>>\n    map_new()\n";
     let tmp = std::env::temp_dir().join("lullaby_wasm_none.lby");
     std::fs::write(&tmp, source).expect("write temp");
     let output = lullaby()
@@ -3627,6 +3627,92 @@ fn wasm_list_value_semantics_execution_parity_with_node() {
 }
 
 #[test]
+fn wasm_list_struct_and_nested_and_map_struct_execution_parity_with_node() {
+    // Mutable-heap collection ELEMENTS/VALUES: a `list<struct>` (push structs, read a
+    // field, `set` an element), a `list<list<i64>>` (one level of mutable nesting,
+    // summed through nested `get`s), and a `map<i64, struct>` (`map_set`/`map_get`
+    // returning `option<struct>`/`map_len`). CRUCIALLY it includes a value-semantics
+    // probe: `get(ps, 2)` returns a struct that is mutated (`.x`/`.y` set to 1000/
+    // 2000), then `get(ps, 2)` again must still read the ORIGINAL element — proving
+    // `get` returns a deep copy (the interpreters' `values[i].clone()`), so the
+    // mutable-aggregate element deep-copy matches the interpreters bit-for-bit. Each
+    // function compiles to WASM (the collection's element/value deep-copy recurses
+    // into the struct/nested list), and the exported `main` must equal the
+    // interpreter's ground truth.
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_list_struct.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_list_struct.wasm");
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // Every function must COMPILE to WASM (the mutable-heap element/value deep-copy
+    // recursion lowers to linear memory), not skip to the interpreters.
+    let verbose = stdout(&emit);
+    for func in [
+        "point_sum",
+        "grow_probe",
+        "build_points",
+        "nested_sum",
+        "build_nested",
+        "map_point_value",
+        "build_map",
+        "main",
+    ] {
+        assert!(
+            verbose.contains(&format!("compiled {func}")),
+            "`{func}` should compile to WASM (not skip), got: {verbose}"
+        );
+    }
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "503411108");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM list<struct>/map<K,struct> parity");
+        return;
+    }
+
+    let runner = std::env::temp_dir().join("lullaby_wasm_list_struct_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           process.stdout.write('main='+r.instance.exports.main().toString());\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "WASM list<struct>/nested/map<K,struct> `main` must equal the interpreter ({interp_main}), got: {out_text}"
+    );
+}
+
+#[test]
 fn wasm_map_build_execution_parity_with_node() {
     // The growable `map<K, V>` step: a program that builds a scalar-key,
     // scalar-value map via `map_new`/`map_set` (inserting several keys plus an
@@ -4677,6 +4763,81 @@ fn native_aggregates_execution_parity_when_linkable() {
     assert_eq!(
         exit,
         (interp.rem_euclid(256)) as i32,
+        "native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// Best-effort execution parity for the native **stack-argument** ABI:
+/// native-compile a program whose functions take more than four scalar
+/// parameters (six and eight `i64`, plus a mixed int/float six-parameter
+/// signature), so their 5th+ arguments are passed on the stack above the shadow
+/// space. Assert every such function compiles natively (not skipped), the
+/// interpreter result agrees across AST/IR/bytecode, and — when linkable — the
+/// `.exe` exit code equals the interpreter's `main` result (mod 256). Sources
+/// MSVC's `LIB` (via vcvars64) when unset so the link+run executes.
+#[test]
+fn native_many_args_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_many_args.lby");
+    let out = std::env::temp_dir().join("lullaby_native_many_args_parity.exe");
+
+    // Make MSVC's `LIB` available (source vcvars64 if unset) so the link+run runs.
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // Every >4-parameter function — and `main` — must compile natively (the
+    // stack-argument ABI keeps them in the native subset, no longer demoted).
+    let emit_out = stdout(&emit);
+    for name in ["six", "eight", "scale", "main"] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile natively (stack args), got: {emit_out}"
+        );
+    }
+    assert!(
+        !emit_out.contains("skipped"),
+        "no >4-parameter function should be skipped: {emit_out}"
+    );
+
+    // Interpreter ground truth for `main`, identical across every backend.
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(interp, 98, "{backend}: many-args fixture main computes 98");
+    }
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native many-args link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 98,
         "native exit code must equal the interpreter result (mod 256)"
     );
 }

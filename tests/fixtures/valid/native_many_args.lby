@@ -1,0 +1,30 @@
+# Native stack arguments: functions with more than four parameters pass their
+# 5th+ arguments on the stack (Win64 stack-argument ABI) rather than being
+# demoted to the interpreters. Every value stays a native scalar (i64 or a
+# mixed int/float signature), so this program is native-eligible and must agree
+# bit-for-bit with the AST/IR/bytecode interpreters. The result is a
+# deterministic i64 < 256.
+
+# Six i64 parameters: the 5th and 6th (e, f) are passed on the stack.
+fn six a i64 b i64 c i64 d i64 e i64 f i64 -> i64
+    a + b + c + d + e + f
+
+# Eight i64 parameters: e, f, g, h are all stack arguments.
+fn eight a i64 b i64 c i64 d i64 e i64 f i64 g i64 h i64 -> i64
+    a + b + c + d + e + f + g + h
+
+# A mixed int/float signature with more than four parameters: the integer and
+# float registers are consumed positionally, and the later arguments spill onto
+# the stack. `scale` returns an i64 so the result folds cleanly into the exit
+# code.
+fn scale a i64 b i64 x f64 c i64 d i64 y f64 -> i64
+    let base i64 = a + b + c + d
+    if x < y
+        return base + 1
+    return base
+
+fn main -> i64
+    let s6 i64 = six(1, 2, 3, 4, 5, 6)
+    let s8 i64 = eight(1, 2, 3, 4, 5, 6, 7, 8)
+    let m i64 = scale(10, 20, 1.5, 5, 5, 2.5)
+    return s6 + s8 + m

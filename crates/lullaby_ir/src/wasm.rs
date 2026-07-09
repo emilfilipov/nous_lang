@@ -404,52 +404,77 @@ impl EnumLayout {
     }
 }
 
-/// Resolve the [`EnumLayout`] of an enum-typed `TypeRef`, or `None` if `ty` is
-/// not an enum the WASM backend can lay out. The supported enums are the
-/// built-in `option<T>` (variants `some(T)`, `none`) and `result<T, E>`
-/// (variants `ok(T)`, `err(E)`), and any user enum, where every variant payload
-/// is a scalar or a `string`. A `string` payload occupies one 8-byte slot as an
-/// `i32` pointer to the immutable string record; because strings are immutable it
-/// is copied by SHARING its pointer on the flat word-copy deep copy (see
-/// [`emit_deep_copy_enum`]), exactly like a scalar. An enum with a MUTABLE heap
-/// payload (`list`/`array`/`map`/`struct`) is still NOT supported and yields
-/// `None` so the enclosing function is skipped (it would need a recursive
-/// per-payload deep copy).
-fn enum_layout(ty: &TypeRef, enums: &HashMap<String, IrEnumDef>) -> Option<EnumLayout> {
+/// Resolve the [`EnumLayout`] of an enum-typed `TypeRef`, or `None` if `ty` is not
+/// an enum the WASM backend can lay out. The supported enums are the built-in
+/// `option<T>` (variants `some(T)`, `none`) and `result<T, E>` (variants `ok(T)`,
+/// `err(E)`), and any user enum, where every variant payload is layable-out by
+/// [`enum_payload_slot_type`]: a scalar, a `string`, or a MUTABLE aggregate (a
+/// `struct` or a supported nested growable `list`).
+///
+/// - A **scalar** payload occupies one 8-byte slot as its own value.
+/// - A **`string`** payload occupies one `i32`-pointer slot to the immutable record;
+///   because strings are immutable it is copied by SHARING its pointer on a deep
+///   copy (see [`emit_deep_copy_enum`]), exactly like a scalar.
+/// - A **mutable-aggregate** payload (`struct` / nested `list`) occupies one
+///   `i32`-pointer slot and is DEEP-COPIED per payload on the enum's value-semantic
+///   copy, so `option<struct>` — the result of `map_get` on a `map<K, struct>` —
+///   and `result<struct, E>` are supported with correct value semantics. One level
+///   of mutable nesting is allowed (see [`collection_slot_type`]); deeper cases
+///   yield `None` so the enclosing function is skipped (still runs on the
+///   interpreters).
+fn enum_layout(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+) -> Option<EnumLayout> {
     // Built-in `option<T>`: variants `some(T)`, `none`, in that order. `?` bails
-    // (unsupported enum) when `T` is neither a scalar nor a `string` (e.g. a
-    // mutable heap payload). `option<string>` — the result of `map_get` on a
-    // `map<K, string>` — is supported: the `some` payload slot is the string
-    // pointer.
+    // (unsupported enum) when `T` is not layable-out. `option<string>` — the result
+    // of `map_get` on a `map<K, string>` — and `option<struct>` — the result of
+    // `map_get` on a `map<K, struct>` — are both supported.
     if let Some(inner) = ty.option_element() {
-        scalar_or_string_slot_type(&inner)?;
+        enum_payload_slot_type(&inner, structs, enums)?;
         return Some(build_layout(vec![
             ("some".to_string(), vec![inner]),
             ("none".to_string(), Vec::new()),
         ]));
     }
     // Built-in `result<T, E>`: variants `ok(T)`, `err(E)`, in that order. Each
-    // payload type must be a scalar or a `string`; `?` bails on a mutable heap
-    // payload.
+    // payload type must be layable-out; `?` bails otherwise.
     if let Some((ok, err)) = ty.result_args() {
-        scalar_or_string_slot_type(&ok)?;
-        scalar_or_string_slot_type(&err)?;
+        enum_payload_slot_type(&ok, structs, enums)?;
+        enum_payload_slot_type(&err, structs, enums)?;
         return Some(build_layout(vec![
             ("ok".to_string(), vec![ok]),
             ("err".to_string(), vec![err]),
         ]));
     }
-    // A user enum: every variant payload must be a scalar or a `string` (`?` bails
-    // otherwise).
+    // A user enum: every variant payload must be layable-out (`?` bails otherwise).
     let def = enums.get(&ty.name)?;
     let mut variants = Vec::with_capacity(def.variants.len());
     for variant in &def.variants {
         for payload_ty in &variant.payload {
-            scalar_or_string_slot_type(payload_ty)?;
+            enum_payload_slot_type(payload_ty, structs, enums)?;
         }
         variants.push((variant.name.clone(), variant.payload.clone()));
     }
     Some(build_layout(variants))
+}
+
+/// The WASM slot type of an enum variant payload: a scalar, a `string`, or a
+/// mutable aggregate (a `struct` or a supported nested growable `list`) at nesting
+/// depth 0. A mutable-aggregate payload is an `i32` pointer deep-copied per payload
+/// on the enum's value-semantic copy (see [`emit_deep_copy_enum`]). Returns `None`
+/// for a payload the backend cannot lay out (e.g. a `map` payload or nesting beyond
+/// one mutable level), so the enclosing enum — and its function — is skipped.
+fn enum_payload_slot_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+) -> Option<WasmValType> {
+    if let Some(vt) = scalar_or_string_slot_type(ty) {
+        return Some(vt);
+    }
+    collection_slot_type(ty, structs, enums, 0)
 }
 
 /// Build an [`EnumLayout`] from an ordered variant table, computing the payload
@@ -550,16 +575,16 @@ fn is_pointer_type(
     if structs.contains_key(&ty.name) {
         return true;
     }
-    if enum_layout(ty, enums).is_some() {
+    if enum_layout(ty, structs, enums).is_some() {
         return true;
     }
     if let Some(elem) = ty.array_element() {
         return slot_val_type(&elem, structs, enums).is_some();
     }
-    if supported_list_element(ty).is_some() {
+    if supported_list_element(ty, structs, enums).is_some() {
         return true;
     }
-    if supported_map_kv(ty).is_some() {
+    if supported_map_kv(ty, structs, enums).is_some() {
         return true;
     }
     false
@@ -584,36 +609,144 @@ fn scalar_or_string_slot_type(ty: &TypeRef) -> Option<WasmValType> {
     None
 }
 
+/// The maximum depth of MUTABLE-aggregate nesting a growable collection
+/// element/value may reach before the WASM backend defers it. Depth 0 is the
+/// collection's own element/value slot; a struct field or a nested list element
+/// consumes one level. This bounds the recursive per-element deep copy to a level
+/// the emitter can verify: one level of mutable nesting (`list<struct>`,
+/// `list<list<scalar>>`, `map<K, struct>`) is supported, and deeper cases
+/// (`list<list<list<…>>>`, `list<map<…>>`, a struct field that is itself a list)
+/// are skipped gracefully (still run on the interpreters) rather than miscompiled.
+const MAX_COLLECTION_NEST_DEPTH: u32 = 1;
+
+/// The WASM slot type of a growable-collection element/value at nesting `depth`, or
+/// `None` if the WASM backend cannot lay it out (so the enclosing function is
+/// skipped). Accepts, in order:
+///
+/// - a **scalar** — its own value type, flat-copied on a deep copy;
+/// - a **`string`** — an `i32` pointer to the immutable record, SHARED on a deep
+///   copy (never deep-recursed) since strings are immutable;
+/// - a **mutable aggregate** (a named `struct` or a supported nested growable
+///   `list<T>`) at `depth < MAX_COLLECTION_NEST_DEPTH` — an `i32` pointer that is
+///   itself DEEP-COPIED per element on the collection's value-semantic copy (see
+///   [`emit_copy_slot`]/[`emit_copy_element_at`] and [`emit_list_copy_elems`]/
+///   [`emit_map_copy_entries`]), matching the interpreters' recursive
+///   `Value::clone`. The nested aggregate's own fields/elements are classified one
+///   level deeper, so `list<list<scalar>>` is accepted but `list<list<list<…>>>`
+///   is deferred.
+///
+/// An `enum` element/value is NOT accepted here (an enum with a mutable payload is
+/// unsupported anyway, and a scalar/string-payload enum crossing a collection is a
+/// later increment), nor is a nested `map` element/value (`list<map<…>>`,
+/// `map<K, map<…>>`) or a fixed `array` element — those are deferred.
+fn collection_slot_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+    depth: u32,
+) -> Option<WasmValType> {
+    if let Some(vt) = scalar_or_string_slot_type(ty) {
+        return Some(vt);
+    }
+    if depth >= MAX_COLLECTION_NEST_DEPTH {
+        return None;
+    }
+    // A struct element/value: every field must itself be layable-out (a scalar, a
+    // `string`, or a mutable aggregate one level deeper). This mirrors
+    // `emit_deep_copy_struct`, which deep-copies each field.
+    if let Some(fields) = structs.get(&ty.name) {
+        for (_, field_ty) in fields {
+            struct_field_slot_type(field_ty, structs, enums, depth + 1)?;
+        }
+        return Some(WasmValType::I32);
+    }
+    // A nested growable `list<T>` element/value: its own element must be layable-out
+    // one level deeper (so `list<list<scalar>>` works, `list<list<list<…>>>` does
+    // not). The nested list is deep-copied per element on the outer copy.
+    if let Some(elem) = ty.list_element() {
+        collection_slot_type(&elem, structs, enums, depth + 1)?;
+        return Some(WasmValType::I32);
+    }
+    None
+}
+
+/// The WASM slot type of a struct FIELD nested inside a growable-collection element,
+/// at nesting `depth`. A field may be a scalar, a `string`, an enum/array/struct
+/// pointer the base backend already lays out, or a nested growable collection one
+/// level deeper. Distinct from [`collection_slot_type`] because a struct field set
+/// is broader than a list element set (a field may be an enum or a fixed array,
+/// which the existing struct deep copy already handles) — but a nested
+/// growable-collection field still consumes a nesting level.
+fn struct_field_slot_type(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+    depth: u32,
+) -> Option<WasmValType> {
+    if let Some(vt) = scalar_val_type(ty) {
+        return Some(vt);
+    }
+    // A `string`, a supported enum, or a fixed `array` field is an `i32` pointer the
+    // base struct/array deep copy already handles (a string is shared; an enum/array
+    // is deep-copied by the existing paths) — no extra nesting budget consumed.
+    if ty.name == "string" {
+        return Some(WasmValType::I32);
+    }
+    if enum_layout(ty, structs, enums).is_some() {
+        return Some(WasmValType::I32);
+    }
+    if let Some(elem) = ty.array_element() {
+        slot_val_type(&elem, structs, enums)?;
+        return Some(WasmValType::I32);
+    }
+    // A nested struct or growable collection consumes a nesting level.
+    collection_slot_type(ty, structs, enums, depth)
+}
+
 /// The `(K, V)` key/value types of a supported growable `map<K, V>`, or `None` if
 /// `ty` is not a map, its key is neither a scalar nor a `string`, or its value is
-/// neither a scalar nor a `string`. A `string` KEY is an `i32` pointer stored in
-/// the key slot; unlike a scalar key it is compared by CONTENT (the decoded UTF-8
-/// bytes) — see [`emit_string_eq`] and [`emit_map_find`] — matching the
-/// interpreters' `Value` content equality, so two distinct string objects with the
-/// same bytes are the SAME key. The value may likewise be a `string` (an `i32`
-/// pointer stored in one slot). Both string keys and string values are shared on
-/// deep copy since strings are immutable. Maps with a non-string heap KEY
-/// (`map<list<…>, V>`, `map<struct, V>`) or a non-string heap value
-/// (`map<K, list<…>>`, `map<K, struct>`) are DEFERRED — such a map is unsupported
-/// and its enclosing function is skipped (still runs on the interpreters).
-fn supported_map_kv(ty: &TypeRef) -> Option<(TypeRef, TypeRef)> {
+/// unsupported. A `string` KEY is an `i32` pointer stored in the key slot; unlike a
+/// scalar key it is compared by CONTENT (the decoded UTF-8 bytes) — see
+/// [`emit_string_eq`] and [`emit_map_find`] — matching the interpreters' `Value`
+/// content equality, so two distinct string objects with the same bytes are the
+/// SAME key. The value may be a scalar, a `string` (shared on deep copy since
+/// strings are immutable), or a MUTABLE aggregate — a named `struct` (or a nested
+/// `list<scalar|string>`), deep-copied per value on the map's value-semantic copy
+/// so `map<K, struct>` is now supported. A map KEY is restricted to a scalar or
+/// `string` (a mutable-aggregate key is DEFERRED — the semantic layer already
+/// restricts map keys to `i64`/`string`), and a map value nested more than one
+/// mutable-aggregate level deep (`map<K, map<…>>`, `map<K, list<list<…>>>`) is
+/// DEFERRED — such a map is unsupported and its enclosing function is skipped (still
+/// runs on the interpreters).
+fn supported_map_kv(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+) -> Option<(TypeRef, TypeRef)> {
     let (key, value) = ty.map_args()?;
+    // Keys stay scalar-or-string: a mutable-aggregate key needs content equality the
+    // backend does not implement, and the semantic layer forbids it anyway.
     scalar_or_string_slot_type(&key)?;
-    scalar_or_string_slot_type(&value)?;
+    collection_slot_type(&value, structs, enums, 0)?;
     Some((key, value))
 }
 
 /// The element type of a supported growable `list<T>`, or `None` if `ty` is not a
-/// list or its element is neither a scalar nor a `string`. A `string` element is
-/// an `i32` pointer stored in one slot and shared on deep copy (strings are
-/// immutable). Lists of other heap elements
-/// (`list<struct>`/`list<list<…>>`/`list<map<…>>`) are DEFERRED — the WASM backend
-/// does not yet recursively deep-copy mutable-heap elements — so such a list is
-/// unsupported and its enclosing function is skipped (still runs on the
-/// interpreters).
-fn supported_list_element(ty: &TypeRef) -> Option<TypeRef> {
+/// list or its element is unsupported. The element may be a scalar, a `string` (an
+/// `i32` pointer shared on deep copy since strings are immutable), or a MUTABLE
+/// aggregate — a named `struct` or a nested `list<scalar|string>` — which is
+/// deep-copied per element on the list's value-semantic copy (see
+/// [`emit_list_copy_elems`]), matching the interpreters' recursive `Value::clone`.
+/// One level of mutable nesting (`list<struct>`, `list<list<scalar>>`) is supported;
+/// deeper cases (`list<list<list<…>>>`, `list<map<…>>`) are DEFERRED and the
+/// enclosing function is skipped (still runs on the interpreters).
+fn supported_list_element(
+    ty: &TypeRef,
+    structs: &HashMap<String, Vec<(String, TypeRef)>>,
+    enums: &HashMap<String, IrEnumDef>,
+) -> Option<TypeRef> {
     let elem = ty.list_element()?;
-    scalar_or_string_slot_type(&elem)?;
+    collection_slot_type(&elem, structs, enums, 0)?;
     Some(elem)
 }
 
@@ -636,22 +769,24 @@ fn is_mutable_aggregate(
     if structs.contains_key(&ty.name) {
         return true;
     }
-    if enum_layout(ty, enums).is_some() {
+    if enum_layout(ty, structs, enums).is_some() {
         return true;
     }
     if let Some(elem) = ty.array_element() {
         return slot_val_type(&elem, structs, enums).is_some();
     }
-    // A scalar-element growable `list<T>` is a mutable aggregate: it is deep-copied
-    // when it crosses a call boundary so a callee mutating its parameter cannot
-    // alter the caller's list, exactly like the interpreters' `Value::clone`.
-    if supported_list_element(ty).is_some() {
+    // A supported growable `list<T>` (scalar, `string`, or a mutable-aggregate
+    // element) is a mutable aggregate: it is deep-copied when it crosses a call
+    // boundary so a callee mutating its parameter cannot alter the caller's list,
+    // exactly like the interpreters' `Value::clone`.
+    if supported_list_element(ty, structs, enums).is_some() {
         return true;
     }
-    // A scalar-key, scalar-value growable `map<K, V>` is a mutable aggregate: it is
-    // deep-copied when it crosses a call boundary so a callee mutating its parameter
-    // cannot alter the caller's map, exactly like the interpreters' `Value::clone`.
-    if supported_map_kv(ty).is_some() {
+    // A supported growable `map<K, V>` (scalar/string key; scalar, `string`, or a
+    // mutable-aggregate value) is a mutable aggregate: it is deep-copied when it
+    // crosses a call boundary so a callee mutating its parameter cannot alter the
+    // caller's map, exactly like the interpreters' `Value::clone`.
+    if supported_map_kv(ty, structs, enums).is_some() {
         return true;
     }
     false
@@ -975,7 +1110,7 @@ impl<'a> LowerCtx<'a> {
 
     /// Resolve the [`EnumLayout`] of an enum-typed `TypeRef` in this context.
     fn enum_layout(&self, ty: &TypeRef) -> Option<EnumLayout> {
-        enum_layout(ty, self.enums)
+        enum_layout(ty, self.structs, self.enums)
     }
 
     /// Allocate a fresh non-parameter local of the given type; return its index.
@@ -1494,6 +1629,13 @@ fn lower_match_arm_body(
                 .ok_or_else(|| format!("variant `{variant}` payload has unsupported type"))?;
             get_local(out, scrut);
             emit_load_at(slot_ty, ENUM_PAYLOAD_BASE + i as i32 * SLOT_SIZE, out);
+            if is_mutable_aggregate(payload_ty, ctx.structs, ctx.enums) {
+                // Bind an INDEPENDENT deep copy of a mutable-aggregate payload so
+                // mutating the binding cannot alter the matched enum's payload
+                // record, matching the interpreters' clone-on-bind. A scalar or
+                // immutable `string` payload needs no copy.
+                emit_deep_copy(ctx, payload_ty, out)?;
+            }
             let index = ctx.add_local(slot_ty);
             set_local(out, index);
             ctx.locals
@@ -3594,11 +3736,11 @@ fn emit_deep_copy(ctx: &mut LowerCtx, ty: &TypeRef, out: &mut Vec<u8>) -> Result
     if ty.array_element().is_some() {
         return emit_deep_copy_array(ctx, ty, out);
     }
-    if supported_list_element(ty).is_some() {
-        return emit_list_deep_copy(ctx, out);
+    if let Some(elem) = supported_list_element(ty, ctx.structs, ctx.enums) {
+        return emit_list_deep_copy(ctx, &elem, out);
     }
-    if supported_map_kv(ty).is_some() {
-        return emit_map_deep_copy(ctx, out);
+    if let Some((_, value)) = supported_map_kv(ty, ctx.structs, ctx.enums) {
+        return emit_map_deep_copy(ctx, &value, out);
     }
     Err(format!(
         "cannot deep-copy non-aggregate type `{}` (wasm backend)",
@@ -3631,12 +3773,21 @@ fn emit_deep_copy_struct(
     Ok(())
 }
 
-/// Deep-copy an enum: the source pointer is on the stack. Enum payloads are a
-/// scalar or a `string` pointer (see [`enum_layout`]), and a `string` is immutable
-/// so sharing its pointer IS its value-semantic copy; the `[tag][payload slots]`
-/// record therefore contains no MUTABLE nested aggregate pointer, so copying every
-/// 8-byte word of `size_bytes()` (the tag, padded to a slot, plus each payload
-/// slot) is an exact deep copy. Leaves the fresh pointer on the stack.
+/// Deep-copy an enum: the source pointer is on the stack. The `[tag][payload slots]`
+/// record is `size_bytes()` bytes (one padded tag slot plus `slot_count` payload
+/// slots, every one 8-byte aligned).
+///
+/// A scalar or `string` payload is copied word-for-word (a `string` is immutable, so
+/// sharing its pointer IS its value-semantic copy). When EVERY variant payload is a
+/// scalar or `string`, the whole record is a flat `i64` word copy — an exact deep
+/// copy with no tag dispatch.
+///
+/// When some variant has a MUTABLE-aggregate payload (`struct` / nested `list`, e.g.
+/// `option<struct>`), the flat copy is done first (so the tag and every scalar/
+/// string slot land), then the record's tag is loaded and, for the matching
+/// variant, each mutable-aggregate payload slot is re-copied as an independent
+/// [`emit_deep_copy`] — so mutating the copy's payload is never observable through
+/// the original. This mirrors the interpreters' recursive `Value::clone` on an enum.
 fn emit_deep_copy_enum(
     ctx: &mut LowerCtx,
     layout: &EnumLayout,
@@ -3645,8 +3796,8 @@ fn emit_deep_copy_enum(
     let src = ctx.add_local(WasmValType::I32);
     set_local(out, src);
     let dst = alloc_bytes(ctx, layout.size_bytes(), out);
-    // The record is `size_bytes()` bytes = one padded tag slot + slot_count payload
-    // slots, every one 8-byte aligned. Copy word by word with i64 loads/stores.
+    // Flat word copy of the whole record (tag + every payload slot). For a scalar/
+    // string-only enum this is already the exact deep copy.
     let words = layout.size_bytes() / SLOT_SIZE;
     for word in 0..words {
         let offset = word * SLOT_SIZE;
@@ -3654,6 +3805,52 @@ fn emit_deep_copy_enum(
         get_local(out, src);
         emit_load_at(WasmValType::I64, offset, out);
         emit_store_at(WasmValType::I64, offset, out);
+    }
+    // If any variant carries a mutable-aggregate payload, re-deep-copy those slots
+    // for the record's actual variant (branch on the loaded tag).
+    let has_mutable_payload = layout.variants.iter().any(|(_, payload)| {
+        payload
+            .iter()
+            .any(|p| is_mutable_aggregate(p, ctx.structs, ctx.enums))
+    });
+    if has_mutable_payload {
+        let tag = ctx.add_local(WasmValType::I32);
+        get_local(out, dst);
+        emit_load_at(WasmValType::I32, 0, out);
+        set_local(out, tag);
+        let variants = layout.variants.clone();
+        for (variant_tag, (_, payload)) in variants.iter().enumerate() {
+            let mutable_slots: Vec<(usize, TypeRef)> = payload
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| is_mutable_aggregate(p, ctx.structs, ctx.enums))
+                .map(|(i, p)| (i, p.clone()))
+                .collect();
+            if mutable_slots.is_empty() {
+                continue;
+            }
+            // if tag == variant_tag { deep-copy each mutable payload slot }
+            get_local(out, tag);
+            out.push(0x41); // i32.const variant_tag
+            write_sleb(out, variant_tag as i64);
+            out.push(0x46); // i32.eq
+            out.push(0x04); // if -> void
+            out.push(0x40);
+            for (slot, payload_ty) in &mutable_slots {
+                let offset = ENUM_PAYLOAD_BASE + *slot as i32 * SLOT_SIZE;
+                // dst_addr = dst + offset; load the payload pointer, deep-copy it,
+                // store the fresh independent pointer back into dst's slot.
+                get_local(out, dst);
+                out.push(0x41); // i32.const offset
+                write_sleb(out, offset as i64);
+                out.push(0x6a); // i32.add -> dst slot addr
+                get_local(out, dst);
+                emit_load_at(WasmValType::I32, offset, out);
+                emit_deep_copy(ctx, payload_ty, out)?;
+                emit_store(WasmValType::I32, out);
+            }
+            out.push(0x0b); // end if
+        }
     }
     get_local(out, dst);
     Ok(())
@@ -3775,12 +3972,27 @@ fn emit_list_block_size(cap_local: u32, out: &mut Vec<u8>) {
 
 /// Copy the first `count` element slots (each `SLOT_SIZE` bytes) from `src` to
 /// `dst` list backing blocks in a runtime loop. `count` is an `i32` local; `src`
-/// and `dst` are `i32` locals holding list base pointers. Element slots are copied
-/// word-for-word by `SLOT_SIZE`-aligned `i64` load/store — a list element is a
-/// scalar or a `string` pointer (see [`supported_list_element`]), and a `string`
-/// is immutable so sharing its pointer IS its value-semantic copy, so a flat word
-/// copy is an exact deep copy and needs no per-element type dispatch.
-fn emit_list_copy_elems(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out: &mut Vec<u8>) {
+/// and `dst` are `i32` locals holding list base pointers. `elem_ty` is the list's
+/// element IR type, which decides the per-element copy:
+///
+/// - a **scalar or `string`** element is copied word-for-word by a `SLOT_SIZE`-
+///   aligned `i64` load/store — a `string` is immutable, so sharing its pointer IS
+///   its value-semantic copy;
+/// - a **mutable-aggregate** element (a `struct` or a nested `list`) is
+///   DEEP-COPIED: the element pointer is loaded from `src`, `emit_deep_copy`
+///   produces a fresh independent record, and that fresh pointer is stored into
+///   `dst`. This mirrors [`emit_copy_element_at`] (the array path) and the
+///   interpreters' recursive `Value::clone`, so mutating an element of one list
+///   copy is never observable through another.
+fn emit_list_copy_elems(
+    ctx: &mut LowerCtx,
+    elem_ty: &TypeRef,
+    src: u32,
+    dst: u32,
+    count: u32,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let deep = is_mutable_aggregate(elem_ty, ctx.structs, ctx.enums);
     let i = ctx.add_local(WasmValType::I32);
     out.push(0x41); // i32.const 0
     write_sleb(out, 0);
@@ -3805,15 +4017,30 @@ fn emit_list_copy_elems(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out:
     write_sleb(out, LIST_DATA_OFF as i64);
     out.push(0x6a); // i32.add
     set_local(out, off);
-    // memory[dst + off] = memory[src + off] (one 8-byte word)
-    get_local(out, dst);
-    get_local(out, off);
-    out.push(0x6a); // i32.add -> dst addr
-    get_local(out, src);
-    get_local(out, off);
-    out.push(0x6a); // i32.add -> src addr
-    emit_load(WasmValType::I64, out);
-    emit_store(WasmValType::I64, out);
+    if deep {
+        // dst_addr = dst + off; load the element pointer from src + off, deep-copy
+        // it into a fresh record, store that fresh pointer into dst.
+        get_local(out, dst);
+        get_local(out, off);
+        out.push(0x6a); // i32.add -> dst addr
+        get_local(out, src);
+        get_local(out, off);
+        out.push(0x6a); // i32.add -> src addr
+        emit_load(WasmValType::I32, out);
+        emit_deep_copy(ctx, elem_ty, out)?;
+        emit_store(WasmValType::I32, out);
+    } else {
+        // memory[dst + off] = memory[src + off] (one 8-byte word: scalar or a
+        // shared immutable `string` pointer).
+        get_local(out, dst);
+        get_local(out, off);
+        out.push(0x6a); // i32.add -> dst addr
+        get_local(out, src);
+        get_local(out, off);
+        out.push(0x6a); // i32.add -> src addr
+        emit_load(WasmValType::I64, out);
+        emit_store(WasmValType::I64, out);
+    }
     // i += 1
     get_local(out, i);
     out.push(0x41); // i32.const 1
@@ -3824,14 +4051,21 @@ fn emit_list_copy_elems(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out:
     write_uleb(out, 0);
     out.push(0x0b); // end loop
     out.push(0x0b); // end block
+    Ok(())
 }
 
 /// Deep-copy the growable `list<T>` whose pointer is on the stack, leaving a fresh
 /// independent `[len][cap][slots]` block's pointer on the stack. The copy keeps the
-/// source's `len` and `cap` and duplicates its `len` element slots. This is the
-/// WASM realization of the interpreters' `Value::clone` on a list: mutating the
-/// copy (or the original) is never observable through the other pointer.
-fn emit_list_deep_copy(ctx: &mut LowerCtx, out: &mut Vec<u8>) -> Result<(), String> {
+/// source's `len` and `cap` and duplicates its `len` element slots (deep-copying a
+/// mutable-aggregate element per [`emit_list_copy_elems`]). This is the WASM
+/// realization of the interpreters' recursive `Value::clone` on a list: mutating
+/// the copy (or the original), or an element of either, is never observable through
+/// the other pointer. `elem_ty` is the element IR type.
+fn emit_list_deep_copy(
+    ctx: &mut LowerCtx,
+    elem_ty: &TypeRef,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     let src = ctx.add_local(WasmValType::I32);
     set_local(out, src);
     // len = load [src + LIST_LEN_OFF], cap = load [src + LIST_CAP_OFF]
@@ -3854,7 +4088,7 @@ fn emit_list_deep_copy(ctx: &mut LowerCtx, out: &mut Vec<u8>) -> Result<(), Stri
     get_local(out, cap);
     emit_store_at(WasmValType::I32, LIST_CAP_OFF, out);
     // copy the `len` live element slots
-    emit_list_copy_elems(ctx, src, dst, len, out);
+    emit_list_copy_elems(ctx, elem_ty, src, dst, len, out)?;
     get_local(out, dst);
     Ok(())
 }
@@ -3891,17 +4125,18 @@ fn lower_list_push(
     value: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let elem_ty = supported_list_element(&list.ty).ok_or_else(|| {
+    let elem_ty = supported_list_element(&list.ty, ctx.structs, ctx.enums).ok_or_else(|| {
         format!(
-            "push expects a scalar-element list but got `{}`",
+            "push expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
-    let slot_ty = scalar_or_string_slot_type(&elem_ty)
+    let slot_ty = collection_slot_type(&elem_ty, ctx.structs, ctx.enums, 0)
         .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
+    let deep_elem = is_mutable_aggregate(&elem_ty, ctx.structs, ctx.enums);
     // Deep-copy the source list into a fresh, independent block (value semantics).
     lower_expr(ctx, list, out)?;
-    emit_list_deep_copy(ctx, out)?;
+    emit_list_deep_copy(ctx, &elem_ty, out)?;
     let lst = ctx.add_local(WasmValType::I32);
     set_local(out, lst);
     // Grow if len == cap.
@@ -3919,7 +4154,7 @@ fn lower_list_push(
     out.push(0x4e); // i32.ge_s
     out.push(0x04); // if
     out.push(0x40); // void block type
-    emit_list_grow(ctx, lst, len, cap, out);
+    emit_list_grow(ctx, &elem_ty, lst, len, cap, out)?;
     out.push(0x0b); // end if
     // slot address of element `len`: lst + LIST_DATA_OFF + len * SLOT_SIZE
     get_local(out, lst);
@@ -3932,6 +4167,12 @@ fn lower_list_push(
     out.push(0x6a); // i32.add
     out.push(0x6a); // i32.add -> element slot address
     lower_expr(ctx, value, out)?; // the value to append
+    if deep_elem {
+        // A mutable-aggregate element is stored as an INDEPENDENT deep copy so a
+        // later mutation of the source value never leaks into the list, matching the
+        // interpreters (an argument `Value` is cloned before it is pushed).
+        emit_deep_copy(ctx, &elem_ty, out)?;
+    }
     emit_store(slot_ty, out);
     // len += 1
     get_local(out, lst);
@@ -3946,10 +4187,23 @@ fn lower_list_push(
 
 /// Grow the list in `lst` (an `i32` local) so it has room past `len` (== `cap`):
 /// compute `new_cap = if cap == 0 { LIST_INITIAL_CAP } else { cap * 2 }`, `__alloc`
-/// a fresh block, copy the `len` live elements, write the new `cap` and preserved
-/// `len`, and update `lst` to the new pointer. `len` and `cap` locals are refreshed
-/// so the caller sees the post-grow capacity; the old block is orphaned.
-fn emit_list_grow(ctx: &mut LowerCtx, lst: u32, len: u32, cap: u32, out: &mut Vec<u8>) {
+/// a fresh block, copy the `len` live elements (deep-copying a mutable-aggregate
+/// element per [`emit_list_copy_elems`], with `elem_ty` the element type), write the
+/// new `cap` and preserved `len`, and update `lst` to the new pointer. `len` and
+/// `cap` locals are refreshed so the caller sees the post-grow capacity; the old
+/// block is orphaned. The elements copied here already came from a fresh deep copy
+/// of the source list, so the grow reuses their independent records without a second
+/// deep recursion — but the copy still routes through `emit_list_copy_elems`, whose
+/// per-element deep-copy keeps the grown block's elements independent of the
+/// pre-grow block that is about to be orphaned.
+fn emit_list_grow(
+    ctx: &mut LowerCtx,
+    elem_ty: &TypeRef,
+    lst: u32,
+    len: u32,
+    cap: u32,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     // new_cap = cap == 0 ? LIST_INITIAL_CAP : cap * 2
     let new_cap = ctx.add_local(WasmValType::I32);
     get_local(out, cap);
@@ -3976,12 +4230,13 @@ fn emit_list_grow(ctx: &mut LowerCtx, lst: u32, len: u32, cap: u32, out: &mut Ve
     get_local(out, new_cap);
     emit_store_at(WasmValType::I32, LIST_CAP_OFF, out);
     // copy the `len` live elements from the old block (lst) to dst
-    emit_list_copy_elems(ctx, lst, dst, len, out);
+    emit_list_copy_elems(ctx, elem_ty, lst, dst, len, out)?;
     // lst = dst; cap = new_cap (len is unchanged)
     get_local(out, dst);
     set_local(out, lst);
     get_local(out, new_cap);
     set_local(out, cap);
+    Ok(())
 }
 
 /// Lower `get(l, i) -> T`: load element `i` from `l + LIST_DATA_OFF + i*SLOT_SIZE`.
@@ -3989,23 +4244,35 @@ fn emit_list_grow(ctx: &mut LowerCtx, lst: u32, len: u32, cap: u32, out: &mut Ve
 /// linear-memory trapping for a truly out-of-range index, so in-bounds reads match
 /// the interpreters exactly and an OOB read traps (a consistent, documented
 /// behavior) instead of returning a poisoned value.
+///
+/// The interpreters return `values[i].clone()` — a DEEP CLONE of the element — so a
+/// mutable-aggregate element (`struct`/nested `list`) is loaded and then
+/// `emit_deep_copy`'d into a fresh independent record before it leaves `get`.
+/// Mutating the returned copy (or pushing it into another list and mutating that)
+/// therefore never affects the original list's element, exactly like the
+/// interpreters. A scalar or immutable `string` element needs no copy (a `string`
+/// is shared, which IS its value-semantic clone).
 fn lower_list_get(
     ctx: &mut LowerCtx,
     list: &IrExpr,
     index: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let elem_ty = supported_list_element(&list.ty).ok_or_else(|| {
+    let elem_ty = supported_list_element(&list.ty, ctx.structs, ctx.enums).ok_or_else(|| {
         format!(
-            "get expects a scalar-element list but got `{}`",
+            "get expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
-    let slot_ty = scalar_or_string_slot_type(&elem_ty)
+    let slot_ty = collection_slot_type(&elem_ty, ctx.structs, ctx.enums, 0)
         .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
     lower_expr(ctx, list, out)?; // base pointer
     emit_list_elem_offset(ctx, index, out)?; // += LIST_DATA_OFF + index * SLOT_SIZE
     emit_load(slot_ty, out);
+    if is_mutable_aggregate(&elem_ty, ctx.structs, ctx.enums) {
+        // Return an independent deep copy (the interpreters' `values[i].clone()`).
+        emit_deep_copy(ctx, &elem_ty, out)?;
+    }
     Ok(())
 }
 
@@ -4020,22 +4287,28 @@ fn lower_list_set(
     value: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let elem_ty = supported_list_element(&list.ty).ok_or_else(|| {
+    let elem_ty = supported_list_element(&list.ty, ctx.structs, ctx.enums).ok_or_else(|| {
         format!(
-            "set expects a scalar-element list but got `{}`",
+            "set expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
-    let slot_ty = scalar_or_string_slot_type(&elem_ty)
+    let slot_ty = collection_slot_type(&elem_ty, ctx.structs, ctx.enums, 0)
         .ok_or_else(|| format!("list element type `{}` is unsupported", elem_ty.name))?;
+    let deep_elem = is_mutable_aggregate(&elem_ty, ctx.structs, ctx.enums);
     lower_expr(ctx, list, out)?;
-    emit_list_deep_copy(ctx, out)?;
+    emit_list_deep_copy(ctx, &elem_ty, out)?;
     let lst = ctx.add_local(WasmValType::I32);
     set_local(out, lst);
     // element slot address in the copy
     get_local(out, lst);
     emit_list_elem_offset(ctx, index, out)?;
     lower_expr(ctx, value, out)?;
+    if deep_elem {
+        // Store an independent deep copy of the replacement so a later mutation of
+        // the source value never leaks into the list (interpreter clone semantics).
+        emit_deep_copy(ctx, &elem_ty, out)?;
+    }
     emit_store(slot_ty, out);
     get_local(out, lst);
     Ok(())
@@ -4048,14 +4321,14 @@ fn lower_list_set(
 /// interpreters; the WASM path decrements to `-1` len, so the enclosing program is
 /// expected to keep the same non-empty precondition the interpreters require.
 fn lower_list_pop(ctx: &mut LowerCtx, list: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
-    supported_list_element(&list.ty).ok_or_else(|| {
+    let elem_ty = supported_list_element(&list.ty, ctx.structs, ctx.enums).ok_or_else(|| {
         format!(
-            "pop expects a scalar-element list but got `{}`",
+            "pop expects a supported-element list but got `{}`",
             list.ty.name
         )
     })?;
     lower_expr(ctx, list, out)?;
-    emit_list_deep_copy(ctx, out)?;
+    emit_list_deep_copy(ctx, &elem_ty, out)?;
     let lst = ctx.add_local(WasmValType::I32);
     set_local(out, lst);
     // len -= 1
@@ -4120,12 +4393,27 @@ fn emit_map_entry_addr(base: u32, entry: u32, out: &mut Vec<u8>) {
 }
 
 /// Copy the first `count` entry records (each `MAP_ENTRY_SIZE` = two `SLOT_SIZE`
-/// words) from `src` to `dst` map backing blocks in a runtime loop. `count`,
-/// `src`, and `dst` are `i32` locals. A map key is a scalar and a value is a
-/// scalar or a `string` pointer (see [`supported_map_kv`]); a `string` is
-/// immutable so sharing its pointer IS its value-semantic copy, so a flat word
-/// copy of both slots is an exact deep copy and needs no per-entry type dispatch.
-fn emit_map_copy_entries(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out: &mut Vec<u8>) {
+/// words) from `src` to `dst` map backing blocks in a runtime loop. `count`, `src`,
+/// and `dst` are `i32` locals; `value_ty` is the map's value IR type. A map KEY is
+/// always a scalar or an immutable `string` pointer (a `string` is compared by
+/// content but shared on copy), so the key word is copied flat. The VALUE word is:
+///
+/// - copied FLAT for a scalar or immutable `string` value — sharing the pointer IS
+///   the value-semantic copy;
+/// - DEEP-COPIED for a mutable-aggregate value (a `struct`, i.e. `map<K, struct>`):
+///   the value pointer is loaded from `src`, `emit_deep_copy` produces a fresh
+///   independent record, and that fresh pointer is stored into `dst` — matching the
+///   interpreters' recursive `Value::clone` on a map, so mutating a value of one map
+///   copy is never observable through another.
+fn emit_map_copy_entries(
+    ctx: &mut LowerCtx,
+    value_ty: &TypeRef,
+    src: u32,
+    dst: u32,
+    count: u32,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let deep_value = is_mutable_aggregate(value_ty, ctx.structs, ctx.enums);
     let i = ctx.add_local(WasmValType::I32);
     out.push(0x41); // i32.const 0
     write_sleb(out, 0);
@@ -4150,18 +4438,36 @@ fn emit_map_copy_entries(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out
     write_sleb(out, MAP_DATA_OFF as i64);
     out.push(0x6a); // i32.add
     set_local(out, off);
-    // Copy the two 8-byte words (key slot then value slot) of the entry.
-    for word in 0..2 {
-        let word_off = word * SLOT_SIZE;
-        // dst addr = dst + off; value = load [src + off]; store.
+    // Copy the key word flat (a scalar or a shared immutable `string` pointer).
+    get_local(out, dst);
+    get_local(out, off);
+    out.push(0x6a); // i32.add -> dst key addr
+    get_local(out, src);
+    get_local(out, off);
+    out.push(0x6a); // i32.add -> src key addr
+    emit_load_at(WasmValType::I64, 0, out);
+    emit_store_at(WasmValType::I64, 0, out);
+    // Copy the value word at MAP_VALUE_OFF: flat for a scalar/string, deep for a
+    // mutable aggregate.
+    if deep_value {
         get_local(out, dst);
         get_local(out, off);
-        out.push(0x6a); // i32.add -> dst addr
+        out.push(0x6a); // i32.add -> dst entry addr
         get_local(out, src);
         get_local(out, off);
-        out.push(0x6a); // i32.add -> src addr
-        emit_load_at(WasmValType::I64, word_off, out);
-        emit_store_at(WasmValType::I64, word_off, out);
+        out.push(0x6a); // i32.add -> src entry addr
+        emit_load_at(WasmValType::I32, MAP_VALUE_OFF, out);
+        emit_deep_copy(ctx, value_ty, out)?;
+        emit_store_at(WasmValType::I32, MAP_VALUE_OFF, out);
+    } else {
+        get_local(out, dst);
+        get_local(out, off);
+        out.push(0x6a); // i32.add -> dst entry addr
+        get_local(out, src);
+        get_local(out, off);
+        out.push(0x6a); // i32.add -> src entry addr
+        emit_load_at(WasmValType::I64, MAP_VALUE_OFF, out);
+        emit_store_at(WasmValType::I64, MAP_VALUE_OFF, out);
     }
     // i += 1
     get_local(out, i);
@@ -4173,14 +4479,21 @@ fn emit_map_copy_entries(ctx: &mut LowerCtx, src: u32, dst: u32, count: u32, out
     write_uleb(out, 0);
     out.push(0x0b); // end loop
     out.push(0x0b); // end block
+    Ok(())
 }
 
 /// Deep-copy the growable `map<K, V>` whose pointer is on the stack, leaving a
 /// fresh independent `[len][cap][entries]` block's pointer on the stack. The copy
 /// keeps the source's `len` and `cap` and duplicates its `len` live entry records
-/// (each two words). This is the WASM realization of the interpreters' clone on a
-/// map: mutating the copy (or the original) is never observable through the other.
-fn emit_map_deep_copy(ctx: &mut LowerCtx, out: &mut Vec<u8>) -> Result<(), String> {
+/// (each two words; a mutable-aggregate value is deep-copied per
+/// [`emit_map_copy_entries`], with `value_ty` the value type). This is the WASM
+/// realization of the interpreters' recursive clone on a map: mutating the copy (or
+/// the original), or a value of either, is never observable through the other.
+fn emit_map_deep_copy(
+    ctx: &mut LowerCtx,
+    value_ty: &TypeRef,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     let src = ctx.add_local(WasmValType::I32);
     set_local(out, src);
     // len = load [src + MAP_LEN_OFF], cap = load [src + MAP_CAP_OFF]
@@ -4203,7 +4516,7 @@ fn emit_map_deep_copy(ctx: &mut LowerCtx, out: &mut Vec<u8>) -> Result<(), Strin
     get_local(out, cap);
     emit_store_at(WasmValType::I32, MAP_CAP_OFF, out);
     // copy the `len` live entry records
-    emit_map_copy_entries(ctx, src, dst, len, out);
+    emit_map_copy_entries(ctx, value_ty, src, dst, len, out)?;
     get_local(out, dst);
     Ok(())
 }
@@ -4426,21 +4739,23 @@ fn lower_map_set(
     value: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let (key_ty, value_ty) = supported_map_kv(&map.ty).ok_or_else(|| {
-        format!(
-            "map_set expects a scalar/string-key, scalar/string-value map but got `{}`",
-            map.ty.name
-        )
-    })?;
+    let (key_ty, value_ty) =
+        supported_map_kv(&map.ty, ctx.structs, ctx.enums).ok_or_else(|| {
+            format!(
+                "map_set expects a scalar/string key and a supported value but got `{}`",
+                map.ty.name
+            )
+        })?;
     let key_slot = scalar_or_string_slot_type(&key_ty)
         .ok_or_else(|| format!("map key type `{}` is unsupported", key_ty.name))?;
     let key_is_string = key_ty.name == "string";
-    let value_slot = scalar_or_string_slot_type(&value_ty)
+    let value_slot = collection_slot_type(&value_ty, ctx.structs, ctx.enums, 0)
         .ok_or_else(|| format!("map value type `{}` is unsupported", value_ty.name))?;
+    let deep_value = is_mutable_aggregate(&value_ty, ctx.structs, ctx.enums);
 
     // Deep-copy the source map into a fresh, independent block (value semantics).
     lower_expr(ctx, map, out)?;
-    emit_map_deep_copy(ctx, out)?;
+    emit_map_deep_copy(ctx, &value_ty, out)?;
     let mp = ctx.add_local(WasmValType::I32);
     set_local(out, mp);
     // Evaluate the key once into a local for the scan and (on append) the store.
@@ -4469,7 +4784,7 @@ fn lower_map_set(
     out.push(0x4e); // i32.ge_s
     out.push(0x04); // if
     out.push(0x40); // void
-    emit_map_grow(ctx, mp, len, cap, out);
+    emit_map_grow(ctx, &value_ty, mp, len, cap, out)?;
     out.push(0x0b); // end if (grow)
     // entry addr of index `len`
     emit_map_entry_addr(mp, len, out);
@@ -4479,9 +4794,13 @@ fn lower_map_set(
     get_local(out, entry_addr);
     get_local(out, key_local);
     emit_store_at(key_slot, 0, out);
-    // store value at entry + MAP_VALUE_OFF
+    // store value at entry + MAP_VALUE_OFF (an independent deep copy for a
+    // mutable-aggregate value, matching the interpreters' clone-before-insert).
     get_local(out, entry_addr);
     lower_expr(ctx, value, out)?;
+    if deep_value {
+        emit_deep_copy(ctx, &value_ty, out)?;
+    }
     emit_store_at(value_slot, MAP_VALUE_OFF, out);
     // len += 1
     get_local(out, mp);
@@ -4494,6 +4813,9 @@ fn lower_map_set(
     // --- overwrite branch: store value into entry `found`'s value slot ---
     emit_map_entry_addr(mp, found, out);
     lower_expr(ctx, value, out)?;
+    if deep_value {
+        emit_deep_copy(ctx, &value_ty, out)?;
+    }
     emit_store_at(value_slot, MAP_VALUE_OFF, out);
     out.push(0x0b); // end if (append/overwrite)
 
@@ -4503,10 +4825,19 @@ fn lower_map_set(
 
 /// Grow the map in `mp` (an `i32` local) so it has room past `len` (== `cap`):
 /// compute `new_cap = if cap == 0 { MAP_INITIAL_CAP } else { cap * 2 }`, `__alloc`
-/// a fresh block, copy the `len` live entries, write the new `cap` and preserved
-/// `len`, and update `mp` to the new pointer. `len` and `cap` locals are refreshed
-/// so the caller sees the post-grow capacity; the old block is orphaned.
-fn emit_map_grow(ctx: &mut LowerCtx, mp: u32, len: u32, cap: u32, out: &mut Vec<u8>) {
+/// a fresh block, copy the `len` live entries (deep-copying a mutable-aggregate
+/// value per [`emit_map_copy_entries`], with `value_ty` the value type), write the
+/// new `cap` and preserved `len`, and update `mp` to the new pointer. `len` and
+/// `cap` locals are refreshed so the caller sees the post-grow capacity; the old
+/// block is orphaned.
+fn emit_map_grow(
+    ctx: &mut LowerCtx,
+    value_ty: &TypeRef,
+    mp: u32,
+    len: u32,
+    cap: u32,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     // new_cap = cap == 0 ? MAP_INITIAL_CAP : cap * 2
     let new_cap = ctx.add_local(WasmValType::I32);
     get_local(out, cap);
@@ -4533,12 +4864,13 @@ fn emit_map_grow(ctx: &mut LowerCtx, mp: u32, len: u32, cap: u32, out: &mut Vec<
     get_local(out, new_cap);
     emit_store_at(WasmValType::I32, MAP_CAP_OFF, out);
     // copy the `len` live entries from the old block (mp) to dst
-    emit_map_copy_entries(ctx, mp, dst, len, out);
+    emit_map_copy_entries(ctx, value_ty, mp, dst, len, out)?;
     // mp = dst; cap = new_cap (len unchanged)
     get_local(out, dst);
     set_local(out, mp);
     get_local(out, new_cap);
     set_local(out, cap);
+    Ok(())
 }
 
 /// Lower `map_get(m, k) -> option<V>`: deep-copy `m` is NOT needed (read-only),
@@ -4552,24 +4884,41 @@ fn lower_map_get(
     key: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let (key_ty, value_ty) = supported_map_kv(&map.ty).ok_or_else(|| {
-        format!(
-            "map_get expects a scalar/string-key, scalar/string-value map but got `{}`",
-            map.ty.name
-        )
-    })?;
+    let (key_ty, value_ty) =
+        supported_map_kv(&map.ty, ctx.structs, ctx.enums).ok_or_else(|| {
+            format!(
+                "map_get expects a scalar/string key and a supported value but got `{}`",
+                map.ty.name
+            )
+        })?;
     let key_slot = scalar_or_string_slot_type(&key_ty)
         .ok_or_else(|| format!("map key type `{}` is unsupported", key_ty.name))?;
     let key_is_string = key_ty.name == "string";
-    let value_slot = scalar_or_string_slot_type(&value_ty)
+    let value_slot = collection_slot_type(&value_ty, ctx.structs, ctx.enums, 0)
         .ok_or_else(|| format!("map value type `{}` is unsupported", value_ty.name))?;
+    let deep_value = is_mutable_aggregate(&value_ty, ctx.structs, ctx.enums);
     // The result `option<V>` enum layout: variant `some(V)` is tag 0, `none` tag 1.
-    let layout = enum_layout(result_ty, ctx.enums).ok_or_else(|| {
+    // Built directly (not via `enum_layout`) so a mutable-aggregate value type
+    // (`map<K, struct>` -> `option<struct>`) is laid out — the `some` payload is one
+    // `i32` pointer slot, deep-copied above so the option owns an independent value.
+    // The produced option is consumed locally (matched to extract the value), so its
+    // enum-level deep copy across a boundary is not exercised by this construction.
+    let inner = result_ty.option_element().ok_or_else(|| {
         format!(
-            "map_get result type `{}` is not a supported option enum",
+            "map_get result type `{}` is not an `option<V>` enum",
             result_ty.name
         )
     })?;
+    if inner.name != value_ty.name {
+        return Err(format!(
+            "map_get result `option<{}>` does not match value type `{}`",
+            inner.name, value_ty.name
+        ));
+    }
+    let layout = build_layout(vec![
+        ("some".to_string(), vec![inner]),
+        ("none".to_string(), Vec::new()),
+    ]);
 
     // Evaluate the map to a pointer local and the key to a slot local.
     lower_expr(ctx, map, out)?;
@@ -4608,10 +4957,16 @@ fn lower_map_get(
     out.push(0x41); // i32.const some_tag
     write_sleb(out, some_tag as i64);
     emit_store_at(WasmValType::I32, 0, out);
-    // opt payload slot = load entry(found).value
+    // opt payload slot = load entry(found).value. A mutable-aggregate value is
+    // deep-copied so the option's payload is an INDEPENDENT record — mutating the
+    // retrieved value never affects the map's stored value, matching the
+    // interpreters' `map_get` returning a clone of the value.
     get_local(out, opt);
     emit_map_entry_addr(mp, found, out);
     emit_load_at(value_slot, MAP_VALUE_OFF, out);
+    if deep_value {
+        emit_deep_copy(ctx, &value_ty, out)?;
+    }
     emit_store_at(value_slot, ENUM_PAYLOAD_BASE, out);
     out.push(0x0b); // end if
 
@@ -4627,12 +4982,13 @@ fn lower_map_has(
     key: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let (key_ty, _value_ty) = supported_map_kv(&map.ty).ok_or_else(|| {
-        format!(
-            "map_has expects a scalar/string-key, scalar/string-value map but got `{}`",
-            map.ty.name
-        )
-    })?;
+    let (key_ty, _value_ty) =
+        supported_map_kv(&map.ty, ctx.structs, ctx.enums).ok_or_else(|| {
+            format!(
+                "map_has expects a scalar/string key and a supported value but got `{}`",
+                map.ty.name
+            )
+        })?;
     let key_slot = scalar_or_string_slot_type(&key_ty)
         .ok_or_else(|| format!("map key type `{}` is unsupported", key_ty.name))?;
     let key_is_string = key_ty.name == "string";
@@ -4657,9 +5013,9 @@ fn lower_map_has(
 /// `i64` (the builtin's interpreter result type). Reads offset 0, shared with the
 /// string/array/list length header.
 fn lower_map_len(ctx: &mut LowerCtx, map: &IrExpr, out: &mut Vec<u8>) -> Result<(), String> {
-    supported_map_kv(&map.ty).ok_or_else(|| {
+    supported_map_kv(&map.ty, ctx.structs, ctx.enums).ok_or_else(|| {
         format!(
-            "map_len expects a scalar/string-key, scalar/string-value map but got `{}`",
+            "map_len expects a scalar/string key and a supported value but got `{}`",
             map.ty.name
         )
     })?;
@@ -5951,11 +6307,13 @@ mod tests {
 
     #[test]
     fn list_of_mutable_heap_element_is_skipped() {
-        // A `list<array<i64>>` (MUTABLE heap element) is still DEFERRED:
-        // `supported_list_element` rejects a non-scalar, non-`string` element (it
-        // would need a recursive per-element deep copy), so the function's
-        // signature is ineligible and it is skipped (still runs on the
-        // interpreters), never miscompiled.
+        // A `list<array<i64>>` (a fixed-`array` element) is still DEFERRED:
+        // `supported_list_element`/`collection_slot_type` accept a `struct` or a
+        // nested growable `list` element but NOT a fixed `array` element this
+        // increment, so the function's signature is ineligible and it is skipped
+        // (still runs on the interpreters), never miscompiled. (A `list<struct>` and
+        // `list<list<scalar>>` DO compile now — see
+        // `list_of_struct_element_compiles_with_recursive_deep_copy`.)
         let source = concat!(
             "fn grid -> list<array<i64>>\n",
             "    list_new()\n\n",
@@ -5965,6 +6323,90 @@ mod tests {
         assert_eq!(artifact.compiled, vec!["ok".to_string()]);
         assert_eq!(artifact.skipped.len(), 1);
         assert_eq!(artifact.skipped[0].name, "grid");
+    }
+
+    #[test]
+    fn list_of_struct_element_compiles_with_recursive_deep_copy() {
+        // A `list<struct>` COMPILES now: the element is an `i32` pointer to the
+        // struct record, and the list's value-semantic deep copy RECURSES per element
+        // (loads the element pointer, deep-copies the struct, stores the fresh
+        // pointer) rather than sharing it — matching the interpreters' recursive
+        // `Value::clone`. `get` likewise returns an independent deep copy of the
+        // element (the interpreters' `values[i].clone()`), so mutating the retrieved
+        // struct cannot affect the list's stored element.
+        let source = concat!(
+            "struct Point\n    x i64\n    y i64\n\n",
+            "fn build -> list<Point>\n",
+            "    push(list_new(), Point(1, 2))\n\n",
+            "fn head l list<Point> -> i64\n",
+            "    let p Point = get(l, 0)\n",
+            "    p.x + p.y\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"build".to_string())
+                && artifact.compiled.contains(&"head".to_string()),
+            "list<struct> functions should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+
+        let code = section_body(&artifact.bytes, 10).expect("code section");
+        // A recursive per-element deep copy loads the element pointer as an `i32`
+        // (`i32.load` 0x28) and, after allocating a fresh struct record, stores the
+        // fresh pointer as an `i32` (`i32.store` 0x36) — the element slot is NOT
+        // copied only by a flat `i64` word (which would share the pointer). The
+        // struct deep copy calls `__alloc` (the last internal function: `build`(0),
+        // `head`(1), `__alloc`(2), all offset past the imports), so a `call` (0x10)
+        // of that index appears where a scalar-only list would not deep-copy.
+        let alloc_index = IMPORT_FUNC_COUNT as u8 + 2;
+        assert!(
+            find_subslice(&code, &[0x28, 0x02, 0x00]).is_some(),
+            "the element deep-copy loads the element pointer as an i32"
+        );
+        assert!(
+            find_subslice(&code, &[0x10, alloc_index]).is_some(),
+            "the recursive element deep-copy allocates a fresh struct record via __alloc"
+        );
+    }
+
+    #[test]
+    fn nested_list_element_compiles() {
+        // A `list<list<i64>>` COMPILES (one level of mutable nesting): the inner list
+        // element is deep-copied per outer element, and `nested_sum`-style nested
+        // `get`s read the scalar leaves. A `list<list<list<i64>>>` (two levels) is
+        // DEFERRED — see `nested_list_beyond_one_level_is_skipped`.
+        let source = concat!(
+            "fn build -> list<list<i64>>\n",
+            "    push(list_new(), push(list_new(), 7))\n\n",
+            "fn first l list<list<i64>> -> i64\n",
+            "    let row list<i64> = get(l, 0)\n",
+            "    get(row, 0)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"build".to_string())
+                && artifact.compiled.contains(&"first".to_string()),
+            "list<list<i64>> functions should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
+    }
+
+    #[test]
+    fn nested_list_beyond_one_level_is_skipped() {
+        // `list<list<list<i64>>>` nests mutable aggregates past the one level the
+        // backend can verify, so it is DEFERRED (skipped, runs on the interpreters),
+        // never miscompiled.
+        let source = concat!(
+            "fn build -> list<list<list<i64>>>\n",
+            "    list_new()\n\n",
+            "fn ok n i64 -> i64\n    n + 1\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["ok".to_string()]);
+        assert_eq!(artifact.skipped.len(), 1);
+        assert_eq!(artifact.skipped[0].name, "build");
     }
 
     // -- Growable `map<K, V>` (scalar key/value) -------------------------------
@@ -6156,13 +6598,14 @@ mod tests {
 
     #[test]
     fn map_with_mutable_value_is_skipped() {
-        // A `map<i64, array<i64>>` (a MUTABLE heap value) is DEFERRED:
-        // `supported_map_kv` rejects a value that is neither scalar nor `string`, so
-        // the signature is ineligible and the function is skipped (still runs on the
-        // interpreters), never miscompiled. (The semantic layer already restricts
-        // `map` KEYS to `i64` or `string` — L0388 — so a non-string heap key never
-        // reaches this backend.) A `string` key/value, by contrast, now compiles —
-        // see `map_string_key_function_compiles`.
+        // A `map<i64, array<i64>>` (a fixed-`array` value) is DEFERRED:
+        // `supported_map_kv`/`collection_slot_type` accept a `struct` value but NOT a
+        // fixed `array` value this increment, so the signature is ineligible and the
+        // function is skipped (still runs on the interpreters), never miscompiled.
+        // (The semantic layer already restricts `map` KEYS to `i64` or `string` —
+        // L0388 — so a non-string heap key never reaches this backend.) A `string`
+        // value now compiles (`map_string_key_function_compiles`), and a `struct`
+        // value now compiles too — see `map_of_struct_value_compiles`.
         let source = concat!(
             "fn rows -> map<i64, array<i64>>\n",
             "    map_new()\n\n",
@@ -6172,6 +6615,33 @@ mod tests {
         assert_eq!(artifact.compiled, vec!["ok".to_string()]);
         let skipped: Vec<&str> = artifact.skipped.iter().map(|s| s.name.as_str()).collect();
         assert!(skipped.contains(&"rows"));
+    }
+
+    #[test]
+    fn map_of_struct_value_compiles() {
+        // A `map<i64, struct>` COMPILES now: the value slot is an `i32` pointer to
+        // the struct record, and the map's value-semantic deep copy RECURSES per
+        // entry (loads the value pointer, deep-copies the struct, stores the fresh
+        // pointer). `map_get` returns `option<struct>` (built directly so the option
+        // lays out a struct payload) with an independent deep-copied value, matching
+        // the interpreters' recursive `Value::clone`.
+        let source = concat!(
+            "struct Point\n    x i64\n    y i64\n\n",
+            "fn build -> map<i64, Point>\n",
+            "    map_set(map_new(), 1, Point(3, 4))\n\n",
+            "fn value m map<i64, Point> k i64 -> i64\n",
+            "    match map_get(m, k)\n",
+            "        some(p) -> p.x + p.y\n",
+            "        none -> 0 - 1\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert!(
+            artifact.compiled.contains(&"build".to_string())
+                && artifact.compiled.contains(&"value".to_string()),
+            "map<i64, struct> functions should compile, skipped: {:?}",
+            artifact.skipped
+        );
+        assert!(artifact.skipped.is_empty());
     }
 
     // -- Aggregates across call boundaries (params/returns) --------------------
@@ -6288,12 +6758,13 @@ mod tests {
 
     #[test]
     fn no_eligible_functions_errors() {
-        // `result<i64, list<i64>>` is an enum with a MUTABLE heap payload, still
-        // outside the supported WASM value set, so nothing is eligible and the
-        // backend reports L0338. (Scalar-element `list<i64>`, `string` payloads
-        // like `result<i64, string>`, and scalar-key maps with a scalar or `string`
-        // value ARE supported now — see the growable-list/map and string tests.)
-        let source = "fn tally n i64 -> result<i64, list<i64>>\n    ok(n)\n";
+        // `map<i64, map<i64, i64>>` is a map whose VALUE is itself a map — a nested
+        // collection the backend does not lay out (a map element/value is deferred),
+        // so nothing is eligible and the backend reports L0338. (Scalar/`string`
+        // element `list`s, `list<struct>`/`list<list<scalar>>`, `map<K, struct>`,
+        // and enum payloads like `result<i64, string>`/`result<i64, list<i64>>` ARE
+        // supported now — see the growable-list/map, struct-element, and enum tests.)
+        let source = "fn tally n i64 -> map<i64, map<i64, i64>>\n    map_new()\n";
         let err = emit_wasm_module(&module_for(source)).expect_err("no eligible");
         assert_eq!(err.code, "L0338");
         assert_eq!(err.skipped.len(), 1);
@@ -6712,13 +7183,30 @@ mod tests {
     }
 
     #[test]
-    fn enum_with_mutable_heap_payload_is_skipped() {
-        // `result<i64, list<i64>>` has a MUTABLE heap (`list`) payload, which the
-        // WASM backend defers (it would need a recursive per-payload deep copy): the
-        // function is skipped (runs on the interpreters), never miscompiled. With no
-        // other eligible function, emission reports L0338.
+    fn enum_with_one_level_mutable_payload_compiles() {
+        // `result<i64, list<i64>>` has a one-level MUTABLE-aggregate (`list<i64>`)
+        // payload, which the WASM backend now supports: the payload slot is an `i32`
+        // pointer deep-copied per variant on the enum's value-semantic copy, matching
+        // the interpreters' recursive `Value::clone`. The function COMPILES.
         let source = concat!(
             "fn describe r result<i64, list<i64>> -> i64\n",
+            "    match r\n",
+            "        ok(v) -> v\n",
+            "        err(m) -> len(m)\n",
+        );
+        let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+        assert_eq!(artifact.compiled, vec!["describe".to_string()]);
+        assert!(artifact.skipped.is_empty());
+    }
+
+    #[test]
+    fn enum_with_deeply_nested_mutable_payload_is_skipped() {
+        // `result<i64, list<list<list<i64>>>>` nests mutable aggregates past the one
+        // level the backend can verify, so it is DEFERRED (skipped, runs on the
+        // interpreters), never miscompiled. With no other eligible function, emission
+        // reports L0338.
+        let source = concat!(
+            "fn describe r result<i64, list<list<list<i64>>>> -> i64\n",
             "    match r\n",
             "        ok(v) -> v\n",
             "        err(m) -> len(m)\n",
@@ -6727,7 +7215,7 @@ mod tests {
         assert_eq!(error.code, "L0338");
         assert!(
             error.skipped.iter().any(|s| s.name == "describe"),
-            "the mutable-heap-payload enum function is recorded as skipped: {:?}",
+            "the deeply-nested-mutable-payload enum function is recorded as skipped: {:?}",
             error.skipped
         );
     }
@@ -6755,16 +7243,19 @@ mod tests {
             ],
         }]);
 
-        let option = enum_layout(&TypeRef::new("option<i64>"), &enums).expect("option layout");
+        let structs = struct_table(&[]);
+        let option =
+            enum_layout(&TypeRef::new("option<i64>"), &structs, &enums).expect("option layout");
         assert_eq!(option.tag_of("some"), Some(0));
         assert_eq!(option.tag_of("none"), Some(1));
         assert_eq!(option.slot_count, 1);
 
-        let result = enum_layout(&TypeRef::new("result<i64, i64>"), &enums).expect("result layout");
+        let result = enum_layout(&TypeRef::new("result<i64, i64>"), &structs, &enums)
+            .expect("result layout");
         assert_eq!(result.tag_of("ok"), Some(0));
         assert_eq!(result.tag_of("err"), Some(1));
 
-        let shape = enum_layout(&TypeRef::new("Shape"), &enums).expect("user layout");
+        let shape = enum_layout(&TypeRef::new("Shape"), &structs, &enums).expect("user layout");
         assert_eq!(shape.tag_of("Circle"), Some(0));
         assert_eq!(shape.tag_of("Rect"), Some(1));
         assert_eq!(shape.tag_of("Empty"), Some(2));
@@ -6772,13 +7263,35 @@ mod tests {
 
         // A `string` payload IS supported (shared immutable pointer in one slot).
         assert!(
-            enum_layout(&TypeRef::new("result<i64, string>"), &enums).is_some(),
+            enum_layout(&TypeRef::new("result<i64, string>"), &structs, &enums).is_some(),
             "string-payload result is a supported WASM enum"
         );
-        // A MUTABLE heap payload (`list`) makes the enum unsupported for WASM.
+        // A one-level MUTABLE-aggregate payload (`list<i64>`) is NOW supported — the
+        // payload slot is deep-copied per variant on the enum's value-semantic copy.
         assert!(
-            enum_layout(&TypeRef::new("result<i64, list<i64>>"), &enums).is_none(),
-            "mutable-heap-payload result is not a supported WASM enum"
+            enum_layout(&TypeRef::new("result<i64, list<i64>>"), &structs, &enums).is_some(),
+            "a one-level list payload is a supported WASM enum (recursive deep copy)"
+        );
+        // A `map` payload is still DEFERRED (the backend does not lay out a map
+        // element/value inside an enum this increment).
+        assert!(
+            enum_layout(
+                &TypeRef::new("result<i64, map<i64, i64>>"),
+                &structs,
+                &enums
+            )
+            .is_none(),
+            "a map payload is not yet a supported WASM enum"
+        );
+        // Nesting beyond one mutable level (`list<list<list<i64>>>`) is DEFERRED.
+        assert!(
+            enum_layout(
+                &TypeRef::new("option<list<list<list<i64>>>>"),
+                &structs,
+                &enums
+            )
+            .is_none(),
+            "a payload nested past one mutable level is deferred"
         );
     }
 }

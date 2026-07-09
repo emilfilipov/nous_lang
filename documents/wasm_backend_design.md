@@ -208,11 +208,20 @@ a pointer (nested strings/structs/arrays).
   value match always leaves a value — binding each arm's payload slots into locals
   before its body. A payload slot is a scalar (its own value type) or a `string`
   (an `i32` pointer to the immutable string record, stored/loaded/copied exactly
-  like a scalar word). This covers the built-in `option<T>`/`result<T, E>` and
-  user enums when every variant payload is a scalar or a `string` — notably
-  `option<string>`, the result of `map_get` on a `map<K, string>`, and
-  `result<i64, string>`. An enum with a **mutable** heap payload
-  (`list`/`array`/`map`/`struct`) is still deferred.
+  like a scalar word). A payload slot may ALSO be a **mutable aggregate** — a
+  `struct` or a one-level nested `list` — occupying one `i32`-pointer slot that is
+  DEEP-COPIED per payload on the enum's value-semantic copy (`emit_deep_copy_enum`
+  first flat-copies the whole record, then branches on the loaded tag and
+  `emit_deep_copy`s each mutable-aggregate payload slot of the matching variant), and
+  `match` binds a mutable-aggregate payload as an independent deep copy. This covers
+  the built-in `option<T>`/`result<T, E>` and user enums when every variant payload
+  is a scalar, a `string`, or a one-level mutable aggregate — notably
+  `option<string>` and `option<struct>` (the results of `map_get` on a
+  `map<K, string>`/`map<K, struct>`), `result<i64, string>`, and `result<i64,
+  list<i64>>`. `map_get`'s `option<V>` layout is built directly (not via the generic
+  `enum_layout` scalar/string gate) so a `struct` value lays out. An enum whose
+  payload is a fixed `array` or a `map`, or is nested past one mutable level, is
+  still deferred.
 
 ### Aggregates across call boundaries (landed)
 
@@ -247,18 +256,23 @@ probes (a callee mutates its parameter; the caller's copy is verified unchanged)
 node-gated against the interpreter.
 
 **Deferred:** aggregates containing values the backend does not lay out — a
-`list`/`map` with a **mutable** heap element/value (`list<struct>`,
-`list<list<…>>`, `map<K, list<…>>`, nested collections), or an enum with a
-**mutable** heap payload (`list`/`array`/`map`/`struct`); `to_string` of a
-**float** (`f32`/`f64`) and the string builders not yet lowered — `replace`,
-`upper`/`lower`, `split`/`join`, `chars`/`string_from_chars` (the `+` concat,
-`to_string`, `substring`, `find`, `contains`, `starts_with`, and `ends_with` DO
-compile); and a free-list allocator (`__alloc` never frees this increment).
-(`string` **elements** of a `list<string>`, `string` **keys** of a
-`map<string, V>` — compared by content — `string` **values** of a
-`map<K, string>`, and `string` enum payloads DO compile — see below.)
-Functions using any of these are skipped with a reason and still run on the
-interpreters.
+`list`/`map`/`enum` nested MORE than one **mutable** heap level deep
+(`list<list<list<…>>>`, `map<K, map<…>>`, `map<K, list<…>>`, an enum whose payload
+is a nested collection), a `list`/`map`/`enum` element/value/payload that is a
+**fixed `array`** or a **`map`**, or a `map` with a **mutable-aggregate KEY**;
+`to_string` of a **float** (`f32`/`f64`) and the string builders not yet lowered —
+`replace`, `upper`/`lower`, `split`/`join`, `chars`/`string_from_chars` (the `+`
+concat, `to_string`, `substring`, `find`, `contains`, `starts_with`, and
+`ends_with` DO compile); and a free-list allocator (`__alloc` never frees this
+increment). One level of **mutable-aggregate** element/value/payload DOES compile
+now: `list<struct>`, `list<list<scalar|string>>`, `map<K, struct>`, and an enum
+with a `struct`/one-level-`list` payload (`option<struct>`, `result<struct, E>`,
+`result<i64, list<i64>>`) — each is deep-copied recursively, see **Mutable-heap
+collection elements/values (landed)** below. (`string` **elements** of a
+`list<string>`, `string` **keys** of a `map<string, V>` — compared by content —
+`string` **values** of a `map<K, string>`, and `string` enum payloads also DO
+compile.) Functions using any deferred construct are skipped with a reason and
+still run on the interpreters.
 
 ### Growable `list<T>` — scalar and `string` elements (landed)
 
@@ -322,13 +336,26 @@ linear-memory access (a consistent, documented behavior) rather than returning a
 poisoned value. In-bounds programs — the common case, and what every parity
 fixture exercises — agree bit-for-bit.
 
-**Out of scope (deferred):** lists of **mutable** heap elements
-(`list<struct>`/`list<list<…>>`/`list<map<…>>`) — a mutable-heap element would need
-a recursive per-element deep copy, so `supported_list_element` rejects it and the
-enclosing function is skipped (still runs on the interpreters) rather than
-miscompiled. (`list<string>` is NO LONGER deferred — a `string` element is a shared
-immutable pointer.) `__alloc` still never frees, so a grown or copied list orphans
-its old block (a free-list allocator is future work).
+**Mutable-aggregate elements (landed).** A `list<struct>` and a one-level
+`list<list<scalar|string>>` now compile: the element is an `i32` pointer, and the
+list's value-semantic deep copy RECURSES per element — `emit_list_copy_elems` loads
+each element pointer, `emit_deep_copy`s the element (struct/nested list) into a
+fresh independent record, and stores that fresh pointer — instead of sharing it,
+matching the interpreters' recursive `Value::clone`. `get(l, i)` on such a list
+returns an **independent deep copy** of the element (the interpreters'
+`values[i].clone()`), so mutating the retrieved struct never affects the list's
+stored element; `push`/`set` likewise deep-copy the incoming element so a later
+mutation of the source value never leaks in. `supported_list_element` accepts a
+scalar, a `string` (shared), or one level of mutable aggregate (`struct` /
+nested `list`); a fixed-`array` element, a `map` element, or nesting past one
+mutable level is DEFERRED (skipped, still runs on the interpreters).
+
+**Out of scope (deferred):** lists nested past one mutable level
+(`list<list<list<…>>>`), a `list` whose element is a fixed `array` or a `map`
+(`list<array<…>>`, `list<map<…>>`) — the enclosing function is skipped (still runs
+on the interpreters) rather than miscompiled. (`list<string>`, `list<struct>`, and
+`list<list<scalar>>` are NO LONGER deferred.) `__alloc` still never frees, so a
+grown or copied list orphans its old block (a free-list allocator is future work).
 
 Fixtures `wasm_list_build.lby` (build via `push` crossing the initial capacity to
 trigger a grow+copy, then `get`/`len`/`set`/`pop`, `main` = 5879) and
@@ -424,17 +451,28 @@ floats) or, for a `string` key, with the `emit_string_eq` **content** compare
 compare `Value` keys by content. In-bounds programs agree bit-for-bit; there is no
 out-of-bounds trap surface because every access is a header-bounded scan.
 
-**Out of scope (deferred):** maps with a **mutable** heap value (`map<K, list<…>>`,
-`map<K, struct>`, nested collections) — such a value would need a recursive
-per-value deep copy, so `supported_map_kv` rejects it and the enclosing function is
-skipped (still runs on the interpreters) rather than miscompiled. (`map<string, V>`
-and `map<K, string>` are NO LONGER deferred — a `string` key/value is a shared
-immutable pointer, and a `string` key is compared by content; see the string-key
-paragraph above. The semantic layer already restricts `map` KEYS to `i64` or
-`string` — diagnostic `L0388` — so no non-string heap key ever reaches this
-backend.) `map_keys`/`map_values` (which the interpreters return as `Value::Array`)
-and `map_del` are also deferred to a later increment. `__alloc` still never frees,
-so a grown or copied map orphans its old block.
+**Mutable-aggregate values (landed).** A `map<K, struct>` now compiles: the value
+slot is an `i32` pointer, and the map's value-semantic deep copy RECURSES per entry
+— `emit_map_copy_entries` copies the key word flat (a scalar or shared `string`)
+and, for a mutable-aggregate value, loads the value pointer, `emit_deep_copy`s the
+struct into a fresh record, and stores that fresh pointer. `map_get(m, k)` returns
+`option<struct>` whose `some` payload is an **independent deep copy** of the stored
+value (built directly so the option lays out a struct payload — see below), and
+`map_set` deep-copies the incoming value before storing it, matching the
+interpreters' clone semantics. `supported_map_kv` accepts a value that is a scalar,
+a `string` (shared), or one level of mutable aggregate (`struct` / nested `list`);
+the KEY stays scalar-or-`string`.
+
+**Out of scope (deferred):** maps whose value is a fixed `array` or a `map`
+(`map<K, array<…>>`, `map<K, map<…>>`), or nested past one mutable level
+(`map<K, list<list<…>>>`) — such a value the backend cannot lay out, so
+`supported_map_kv` rejects it and the enclosing function is skipped (still runs on
+the interpreters) rather than miscompiled. (`map<string, V>`, `map<K, string>`, and
+`map<K, struct>` are NO LONGER deferred. The semantic layer already restricts `map`
+KEYS to `i64` or `string` — diagnostic `L0388` — so no non-string heap key ever
+reaches this backend.) `map_keys`/`map_values` (which the interpreters return as
+`Value::Array`) and `map_del` are also deferred to a later increment. `__alloc`
+still never frees, so a grown or copied map orphans its old block.
 
 Fixtures `wasm_map_build.lby` (build via `map_set` with an in-place key update,
 crossing the initial capacity to trigger a grow+copy, then `map_get` matched
@@ -450,6 +488,46 @@ the interpreter
 (`crates/lullaby_cli/tests/cli.rs::wasm_map_build_execution_parity_with_node`,
 `wasm_map_value_semantics_execution_parity_with_node`, and
 `wasm_map_string_key_execution_parity_with_node`).
+
+### Mutable-heap collection elements/values (landed)
+
+A growable `list`/`map` element/value (and an enum payload) may now be a **mutable
+aggregate** — a named `struct`, or a one-level nested `list<scalar|string>` — not
+just a scalar or immutable `string`. The key requirement is **value semantics**: the
+collection's element/value deep-copy must RECURSE into a mutable-aggregate element
+(deep-copy the element struct/list) rather than share its pointer, exactly like the
+interpreters' recursive `Value::clone`. Immutable `string` elements stay shared;
+scalar elements stay flat-copied.
+
+- **Classification.** `collection_slot_type(ty, structs, enums, depth)` accepts a
+  scalar, a `string` (shared), or — at `depth < MAX_COLLECTION_NEST_DEPTH` (1) — a
+  `struct` (each field re-classified one level deeper) or a nested growable `list`
+  (its element one level deeper). `supported_list_element`/`supported_map_kv`/
+  `enum_layout` route through it, so `list<struct>`, `list<list<scalar|string>>`,
+  `map<K, struct>`, and `option<struct>`/`result<struct, E>`/`result<i64, list<…>>`
+  compile, while a fixed-`array` element, a `map` element, a mutable-aggregate map
+  KEY, or nesting past one mutable level is skipped gracefully (the function still
+  runs on the interpreters).
+- **Recursive deep copy.** `emit_list_copy_elems`/`emit_map_copy_entries` take the
+  element/value type: a scalar/`string` slot is a flat 8-byte word copy, a
+  mutable-aggregate slot loads the element pointer, `emit_deep_copy`s it, and stores
+  the fresh pointer. `emit_deep_copy_enum` flat-copies the record, then tag-branches
+  to `emit_deep_copy` each mutable-aggregate payload of the actual variant.
+- **Value-semantic reads and writes.** `get(l, i)` and `map_get`'s `some` payload
+  return an **independent deep copy** of a mutable-aggregate element/value (the
+  interpreters' `values[i].clone()` / value clone), so mutating the retrieved struct
+  never affects the collection's stored element. `push`/`set`/`map_set` deep-copy the
+  incoming mutable-aggregate value before storing it, so a later mutation of the
+  source never leaks in. `match` binds a mutable-aggregate payload as a deep copy.
+
+Fixture `wasm_list_struct.lby` builds a `list<Point>` (push structs, read a field,
+`set` an element), a `list<list<i64>>` (nested, summed through nested `get`s), and a
+`map<i64, Point>` (`map_set`/`map_get`→`option<Point>`/`map_len`). Its
+value-semantics probe reads `get(ps, 2)`, mutates the retrieved struct's `.x`/`.y`,
+then re-reads `get(ps, 2)` and confirms the ORIGINAL element is unchanged — proving
+the per-element deep copy. It runs on all three interpreter backends (`main` =
+503411108) and, under node, its exported `main` matches
+(`crates/lullaby_cli/tests/cli.rs::wasm_list_struct_and_nested_and_map_struct_execution_parity_with_node`).
 
 ## First increment — the scalar subset
 
@@ -471,28 +549,31 @@ second phase. So the first increment compiles the **scalar subset** only:
 - Statements: `let`, assignment, `return`, `if`/`elif`/`else`, `while`, `loop`
   with `break`/`continue`, and range `for` (lowered to a loop). These map to
   WASM's structured `block`/`loop`/`br`/`br_if`/`if`.
-- A function that uses a `list`/`map` with a **mutable** heap element/value, an
-  enum with a **mutable** heap payload, a runtime string builder other than `+`
-  concat, or any type still outside the supported set is **rejected for WASM** with
-  a clear diagnostic (it still runs on the interpreters). Note: later increments
-  added enum values and `match` for scalar-or-`string`-payload enums
-  (`option`/`result`/user enums), the growable `list<T>` collection for scalar and
-  `string` element types, the `map<K, V>` collection for a scalar or `string` key
-  (string keys compared by content) and a scalar or `string` value, and runtime
-  `string` `+` concatenation — see the linear-memory sections above. The allowed
-  builtins are `wasm_log(x i64) -> void` (the host log import above),
-  `console_log(s string) -> void` and `dom_set_text(id string, text string) ->
-  void` (the JS/DOM host imports above), `len(string|array|list) -> i64`, the
-  `list` builtins `list_new`/`push`/`get`/`set`/`pop` (scalar or `string` element),
-  the `map` builtins `map_new`/`map_set`/`map_get`/`map_has`/`map_len` (scalar or
-  `string` key, scalar or `string` value), `to_string` (non-float arguments), and
-  the index-based string operations
+- A function that uses a `list`/`map`/enum nested past one **mutable** heap level, a
+  `list`/`map` element/value (or enum payload) that is a fixed `array` or a `map`, a
+  `map` with a mutable-aggregate KEY, a runtime string builder other than `+` concat,
+  or any type still outside the supported set is **rejected for WASM** with a clear
+  diagnostic (it still runs on the interpreters). Note: later increments added enum
+  values and `match` for scalar-/`string`-/one-level-mutable-payload enums
+  (`option`/`result`/user enums, including `option<struct>` and
+  `result<i64, list<i64>>`), the growable `list<T>` collection for scalar,
+  `string`, and one-level mutable-aggregate element types (`list<struct>`,
+  `list<list<scalar|string>>`), the `map<K, V>` collection for a scalar or `string`
+  key (string keys compared by content) and a scalar, `string`, or `struct` value
+  (`map<K, struct>`), and runtime `string` `+` concatenation — see the linear-memory
+  sections above. The allowed builtins are `wasm_log(x i64) -> void` (the host log
+  import above), `console_log(s string) -> void` and `dom_set_text(id string, text
+  string) -> void` (the JS/DOM host imports above), `len(string|array|list) -> i64`,
+  the `list` builtins `list_new`/`push`/`get`/`set`/`pop`, the `map` builtins
+  `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, `to_string` (non-float
+  arguments), and the index-based string operations
   `substring`/`find`/`contains`/`starts_with`/`ends_with` (see **Heap types
   (landed)** above); every other builtin is still rejected. Strings, structs, fixed
-  arrays, scalar- and `string`-element lists, and maps with a scalar or `string`
-  key and a scalar or `string` value are now supported — see **Heap types
-  (landed)**, **Growable `list<T>` (landed)**, and **Growable `map<K, V>`
-  (landed)** above.
+  arrays, lists of scalar/`string`/`struct`/nested-list elements, and maps with a
+  scalar or `string` key and a scalar, `string`, or `struct` value are now supported
+  — see **Heap types (landed)**, **Growable `list<T>` (landed)**, **Growable
+  `map<K, V>` (landed)**, and **Mutable-heap collection elements/values (landed)**
+  above.
 
 ## From IR to WASM
 
@@ -607,14 +688,21 @@ bit-for-bit — see **Heap types (landed) → Strings** above. They are
 node-parity-tested
 (`crates/lullaby_cli/tests/cli.rs::wasm_string_ops_execution_parity_with_node`,
 fixture `tests/fixtures/valid/wasm_string_ops.lby`, `main` = 11, including a
-multi-byte string). Deferred:
-enums with a heap payload (`string`/`list`/`array`/`map`, e.g. `result<i64,
-string>`), lists of heap elements, maps with a heap key or value (including string
-keys), `map_keys`/`map_values`/`map_del`, `to_string` of a **float** (`f32`/`f64`)
-and the string builders not yet lowered — `replace`, `upper`/`lower` (Unicode case
-mapping is hard to match Rust), `split`/`join`, `chars`/`string_from_chars` — a
-free-list allocator, and a richer DOM interop surface (reading DOM values, events)
-that builds on these imports.
+multi-byte string). Mutable-heap collection elements/values now compile for one
+level of nesting — `list<struct>`, `list<list<scalar|string>>`, `map<K, struct>`,
+and an enum with a `struct`/one-level-`list` payload (`option<struct>`,
+`result<i64, list<i64>>`) — with recursive per-element/value/payload deep copy
+matching the interpreters, node-parity-tested
+(`crates/lullaby_cli/tests/cli.rs::wasm_list_struct_and_nested_and_map_struct_execution_parity_with_node`,
+fixture `tests/fixtures/valid/wasm_list_struct.lby`, `main` = 503411108) — see
+**Mutable-heap collection elements/values (landed)** above. Deferred: a `list`/`map`
+element/value/enum-payload that is a fixed `array` or a `map`, a `map` with a
+mutable-aggregate KEY, nesting past one mutable level (`list<list<list<…>>>`,
+`map<K, map<…>>`), `map_keys`/`map_values`/`map_del`, `to_string` of a **float**
+(`f32`/`f64`) and the string builders not yet lowered — `replace`, `upper`/`lower`
+(Unicode case mapping is hard to match Rust), `split`/`join`,
+`chars`/`string_from_chars` — a free-list allocator, and a richer DOM interop
+surface (reading DOM values, events) that builds on these imports.
 
 ## Why these choices
 

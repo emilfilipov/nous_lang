@@ -1440,19 +1440,15 @@ fn native_signature_eligibility(
         })?;
     }
 
-    // The hidden return pointer (if any) plus each parameter must fit in the four
-    // Win64 integer argument registers. `main`'s scalar `i64` return path is
-    // unaffected (no hidden pointer).
-    let effective_args = function.params.len() + usize::from(returns_aggregate);
-    if effective_args > 4 {
-        return Err(format!(
-            "native subset supports at most four register arguments; `{}` needs {} \
-             (including {} hidden return pointer)",
-            function.name,
-            effective_args,
-            usize::from(returns_aggregate)
-        ));
-    }
+    // The hidden return pointer (if any) plus each parameter fill the four Win64
+    // register slots (`rcx`/`rdx`/`r8`/`r9`, with floats positionally in
+    // `xmm0..3`); the 5th+ effective argument is passed on the stack above the
+    // callee's shadow space (see the stack-argument ABI). `main`'s scalar `i64`
+    // return path is unaffected (no hidden pointer). There is therefore no
+    // fixed arity cap; every effective argument beyond the fourth spills to the
+    // stack. `returns_aggregate` is referenced here to document the effective
+    // count even though it no longer gates eligibility.
+    let _effective_args = function.params.len() + usize::from(returns_aggregate);
     Ok(())
 }
 
@@ -2423,9 +2419,14 @@ impl<'a> NativeCtx<'a> {
         next_slot += (scratch_words as i32 + 1) * 8;
 
         let has_call = body_has_call(&function.instructions);
-        // Reserve local slots plus (if calling) 32 bytes of shadow space.
+        // Reserve local slots plus (if calling) 32 bytes of shadow space, plus an
+        // outgoing stack-argument area for any call passing more than four
+        // effective register arguments. The area lives at the bottom of the frame
+        // (lowest addresses, where `rsp` points at a `call`): `[rsp .. rsp+32]` is
+        // the shadow, `[rsp+32 .. rsp+32+8*out]` holds the 5th+ arguments.
+        let out_words = max_outgoing_stack_words(&function.instructions, signatures);
         let shadow = if has_call { 32 } else { 0 };
-        let raw = next_slot + shadow;
+        let raw = next_slot + shadow + out_words as i32 * 8;
         // Keep the frame a multiple of 16 so that after `push rbp` and a `call`
         // the callee sees a 16-byte-aligned rsp per the Win64 ABI.
         let frame_size = ((raw + 15) / 16) * 16;
@@ -2773,6 +2774,103 @@ fn max_call_arg_scratch_words(
     Ok(max)
 }
 
+/// The maximum number of **outgoing stack-argument words** any single call in
+/// this body needs. The first four Win64 register slots (`rcx`/`rdx`/`r8`/`r9`,
+/// including a hidden aggregate-return pointer when the callee returns an
+/// aggregate) are passed in registers; arguments 5, 6, … spill onto the stack
+/// above the 32-byte shadow space. The caller must reserve `8 * this` bytes of
+/// outgoing space (plus 32 bytes shadow) in its frame so those stack words have a
+/// home at each `call`. Extern (C-ABI) calls stage their own spill inline and are
+/// not counted here (they never exceed four arguments in the delivered subset).
+fn max_outgoing_stack_words(
+    body: &[BytecodeInstruction],
+    signatures: &HashMap<String, NativeSignature>,
+) -> usize {
+    fn call_stack_words(
+        name: &str,
+        args: usize,
+        signatures: &HashMap<String, NativeSignature>,
+    ) -> usize {
+        // A compiled callee that returns an aggregate consumes one register slot
+        // for its hidden result pointer, shifting the visible args down by one.
+        let hidden = signatures
+            .get(name)
+            .map(|sig| usize::from(sig.returns_aggregate()))
+            .unwrap_or(0);
+        (args + hidden).saturating_sub(4)
+    }
+    fn expr_words(expr: &BytecodeExpr, signatures: &HashMap<String, NativeSignature>) -> usize {
+        let mut here = 0usize;
+        if let BytecodeExprKind::Call { name, args } = &expr.kind {
+            // Only compiled (internal) callees use the stack-spill convention; an
+            // extern/builtin call has no native signature and stages inline.
+            if signatures.contains_key(name.as_str()) {
+                here = call_stack_words(name, args.len(), signatures);
+            }
+            for arg in args {
+                here = here.max(expr_words(arg, signatures));
+            }
+        } else {
+            for child in expr_children(expr) {
+                here = here.max(expr_words(child, signatures));
+            }
+        }
+        here
+    }
+    let mut max = 0usize;
+    for instruction in body {
+        let here = match instruction {
+            BytecodeInstruction::Let { value, .. }
+            | BytecodeInstruction::Assign { value, .. }
+            | BytecodeInstruction::Return(Some(value))
+            | BytecodeInstruction::Expr(value) => expr_words(value, signatures),
+            BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                let mut h = max_outgoing_stack_words(else_body, signatures);
+                for branch in branches {
+                    h = h
+                        .max(expr_words(&branch.condition, signatures))
+                        .max(max_outgoing_stack_words(&branch.body, signatures));
+                }
+                h
+            }
+            BytecodeInstruction::While {
+                condition, body, ..
+            } => expr_words(condition, signatures).max(max_outgoing_stack_words(body, signatures)),
+            BytecodeInstruction::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => expr_words(start, signatures)
+                .max(expr_words(end, signatures))
+                .max(
+                    step.as_ref()
+                        .map(|s| expr_words(s, signatures))
+                        .unwrap_or(0),
+                )
+                .max(max_outgoing_stack_words(body, signatures)),
+            BytecodeInstruction::Loop { body, .. } => max_outgoing_stack_words(body, signatures),
+            BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } => {
+                let mut h = expr_words(scrutinee, signatures);
+                for arm in arms {
+                    h = h.max(max_outgoing_stack_words(&arm.body, signatures));
+                }
+                h
+            }
+            _ => 0,
+        };
+        max = max.max(here);
+    }
+    max
+}
+
 /// The immediate sub-expressions of an expression (for recursive scans).
 fn expr_children(expr: &BytecodeExpr) -> Vec<&BytecodeExpr> {
     match &expr.kind {
@@ -2926,28 +3024,48 @@ fn lower_native_function(
     }
     for param in &function.params {
         let local = ctx.local(&param.name)?.clone();
+        // Arguments 5, 6, … (register slots 4, 5, … already consumed) arrive on the
+        // stack above the caller's 32-byte shadow space. On entry the callee sees
+        // the return address at `[rsp]`; after `push rbp` + `mov rbp, rsp` the saved
+        // rbp is at `[rbp]`, the return address at `[rbp+8]`, the caller's shadow at
+        // `[rbp+16 .. rbp+48]`, and the first stack argument at `[rbp+48]`. So the
+        // Nth stack argument (0-indexed `reg-4`) sits at `[rbp + 48 + 8*(reg-4)]`.
+        // The first four (`reg < 4`) arrive in registers.
+        let on_stack = reg >= 4;
+        let stack_disp = 48 + (reg as i32 - 4) * 8;
         match local.ty {
             NativeType::F64 | NativeType::F32 => {
-                // A float parameter arrives in the SSE register at this position
-                // (`xmm N`, positionally aligned with the integer registers — a
-                // float at position N uses `xmm N` while an integer at position N
-                // uses integer register N). Spill it into the parameter's slot.
-                let width = match local.ty {
-                    NativeType::F64 => FloatWidth::F64,
-                    NativeType::F32 => FloatWidth::F32,
-                    _ => unreachable!("guarded by the match arm"),
-                };
-                emit_store_xmm_to_slot(&mut code, reg as u8, local.slot, width);
+                if on_stack {
+                    // A float stack argument is already a raw 8-byte word; copy it
+                    // bit-for-bit into the parameter's slot (the slot holds the raw
+                    // float bits, so no XMM round-trip is needed).
+                    emit_mov_rax_from_rbp_pos(&mut code, stack_disp);
+                    store_local(&mut code, local.slot);
+                } else {
+                    // A float register parameter arrives in the SSE register at this
+                    // position (`xmm N`, positionally aligned with the integer
+                    // registers). Spill it into the parameter's slot.
+                    let width = match local.ty {
+                        NativeType::F64 => FloatWidth::F64,
+                        NativeType::F32 => FloatWidth::F32,
+                        _ => unreachable!("guarded by the match arm"),
+                    };
+                    emit_store_xmm_to_slot(&mut code, reg as u8, local.slot, width);
+                }
             }
             NativeType::Struct { .. } | NativeType::Array { .. } | NativeType::Enum { .. } => {
-                // The register holds a pointer to the caller's copy. Copy the
-                // aggregate words into the parameter's frame slots (value
-                // semantics: the callee owns an independent snapshot and never
-                // mutates the caller's copy). rax = source pointer (addresses word
-                // 0, the aggregate's highest stack address). Words descend in
-                // memory, so word k is at `[rax - 8*k]`, matching the caller's
-                // `[rbp - (base + 8*k)]` layout.
-                code.extend_from_slice(ARG_TO_RAX[reg]);
+                // The argument holds a pointer to the caller's copy (in a register
+                // for `reg < 4`, on the stack otherwise). Copy the aggregate words
+                // into the parameter's frame slots (value semantics: the callee owns
+                // an independent snapshot and never mutates the caller's copy). rax =
+                // source pointer (addresses word 0, the aggregate's highest stack
+                // address). Words descend in memory, so word k is at `[rax - 8*k]`,
+                // matching the caller's `[rbp - (base + 8*k)]` layout.
+                if on_stack {
+                    emit_mov_rax_from_rbp_pos(&mut code, stack_disp);
+                } else {
+                    code.extend_from_slice(ARG_TO_RAX[reg]);
+                }
                 for word in 0..local.ty.words() as i32 {
                     // mov rcx, [rax - 8*word]
                     emit_mov_rcx_from_rax_disp(&mut code, -word * 8);
@@ -2960,14 +3078,19 @@ fn lower_native_function(
             | NativeType::List { .. }
             | NativeType::Map { .. } => {
                 // An integer/pointer scalar parameter — or a string/list/map (a heap
-                // pointer word) — spills its register directly into its slot. A
-                // string parameter shares the caller's record by pointer, which is
-                // safe because strings are immutable. A list/map parameter also
-                // shares by pointer safely: their mutators (`push`/`set`/`pop`,
-                // `map_set`) deep-copy their source, so the callee cannot alter the
-                // caller's value through the shared pointer.
-                code.extend_from_slice(PARAM_STORE[reg]);
-                code.extend_from_slice(&(-local.slot).to_le_bytes());
+                // pointer word) — spills its register (or its incoming stack word)
+                // directly into its slot. A string parameter shares the caller's
+                // record by pointer, which is safe because strings are immutable. A
+                // list/map parameter also shares by pointer safely: their mutators
+                // (`push`/`set`/`pop`, `map_set`) deep-copy their source, so the
+                // callee cannot alter the caller's value through the shared pointer.
+                if on_stack {
+                    emit_mov_rax_from_rbp_pos(&mut code, stack_disp);
+                    store_local(&mut code, local.slot);
+                } else {
+                    code.extend_from_slice(PARAM_STORE[reg]);
+                    code.extend_from_slice(&(-local.slot).to_le_bytes());
+                }
             }
         }
         reg += 1;
@@ -4450,16 +4573,6 @@ fn lower_native_expr(
                      return position on the native backend"
                 ));
             }
-            // Effective register arguments: an aggregate argument is passed by
-            // pointer (one register), a scalar by value (one register). No hidden
-            // return pointer here (this path is scalar-returning). Enforce the
-            // four-register Win64 limit.
-            if args.len() > 4 {
-                return Err(format!(
-                    "native calls support at most four arguments; `{name}` got {}",
-                    args.len()
-                ));
-            }
             // If the target is an `extern fn` (a C symbol), marshal it across the
             // Win64 C ABI via `emit_extern_call`: each argument is routed to the
             // register selected by its position and type (integer/pointer →
@@ -4491,18 +4604,13 @@ fn lower_native_expr(
                 }
                 return Ok(());
             }
-            // A non-extern (compiled/builtin) call: evaluate/stage args left-to-
-            // right onto the stack, then pop into the Win64 argument registers. A
-            // scalar argument stages its value; an aggregate argument stages a
-            // *pointer* to a freshly materialized, caller-owned copy (by-pointer
-            // aggregate ABI, value semantics). An integer scalar already sits in
-            // the low bits of `rax` normalized to its width, exactly what Win64
-            // passes in the low bits of the argument register.
-            emit_staged_call_args(ctx, name, args, code)?;
-            // Pop in reverse so the first argument lands in rcx.
-            for index in (0..args.len()).rev() {
-                code.extend_from_slice(CALL_ARG_POP[index]);
-            }
+            // A non-extern (compiled/builtin) call: stage every argument onto the
+            // machine stack (a scalar value, a float word, or an aggregate-copy
+            // pointer), then distribute the first four into the Win64 argument
+            // registers and any 5th+ into the outgoing stack-argument area above
+            // the callee's shadow space. No hidden return pointer here (this path
+            // is scalar-returning).
+            emit_native_call_args(ctx, name, args, None, code)?;
             // call rel32 -> relocation against the target symbol.
             code.push(0xE8);
             let site = code.len();
@@ -4549,61 +4657,115 @@ fn lower_native_expr(
     }
 }
 
-// -- Aggregate call/return ABI (by hidden pointer) ---------------------------
+// -- Internal call argument ABI (registers + stack spill) --------------------
 //
-// Aggregates cross a native function boundary by pointer. A scalar-returning
-// call stages each argument on the stack (a scalar value or, for an aggregate
-// argument, the address of a caller-owned copy) and pops them into the Win64
-// integer registers. An aggregate return uses a hidden first pointer: the caller
-// allocates the destination and passes its address in the first register; the
-// callee writes the result words there and returns that pointer in rax.
+// A compiled Lullaby callee receives its first four **effective** arguments in
+// the Win64 registers (`rcx`/`rdx`/`r8`/`r9` for integer/pointer/aggregate-copy
+// pointers; `xmm0..3` positionally for floats) and its 5th+ arguments on the
+// stack, pushed above the callee's 32-byte shadow space. When the callee returns
+// an aggregate, its hidden result pointer consumes register 0, shifting the
+// visible arguments down by one effective position. `emit_native_call_args`
+// stages every visible argument onto the machine stack, then distributes each to
+// its register or outgoing stack slot before the `call`.
 
-/// Pop sequence for the first four Win64 integer argument registers, in order.
-const CALL_ARG_POP: [&[u8]; 4] = [
-    &[0x59],       // pop rcx
-    &[0x5A],       // pop rdx
-    &[0x41, 0x58], // pop r8
-    &[0x41, 0x59], // pop r9
-];
+/// Load the staged word at machine-stack offset `disp` into effective integer
+/// register `pos` (`rcx`/`rdx`/`r8`/`r9`).
+const GPR_ARG_INDEX: [u8; 4] = [0, 1, 2, 3];
 
-/// Stage a call's arguments on the stack (left-to-right) so they can be popped
-/// into the Win64 registers. A scalar argument pushes its value; an aggregate
-/// argument materializes a fresh caller-owned copy in scratch and pushes that
-/// copy's address (`lea rax, [rbp - base]`), preserving value semantics — the
-/// callee copies-in from this snapshot and cannot mutate the caller's original.
-fn emit_staged_call_args(
+/// Stage a call's arguments and place them into the Win64 argument registers and
+/// (for a 5th+ argument) the outgoing stack area, then leave the machine stack as
+/// the emitter found it so the `call` sees the reserved outgoing area intact.
+///
+/// `sret` is the caller-allocated destination slot when the callee returns an
+/// aggregate (its address is passed as the hidden first argument, register 0),
+/// otherwise `None`. A scalar argument stages its value word; a float argument
+/// stages its raw float word; an aggregate argument stages a *pointer* to a fresh
+/// caller-owned copy in scratch (value semantics). After staging all `n` words on
+/// the stack (argument `i` at `[rsp + 8*(n-1-i)]`), the first four effective
+/// positions load into registers and each later position is copied into the
+/// outgoing area at `[rsp + 8*n + 32 + 8*(pos-4)]` (which becomes
+/// `[rsp' + 32 + 8*(pos-4)]` once the staging words are discarded).
+fn emit_native_call_args(
     ctx: &mut NativeCtx,
     callee: &str,
     args: &[BytecodeExpr],
+    sret: Option<i32>,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
     // The callee's parameter layouts (when it is a compiled function) tell us
-    // which arguments are aggregates. An `extern`/builtin call has no aggregate
-    // parameters (guarded elsewhere), so treat missing signatures as all-scalar.
+    // which arguments are aggregates or floats. An `extern`/builtin call has no
+    // aggregate/float parameters on this path (guarded elsewhere), so treat a
+    // missing signature as all-scalar-integer.
     let param_tys: Vec<Option<NativeType>> = match ctx.signatures.get(callee) {
         Some(sig) => sig.params.iter().map(|t| Some(t.clone())).collect(),
         None => args.iter().map(|_| None).collect(),
     };
-    // Reset the scratch cursor so each call reuses the shared scratch region.
+    // Stage every argument onto the machine stack as one 8-byte word, left to
+    // right, so evaluating a later argument cannot clobber an already-placed
+    // register. Reset the scratch cursor so each call reuses the shared region.
     let saved_scratch = ctx.scratch_next;
     for (arg, param_ty) in args.iter().zip(param_tys.iter()) {
         match param_ty {
             Some(ty) if ty.is_aggregate() => {
                 // Materialize the argument aggregate into scratch, then push its
-                // address.
+                // address (the callee copies-in from this snapshot).
                 let base = ctx.alloc_scratch(ty.words());
                 lower_aggregate_init(ctx, base, ty, arg, code)?;
                 emit_lea_rax_slot(code, base); // rax = &scratch copy
                 code.push(0x50); // push rax
             }
+            Some(NativeType::F64) | Some(NativeType::F32) => {
+                // A float argument evaluates into `xmm0`; spill it as one raw word.
+                lower_native_float_expr(ctx, arg, code)?;
+                code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
+                code.extend_from_slice(&[0xF2, 0x0F, 0x11, 0x04, 0x24]); // movsd [rsp], xmm0
+            }
             _ => {
-                // A scalar argument: evaluate its value and push it.
+                // A scalar integer/pointer argument: evaluate into rax and push it.
                 lower_native_expr(ctx, arg, code)?;
                 code.push(0x50); // push rax
             }
         }
     }
     ctx.scratch_next = saved_scratch;
+
+    let n = args.len();
+    let hidden = usize::from(sret.is_some());
+    // Distribute each staged word to its effective position. Register positions
+    // (< 4) load into the GPR/XMM chosen by position and class; stack positions
+    // (>= 4) copy into the outgoing area above the shadow space.
+    for (i, param_ty) in param_tys.iter().enumerate() {
+        let staged_disp = 8 * (n - 1 - i) as i32; // arg i at [rsp + staged_disp]
+        let pos = i + hidden;
+        let is_float = matches!(param_ty, Some(NativeType::F64) | Some(NativeType::F32));
+        if pos < 4 {
+            if is_float {
+                emit_load_xmm_from_rsp_disp(code, pos as u8, staged_disp);
+            } else {
+                emit_load_gpr_from_rsp_disp(code, GPR_ARG_INDEX[pos], staged_disp);
+            }
+        } else {
+            // Copy the staged word into the outgoing stack slot. After the staging
+            // words are discarded (`add rsp, 8*n`), the slot at
+            // `[rsp + 8*n + 32 + 8*(pos-4)]` becomes `[rsp' + 32 + 8*(pos-4)]`,
+            // exactly where the callee reads its `(pos-4)`-th stack parameter from
+            // `[rbp + 16 + 8*(pos-4)]`.
+            let out_disp = 8 * n as i32 + 32 + 8 * (pos as i32 - 4);
+            // mov rax, [rsp + staged_disp] ; mov [rsp + out_disp], rax.
+            code.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24]); // mov rax, [rsp + disp32]
+            code.extend_from_slice(&staged_disp.to_le_bytes());
+            code.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]); // mov [rsp + disp32], rax
+            code.extend_from_slice(&out_disp.to_le_bytes());
+        }
+    }
+    // The hidden aggregate-return pointer occupies register 0 (`rcx`).
+    if let Some(dest_slot) = sret {
+        emit_lea_rcx_slot(code, dest_slot);
+    }
+    // Discard the staging words; the outgoing area and shadow space remain.
+    if n > 0 {
+        emit_add_rsp(code, 8 * n as i32);
+    }
     Ok(())
 }
 
@@ -4778,22 +4940,10 @@ fn lower_aggregate_returning_call(
             ty.words()
         ));
     }
-    // Effective register args: the hidden return pointer plus each argument.
-    if args.len() + 1 > 4 {
-        return Err(format!(
-            "aggregate-returning call `{name}` needs {} register arguments (limit 4)",
-            args.len() + 1
-        ));
-    }
-    // Stage the visible arguments on the stack (scalar values / aggregate-copy
-    // pointers), then pop them into the registers *after* the hidden pointer.
-    emit_staged_call_args(ctx, name, args, code)?;
-    // Pop the visible args into rdx/r8/r9 (registers 1..=args.len()), in reverse.
-    for index in (0..args.len()).rev() {
-        code.extend_from_slice(CALL_ARG_POP[index + 1]);
-    }
-    // Hidden return pointer -> rcx = &dest_slot.
-    emit_lea_rcx_slot(code, dest_slot);
+    // Stage the visible arguments and distribute them past the hidden return
+    // pointer: the pointer consumes register 0 (`rcx`), the visible args follow in
+    // `rdx`/`r8`/`r9` and then the outgoing stack area for a 5th+ effective arg.
+    emit_native_call_args(ctx, name, args, Some(dest_slot), code)?;
     // call rel32 -> relocation against the callee.
     code.push(0xE8);
     let site = code.len();
@@ -6218,6 +6368,16 @@ fn load_local(code: &mut Vec<u8>, slot: i32) {
 fn store_local(code: &mut Vec<u8>, slot: i32) {
     code.extend_from_slice(&[0x48, 0x89, 0x85]);
     code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// `mov rax, [rbp + disp]` — load an incoming **stack argument** into rax. Unlike
+/// `load_local` (which addresses a callee-owned slot at a negative displacement),
+/// this reads a positive `[rbp + disp]` address, where the 5th+ Win64 arguments
+/// live: `[rbp+8]` is the return address, `[rbp]` the saved rbp, so the first
+/// stack argument sits at `[rbp+16]`.
+fn emit_mov_rax_from_rbp_pos(code: &mut Vec<u8>, disp: i32) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x85]); // mov rax, [rbp + disp32]
+    code.extend_from_slice(&disp.to_le_bytes());
 }
 
 /// `mov rcx, [rax + disp]` — read a word at an offset from a pointer in rax.
@@ -10054,6 +10214,114 @@ mod native_program_tests {
     }
 
     #[test]
+    fn function_with_six_i64_params_compiles_with_stack_args() {
+        // A six-parameter i64 function is no longer demoted: its 5th and 6th
+        // arguments pass on the stack (Win64 stack-argument ABI). Both the callee
+        // (`six`) and the caller (`main`) must compile natively.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn six a i64 b i64 c i64 d i64 e i64 f i64 -> i64\n",
+            "    a + b + c + d + e + f\n\n",
+            "fn main -> i64\n",
+            "    six(1, 2, 3, 4, 5, 6)\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"six".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "expected `six` and `main` compiled: {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped,
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+
+        let text = text_bytes(&program);
+        // Callee prologue: the 5th parameter (0-indexed stack slot 0) is loaded
+        // from `[rbp + 48]` (16 for saved rbp + return address, then 32 shadow) =
+        // `48 8B 85 30 00 00 00` (mov rax, [rbp+0x30]).
+        assert!(
+            text.windows(7)
+                .any(|w| w == [0x48, 0x8B, 0x85, 0x30, 0x00, 0x00, 0x00]),
+            "expected the 5th parameter loaded from [rbp+48] in the callee prologue"
+        );
+        // The 6th parameter is loaded from `[rbp + 56]` = `48 8B 85 38 00 00 00`.
+        assert!(
+            text.windows(7)
+                .any(|w| w == [0x48, 0x8B, 0x85, 0x38, 0x00, 0x00, 0x00]),
+            "expected the 6th parameter loaded from [rbp+56] in the callee prologue"
+        );
+        // Caller call site: the 5th argument is written into the outgoing area at
+        // `[rsp + 32 + ...]` after staging six words (n=6): disp = 8*6 + 32 = 80 =
+        // 0x50 => `48 89 84 24 50 00 00 00` (mov [rsp+0x50], rax).
+        assert!(
+            text.windows(8)
+                .any(|w| w == [0x48, 0x89, 0x84, 0x24, 0x50, 0x00, 0x00, 0x00]),
+            "expected the 5th argument stored to the outgoing stack area [rsp+0x50]"
+        );
+        // The 6th argument is written to `[rsp + 88]` = `[rsp + 0x58]`.
+        assert!(
+            text.windows(8)
+                .any(|w| w == [0x48, 0x89, 0x84, 0x24, 0x58, 0x00, 0x00, 0x00]),
+            "expected the 6th argument stored to the outgoing stack area [rsp+0x58]"
+        );
+    }
+
+    #[test]
+    fn function_with_eight_i64_params_compiles_with_stack_args() {
+        // Eight i64 parameters: arguments 5..=8 spill to the stack. Verifies the
+        // arity is not capped and the callee reads its four stack parameters from
+        // ascending `[rbp + 16 + 8*k]` offsets.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn eight a i64 b i64 c i64 d i64 e i64 f i64 g i64 h i64 -> i64\n",
+            "    a + b + c + d + e + f + g + h\n\n",
+            "fn main -> i64\n",
+            "    eight(1, 2, 3, 4, 5, 6, 7, 8)\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"eight".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "expected `eight` and `main` compiled: {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped,
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+
+        let text = text_bytes(&program);
+        // The 8th (last) parameter is at `[rbp + 48 + 8*3]` = `[rbp + 72]` = 0x48.
+        assert!(
+            text.windows(7)
+                .any(|w| w == [0x48, 0x8B, 0x85, 0x48, 0x00, 0x00, 0x00]),
+            "expected the 8th parameter loaded from [rbp+72] in the callee prologue"
+        );
+    }
+
+    #[test]
+    fn function_with_mixed_int_float_params_beyond_four_compiles() {
+        // A six-parameter signature mixing i64 and f64: the integer and float
+        // registers are consumed positionally (`rcx`/`rdx`, `xmm2`, `r8`; then
+        // stack), and the 5th/6th arguments spill onto the stack. It must compile,
+        // proving float and integer stack arguments coexist.
+        let program = emit_alpha1_native_program(&module_for(concat!(
+            "fn scale a i64 b i64 x f64 c i64 d i64 y f64 -> i64\n",
+            "    let base i64 = a + b + c + d\n",
+            "    if x < y\n",
+            "        return base + 1\n",
+            "    return base\n\n",
+            "fn main -> i64\n",
+            "    scale(10, 20, 1.5, 5, 5, 2.5)\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"scale".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "expected `scale` and `main` compiled: {:?} / skipped {:?}",
+            program.compiled,
+            program.skipped,
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+    }
+
+    #[test]
     fn f32_precision_loss_matches_interpreter_semantics() {
         // The `run_f32.lby` scenario in miniature: 2^24 + 1 rounds back to 2^24 in
         // f32 (single precision cannot represent the extra bit), so the equality
@@ -10629,26 +10897,34 @@ mod native_program_tests {
     }
 
     #[test]
-    fn defers_aggregate_return_that_overflows_register_arity() {
-        // Four scalar parameters plus a hidden return pointer would need five
-        // integer registers, exceeding the Win64 four-register limit, so the
-        // function skips gracefully rather than miscompiling.
+    fn aggregate_return_with_four_params_uses_a_stack_argument() {
+        // Four scalar parameters plus a hidden return pointer make five effective
+        // register arguments; the fifth (the last parameter) now spills to the
+        // stack rather than demoting the function. The callee reads its last
+        // parameter from `[rbp+16]` and `main`'s call passes the hidden result
+        // pointer in `rcx` and the 5th effective argument on the stack.
         let program = emit_alpha1_native_program(&module_for(concat!(
             "struct Quad\n    a i64\n    b i64\n\n",
             "fn build w i64 x i64 y i64 z i64 -> Quad\n    Quad(w + x, y + z)\n\n",
-            "fn main -> i64\n    7\n",
+            "fn main -> i64\n    let q Quad = build(1, 2, 3, 4)\n    q.a + q.b\n",
         )))
         .expect("emit native program");
-        assert_eq!(program.compiled, vec!["main".to_string()]);
-        let build_skip = program
-            .skipped
-            .iter()
-            .find(|s| s.name == "build")
-            .expect("build must be skipped");
         assert!(
-            build_skip.reason.contains("register arguments"),
-            "skip reason should cite the register-arity limit: {}",
-            build_skip.reason
+            program.compiled.contains(&"build".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "aggregate return with four params must compile via a stack argument: {:?} / {:?}",
+            program.compiled,
+            program.skipped,
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+
+        let text = text_bytes(&program);
+        // `build`'s prologue reads its 4th (0-indexed effective position 4, since
+        // the hidden return pointer is position 0) parameter `z` from `[rbp+48]`.
+        assert!(
+            text.windows(7)
+                .any(|w| w == [0x48, 0x8B, 0x85, 0x30, 0x00, 0x00, 0x00]),
+            "expected the 5th effective argument (param `z`) loaded from [rbp+48]"
         );
     }
 
