@@ -285,6 +285,12 @@ fn is_builtin_variant(name: &str) -> bool {
     matches!(name, "some" | "none" | "ok" | "err")
 }
 
+/// The five `MemoryOrder` enum variant names, weakest to strongest. `MemoryOrder`
+/// is a compiler-provided nominal enum (like `option`/`result`); its unit
+/// variants are the memory orderings passed to the ordering-taking atomic
+/// builtins (`atomic_*_ordered`) and to `fence`.
+const MEMORY_ORDER_VARIANTS: [&str; 5] = ["relaxed", "acquire", "release", "acq_rel", "seq_cst"];
+
 /// The outcome of unifying a call's arguments against a generic function's
 /// parameter types.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1076,6 +1082,24 @@ impl<'a> Checker<'a> {
     /// names within an enum, non-empty enums (`L0380`), and global uniqueness of
     /// variant names across all enums (`L0382`).
     fn collect_enums(&mut self) {
+        // Register the compiler-provided `MemoryOrder` enum before user enums so
+        // its five unit variants resolve for construction and `match`, and any
+        // user enum that reuses the name (`L0380`) or one of its variant names
+        // (`L0382`) collides against it through the existing checks below.
+        self.enums.insert(
+            "MemoryOrder".to_string(),
+            MEMORY_ORDER_VARIANTS
+                .iter()
+                .map(|name| EnumVariant {
+                    name: (*name).to_string(),
+                    payload: Vec::new(),
+                })
+                .collect(),
+        );
+        for name in MEMORY_ORDER_VARIANTS {
+            self.variants
+                .insert(name.to_string(), ("MemoryOrder".to_string(), Vec::new()));
+        }
         for declaration in &self.program.enums {
             // `option` and `result` are built-in generic enum names; a user enum
             // may not redeclare them.
@@ -4009,6 +4033,102 @@ impl<'a> Checker<'a> {
                 self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
                 Some(TypeRef::new("i64"))
             }
+            "atomic_load_ordered" => {
+                // `atomic_load_ordered(a atomic_i64, order MemoryOrder) -> i64`.
+                // A load may use `relaxed`/`acquire`/`seq_cst`, never
+                // `release`/`acq_rel`.
+                self.expect_concurrency_arity(name, args, 2, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.check_ordering_arg(
+                    name,
+                    2,
+                    &args[1],
+                    &["relaxed", "acquire", "seq_cst"],
+                    scope,
+                    function,
+                )?;
+                Some(TypeRef::new("i64"))
+            }
+            "atomic_store_ordered" => {
+                // `atomic_store_ordered(a atomic_i64, v i64, order MemoryOrder)
+                // -> void`. A store may use `relaxed`/`release`/`seq_cst`, never
+                // `acquire`/`acq_rel`.
+                self.expect_concurrency_arity(name, args, 3, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                self.check_ordering_arg(
+                    name,
+                    3,
+                    &args[2],
+                    &["relaxed", "release", "seq_cst"],
+                    scope,
+                    function,
+                )?;
+                Some(TypeRef::new("void"))
+            }
+            "atomic_swap_ordered"
+            | "atomic_add_ordered"
+            | "atomic_sub_ordered"
+            | "atomic_and_ordered"
+            | "atomic_or_ordered"
+            | "atomic_xor_ordered" => {
+                // Ordered read-modify-write: `(a atomic_i64, v i64, order
+                // MemoryOrder) -> i64`. Every ordering is valid for an RMW.
+                self.expect_concurrency_arity(name, args, 3, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                self.check_ordering_arg(
+                    name,
+                    3,
+                    &args[2],
+                    &MEMORY_ORDER_VARIANTS,
+                    scope,
+                    function,
+                )?;
+                Some(TypeRef::new("i64"))
+            }
+            "atomic_cas_ordered" => {
+                // `atomic_cas_ordered(a atomic_i64, expected i64, new i64,
+                // success MemoryOrder, failure MemoryOrder) -> i64`. `success`
+                // takes any ordering; `failure` is a load and cannot be
+                // `release`/`acq_rel`.
+                self.expect_concurrency_arity(name, args, 5, call_span, function)?;
+                self.expect_concurrency_arg(name, 1, &args[0], "atomic_i64", scope, function)?;
+                self.expect_concurrency_arg(name, 2, &args[1], "i64", scope, function)?;
+                self.expect_concurrency_arg(name, 3, &args[2], "i64", scope, function)?;
+                self.check_ordering_arg(
+                    name,
+                    4,
+                    &args[3],
+                    &MEMORY_ORDER_VARIANTS,
+                    scope,
+                    function,
+                )?;
+                self.check_ordering_arg(
+                    name,
+                    5,
+                    &args[4],
+                    &["relaxed", "acquire", "seq_cst"],
+                    scope,
+                    function,
+                )?;
+                Some(TypeRef::new("i64"))
+            }
+            "fence" => {
+                // `fence(order MemoryOrder) -> void`: a standalone memory fence.
+                // A fence is meaningless under `relaxed`, so only
+                // `acquire`/`release`/`acq_rel`/`seq_cst` are accepted.
+                self.expect_concurrency_arity(name, args, 1, call_span, function)?;
+                self.check_ordering_arg(
+                    name,
+                    1,
+                    &args[0],
+                    &["acquire", "release", "acq_rel", "seq_cst"],
+                    scope,
+                    function,
+                )?;
+                Some(TypeRef::new("void"))
+            }
             "tcp_connect" | "tcp_listen" | "udp_bind" => {
                 // `(host string, port i64) -> result<Socket, string>`.
                 self.expect_socket_arg_count(name, args, 2, function)?;
@@ -5281,6 +5401,40 @@ impl<'a> Checker<'a> {
             ));
             None
         }
+    }
+
+    /// Validate a `MemoryOrder` ordering argument for an ordering-taking atomic
+    /// builtin or `fence`. The argument must first type-check as `MemoryOrder`
+    /// (`L0337`). When it is a literal ordering variant (a bare `acquire`/…, not
+    /// a local of `MemoryOrder` type), the ordering is additionally checked
+    /// against `allowed` for this operation and an invalid combination — a
+    /// `release` load, an `acquire` store, a `relaxed` fence, and so on — is
+    /// rejected statically with `L0432`. A dynamically chosen `MemoryOrder`
+    /// (passed through a variable) type-checks here and is guarded at runtime.
+    fn check_ordering_arg(
+        &mut self,
+        name: &str,
+        index: usize,
+        arg: &Expr,
+        allowed: &[&str],
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<()> {
+        self.expect_concurrency_arg(name, index, arg, "MemoryOrder", scope, function)?;
+        if let ExprKind::Variable(variant) = &arg.kind
+            && !scope.locals.contains_key(variant)
+            && MEMORY_ORDER_VARIANTS.contains(&variant.as_str())
+            && !allowed.contains(&variant.as_str())
+        {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0432",
+                format!("`{variant}` is not a valid memory ordering for `{name}`"),
+                Some(function.name.clone()),
+                arg.span,
+            ));
+            return None;
+        }
+        Some(())
     }
 
     /// Validate a socket/network builtin argument type, reporting `L0335` on a
@@ -7290,6 +7444,146 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "L0337"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_ordered_atomics_with_valid_orderings() {
+        // The full ordering-taking atomic surface plus `fence` type-checks when
+        // each op is given an ordering it permits: a `release` store, an
+        // `acquire`/`relaxed`/`seq_cst` load, every RMW under an arbitrary
+        // ordering, an `acq_rel`/`acquire` CAS, and a `seq_cst` fence.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(10)\n",
+            "    atomic_store_ordered(a, 20, release)\n",
+            "    let l i64 = atomic_load_ordered(a, acquire)\n",
+            "    let p i64 = atomic_add_ordered(a, 5, relaxed)\n",
+            "    atomic_sub_ordered(a, 1, seq_cst)\n",
+            "    atomic_and_ordered(a, 15, acquire)\n",
+            "    atomic_or_ordered(a, 1, release)\n",
+            "    atomic_xor_ordered(a, 2, acq_rel)\n",
+            "    let s i64 = atomic_swap_ordered(a, 7, seq_cst)\n",
+            "    let c i64 = atomic_cas_ordered(a, 7, 99, acq_rel, acquire)\n",
+            "    fence(seq_cst)\n",
+            "    l + p + s + c + atomic_load_ordered(a, relaxed)\n",
+        );
+        validate_source(source).expect("semantic");
+    }
+
+    #[test]
+    fn accepts_memory_order_passed_through_a_local() {
+        // A `MemoryOrder` value bound to a local type-checks as the ordering
+        // argument; the specific ordering is validated at runtime, not statically.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(0)\n",
+            "    let o MemoryOrder = acquire\n",
+            "    atomic_load_ordered(a, o)\n",
+        );
+        validate_source(source).expect("semantic");
+    }
+
+    #[test]
+    fn rejects_release_ordering_on_a_load() {
+        // A load can never use `release` (nor `acq_rel`): rejected with L0432.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(0)\n",
+            "    atomic_load_ordered(a, release)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0432"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_acquire_ordering_on_a_store() {
+        // A store can never use `acquire` (nor `acq_rel`): rejected with L0432.
+        let source = concat!(
+            "fn main -> void\n",
+            "    let a atomic_i64 = atomic_new(0)\n",
+            "    atomic_store_ordered(a, 1, acquire)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0432"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_relaxed_ordering_on_a_fence() {
+        // A `relaxed` fence is meaningless: rejected with L0432.
+        let source = "fn main -> void\n    fence(relaxed)\n";
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0432"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_release_cas_failure_ordering() {
+        // A CAS failure ordering is a load and cannot be `release`/`acq_rel`.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(0)\n",
+            "    atomic_cas_ordered(a, 0, 1, seq_cst, release)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0432"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_memory_order_ordering_argument() {
+        // The ordering argument must be a `MemoryOrder`; an `i64` is rejected
+        // with the concurrency-builtin type code L0337.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    let a atomic_i64 = atomic_new(0)\n",
+            "    atomic_load_ordered(a, 5)\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0337"),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_user_enum_reusing_memory_order_variant() {
+        // `acquire` and friends are reserved by the built-in `MemoryOrder` enum;
+        // a user enum reusing one collides with L0382.
+        let source = concat!(
+            "enum Signal\n",
+            "    acquire\n",
+            "    done\n",
+            "\n",
+            "fn main -> i64\n",
+            "    0\n",
+        );
+        let diagnostics = validate_source(source).expect_err("semantic");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "L0382"),
             "{diagnostics:?}"
         );
     }

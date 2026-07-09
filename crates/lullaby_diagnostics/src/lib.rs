@@ -704,6 +704,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         root_cause: "`size_of`/`align_of` were applied to a type with no defined C-natural layout (a `string`, `list`, `map`, enum, closure, or other non-sized value), or `offset_of` was applied to a non-struct value, a struct with a non-sized field, or a missing or non-literal field name.",
         suggested_fix: "Query `size_of`/`align_of` only on scalars, pointer/reference handles, structs, and fixed `array<T>` values, and call `offset_of(x, \"field\")` with a struct `x` and a string-literal name of one of its fields.",
     },
+    DiagnosticEntry {
+        code: "L0432",
+        phase: DiagnosticPhase::Semantic,
+        explanation: "An ordering-taking atomic operation or a `fence` was given a `MemoryOrder` that is invalid for it. A load may not use `release`/`acq_rel`, a store may not use `acquire`/`acq_rel`, a compare-and-swap failure ordering may not use `release`/`acq_rel`, and a `fence` may not use `relaxed`.",
+        root_cause: "The `MemoryOrder` variant passed to the operation is not one of the orderings that operation permits; the invalid combination is rejected statically when the ordering is a literal variant and guarded at runtime for dynamically chosen orderings.",
+        suggested_fix: "Use `relaxed`/`acquire`/`seq_cst` for a load and for a CAS failure ordering, `relaxed`/`release`/`seq_cst` for a store, any of the five for a read-modify-write or a CAS success ordering, and `acquire`/`release`/`acq_rel`/`seq_cst` for a `fence`.",
+    },
 ];
 
 pub fn render_concise(report: &DiagnosticReport) -> String {

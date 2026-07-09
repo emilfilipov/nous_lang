@@ -15,6 +15,53 @@ as an approximation. This document specifies the atomic types, operations, order
 fences, thread-local storage, the backend semantics that keep all backends observationally
 identical, and the diagnostics.
 
+## Implementation status (delivered)
+
+Memory orderings and fences are **delivered on `atomic_i64`** across the AST, IR,
+and bytecode interpreters. The shipped surface refines the original proposal
+below (which sketched a wider, per-width design); where they differ, this section
+is authoritative for what exists today:
+
+- **`MemoryOrder` enum, not `Ordering`.** Orderings are the five unit variants of
+  a compiler-provided `MemoryOrder` enum (registered like `option`/`result`),
+  spelled `relaxed`, `acquire`, `release`, `acq_rel`, `seq_cst` (note the
+  underscored `acq_rel`/`seq_cst`, not `acqrel`/`seqcst`). They decode straight to
+  `std::sync::atomic::Ordering::{Relaxed,Acquire,Release,AcqRel,SeqCst}`, so an
+  `acquire` load runs a genuine `Ordering::Acquire` load — the argument selects
+  the real std/hardware ordering, never seq_cst-for-everything.
+- **Separate `*_ordered` variants, not an optional trailing argument.** The bare
+  `atomic_load`/`atomic_store`/`atomic_swap`/`atomic_cas`/fetch-op builtins are
+  unchanged and remain the `seq_cst`-default convenience forms. Each gains an
+  ordering-taking sibling: `atomic_load_ordered(a, order)`,
+  `atomic_store_ordered(a, v, order)`, `atomic_swap_ordered`/`atomic_add_ordered`/
+  `atomic_sub_ordered`/`atomic_and_ordered`/`atomic_or_ordered`/
+  `atomic_xor_ordered(a, v, order)`, and
+  `atomic_cas_ordered(a, expected, new, success_order, failure_order)`.
+- **`fence(order MemoryOrder)`**, not `atomic_fence`. Maps to
+  `std::sync::atomic::fence`; accepts `acquire`/`release`/`acq_rel`/`seq_cst`. The
+  single-thread compiler fence (`atomic_fence_signal`/`compiler_fence`) is
+  deferred.
+- **Ordering validity is enforced under a single code, `L0432`** — not the
+  proposed `L0433`/`L0434`. (The proposed `L0430`–`L0432` numbers below predate
+  the registry and are now assigned to unrelated features; the live registry's
+  next free code was `L0432`.) A load or a CAS failure ordering may not be
+  `release`/`acq_rel`; a store may not be `acquire`/`acq_rel`; a fence may not be
+  `relaxed`. A literal keyword ordering is rejected statically; a `MemoryOrder`
+  chosen dynamically through a variable type-checks and is guarded at runtime
+  (a clean `L0432` runtime error, never a `std` panic).
+- **Dynamic orderings are supported.** Unlike the "compile-time-only classifier"
+  note below, a `MemoryOrder` is an ordinary runtime `Value::Enum`, so it can be
+  bound to a local and passed to an ordered op; the interpreters resolve it at
+  the call.
+- **Scope.** Delivered on `atomic_i64` only. The other widths, `atomic_bool`,
+  weak CAS, and native/WASM lowering of the ordered ops remain deferred (the
+  ordered atomics are interpreter-only today, exactly like the base atomics). A
+  `run_atomic_orderings.lby` parity fixture asserts an identical deterministic
+  result on AST/IR/bytecode.
+
+The remainder of this document is the original design exploration and retains the
+proposal's wider naming/scoping for reference.
+
 ## Motivation and non-goals
 
 Atomics are the primitive under lock-free data structures, the building block the existing
