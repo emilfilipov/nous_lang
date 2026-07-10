@@ -18,3 +18,15 @@ exclude = ["crates/lullaby_wasm"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/emilfilipov/lullaby"
+
+# Release builds power the shipped toolchain and the interpreter backends that
+# run user programs, so optimize the produced binary hard: whole-program (fat)
+# LTO and a single codegen unit let the optimizer inline across crate
+# boundaries (lexer/parser/semantics/runtime are separate crates on every hot
+# path), and `panic = "abort"` drops the unwinding machinery. No code uses
+# `catch_unwind` and there are no `#[should_panic]` tests, so aborting on an
+# internal panic is safe.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"

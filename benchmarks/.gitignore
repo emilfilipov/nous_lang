@@ -1,0 +1,6 @@
+# Generated benchmark artifacts (rebuilt by run_bench.ps1).
+*.exe
+*.obj
+*.lbc
+fib_[0-9]*.lby
+results_*.csv
