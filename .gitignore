@@ -29,3 +29,6 @@ Desktop.ini
 # Test artifacts
 coverage/
 test-results/
+
+crates/lullaby_wasm/pkg/
+crates/lullaby_wasm/target/

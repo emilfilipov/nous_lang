@@ -1655,6 +1655,25 @@ pub fn char_find(text: &str, needle: &str) -> i64 {
     }
 }
 
+// Captured program output for wasm builds (the browser has no real stdout).
+// `print`/`println` append here; the wasm entry point drains it after a run.
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WASM_STDOUT: core::cell::RefCell<String> = const { core::cell::RefCell::new(String::new()) };
+}
+
+/// Clear the captured wasm output buffer (call before a run).
+#[cfg(target_arch = "wasm32")]
+pub fn clear_wasm_output() {
+    WASM_STDOUT.with(|b| b.borrow_mut().clear());
+}
+
+/// Take and clear the captured wasm output buffer (call after a run).
+#[cfg(target_arch = "wasm32")]
+pub fn take_wasm_output() -> String {
+    WASM_STDOUT.with(|b| core::mem::take(&mut *b.borrow_mut()))
+}
+
 pub fn run_main(program: &Program) -> Result<Value, RuntimeError> {
     run_main_with_args(program, Vec::new())
 }
@@ -4530,22 +4549,39 @@ impl<'a> Runtime<'a> {
         args: Vec<Value>,
         newline: bool,
     ) -> Result<Value, RuntimeError> {
-        use std::io::Write;
         let [text]: [Value; 1] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity(name, 1, args.len()))?;
         let text = text.as_string()?;
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
-        let result = if newline {
-            writeln!(handle, "{text}")
-        } else {
-            write!(handle, "{text}")
-        };
-        result.map_err(|error| {
-            RuntimeError::resource("L0419", format!("failed to write to stdout: {error}"))
-        })?;
-        Ok(Value::Void)
+        #[cfg(target_arch = "wasm32")]
+        {
+            // wasm has no real stdout — capture program output into a thread-local
+            // buffer the wasm entry point drains (the browser playground reads it).
+            let _ = name;
+            WASM_STDOUT.with(|buf| {
+                let mut b = buf.borrow_mut();
+                b.push_str(&text);
+                if newline {
+                    b.push('\n');
+                }
+            });
+            Ok(Value::Void)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Write;
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            let result = if newline {
+                writeln!(handle, "{text}")
+            } else {
+                write!(handle, "{text}")
+            };
+            result.map_err(|error| {
+                RuntimeError::resource("L0419", format!("failed to write to stdout: {error}"))
+            })?;
+            Ok(Value::Void)
+        }
     }
 
     fn builtin_warn(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {

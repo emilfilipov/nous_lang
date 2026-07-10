@@ -1,0 +1,21 @@
+[package]
+name = "lullaby_wasm"
+version = "0.1.0-alpha.2"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+lullaby_lexer = { path = "../lullaby_lexer" }
+lullaby_parser = { path = "../lullaby_parser" }
+lullaby_semantics = { path = "../lullaby_semantics" }
+lullaby_runtime = { path = "../lullaby_runtime" }
+serde_json = "1"
+
+# The browser playground supplies randomness via JS crypto (needs the build flag
+# --cfg getrandom_backend="wasm_js"; see .cargo/config.toml).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }

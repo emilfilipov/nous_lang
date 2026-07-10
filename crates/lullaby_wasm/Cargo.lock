@@ -50,39 +50,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
-name = "lullaby_cli"
-version = "0.1.0-alpha.2"
-dependencies = [
- "lullaby_diagnostics",
- "lullaby_ir",
- "lullaby_lexer",
- "lullaby_lsp",
- "lullaby_parser",
- "lullaby_runtime",
- "lullaby_semantics",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "lullaby_diagnostics"
 version = "0.1.0-alpha.2"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "lullaby_ir"
-version = "0.1.0-alpha.2"
-dependencies = [
- "getrandom",
- "lullaby_diagnostics",
- "lullaby_lexer",
- "lullaby_parser",
- "lullaby_runtime",
- "lullaby_semantics",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -93,22 +64,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "lullaby_lsp"
-version = "0.1.0-alpha.2"
-dependencies = [
- "lullaby_lexer",
- "lullaby_parser",
- "lullaby_semantics",
- "serde_json",
-]
-
-[[package]]
 name = "lullaby_parser"
 version = "0.1.0-alpha.2"
 dependencies = [
  "lullaby_lexer",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -117,9 +77,7 @@ version = "0.1.0-alpha.2"
 dependencies = [
  "getrandom",
  "lullaby_diagnostics",
- "lullaby_lexer",
  "lullaby_parser",
- "lullaby_semantics",
 ]
 
 [[package]]
@@ -127,15 +85,27 @@ name = "lullaby_semantics"
 version = "0.1.0-alpha.2"
 dependencies = [
  "lullaby_diagnostics",
- "lullaby_lexer",
  "lullaby_parser",
 ]
 
 [[package]]
+name = "lullaby_wasm"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "getrandom",
+ "lullaby_lexer",
+ "lullaby_parser",
+ "lullaby_runtime",
+ "lullaby_semantics",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "memchr"
-version = "2.8.2"
+version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "once_cell"
