@@ -62,8 +62,9 @@ Clearance) before first public publish:
 - **Wordmark:** lowercase `lullaby` set in a rounded humanist sans (e.g. Inter /
   Manrope), letter-spaced slightly, to read calm and approachable — matching the
   name's meaning and the "LLM-friendly, gentle to write" positioning.
-- **Mark:** a minimal crescent-moon-over-baseline glyph that doubles as the `.lby`
-  file-type icon. Ships as SVG plus the raster sizes each channel needs:
+- **Icon:** a plain lowercase `l` monogram on the lavender→sky tile that doubles as
+  the `.lby` file-type icon (the full `lullaby` wordmark is the identity everywhere a
+  lockup fits). Ships as SVG plus the raster sizes each channel needs:
   - Windows `.ico` (16/32/48/256 px) for the MSI/EXE and the `.lby` file
     association icon;
   - Linux `.png` set (16–512 px) plus a scalable SVG for the freedesktop icon

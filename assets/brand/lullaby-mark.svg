@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96" role="img" aria-label="lullaby">
+  <title>Lullaby wordmark</title>
+  <!-- Plain wordmark: the lowercase word "lullaby" tightly tracked in lavender
+       (#8b6ff0). Set in Nunito ExtraBold (800); a standalone SVG cannot bundle the
+       font, so it is drawn with a <text> element referencing the Nunito stack and
+       falls back to the host sans-serif. Transparent background; recolour by
+       changing `fill`. -->
+  <text x="6" y="72" font-family="Nunito, sans-serif" font-weight="800"
+        font-size="80" letter-spacing="-3" fill="#8b6ff0">lullaby</text>
+</svg>

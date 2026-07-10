@@ -140,3 +140,9 @@ the default object bytes are unchanged.
 Runnable example programs live under [`examples/`](examples/); the offline
 browser documentation is a self-contained HTML bundle that can be generated and
 opened directly from disk (no server or internet access required).
+
+## License
+
+Lullaby is open source under the [MIT License](LICENSE) — free to use, modify, and
+redistribute, including in proprietary and commercial work. The only condition is
+retaining the copyright and license notice.

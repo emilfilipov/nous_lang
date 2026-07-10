@@ -306,6 +306,11 @@ def verify_html(entry: Path, required_ids: list[str], required_phrases: list[str
             if target not in ids:
                 return fail(f"anchor link has no matching section: {href}")
             continue
+        if href.startswith("data:"):
+            # A self-contained embedded asset (bundled font/icon). This IS the
+            # offline story; the remote-dependency scan above still rejects any
+            # http(s)/CDN/@import reference.
+            continue
         if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", href):
             return fail(f"non-local href found: {href}")
         local_target = (entry.parent / href).resolve()

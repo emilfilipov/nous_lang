@@ -2,6 +2,7 @@
 name = "lullaby_ir"
 version = "0.1.0-alpha.2"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 getrandom = "0.4"

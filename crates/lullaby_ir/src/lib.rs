@@ -11,18 +11,18 @@ use lullaby_parser::{
     TypeRef, UnaryOp, function_type, generic_type,
 };
 use lullaby_runtime::{
-    ArithOp, Closure, Future, IntKind, MEMORY_ORDER_VARIANTS, OrderedMap, OverflowMode,
-    ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource, Task,
-    Value, apply_compound, asm_interpreter_error, await_future, builtin_atomic_add_ordered,
-    builtin_atomic_and_ordered, builtin_atomic_cas_ordered, builtin_atomic_load_ordered,
-    builtin_atomic_or_ordered, builtin_atomic_store_ordered, builtin_atomic_sub_ordered,
-    builtin_atomic_swap_ordered, builtin_atomic_xor_ordered, builtin_fence, char_find,
-    expect_atomic, expect_bool, expect_chan, expect_future, expect_i64, expect_list, expect_map,
-    expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64, get_place, http_exchange,
-    int_cmp, int_div, int_shl, int_shr, join_task, list_extreme, list_sum_values,
-    monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes, overflow_arith,
-    process_exit_code, result_value, scalar_order_keys, set_place, shift_left, shift_right,
-    sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
+    ArithOp, Closure, EnumValue, Future, IntKind, MEMORY_ORDER_VARIANTS, OverflowMode,
+    ProcessResource, ResolvedPlace, RuntimeError, SharedAtomic, SharedMutex, SocketResource,
+    StructValue, Task, Value, apply_compound, asm_interpreter_error, await_future,
+    builtin_atomic_add_ordered, builtin_atomic_and_ordered, builtin_atomic_cas_ordered,
+    builtin_atomic_load_ordered, builtin_atomic_or_ordered, builtin_atomic_store_ordered,
+    builtin_atomic_sub_ordered, builtin_atomic_swap_ordered, builtin_atomic_xor_ordered,
+    builtin_fence, char_find, expect_atomic, expect_bool, expect_chan, expect_future, expect_i64,
+    expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64,
+    get_place, http_exchange, int_cmp, int_div, int_shl, int_shr, join_task, list_extreme,
+    list_sum_values, monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes,
+    overflow_arith, process_exit_code, result_value, scalar_order_keys, set_place, shift_left,
+    shift_right, sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};
@@ -3740,6 +3740,15 @@ enum IrParallelCallable {
     Closure(Closure),
 }
 
+/// One entry in the interpreter's active call stack, mirroring the AST
+/// runtime's `CallFrame`: the function name is *borrowed* from the program
+/// (`&'a str`) so pushing a frame per call is allocation-free; owned
+/// [`TraceFrame`]s are materialized only when a traceback is attached on error.
+struct CallFrame<'a> {
+    function: &'a str,
+    span: Option<Span>,
+}
+
 struct IrRuntime<'a> {
     /// The whole IR module, borrowed so a builtin can spawn sibling interpreters
     /// over the same shared `&IrModule` (used by `parallel_map`'s scoped threads).
@@ -3762,7 +3771,7 @@ struct IrRuntime<'a> {
     /// Per-runtime table of live external processes, mirroring the AST interpreter.
     /// A `Value::Process(i)` indexes this vector.
     processes: Vec<Option<ProcessResource>>,
-    call_stack: Vec<TraceFrame>,
+    call_stack: Vec<CallFrame<'a>>,
     /// Trait-method dispatch table: `(receiver type name, method name)` -> impl
     /// function. Built once from every `impl` in the module.
     impl_methods: HashMap<(String, String), &'a IrFunction>,
@@ -4054,6 +4063,21 @@ impl<'a> IrRuntime<'a> {
         Ok(Some(self.eval_binary(l, op, r)?))
     }
 
+    /// Dispatch a call to an already-resolved top-level function name: reject an
+    /// `extern fn` (C-ABI, native-only) with `L0423`, spawn an `async fn` on its
+    /// own OS thread yielding a `Future`, or invoke the function / builtin /
+    /// constructor synchronously through [`Self::call_function`].
+    fn dispatch_named_call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if self.extern_functions.contains(name) {
+            return Err(extern_call_error(name));
+        }
+        if self.async_functions.contains(name) {
+            Ok(self.spawn_async(name, args))
+        } else {
+            self.call_function(name, args)
+        }
+    }
+
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Trait-method dispatch: select the impl by the receiver's runtime type.
         if self.trait_method_names.contains(name) {
@@ -4075,17 +4099,17 @@ impl<'a> IrRuntime<'a> {
             return self.invoke_function(method, args);
         }
         if let Some(enum_name) = self.variants.get(name) {
-            return Ok(Value::Enum {
+            return Ok(Value::Enum(Box::new(EnumValue {
                 enum_name: enum_name.to_string(),
                 variant: name.to_string(),
                 payload: args,
-            });
+            })));
         }
         if let Some(field_names) = self.structs.get(name) {
-            return Ok(Value::Struct {
+            return Ok(Value::Struct(Box::new(StructValue {
                 name: name.to_string(),
                 fields: field_names.iter().cloned().zip(args).collect(),
-            });
+            })));
         }
         match name {
             "alloc" => self.builtin_alloc(args),
@@ -4329,15 +4353,35 @@ impl<'a> IrRuntime<'a> {
             env.define(param.name.clone(), value);
         }
 
-        self.call_stack.push(TraceFrame {
-            function: function.name.clone(),
+        self.call_stack.push(CallFrame {
+            function: function.name.as_str(),
             span: Some(function.span),
         });
         let result = self.eval_block(&function.body, &mut env);
-        let traceback = self.call_stack.clone();
-        self.call_stack.pop();
 
-        match result.map_err(|error| error.with_traceback(traceback))? {
+        // Attach the traceback lazily. `with_traceback` records only the first
+        // (innermost) stack, so eagerly cloning `call_stack` on every successful
+        // call — and on every frame an error merely passes through — is pure
+        // waste that grows with recursion depth. Clone it only when this frame is
+        // the one first recording a traceback, while the frame is still on the
+        // stack so it is included.
+        let control = match result {
+            Err(error) => {
+                let error = if error.traceback.is_empty() {
+                    error.with_traceback(self.build_traceback())
+                } else {
+                    error
+                };
+                self.call_stack.pop();
+                return Err(error);
+            }
+            Ok(control) => {
+                self.call_stack.pop();
+                control
+            }
+        };
+
+        match control {
             Control::Return(value) | Control::Value(value) => Ok(value),
             Control::Break | Control::Continue => Err(RuntimeError::new(
                 "L0410",
@@ -4585,15 +4629,15 @@ impl<'a> IrRuntime<'a> {
         env: &mut Env,
     ) -> Result<Control, RuntimeError> {
         let value = self.eval_expr(scrutinee, env)?;
-        let Value::Enum {
-            variant, payload, ..
-        } = value
-        else {
+        let Value::Enum(e) = value else {
             return Err(RuntimeError::new(
                 "L0383",
                 "match scrutinee did not evaluate to an enum value",
             ));
         };
+        let EnumValue {
+            variant, payload, ..
+        } = *e;
         for arm in arms {
             match &arm.pattern {
                 IrMatchPattern::Wildcard => {
@@ -4650,11 +4694,11 @@ impl<'a> IrRuntime<'a> {
                     // A bare name that is not a local but is a known enum variant
                     // constructs a unit variant.
                     if let Some(enum_name) = self.variants.get(name.as_str()) {
-                        Ok(Value::Enum {
+                        Ok(Value::Enum(Box::new(EnumValue {
                             enum_name: enum_name.to_string(),
                             variant: name.clone(),
                             payload: Vec::new(),
-                        })
+                        })))
                     } else if self.functions.contains_key(name.as_str()) {
                         // A bare name that is a known top-level function evaluates
                         // to a first-class function value.
@@ -4681,7 +4725,8 @@ impl<'a> IrRuntime<'a> {
                 })
             }
             IrExprKind::Field { target, field } => match self.eval_expr(target, env)? {
-                Value::Struct { fields, .. } => fields
+                Value::Struct(s) => s
+                    .fields
                     .into_iter()
                     .find(|(name, _)| name == field)
                     .map(|(_, value)| value)
@@ -4729,32 +4774,26 @@ impl<'a> IrRuntime<'a> {
                     .iter()
                     .map(|arg| self.eval_expr(arg, env))
                     .collect::<Result<Vec<_>, _>>()?;
-                // A call name bound to a closure value invokes that closure: bind
-                // its captured snapshot then the arguments and evaluate the body
-                // from the id-keyed table. This is the same call site that
-                // dispatches a `Value::Func`, so a closure passed as an argument
-                // and called through a parameter name works with no extra path.
-                if let Ok(Value::Closure(closure)) = env.get(name) {
-                    return self.invoke_closure(&closure, values);
-                }
-                // A call name that is a local holding a function value dispatches
-                // through that value: invoke the referenced top-level function.
-                let target = match env.get(name) {
-                    Ok(Value::Func(target)) => target,
-                    _ => name.clone(),
+                // Resolve the call target with a single borrowing lookup. A call
+                // name bound to a closure value invokes that closure (binding its
+                // captured snapshot then the arguments); a name bound to a
+                // function value dispatches through it; otherwise `name` is a plain
+                // top-level function / builtin / constructor. Using `get_ref`
+                // keeps the common case — an ordinary top-level call, where `name`
+                // is not a local — free of the clone and the discarded "unknown
+                // variable" error a bare `env.get` allocates on every such call.
+                let target: &str = match env.get_ref(name) {
+                    Some(Value::Closure(closure)) => {
+                        let closure = closure.clone();
+                        return self.invoke_closure(&closure, values);
+                    }
+                    Some(Value::Func(func)) => {
+                        let func = func.clone();
+                        return self.dispatch_named_call(&func, values);
+                    }
+                    _ => name,
                 };
-                // An `extern fn` (C-ABI) cannot run on the interpreter; it only
-                // has meaning after native codegen + linking.
-                if self.extern_functions.contains(target.as_str()) {
-                    return Err(extern_call_error(&target));
-                }
-                // Calling an `async fn` spawns its body on a new OS thread and
-                // yields a `Future` handle; a synchronous call runs inline.
-                if self.async_functions.contains(target.as_str()) {
-                    Ok(self.spawn_async(&target, values))
-                } else {
-                    self.call_function(&target, values)
-                }
+                self.dispatch_named_call(target, values)
             }
             IrExprKind::Await { expr } => {
                 let value = self.eval_expr(expr, env)?;
@@ -4778,10 +4817,24 @@ impl<'a> IrRuntime<'a> {
         let error = error.with_span(span);
         match self.call_stack.last() {
             Some(frame) => error
-                .with_function(frame.function.clone())
-                .with_traceback(self.call_stack.clone()),
+                .with_function(frame.function.to_string())
+                .with_traceback(self.build_traceback()),
             None => error,
         }
+    }
+
+    /// Materialize the active call stack as owned [`TraceFrame`]s for a
+    /// `RuntimeError` — called only on the error path, so the per-frame name
+    /// clone stays off the hot call path (the live `call_stack` borrows each
+    /// name from the program).
+    fn build_traceback(&self) -> Vec<TraceFrame> {
+        self.call_stack
+            .iter()
+            .map(|frame| TraceFrame {
+                function: frame.function.to_string(),
+                span: frame.span,
+            })
+            .collect()
     }
 
     fn eval_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, RuntimeError> {
@@ -6759,7 +6812,7 @@ impl<'a> IrRuntime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_new", 0, args.len()))?;
-        Ok(Value::Map(OrderedMap::new()))
+        Ok(Value::Map(Box::default()))
     }
 
     /// `map_set(m, k, v) -> map<K, V>`: a new map with `k` mapped to `v`.
@@ -6770,7 +6823,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_set", 3, args.len()))?;
         let mut entries = expect_map("map_set", map)?;
         entries.insert(key, value);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`. O(1).
@@ -6830,7 +6883,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_del", 2, args.len()))?;
         let mut entries = expect_map("map_del", map)?;
         entries.remove(&key);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     fn builtin_substring(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -7555,22 +7608,30 @@ fn expr_mentions_var(expr: &IrExpr, name: &str) -> bool {
     }
 }
 
+/// A lexical environment: a stack of scopes, each an insertion-ordered
+/// association list of `(name, value)`. Function-call and block scopes are
+/// small, so a linear-scan `Vec` beats a `HashMap` — it avoids a per-scope
+/// bucket allocation and per-access string hashing, and its contiguous layout
+/// is cache-friendly. `define` keeps at most one binding per name per scope
+/// (replacing in place, like the previous `HashMap::insert`), so resolution
+/// never disambiguates duplicates within a scope; cross-scope shadowing is
+/// innermost-first. Mirrors the AST runtime's `Env` one-to-one.
 #[derive(Debug, Clone)]
 struct Env {
-    scopes: Vec<HashMap<String, Value>>,
+    scopes: Vec<Vec<(String, Value)>>,
 }
 
 impl Default for Env {
     fn default() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![Vec::new()],
         }
     }
 }
 
 impl Env {
     fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
@@ -7578,17 +7639,23 @@ impl Env {
     }
 
     fn define(&mut self, name: String, value: Value) {
-        self.scopes
-            .last_mut()
-            .expect("env always has a scope")
-            .insert(name, value);
+        let scope = self.scopes.last_mut().expect("env always has a scope");
+        for (existing, slot) in scope.iter_mut() {
+            if *existing == name {
+                *slot = value;
+                return;
+            }
+        }
+        scope.push((name, value));
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                *slot = value;
-                return Ok(());
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    *slot = value;
+                    return Ok(());
+                }
             }
         }
         Err(RuntimeError::new(
@@ -7598,10 +7665,7 @@ impl Env {
     }
 
     fn get(&self, name: &str) -> Result<Value, RuntimeError> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
+        self.get_ref(name)
             .cloned()
             .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
     }
@@ -7610,7 +7674,14 @@ impl Env {
     /// [`Env::get`]). Used to classify a call target on the
     /// move-on-functional-update fast path without paying for a clone.
     fn get_ref(&self, name: &str) -> Option<&Value> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+        for scope in self.scopes.iter().rev() {
+            for (existing, value) in scope.iter() {
+                if existing == name {
+                    return Some(value);
+                }
+            }
+        }
+        None
     }
 
     /// True when `name` is bound in the innermost (current) scope. A `let x =
@@ -7620,7 +7691,7 @@ impl Env {
     fn innermost_has(&self, name: &str) -> bool {
         self.scopes
             .last()
-            .is_some_and(|scope| scope.contains_key(name))
+            .is_some_and(|scope| scope.iter().any(|(n, _)| n == name))
     }
 
     /// True when `name` is bound in any scope (a normal local). A plain `x =
@@ -7639,8 +7710,10 @@ impl Env {
     /// never observable (see the AST runtime twin for the full argument).
     fn move_out_nearest(&mut self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                return Some(std::mem::replace(slot, Value::Void));
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    return Some(std::mem::replace(slot, Value::Void));
+                }
             }
         }
         None

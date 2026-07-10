@@ -8,6 +8,7 @@ verification environments without a package manager.
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import re
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPO_ROOT / "target" / "offline_docs" / "index.html"
+BRAND_DIR = REPO_ROOT / "assets" / "brand"
 
 SOURCE_DOCS = [
     ("Project Overview", REPO_ROOT / "README.md"),
@@ -117,6 +119,94 @@ def markdown_to_html(markdown: str) -> str:
     return "\n".join(output)
 
 
+# Branded offline-docs stylesheet (Lullaby visual identity: warm & friendly, soft
+# pastel, Nunito). Plain string with literal braces — injected whole into the head,
+# so it never touches the surrounding f-string's fields. Light and dark are both
+# designed; no remote dependencies (the font is embedded as a data URI below).
+_DOCS_CSS = """
+:root{
+  color-scheme: light dark;
+  --bg:#fef9f3; --panel:#ffffff; --ink:#372a54; --muted:#7c6fa6; --line:#efe7f7;
+  --lav:#8b6ff0; --lav-050:#f4f0ff; --peach:#fecaca; --sky:#bae6fd;
+  --code-bg:#201a33; --code-fg:#f3eefe;
+  --header-grad:linear-gradient(120deg,#f4f0ff,#eaf6ff 58%,#fdeeee);
+  --sans:'Nunito',ui-rounded,'Segoe UI',system-ui,-apple-system,sans-serif;
+  --mono:'Cascadia Code','JetBrains Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --bg:#161020; --panel:#20182f; --ink:#f1ecff; --muted:#b6a8db;
+    --line:#2e2440; --lav:#c9bafd; --lav-050:#241c38; --code-bg:#0f0b1a;
+    --header-grad:linear-gradient(120deg,#1f1836,#141a2b 58%,#241a2a); }
+}
+*{box-sizing:border-box}
+body{margin:0; font-family:var(--sans); line-height:1.62; color:var(--ink); background:var(--bg);}
+a{color:var(--lav); text-decoration:none; font-weight:600}
+a:hover{text-decoration:underline}
+a:focus-visible{outline:2px solid var(--lav); outline-offset:2px; border-radius:4px}
+.lb-header{display:flex; align-items:center; gap:16px; padding:1.7rem 2rem;
+  background:var(--header-grad); border-bottom:1px solid var(--line);}
+.lb-header .wordmark{flex:0 0 auto; font-family:var(--sans); font-weight:800;
+  font-size:2.1rem; letter-spacing:-.03em; line-height:1; color:var(--lav)}
+.lb-header h1{margin:0; font-size:1.45rem; font-weight:800; letter-spacing:-.02em}
+.lb-header p{margin:.25rem 0 0; color:var(--muted); font-size:.92rem}
+main{display:grid; grid-template-columns:minmax(13rem,16rem) minmax(0,1fr); gap:2rem;
+  padding:1.8rem 2rem; max-width:82rem; margin:0 auto}
+nav{position:sticky; top:1rem; align-self:start; max-height:calc(100vh - 2rem); overflow:auto}
+nav ul{list-style:none; padding:0; margin:0}
+nav li{margin:.12rem 0}
+nav a{display:block; padding:.32rem .6rem; border-radius:9px; color:var(--muted); font-weight:600; font-size:.92rem}
+nav a:hover{background:var(--lav-050); color:var(--ink); text-decoration:none}
+section{max-width:76rem; margin-bottom:3rem}
+h1,h2,h3{letter-spacing:-.01em; line-height:1.28}
+section>h1{font-size:1.7rem; font-weight:800; padding-bottom:.4rem; border-bottom:2px solid var(--lav-050)}
+p{max-width:70ch}
+code{font-family:var(--mono); font-size:.9em; background:var(--lav-050); color:var(--ink); padding:.1rem .35rem; border-radius:6px}
+pre{overflow-x:auto; padding:1rem 1.1rem; background:var(--code-bg); color:var(--code-fg); border-radius:12px; border:1px solid var(--line)}
+pre code{background:none; color:inherit; padding:0}
+table{border-collapse:collapse; margin:.9rem 0; width:100%; font-size:.94rem}
+td{border:1px solid var(--line); padding:.5rem .6rem; vertical-align:top; text-align:left}
+.source{color:var(--muted); font-size:.85rem}
+.lb-footer{padding:1.5rem 2rem; border-top:1px solid var(--line); color:var(--muted); text-align:center; font-size:.9rem}
+.lb-footer b{color:var(--lav); font-weight:800}
+@media (max-width:760px){ main{display:block} nav{position:static; max-height:none} .lb-header{flex-wrap:wrap} }
+"""
+
+# The plain wordmark, inline for the header: the lowercase word "lullaby" in the
+# bundled Nunito ExtraBold, tinted lavender (var(--lav)). No pictorial mark. The
+# text carries the whole identity, so there is no SVG namespace URL to keep out of
+# the bundle either.
+_HEADER_MARK = '<span class="wordmark">lullaby</span>'
+
+
+def render_brand() -> tuple[str, str, str]:
+    """Return (style_block, favicon_link, header_html) for the branded bundle.
+
+    The Nunito typeface and the favicon are embedded as data URIs so the bundle
+    stays fully offline (no CDN, no remote font, no `@import`). Base64 encoding also
+    keeps the SVG namespace URL out of the document as a literal string.
+    """
+    font_b64 = base64.b64encode((BRAND_DIR / "nunito.woff2").read_bytes()).decode("ascii")
+    font_face = (
+        "@font-face{font-family:'Nunito';font-style:normal;font-weight:400 800;"
+        f"font-display:swap;src:url(data:font/woff2;base64,{font_b64}) format('woff2');}}"
+    )
+    style_block = font_face + _DOCS_CSS
+
+    icon_b64 = base64.b64encode((BRAND_DIR / "lullaby-icon.svg").read_bytes()).decode("ascii")
+    favicon_link = f'<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,{icon_b64}">'
+
+    header_html = (
+        '  <header class="lb-header">\n'
+        f"    {_HEADER_MARK}\n"
+        "    <div>\n"
+        "      <h1>Lullaby Generated Offline Documentation</h1>\n"
+        "      <p>Self-contained HTML generated from canonical repository Markdown.</p>\n"
+        "    </div>\n"
+        "  </header>"
+    )
+    return style_block, favicon_link, header_html
+
+
 def render_document() -> str:
     nav_items = []
     sections = []
@@ -139,40 +229,25 @@ def render_document() -> str:
         nav_items.append(f'<li><a href="#{section_id}">{html.escape(title)}</a></li>')
         sections.append(f'<section id="{section_id}"><h1>{html.escape(title)}</h1>{body}</section>')
 
+    style_block, favicon_link, header_html = render_brand()
+    nav = "".join(nav_items)
+    body = "".join(sections)
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lullaby Generated Offline Documentation</title>
-  <style>
-    :root {{ color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    body {{ margin: 0; line-height: 1.55; }}
-    header {{ padding: 2rem; background: #18212f; color: #f7fbff; }}
-    main {{ display: grid; grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr); gap: 2rem; padding: 1.5rem; }}
-    nav {{ position: sticky; top: 1rem; align-self: start; }}
-    nav ul {{ list-style: none; padding: 0; }}
-    nav li {{ margin: 0.4rem 0; }}
-    a {{ color: #235fa7; }}
-    section {{ max-width: 76rem; margin-bottom: 3rem; }}
-    code, pre {{ font-family: "Cascadia Mono", Consolas, monospace; }}
-    code {{ background: rgba(127, 127, 127, 0.14); padding: 0.08rem 0.25rem; border-radius: 0.2rem; }}
-    pre {{ overflow-x: auto; padding: 1rem; background: #111827; color: #f9fafb; }}
-    table {{ border-collapse: collapse; margin: 0.75rem 0; width: 100%; }}
-    td {{ border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.4rem; vertical-align: top; }}
-    .source {{ color: #697386; }}
-    @media (max-width: 760px) {{ main {{ display: block; }} nav {{ position: static; }} }}
-  </style>
+  {favicon_link}
+  <style>{style_block}</style>
 </head>
 <body>
-  <header>
-    <h1>Lullaby Generated Offline Documentation</h1>
-    <p>Self-contained HTML generated from canonical repository Markdown.</p>
-  </header>
+{header_html}
   <main>
-    <nav aria-label="Documentation sections"><ul>{''.join(nav_items)}</ul></nav>
-    <div>{''.join(sections)}</div>
+    <nav aria-label="Documentation sections"><ul>{nav}</ul></nav>
+    <div>{body}</div>
   </main>
+  <footer class="lb-footer">Lullaby &mdash; <b>Serious systems code. Sweet dreams.</b></footer>
 </body>
 </html>
 """

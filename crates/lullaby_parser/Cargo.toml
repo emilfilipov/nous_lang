@@ -2,6 +2,7 @@
 name = "lullaby_parser"
 version = "0.1.0-alpha.2"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 lullaby_lexer = { path = "../lullaby_lexer" }

@@ -27,8 +27,8 @@ pub fn value_type_name(value: &Value) -> String {
         Value::Char(_) => "char".to_string(),
         Value::Byte(_) => "byte".to_string(),
         Value::Array(_) => "array".to_string(),
-        Value::Struct { name, .. } => name.clone(),
-        Value::Enum { enum_name, .. } => enum_name.clone(),
+        Value::Struct(s) => s.name.clone(),
+        Value::Enum(e) => e.enum_name.clone(),
         Value::Map(_) => "map".to_string(),
         Value::Func(_) => "fn".to_string(),
         // The runtime closure value carries no parameter/return types (they live
@@ -598,19 +598,19 @@ pub enum Value {
     Byte(u8),
     Array(Vec<Value>),
     Ptr(usize),
-    Struct {
-        name: String,
-        fields: Vec<(String, Value)>,
-    },
-    Enum {
-        enum_name: String,
-        variant: String,
-        payload: Vec<Value>,
-    },
+    /// A struct value. Boxed so the common scalar `Value` variants stay small
+    /// (the interpreter moves/clones `Value`s constantly, so enum size is on the
+    /// hot path); the box is one indirection paid only by struct values.
+    Struct(Box<StructValue>),
+    /// An enum value (including the built-in `option`/`result`). Boxed for the
+    /// same size reason as [`Value::Struct`].
+    Enum(Box<EnumValue>),
     /// A `map<K, V>`: an insertion-ordered association list ([`OrderedMap`])
     /// backed by a hash index, so `map_get`/`map_has`/`map_set`-of-an-existing-
     /// key are O(1) while iteration order and `==` remain those of the entries.
-    Map(OrderedMap),
+    /// Boxed so the map's Vec+hash-index (the largest payload) does not inflate
+    /// every `Value`.
+    Map(Box<OrderedMap>),
     /// A first-class function value: a handle to a top-level function by name.
     /// No environment is captured in this increment.
     Func(String),
@@ -644,6 +644,24 @@ pub enum Value {
     Void,
 }
 
+/// The payload of a [`Value::Struct`]: the struct type name plus its fields in
+/// declaration order. Boxed inside `Value` to keep the enum small.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructValue {
+    pub name: String,
+    pub fields: Vec<(String, Value)>,
+}
+
+/// The payload of a [`Value::Enum`]: the owning enum name, the variant name,
+/// and the (positional) payload values. Boxed inside `Value` to keep the enum
+/// small.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumValue {
+    pub enum_name: String,
+    pub variant: String,
+    pub payload: Vec<Value>,
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -672,21 +690,22 @@ impl fmt::Display for Value {
                 write!(formatter, "[{values}]")
             }
             Self::Ptr(slot) => write!(formatter, "ptr({slot})"),
-            Self::Struct { name, fields } => {
-                let rendered = fields
+            Self::Struct(s) => {
+                let rendered = s
+                    .fields
                     .iter()
                     .map(|(field, value)| format!("{field}: {value}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                write!(formatter, "{name}({rendered})")
+                write!(formatter, "{}({rendered})", s.name)
             }
-            Self::Enum {
-                variant, payload, ..
-            } => {
-                if payload.is_empty() {
+            Self::Enum(e) => {
+                let variant = &e.variant;
+                if e.payload.is_empty() {
                     write!(formatter, "{variant}")
                 } else {
-                    let rendered = payload
+                    let rendered = e
+                        .payload
                         .iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>()
@@ -1021,9 +1040,7 @@ pub const MEMORY_ORDER_VARIANTS: [&str; 5] =
 /// `L0432`.
 pub fn expect_memory_order(name: &str, value: Value) -> Result<Ordering, RuntimeError> {
     match value {
-        Value::Enum {
-            enum_name, variant, ..
-        } if enum_name == "MemoryOrder" => match variant.as_str() {
+        Value::Enum(e) if e.enum_name == "MemoryOrder" => match e.variant.as_str() {
             "relaxed" => Ok(Ordering::Relaxed),
             "acquire" => Ok(Ordering::Acquire),
             "release" => Ok(Ordering::Release),
@@ -1210,7 +1227,7 @@ pub fn builtin_fence(args: Vec<Value>) -> Result<Value, RuntimeError> {
 /// Unwrap a runtime `Value` expected to be a map, reporting `L0417` otherwise.
 pub fn expect_map(name: &str, value: Value) -> Result<OrderedMap, RuntimeError> {
     match value {
-        Value::Map(entries) => Ok(entries),
+        Value::Map(entries) => Ok(*entries),
         other => Err(RuntimeError::new(
             "L0417",
             format!("{name} expects a map but got `{other}`"),
@@ -1222,16 +1239,16 @@ pub fn expect_map(name: &str, value: Value) -> Result<OrderedMap, RuntimeError> 
 /// representation (`some(v)` or `none`).
 pub fn option_value(payload: Option<Value>) -> Value {
     match payload {
-        Some(value) => Value::Enum {
+        Some(value) => Value::Enum(Box::new(EnumValue {
             enum_name: "option".to_string(),
             variant: "some".to_string(),
             payload: vec![value],
-        },
-        None => Value::Enum {
+        })),
+        None => Value::Enum(Box::new(EnumValue {
             enum_name: "option".to_string(),
             variant: "none".to_string(),
             payload: Vec::new(),
-        },
+        })),
     }
 }
 
@@ -1405,16 +1422,16 @@ fn mixed_numeric_list_error(name: &str, value: &Value) -> RuntimeError {
 /// representation (`ok(v)` or `err(e)`).
 pub fn result_value(payload: Result<Value, Value>) -> Value {
     match payload {
-        Ok(value) => Value::Enum {
+        Ok(value) => Value::Enum(Box::new(EnumValue {
             enum_name: "result".to_string(),
             variant: "ok".to_string(),
             payload: vec![value],
-        },
-        Err(error) => Value::Enum {
+        })),
+        Err(error) => Value::Enum(Box::new(EnumValue {
             enum_name: "result".to_string(),
             variant: "err".to_string(),
             payload: vec![error],
-        },
+        })),
     }
 }
 
@@ -1811,6 +1828,15 @@ enum ParallelCallable {
     Closure(Closure),
 }
 
+/// One entry in the interpreter's active call stack. The function name is
+/// *borrowed* from the program (`&'a str`), so pushing a frame on every call is
+/// allocation-free; the owned [`TraceFrame`]s a `RuntimeError` carries are
+/// materialized only when a traceback is actually attached on the error path.
+struct CallFrame<'a> {
+    function: &'a str,
+    span: Option<Span>,
+}
+
 struct Runtime<'a> {
     /// The whole program, borrowed so a builtin can spawn sibling interpreters
     /// over the same shared `&Program` (used by `parallel_map`'s scoped threads).
@@ -1839,7 +1865,7 @@ struct Runtime<'a> {
     /// this vector; a killed/reaped process keeps its slot but `child.stdout`/
     /// `stderr` are drained on read. Mirrors `sockets`.
     processes: Vec<Option<ProcessResource>>,
-    call_stack: Vec<TraceFrame>,
+    call_stack: Vec<CallFrame<'a>>,
     /// Trait-method dispatch table: `(receiver type name, method name)` -> the
     /// impl function. Built once from every `impl Trait for Type` block.
     impl_methods: HashMap<(String, String), &'a Function>,
@@ -2194,6 +2220,21 @@ impl<'a> Runtime<'a> {
         Ok(Some(self.eval_binary(l, op, r)?))
     }
 
+    /// Dispatch a call to an already-resolved top-level function name: reject an
+    /// `extern fn` (C-ABI, native-only) with `L0423`, spawn an `async fn` on its
+    /// own OS thread yielding a `Future`, or invoke the function / builtin /
+    /// constructor synchronously through [`Self::call_function`].
+    fn dispatch_named_call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        if self.extern_functions.contains(name) {
+            return Err(extern_call_error(name));
+        }
+        if self.async_functions.contains(name) {
+            Ok(self.spawn_async(name, args))
+        } else {
+            self.call_function(name, args)
+        }
+    }
+
     fn call_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Trait-method dispatch: when `name` is a trait method, select the impl
         // by the receiver `args[0]`'s runtime type and invoke it. Because
@@ -2217,17 +2258,17 @@ impl<'a> Runtime<'a> {
             return self.invoke_function(method, args);
         }
         if let Some(enum_name) = self.variants.get(name) {
-            return Ok(Value::Enum {
+            return Ok(Value::Enum(Box::new(EnumValue {
                 enum_name: enum_name.to_string(),
                 variant: name.to_string(),
                 payload: args,
-            });
+            })));
         }
         if let Some(field_names) = self.structs.get(name) {
-            return Ok(Value::Struct {
+            return Ok(Value::Struct(Box::new(StructValue {
                 name: name.to_string(),
                 fields: field_names.iter().cloned().zip(args).collect(),
-            });
+            })));
         }
         match name {
             "alloc" => self.builtin_alloc(args),
@@ -3378,21 +3419,27 @@ impl<'a> Runtime<'a> {
             env.define(param.name.clone(), value);
         }
 
-        self.call_stack.push(TraceFrame {
-            function: function.name.clone(),
+        self.call_stack.push(CallFrame {
+            function: function.name.as_str(),
             span: Some(function.span),
         });
         let result = self.eval_block(&function.body, &mut env);
-        let traceback = self.call_stack.clone();
-        self.call_stack.pop();
 
+        // Attach the traceback lazily. `with_traceback` records only the first
+        // (innermost) stack — every later frame's attach is a no-op — so eagerly
+        // cloning `call_stack` on every successful call, and on every frame an
+        // error merely passes through, is pure waste. Clone it only when this
+        // frame is the one first recording a traceback, while the frame is still
+        // on the stack so it is included.
+        //
         // A postfix `?` on a `none`/`err` unwinds to here as the `L0430`
         // sentinel, carrying the failure value in `pending_try_return`. Catch it
         // at this call boundary and turn it into a normal function return of that
         // value (this is the function-level early return `?` denotes). The slot
         // is always taken, so it never leaks into a later call.
-        let result = match result {
+        let control = match result {
             Err(error) if error.code == "L0430" => {
+                self.call_stack.pop();
                 let value = self.pending_try_return.take().ok_or_else(|| {
                     RuntimeError::new(
                         "L0430",
@@ -3401,10 +3448,22 @@ impl<'a> Runtime<'a> {
                 })?;
                 return Ok(value);
             }
-            other => other,
+            Err(error) => {
+                let error = if error.traceback.is_empty() {
+                    error.with_traceback(self.build_traceback())
+                } else {
+                    error
+                };
+                self.call_stack.pop();
+                return Err(error);
+            }
+            Ok(control) => {
+                self.call_stack.pop();
+                control
+            }
         };
 
-        match result.map_err(|error| error.with_traceback(traceback))? {
+        match control {
             Control::Return(value) | Control::Value(value) => Ok(value),
             Control::Break | Control::Continue => Err(RuntimeError::new(
                 "L0410",
@@ -3667,15 +3726,15 @@ impl<'a> Runtime<'a> {
         env: &mut Env,
     ) -> Result<Control, RuntimeError> {
         let value = self.eval_expr(scrutinee, env)?;
-        let Value::Enum {
-            variant, payload, ..
-        } = value
-        else {
+        let Value::Enum(e) = value else {
             return Err(RuntimeError::new(
                 "L0383",
                 "match scrutinee did not evaluate to an enum value",
             ));
         };
+        let EnumValue {
+            variant, payload, ..
+        } = *e;
         for arm in arms {
             match &arm.pattern {
                 MatchPattern::Wildcard => {
@@ -3721,7 +3780,8 @@ impl<'a> Runtime<'a> {
             ExprKind::Field { target, field } => {
                 let target = self.eval_expr(target, env)?;
                 match target {
-                    Value::Struct { fields, .. } => fields
+                    Value::Struct(s) => s
+                        .fields
                         .into_iter()
                         .find(|(name, _)| name == field)
                         .map(|(_, value)| value)
@@ -3748,11 +3808,11 @@ impl<'a> Runtime<'a> {
                     // A bare name that is not a local but is a known enum variant
                     // constructs a unit variant.
                     if let Some(enum_name) = self.variants.get(name.as_str()) {
-                        Ok(Value::Enum {
+                        Ok(Value::Enum(Box::new(EnumValue {
                             enum_name: enum_name.to_string(),
                             variant: name.clone(),
                             payload: Vec::new(),
-                        })
+                        })))
                     } else if self.functions.contains_key(name.as_str()) {
                         // A bare name that is a known top-level function evaluates
                         // to a first-class function value.
@@ -3816,32 +3876,27 @@ impl<'a> Runtime<'a> {
                     .iter()
                     .map(|arg| self.eval_expr(arg, env))
                     .collect::<Result<Vec<_>, _>>()?;
-                // A call name bound to a closure value invokes that closure: bind
-                // its captured snapshot then the arguments, and evaluate the body
-                // from the id-keyed table. This is the same call site that
-                // dispatches a `Value::Func`, so a closure passed as an argument
-                // and called through a parameter name works with no extra path.
-                if let Ok(Value::Closure(closure)) = env.get(name) {
-                    return self.invoke_closure(&closure, values);
-                }
-                // A call name that is a local holding a function value dispatches
-                // through that value: invoke the referenced top-level function.
-                let target = match env.get(name) {
-                    Ok(Value::Func(target)) => target,
-                    _ => name.clone(),
+                // Resolve the call target with a single borrowing lookup. A call
+                // name bound to a closure value invokes that closure (binding its
+                // captured snapshot then the arguments); a name bound to a
+                // function value dispatches through it; otherwise `name` is a plain
+                // top-level function / builtin / constructor and dispatches by
+                // name. Using `get_ref` keeps the common case — an ordinary
+                // top-level call, where `name` is not a local at all — free of the
+                // clone and the discarded "unknown variable" error a bare
+                // `env.get` allocates on every such call.
+                let target: &str = match env.get_ref(name) {
+                    Some(Value::Closure(closure)) => {
+                        let closure = closure.clone();
+                        return self.invoke_closure(&closure, values);
+                    }
+                    Some(Value::Func(func)) => {
+                        let func = func.clone();
+                        return self.dispatch_named_call(&func, values);
+                    }
+                    _ => name,
                 };
-                // An `extern fn` (C-ABI) cannot run on the interpreter; it only
-                // has meaning after native codegen + linking.
-                if self.extern_functions.contains(target.as_str()) {
-                    return Err(extern_call_error(&target));
-                }
-                // Calling an `async fn` spawns its body on a new OS thread and
-                // yields a `Future` handle; a synchronous call runs inline.
-                if self.async_functions.contains(target.as_str()) {
-                    Ok(self.spawn_async(&target, values))
-                } else {
-                    self.call_function(&target, values)
-                }
+                self.dispatch_named_call(target, values)
             }
             ExprKind::Await { expr } => {
                 let value = self.eval_expr(expr, env)?;
@@ -3860,16 +3915,14 @@ impl<'a> Runtime<'a> {
             // `option`/`result` and the return type is compatible.
             ExprKind::Try(inner) => {
                 let value = self.eval_expr(inner, env)?;
-                let Value::Enum {
-                    variant, payload, ..
-                } = &value
-                else {
+                let Value::Enum(e) = &value else {
                     return Err(RuntimeError::new(
                         "L0428",
                         "`?` operand did not evaluate to an option/result value",
                     )
                     .with_span(expr.span));
                 };
+                let (variant, payload) = (&e.variant, &e.payload);
                 match variant.as_str() {
                     "ok" | "some" => payload.first().cloned().ok_or_else(|| {
                         RuntimeError::new("L0428", format!("`{variant}` payload missing for `?`"))
@@ -3946,10 +3999,24 @@ impl<'a> Runtime<'a> {
         let error = error.with_span(span);
         match self.call_stack.last() {
             Some(frame) => error
-                .with_function(frame.function.clone())
-                .with_traceback(self.call_stack.clone()),
+                .with_function(frame.function.to_string())
+                .with_traceback(self.build_traceback()),
             None => error,
         }
+    }
+
+    /// Materialize the active call stack as owned [`TraceFrame`]s for a
+    /// `RuntimeError`. Called only on the error path, so the per-frame name
+    /// clone stays off the hot call path (the live `call_stack` borrows each
+    /// name from the program).
+    fn build_traceback(&self) -> Vec<TraceFrame> {
+        self.call_stack
+            .iter()
+            .map(|frame| TraceFrame {
+                function: frame.function.to_string(),
+                span: frame.span,
+            })
+            .collect()
     }
 
     fn eval_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, RuntimeError> {
@@ -5048,7 +5115,7 @@ impl<'a> Runtime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_new", 0, args.len()))?;
-        Ok(Value::Map(OrderedMap::new()))
+        Ok(Value::Map(Box::default()))
     }
 
     /// `map_set(m, k, v) -> map<K, V>`: a new map with `k` mapped to `v`.
@@ -5059,7 +5126,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_set", 3, args.len()))?;
         let mut entries = expect_map("map_set", map)?;
         entries.insert(key, value);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     /// `map_get(m, k) -> option<V>`: `some(v)` if present, else `none`. O(1).
@@ -5119,7 +5186,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("map_del", 2, args.len()))?;
         let mut entries = expect_map("map_del", map)?;
         entries.remove(&key);
-        Ok(Value::Map(entries))
+        Ok(Value::Map(Box::new(entries)))
     }
 
     fn builtin_substring(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5842,13 +5909,13 @@ pub enum ResolvedPlace {
 fn place_get<'a>(current: &'a Value, place: &ResolvedPlace) -> Result<&'a Value, RuntimeError> {
     match place {
         ResolvedPlace::Field(field) => {
-            let Value::Struct { fields, .. } = current else {
+            let Value::Struct(s) = current else {
                 return Err(RuntimeError::new(
                     "L0371",
                     format!("cannot access field `{field}` on non-struct value"),
                 ));
             };
-            fields
+            s.fields
                 .iter()
                 .find(|(name, _)| name == field)
                 .map(|(_, value)| value)
@@ -5877,13 +5944,13 @@ fn place_get_mut<'a>(
 ) -> Result<&'a mut Value, RuntimeError> {
     match place {
         ResolvedPlace::Field(field) => {
-            let Value::Struct { fields, .. } = current else {
+            let Value::Struct(s) = current else {
                 return Err(RuntimeError::new(
                     "L0371",
                     format!("cannot access field `{field}` on non-struct value"),
                 ));
             };
-            fields
+            s.fields
                 .iter_mut()
                 .find(|(name, _)| name == field)
                 .map(|(_, value)| value)
@@ -6054,22 +6121,30 @@ fn stmt_mentions_var(stmt: &Stmt, name: &str) -> bool {
     }
 }
 
+/// A lexical environment: a stack of scopes, each an insertion-ordered
+/// association list of `(name, value)`. Function-call and block scopes are
+/// small (a handful of bindings), so a linear-scan `Vec` beats a `HashMap`
+/// here — it avoids a per-scope bucket allocation and per-access string
+/// hashing, and its contiguous layout is cache-friendly. `define` keeps at
+/// most one binding per name per scope (replacing in place, exactly like the
+/// previous `HashMap::insert`), so resolution never has to disambiguate
+/// duplicates within a scope; shadowing across scopes is innermost-first.
 #[derive(Debug, Clone)]
 struct Env {
-    scopes: Vec<HashMap<String, Value>>,
+    scopes: Vec<Vec<(String, Value)>>,
 }
 
 impl Default for Env {
     fn default() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![Vec::new()],
         }
     }
 }
 
 impl Env {
     fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
@@ -6077,17 +6152,26 @@ impl Env {
     }
 
     fn define(&mut self, name: String, value: Value) {
-        self.scopes
-            .last_mut()
-            .expect("env always has a scope")
-            .insert(name, value);
+        let scope = self.scopes.last_mut().expect("env always has a scope");
+        // `let` may redefine a name already bound in this scope; replace that
+        // binding in place so there is exactly one entry per name per scope
+        // (matching the previous `HashMap::insert` semantics).
+        for (existing, slot) in scope.iter_mut() {
+            if *existing == name {
+                *slot = value;
+                return;
+            }
+        }
+        scope.push((name, value));
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                *slot = value;
-                return Ok(());
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    *slot = value;
+                    return Ok(());
+                }
             }
         }
         Err(RuntimeError::new(
@@ -6097,10 +6181,7 @@ impl Env {
     }
 
     fn get(&self, name: &str) -> Result<Value, RuntimeError> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.get(name))
+        self.get_ref(name)
             .cloned()
             .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
     }
@@ -6110,7 +6191,14 @@ impl Env {
     /// value vs. builtin) on the move-on-functional-update fast path without
     /// paying for a clone.
     fn get_ref(&self, name: &str) -> Option<&Value> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+        for scope in self.scopes.iter().rev() {
+            for (existing, value) in scope.iter() {
+                if existing == name {
+                    return Some(value);
+                }
+            }
+        }
+        None
     }
 
     /// True when `name` is bound in the innermost (current) scope. A `let x =
@@ -6120,7 +6208,7 @@ impl Env {
     fn innermost_has(&self, name: &str) -> bool {
         self.scopes
             .last()
-            .is_some_and(|scope| scope.contains_key(name))
+            .is_some_and(|scope| scope.iter().any(|(n, _)| n == name))
     }
 
     /// True when `name` is bound in any scope (a normal local). A plain `x =
@@ -6141,8 +6229,10 @@ impl Env {
     /// catchable error mid-call.
     fn move_out_nearest(&mut self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                return Some(std::mem::replace(slot, Value::Void));
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    return Some(std::mem::replace(slot, Value::Void));
+                }
             }
         }
         None
@@ -6207,10 +6297,10 @@ impl Value {
             Value::F32(_) => 4,
             Value::Char(_) => 4,
             Value::Bool(_) | Value::Byte(_) => 1,
-            Value::Struct { fields, .. } => {
+            Value::Struct(s) => {
                 let mut offset = 0i64;
                 let mut max_align = 1i64;
-                for (_, field) in fields {
+                for (_, field) in &s.fields {
                     let size = field.layout_size()?;
                     let align = field.layout_align()?;
                     max_align = max_align.max(align);
@@ -6240,9 +6330,9 @@ impl Value {
             Value::F32(_) => 4,
             Value::Char(_) => 4,
             Value::Bool(_) | Value::Byte(_) => 1,
-            Value::Struct { fields, .. } => {
+            Value::Struct(s) => {
                 let mut max_align = 1i64;
-                for (_, field) in fields {
+                for (_, field) in &s.fields {
                     max_align = max_align.max(field.layout_align()?);
                 }
                 max_align
@@ -6260,11 +6350,11 @@ impl Value {
     /// defined layout. Fields are laid out in declaration order per
     /// [`Value::layout_size`].
     pub fn layout_field_offset(&self, field: &str) -> Option<i64> {
-        let Value::Struct { fields, .. } = self else {
+        let Value::Struct(s) = self else {
             return None;
         };
         let mut offset = 0i64;
-        for (name, value) in fields {
+        for (name, value) in &s.fields {
             offset = layout_round_up(offset, value.layout_align()?);
             if name == field {
                 return Some(offset);
@@ -6957,11 +7047,11 @@ mod tests {
         let order = |name: &str| {
             expect_memory_order(
                 "t",
-                Value::Enum {
+                Value::Enum(Box::new(EnumValue {
                     enum_name: "MemoryOrder".to_string(),
                     variant: name.to_string(),
                     payload: Vec::new(),
-                },
+                })),
             )
             .expect("decode")
         };
@@ -6981,10 +7071,12 @@ mod tests {
                 cell: Arc::new(AtomicI64::new(0)),
             })
         };
-        let order = |name: &str| Value::Enum {
-            enum_name: "MemoryOrder".to_string(),
-            variant: name.to_string(),
-            payload: Vec::new(),
+        let order = |name: &str| {
+            Value::Enum(Box::new(EnumValue {
+                enum_name: "MemoryOrder".to_string(),
+                variant: name.to_string(),
+                payload: Vec::new(),
+            }))
         };
         // A `release` load is illegal.
         let load = builtin_atomic_load_ordered(vec![atomic(), order("release")]);
@@ -7268,18 +7360,18 @@ mod tests {
 
     #[test]
     fn enum_value_display_formats_unit_and_payload_variants() {
-        let unit = Value::Enum {
+        let unit = Value::Enum(Box::new(EnumValue {
             enum_name: "Shape".to_string(),
             variant: "Empty".to_string(),
             payload: Vec::new(),
-        };
+        }));
         assert_eq!(unit.to_string(), "Empty");
 
-        let payload = Value::Enum {
+        let payload = Value::Enum(Box::new(EnumValue {
             enum_name: "Shape".to_string(),
             variant: "Circle".to_string(),
             payload: vec![Value::F64(2.0)],
-        };
+        }));
         assert_eq!(payload.to_string(), "Circle(2)");
     }
 

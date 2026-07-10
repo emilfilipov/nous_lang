@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Lullaby">
+  <title>Lullaby app icon</title>
+  <!-- Filled app/installer/favicon icon: a plain lowercase "l" monogram (a rounded
+       vertical stroke with a small foot) in cream on the soft lavender->sky tile, so
+       it stays legible at small sizes (16 px taskbar / tab). The plain "lullaby"
+       wordmark is the identity everywhere a full lockup fits. -->
+  <defs>
+    <linearGradient id="lb-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d9ccff"/>
+      <stop offset=".5" stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#bfe6fb"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="112" height="112" rx="28" fill="url(#lb-tile)"/>
+  <rect x="4.75" y="4.75" width="110.5" height="110.5" rx="27.25" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="1.5"/>
+  <path d="M51 32 V68 Q51 84 68 84" fill="none" stroke="#fff8ef" stroke-width="14"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
