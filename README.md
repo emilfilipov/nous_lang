@@ -98,6 +98,8 @@ cargo test --all
 Invoke the CLI during development with `cargo run -p lullaby_cli -- <command>`
 (shown below as `lullaby` for brevity):
 
+- `lullaby new <name>` — scaffold a new project directory (`lullaby.json`, a
+  runnable `src/main.lby`, and a `.gitignore`).
 - `lullaby check [--verbose|--format json] <file.lby>` — type-check source,
   including helper/library files without `main`.
 - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>` — run source on any interpreter backend.

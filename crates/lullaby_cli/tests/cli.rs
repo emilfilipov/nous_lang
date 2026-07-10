@@ -7437,3 +7437,82 @@ fn rejects_cross_package_private_use_with_l0392() {
     assert!(stderr.contains("L0392 [loader error]"), "{stderr}");
     assert!(stderr.contains("hidden_helper"), "{stderr}");
 }
+
+/// A unique, empty scratch directory for a `lullaby new` test, cleaned first so
+/// re-runs start fresh. Keyed by the test name to avoid collisions.
+fn scratch_dir(key: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lullaby_new_test_{key}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    dir
+}
+
+#[test]
+fn new_scaffolds_a_runnable_project() {
+    let work = scratch_dir("ok");
+    let created = lullaby()
+        .current_dir(&work)
+        .args(["new", "bedtime"])
+        .output()
+        .expect("run cli");
+    assert!(created.status.success(), "{created:?}");
+    assert!(
+        stdout(&created).contains("created bedtime/"),
+        "{}",
+        stdout(&created)
+    );
+
+    let root = work.join("bedtime");
+    assert!(root.join("lullaby.json").is_file());
+    assert!(root.join("src/main.lby").is_file());
+    assert!(root.join(".gitignore").is_file());
+
+    // The scaffold is a valid project the toolchain runs unmodified.
+    let ran = lullaby()
+        .current_dir(&work)
+        .args(["run", "bedtime"])
+        .output()
+        .expect("run cli");
+    assert!(ran.status.success(), "{ran:?}");
+    assert!(
+        stdout(&ran).contains("hello from bedtime"),
+        "{}",
+        stdout(&ran)
+    );
+
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
+fn new_refuses_existing_directory() {
+    let work = scratch_dir("exists");
+    std::fs::create_dir(work.join("taken")).expect("pre-create dir");
+    let output = lullaby()
+        .current_dir(&work)
+        .args(["new", "taken"])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr(&output).contains("already exists"),
+        "{}",
+        stderr(&output)
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
+fn new_rejects_invalid_names() {
+    let work = scratch_dir("invalid");
+    for bad in ["my-app", "9lives", ""] {
+        let output = lullaby()
+            .current_dir(&work)
+            .args(["new", bad])
+            .output()
+            .expect("run cli");
+        assert!(!output.status.success(), "name {bad:?}: {output:?}");
+    }
+    // A rejected name creates nothing.
+    assert!(!work.join("my-app").exists());
+    let _ = std::fs::remove_dir_all(&work);
+}

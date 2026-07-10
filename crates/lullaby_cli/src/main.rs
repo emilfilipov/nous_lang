@@ -54,6 +54,7 @@ fn run() -> Result<(), String> {
         ),
         CommandName::Docs => docs(),
         CommandName::Examples => examples(),
+        CommandName::New => new_project(invocation.path),
         CommandName::Fmt => fmt_file(invocation.path, invocation.fmt_mode),
         CommandName::Inspect => inspect_bytecode_artifact(invocation.path, invocation.mode),
         CommandName::Run => run_file(
@@ -147,6 +148,71 @@ fn examples() -> Result<(), String> {
     })?;
     println!("examples: {}", path.display());
     Ok(())
+}
+
+/// Scaffold a new Lullaby project in a fresh directory named after the project.
+///
+/// Creates `<name>/lullaby.json`, a runnable `<name>/src/main.lby`, and a
+/// `.gitignore`, then prints the next step. Fails with a clear message if the
+/// name is not a valid identifier or the target directory already exists — the
+/// scaffold is never written over an existing directory.
+fn new_project(name: PathBuf) -> Result<(), String> {
+    let name = name.to_string_lossy().into_owned();
+    if !is_valid_project_name(&name) {
+        return Err(format!(
+            "invalid project name `{name}`: start with a letter or underscore, then use \
+             letters, digits, or underscores (e.g. `bedtime`, `my_app`)"
+        ));
+    }
+
+    let root = PathBuf::from(&name);
+    if root.exists() {
+        return Err(format!(
+            "`{name}` already exists here; choose another name or remove it first"
+        ));
+    }
+    let src = root.join("src");
+    fs::create_dir_all(&src)
+        .map_err(|error| format!("could not create `{}`: {error}", src.display()))?;
+
+    let manifest_name = manifest::MANIFEST_FILE_NAME;
+    let manifest_json = format!(
+        "{{\n  \"name\": \"{name}\",\n  \"entry\": \"src/main.lby\",\n  \"src\": [\"src\"]\n}}\n"
+    );
+    let main_lby = format!(
+        "# {name} — a new Lullaby project.\n\
+         # Run it with:  lullaby run {name}\n\n\
+         fn main -> void\n    println(\"hello from {name}\")\n"
+    );
+    let gitignore = "/target\n*.lbc\n";
+
+    write_new_file(&root.join(manifest_name), &manifest_json)?;
+    write_new_file(&src.join("main.lby"), &main_lby)?;
+    write_new_file(&root.join(".gitignore"), gitignore)?;
+
+    println!("created {name}/");
+    println!("  {name}/{manifest_name}");
+    println!("  {name}/src/main.lby");
+    println!("\nnext:  lullaby run {name}");
+    Ok(())
+}
+
+/// A project name that is also a valid Lullaby identifier, so the project can be
+/// imported by name as a dependency: an ASCII letter or `_`, then ASCII
+/// alphanumerics or `_`.
+fn is_valid_project_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Write a freshly scaffolded file, mapping any I/O error to a CLI message.
+fn write_new_file(path: &Path, contents: &str) -> Result<(), String> {
+    fs::write(path, contents)
+        .map_err(|error| format!("could not write `{}`: {error}", path.display()))
 }
 
 fn locate_examples() -> Option<PathBuf> {
@@ -1353,6 +1419,7 @@ enum CommandName {
     Examples,
     Fmt,
     Inspect,
+    New,
     Run,
     Test,
     Wasm,
@@ -1506,6 +1573,26 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                 }))
             } else {
                 Err("usage: lullaby lsp".to_string())
+            }
+        }
+        "new" => {
+            // `lullaby new <name>` — exactly one argument, the project name,
+            // carried through the `path` field to the `New` handler.
+            match &args[1..] {
+                [name] => Ok(Some(Invocation {
+                    command: CommandName::New,
+                    path: PathBuf::from(name),
+                    output: None,
+                    mode: OutputMode::Concise,
+                    backend: Backend::Ast,
+                    optimization: OptimizationMode::None,
+                    fmt_mode: FmtMode::Print,
+                    program_args: Vec::new(),
+                    freestanding: false,
+                    debug: false,
+                    native_target: None,
+                })),
+                _ => Err("usage: lullaby new <name>".to_string()),
             }
         }
         "build" | "check" | "compile" | "inspect" | "run" | "test" | "wasm" | "native" => {
@@ -1735,7 +1822,7 @@ fn command_usage(command: &str) -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby new <name>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
         env!("CARGO_PKG_VERSION")
     );
 }
