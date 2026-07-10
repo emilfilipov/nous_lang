@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX v7 authoring for the Lullaby Windows installer (.msi).
+
+  Installs the toolchain to Program Files\Lullaby in the portable layout the CLI
+  expects (bin\ , docs\ , examples\ ), adds bin to the system PATH, creates Start
+  Menu shortcuts, and brands the wizard + Add/Remove Programs entry.
+
+  Build (from the repo root):
+    wix build installer/lullaby.wxs -arch x64 \
+      -ext WixToolset.UI.wixext -d Version=0.1.0 -o dist/lullaby-0.1.0-x64.msi
+  The build is normally driven by scripts/build_windows_installer.py, which stages
+  the payload (release exe, generated docs, examples) and passes the version.
+-->
+<?ifndef Version ?>
+<?define Version = "0.1.0" ?>
+<?endif?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Lullaby"
+           Manufacturer="Lullaby"
+           Version="$(Version)"
+           UpgradeCode="9F5B2E7A-1C3D-4B8E-A6F2-7D4C8E1B9A03"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Lullaby is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Branding: Add/Remove Programs icon + wizard bitmaps -->
+    <Icon Id="lullaby.ico" SourceFile="assets/brand/lullaby.ico" />
+    <Property Id="ARPPRODUCTICON" Value="lullaby.ico" />
+    <WixVariable Id="WixUILicenseRtf" Value="installer/notice.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="installer/banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="installer/dialog.bmp" />
+
+    <!-- Install layout: [ProgramFiles64]\Lullaby\{bin,docs,examples} -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Lullaby">
+        <Directory Id="BinDir" Name="bin" />
+        <Directory Id="DocsDir" Name="docs" />
+        <Directory Id="ExamplesDir" Name="examples" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuDir" Name="Lullaby" />
+    </StandardDirectory>
+
+    <!-- The command-line tool + PATH entry -->
+    <ComponentGroup Id="ToolComponents">
+      <Component Directory="BinDir">
+        <File Id="LullabyExe" Source="target/release/lullaby.exe" KeyPath="yes" />
+        <Environment Id="AddToPath" Name="PATH" Value="[BinDir]"
+                     Action="set" Part="last" System="yes" Permanent="no" />
+      </Component>
+      <Component Directory="DocsDir">
+        <File Id="DocsIndex" Source="target/offline_docs/index.html" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Packaged example programs (valid + invalid diagnostic .lby), harvested.
+         Files/@Include is resolved relative to THIS .wxs file, so reach up to the
+         repo-root examples/ tree (unlike File/@Source, which is CWD-relative). -->
+    <ComponentGroup Id="ExampleComponents" Directory="ExamplesDir">
+      <Files Include="../examples/**" />
+    </ComponentGroup>
+
+    <!-- Start Menu shortcuts -->
+    <Component Directory="AppMenuDir" Id="Shortcuts" Guid="B2A4C6E8-3D5F-4A7B-9C1E-6F8A0B2D4C60">
+      <Shortcut Id="DocsShortcut"
+                Name="Lullaby Documentation"
+                Description="Open the offline Lullaby documentation"
+                Target="[#DocsIndex]"
+                Icon="lullaby.ico" />
+      <Shortcut Id="PromptShortcut"
+                Name="Lullaby Command Prompt"
+                Description="A command prompt with lullaby on the PATH"
+                Target="[System64Folder]cmd.exe"
+                Arguments="/k lullaby --version"
+                Icon="lullaby.ico" />
+      <RemoveFolder Id="RemoveAppMenuDir" Directory="AppMenuDir" On="uninstall" />
+      <RegistryValue Root="HKMU" Key="Software\Lullaby" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main" Title="Lullaby toolchain" Level="1">
+      <ComponentGroupRef Id="ToolComponents" />
+      <ComponentGroupRef Id="ExampleComponents" />
+      <ComponentRef Id="Shortcuts" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+  </Package>
+</Wix>

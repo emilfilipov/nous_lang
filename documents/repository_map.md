@@ -12,7 +12,8 @@ This file maps the repository layout and explains where to find core information
 - `crates/`: Rust implementation crates.
 - `assets/`: brand and visual-identity assets. `assets/brand/` holds the canonical logo (`lullaby-mark.svg` one-ink lavender; `lullaby-icon.svg` filled tile), the multi-size app/installer/favicon icon (`lullaby.ico` + `lullaby-icon-256/512.png`), the bundled Nunito typeface (`nunito.woff2`, OFL), and `render_icons.py` which regenerates the raster icons from the mark geometry.
 - `examples/`: user-facing `.lby` examples packaged with the toolchain.
-- `scripts/`: release packaging and verification scripts.
+- `scripts/`: release packaging and verification scripts, including `build_windows_installer.py` (stages the payload and builds the branded WiX `.msi`).
+- `installer/`: Windows installer authoring — `lullaby.wxs` (WiX v7 package: Program Files layout, PATH entry, Start Menu shortcuts, branded ARP icon + wizard), `notice.rtf` (preview notice shown by the wizard), `banner.bmp`/`dialog.bmp` (branded wizard bitmaps), and `render_installer_art.py` (regenerates the bitmaps from the mark geometry).
 - `tests/`: shared `.lby` fixtures used by crate and CLI tests.
 - `documents/`: core language documents and planning material.
 - `offline_docs/`: self-contained browser documentation bundle that can be opened directly from disk.
@@ -64,6 +65,7 @@ This file maps the repository layout and explains where to find core information
 - `documents/lullaby_error_handling.md`: error model, compact error tokens, compile-time and runtime categories, throw/catch/recovery behavior, diagnostics, and compiler integration.
 - `documents/lullaby_compilation_architecture.md`: compiler architecture from tokenization through semantic analysis, IR, optimization, code generation, linking, and binary verification.
 - `documents/brand_guidelines.md`: Lullaby visual identity — the "L cradling a crescent moon" mark (one-ink lavender primary; filled tile for small-size app/installer/favicon), the soft-pastel palette with hex tokens and roles, Nunito typography, voice and tagline, and the `assets/brand/` asset inventory.
+- `documents/packaging_roadmap.md`: distribution-channel roadmap — the shipped Windows `.msi` and portable archives, plus planned release automation, one-line web installer, winget, Homebrew, Linux `.deb`/`.rpm`, macOS tarball, and code signing, each with its build machinery and the owner-provided prerequisites.
 - `documents/repository_map.md`: this file. Use it as the first navigation aid and update it with repository changes.
 
 ## Offline Browser Docs
