@@ -1,4 +1,10 @@
-# Lullaby
+<p align="center">
+  <img src="assets/brand/lullaby-wordmark.png" alt="Lullaby" width="360">
+</p>
+
+<p align="center"><strong>Serious systems code. Sweet dreams.</strong></p>
+
+<hr>
 
 Lullaby is a compiled, statically typed systems programming language with an
 indentation-only syntax. It is designed for concise, readable source that is

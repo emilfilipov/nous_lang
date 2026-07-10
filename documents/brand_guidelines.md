@@ -71,11 +71,15 @@ cost of clarity.
 | File | Use |
 | --- | --- |
 | `assets/brand/lullaby-mark.svg` | Primary lavender `lullaby` wordmark |
+| `assets/brand/lullaby-wordmark.png` | Raster wordmark (real Nunito ExtraBold, transparent) for GitHub/READMEs where the font is absent |
 | `assets/brand/lullaby-icon.svg` | Filled `l`-monogram tile icon (app/favicon/installer) |
 | `assets/brand/lullaby.ico` | Multi-size icon 16–256 (exe, installer, favicon) |
 | `assets/brand/lullaby-icon-256.png`, `-512.png` | Raster app icon |
+| `assets/brand/lullaby-social-card.png` | 1200×630 social-preview card (Open Graph / Twitter, GitHub repo preview) |
 | `assets/brand/nunito.woff2` | Bundled body/display typeface (OFL) |
 | `assets/brand/render_icons.py` | Regenerates the raster icons from the geometry |
+| `assets/brand/render_wordmark.py` | Regenerates the raster wordmark from Nunito ExtraBold |
+| `assets/brand/render_social_card.py` | Regenerates the social-preview card |
 
 The colour tokens, tagline, and lockups are previewed in the visual-identity board
 (shared separately); this document is the source of truth for hex values and usage.
