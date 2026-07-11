@@ -31,12 +31,25 @@ interpreter tiers (ast/ir/bytecode) run at N=30. Every result is correctness-che
 | lullaby ir | 430 | 342x |
 | lullaby ast | 439 | 349x |
 
-After adding `[profile.release]` (fat LTO + `codegen-units=1` + `panic=abort`):
-bytecode 381 (-13%), ir 365 (-15%), ast 403 (-8%); native and C unchanged
-(native is emitted machine code, not Rust).
+### Current standings (after the optimization campaign)
 
-After fusing i64 comparisons into their branch + folding constant operands into
-immediates (native codegen): **native fib 2.17 → 1.71 ns/call (1.72× → 1.35× C)**.
+| Tier | baseline ns/call | now | vs C |
+|---|---|---|---|
+| C (`cl /O2`) | 1.26 | ~1.25 | 1.0× |
+| **lullaby native** | 2.17 (1.72×) | **1.56 (1.21× C)** | 28% faster |
+| lullaby bytecode | 436 | **229** | 47% faster |
+| lullaby ir | 430 | **233** | 46% faster |
+| lullaby ast | 439 | **228** | 48% faster |
+
+What changed:
+- `[profile.release]` (fat LTO + `codegen-units=1` + `panic=abort`) — interpreters
+  −8…15%; native/C unchanged (native is emitted machine code, not Rust).
+- Native codegen: fuse i64 comparisons into their branch (`cmp; jcc` vs
+  `setcc;movzx;test;jz`), fold constant operands into immediates, memory-destination
+  self-assign, and pass a single scalar call arg straight into `rcx` — **native fib
+  2.17 → 1.56 (1.72× → 1.21× C)**.
+- Per-call environment pooling in both the AST and IR/bytecode interpreters — the
+  per-call `Env` allocation dominated the call path: **~435 → ~230 ns/call (≈47%)**.
 
 ## Compute-bound loop (`run_loop.ps1`, sum 0..N)
 
