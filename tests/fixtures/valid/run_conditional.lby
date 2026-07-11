@@ -1,0 +1,14 @@
+fn max2 a i64 b i64 -> i64
+    a if a > b else b
+
+fn abs2 n i64 -> i64
+    n if n >= 0 else 0 - n
+
+fn grade s i64 -> i64
+    1 if s >= 90 else (2 if s >= 80 else (3 if s >= 70 else 4))
+
+fn main -> i64
+    let x = max2(3, 9)
+    let y = abs2(0 - 4)
+    let z = 100 if x > y else 200
+    x + y + z + grade(85)

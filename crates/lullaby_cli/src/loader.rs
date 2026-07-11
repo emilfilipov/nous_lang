@@ -631,6 +631,15 @@ fn collect_expr_references(expr: &Expr, out: &mut Vec<(String, Span)>) {
                 collect_block_references(body, out);
             }
         }
+        ExprKind::Conditional {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_expr_references(cond, out);
+            collect_expr_references(then_branch, out);
+            collect_expr_references(else_branch, out);
+        }
     }
 }
 

@@ -1,0 +1,2 @@
+fn main -> i64
+    5 if true else "no"

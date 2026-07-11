@@ -677,6 +677,20 @@ pub enum ExprKind {
         params: Vec<Param>,
         body: Box<Expr>,
     },
+    /// Inline conditional (ternary) expression `THEN if COND else ELSE`. `cond`
+    /// must be `bool`; `then_branch` and `else_branch` must share a type, which
+    /// becomes the expression's type. It is the lowest-precedence expression
+    /// form and right-associative, so `a + b if c else d` parses as
+    /// `(a + b) if c else d` and `x if a else y if b else z` as
+    /// `x if a else (y if b else z)`. The AST interpreter evaluates it directly;
+    /// the IR lowerer desugars it into a hoisted temporary plus an `if`
+    /// statement, so the IR interpreter, bytecode VM, native, and WASM backends
+    /// need no dedicated conditional-expression node.
+    Conditional {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2429,11 +2443,54 @@ impl<'a> ExprParser<'a> {
     }
 
     fn parse(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_binary(0)?;
+        let expr = self.parse_conditional()?;
         if !self.is_at_end() {
             return Err("unexpected token in expression".to_string());
         }
         Ok(expr)
+    }
+
+    /// The lowest-precedence expression layer: a binary/unary expression,
+    /// optionally followed by an inline conditional `if COND else ELSE`. Every
+    /// "fresh expression" position (call/method arguments, array elements,
+    /// named-field values, parentheses, index brackets, closure bodies, and the
+    /// top-level entry) parses through here, so a ternary is accepted wherever a
+    /// full expression is. Right-associative: the `else` branch recurses.
+    fn parse_conditional(&mut self) -> Result<Expr, String> {
+        let then_branch = self.parse_binary(0)?;
+        if !self.peek_keyword(Keyword::If) {
+            return Ok(then_branch);
+        }
+        self.cursor += 1;
+        let cond = self.parse_binary(0)?;
+        if !self.eat_keyword_tok(Keyword::Else) {
+            return Err(
+                "expected `else` in inline conditional `THEN if COND else ELSE`".to_string(),
+            );
+        }
+        let else_branch = self.parse_conditional()?;
+        let span = then_branch.span;
+        Ok(Expr {
+            kind: ExprKind::Conditional {
+                cond: Box::new(cond),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            span,
+        })
+    }
+
+    fn peek_keyword(&self, keyword: Keyword) -> bool {
+        matches!(self.peek(), Some(token) if matches!(&token.kind, TokenKind::Keyword(k) if *k == keyword))
+    }
+
+    fn eat_keyword_tok(&mut self, keyword: Keyword) -> bool {
+        if self.peek_keyword(keyword) {
+            self.cursor += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn parse_binary(&mut self, min_precedence: u8) -> Result<Expr, String> {
@@ -2518,7 +2575,7 @@ impl<'a> ExprParser<'a> {
         let mut expr = self.parse_primary()?;
         loop {
             if self.eat_symbol("[") {
-                let index = self.parse_binary(0)?;
+                let index = self.parse_conditional()?;
                 if !self.eat_symbol("]") {
                     return Err("expected `]` after index expression".to_string());
                 }
@@ -2545,7 +2602,7 @@ impl<'a> ExprParser<'a> {
                     let mut args = vec![expr];
                     if !self.eat_symbol(")") {
                         loop {
-                            args.push(self.parse_binary(0)?);
+                            args.push(self.parse_conditional()?);
                             if self.eat_symbol(")") {
                                 break;
                             }
@@ -2623,7 +2680,7 @@ impl<'a> ExprParser<'a> {
                 if !self.eat_arrow() {
                     return Err("expected `->` in closure literal".to_string());
                 }
-                let body = self.parse_binary(0)?;
+                let body = self.parse_conditional()?;
                 Ok(Expr {
                     kind: ExprKind::Closure {
                         id,
@@ -2653,7 +2710,7 @@ impl<'a> ExprParser<'a> {
                                 return Err("expected `:` after field name in named construction"
                                     .to_string());
                             }
-                            fields.push((field, self.parse_binary(0)?));
+                            fields.push((field, self.parse_conditional()?));
                             if self.eat_symbol(")") {
                                 break;
                             }
@@ -2669,7 +2726,7 @@ impl<'a> ExprParser<'a> {
                     let mut args = Vec::new();
                     if !self.eat_symbol(")") {
                         loop {
-                            args.push(self.parse_binary(0)?);
+                            args.push(self.parse_conditional()?);
                             if self.eat_symbol(")") {
                                 break;
                             }
@@ -2693,7 +2750,7 @@ impl<'a> ExprParser<'a> {
                 let mut values = Vec::new();
                 if !self.eat_symbol("]") {
                     loop {
-                        values.push(self.parse_binary(0)?);
+                        values.push(self.parse_conditional()?);
                         if self.eat_symbol("]") {
                             break;
                         }
@@ -2708,7 +2765,7 @@ impl<'a> ExprParser<'a> {
                 })
             }
             TokenKind::Symbol(symbol) if symbol == "(" => {
-                let expr = self.parse_binary(0)?;
+                let expr = self.parse_conditional()?;
                 if !self.eat_symbol(")") {
                     return Err("expected `)` after grouped expression".to_string());
                 }

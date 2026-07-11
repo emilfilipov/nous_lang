@@ -37,7 +37,16 @@ while cond
 
 for i from 0 to n            # INCLUSIVE both ends; `for i from 0 to n-1` visits n items.
     ...                      # empty when start > end. `break` / `continue` work.
+
+let s = "even" if n % 2 == 0 else "odd"   # inline conditional (ternary): THEN if COND else ELSE
+return 1 if ok else 0                     # great for 1/0 returns — replaces a 4-line if/else block
+let g = 1 if s >= 90 else 2 if s >= 80 else 3   # right-associative else-chain (no parens needed)
 ```
+
+**Prefer the inline conditional over a block `if/else` when returning a value.**
+`return 1 if cond else 0` is one line and far fewer tokens than the `if cond` /
+`1` / `else` / `0` block. Condition must be `bool`; both branches must share a
+type; the result must be a scalar or `string` (use a block `if` for aggregates).
 
 ## Operators & gotchas (IMPORTANT)
 

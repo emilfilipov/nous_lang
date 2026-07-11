@@ -46,9 +46,23 @@ loop
     continue
 ```
 
+The **inline conditional** (ternary) is an *expression*, unlike the block `if`
+above. It selects one of two values in a single line:
+
+```lullaby
+let label string = "even" if n % 2 == 0 else "odd"
+let bigger i64 = a if a > b else b
+```
+
+`THEN if COND else ELSE` binds looser than every operator and is
+right-associative, so `a + b if c else d` is `(a + b) if c else d` and a chained
+`x if a else y if b else z` is `x if a else (y if b else z)`. The condition must
+be `bool` (`L0305`), both branches must share a type (`L0435`), and that type
+must be a scalar or `string` (`L0436`) — use a block `if` to select an aggregate.
+
 Current rules:
 
-- `if`, `elif`, and `while` conditions must type-check as `bool`.
+- `if`, `elif`, `while`, and inline-conditional conditions must type-check as `bool`.
 - `for` ranges use inclusive `i64` start/end expressions with an optional `i64` step. The default step is `1`; runtime rejects step `0`.
 - `break` and `continue` are valid only inside `while`, `for`, or `loop`.
 - `let` bindings introduced inside an indented block are scoped to that block.

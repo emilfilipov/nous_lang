@@ -176,18 +176,28 @@ Range-for loops are inclusive at runtime. A zero step is a runtime error, not a 
 
 Expression precedence, from lowest to highest:
 
-1. `or`
-2. `and`
-3. equality and ordering: `==`, `!=`, `<`, `<=`, `>`, `>=`
-4. addition and subtraction: `+`, `-`
-5. multiplication, division, and remainder: `*`, `/`, `%`
-6. unary: `not`, unary `-`
-7. postfix indexing: `target[index]`
-8. primary expressions
+1. inline conditional (ternary): `THEN if COND else ELSE`
+2. `or`
+3. `and`
+4. equality and ordering: `==`, `!=`, `<`, `<=`, `>`, `>=`
+5. addition and subtraction: `+`, `-`
+6. multiplication, division, and remainder: `*`, `/`, `%`
+7. unary: `not`, unary `-`
+8. postfix indexing: `target[index]`
+9. primary expressions
+
+The inline conditional binds looser than every operator and is
+right-associative, so `a + b if c else d` parses as `(a + b) if c else d` and
+`x if a else y if b else z` as `x if a else (y if b else z)`. It appears
+wherever a full expression is expected (a `let`/`return` value, a call argument,
+an array element, an index, a parenthesized group, a closure body).
 
 ```ebnf
 expr =
-    or_expr ;
+    conditional_expr ;
+
+conditional_expr =
+    or_expr [ "if" or_expr "else" conditional_expr ] ;
 
 or_expr =
     and_expr { "or" and_expr } ;

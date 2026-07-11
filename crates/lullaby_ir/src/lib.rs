@@ -8190,6 +8190,9 @@ struct Lowerer<'a> {
     /// Monotonic counter for fresh `?`-desugar temp names, unique per program so
     /// hoisted temporaries never collide with user bindings or each other.
     next_try_temp: std::cell::Cell<usize>,
+    /// Monotonic counter for fresh inline-conditional (`THEN if COND else ELSE`)
+    /// desugar temp names, unique per program for the same reason.
+    next_cond_temp: std::cell::Cell<usize>,
     /// Lowered closure bodies collected while lowering, keyed by parse-order id.
     /// Each `ExprKind::Closure` lowering registers an entry here and emits an
     /// `IrExprKind::Closure { id }` node; the accumulated table is attached to
@@ -8205,6 +8208,7 @@ impl<'a> Lowerer<'a> {
             current_return_type: std::cell::RefCell::new(TypeRef::new("void")),
             try_prelude: std::cell::RefCell::new(Vec::new()),
             next_try_temp: std::cell::Cell::new(0),
+            next_cond_temp: std::cell::Cell::new(0),
             closures: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -9147,6 +9151,26 @@ impl<'a> Lowerer<'a> {
                 let (kind, ty) = self.desugar_try(inner, expr.span, scope)?;
                 (kind, ty)
             }
+            // Inline conditional `THEN if COND else ELSE`. Desugared here into a
+            // hoisted temporary plus an `if` statement so the IR interpreter,
+            // bytecode VM, native, and WASM backends need no conditional node
+            // (mirrors the `?` desugar). The result flows back as a reference to
+            // the temporary.
+            ExprKind::Conditional {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let temp = self.desugar_conditional(
+                    cond,
+                    then_branch,
+                    else_branch,
+                    expected,
+                    expr.span,
+                    scope,
+                )?;
+                (temp.kind, temp.ty)
+            }
             // Lower a closure literal: lower its body in a child scope that layers
             // the closure parameters over the enclosing scope, register the lowered
             // `(param names, body)` in the module's closure table keyed by the
@@ -9339,6 +9363,131 @@ impl<'a> Lowerer<'a> {
         }
 
         Ok((IrExprKind::Variable(v_name), payload_ty))
+    }
+
+    /// Desugar an inline conditional `THEN if COND else ELSE` into a hoisted
+    /// temporary plus an `if` statement, returning a reference to the temporary.
+    ///
+    /// ```text
+    /// let __cond_N: T = <zero of T>      # dead init, overwritten by both arms
+    /// if COND:
+    ///     <THEN's own hoisted prelude>
+    ///     __cond_N = THEN
+    /// else:
+    ///     <ELSE's own hoisted prelude>
+    ///     __cond_N = ELSE
+    /// ```
+    ///
+    /// `COND` is evaluated unconditionally, so its prelude stays in the outer
+    /// statement prelude; each branch's own prelude (from a nested `?`/ternary)
+    /// is captured and placed inside that branch so it runs only when taken. The
+    /// temporary's zero initializer is never observed (both arms assign before
+    /// any read); semantics restricts the result type to a scalar or `string`
+    /// (`L0436`), so a correctly-typed zero always exists and every backend can
+    /// compile the desugared `if`.
+    fn desugar_conditional(
+        &self,
+        cond: &Expr,
+        then_branch: &Expr,
+        else_branch: &Expr,
+        expected: Option<&TypeRef>,
+        span: Span,
+        scope: &HashMap<String, TypeRef>,
+    ) -> Result<IrExpr, IrLoweringError> {
+        // The condition is always evaluated: lower it normally so any prelude it
+        // produces stays ahead of the `if` in the outer statement prelude.
+        let cond_ir = self.lower_expr(cond, scope)?;
+        // Each branch is only evaluated when taken: capture its own prelude so
+        // nested hoists land inside the branch body, not before the `if`.
+        let (then_prelude, then_ir) = self.lower_captured(then_branch, expected, scope)?;
+        let (else_prelude, else_ir) = self.lower_captured(else_branch, expected, scope)?;
+
+        let result_ty = expected.cloned().unwrap_or_else(|| then_ir.ty.clone());
+        let id = self.next_cond_temp.get();
+        self.next_cond_temp.set(id + 1);
+        let temp = format!("__cond_{id}");
+
+        let zero = self.zero_ir_expr(&result_ty, span)?;
+        self.try_prelude.borrow_mut().push(IrStmt::Let {
+            name: temp.clone(),
+            ty: result_ty.clone(),
+            value: zero,
+            span,
+        });
+
+        let mut then_body = then_prelude;
+        then_body.push(IrStmt::Assign {
+            name: temp.clone(),
+            path: Vec::new(),
+            op: AssignOp::Replace,
+            value: then_ir,
+            span,
+        });
+        let mut else_body = else_prelude;
+        else_body.push(IrStmt::Assign {
+            name: temp.clone(),
+            path: Vec::new(),
+            op: AssignOp::Replace,
+            value: else_ir,
+            span,
+        });
+        self.try_prelude.borrow_mut().push(IrStmt::If {
+            branches: vec![IrIfBranch {
+                condition: cond_ir,
+                body: then_body,
+            }],
+            else_body,
+            span,
+        });
+
+        Ok(IrExpr {
+            kind: IrExprKind::Variable(temp),
+            ty: result_ty,
+            span,
+        })
+    }
+
+    /// Lower an expression while capturing exactly the statement-prelude entries
+    /// its own lowering produced (e.g. a nested `?` or inline conditional),
+    /// leaving any earlier prelude in place. Used to keep a conditional branch's
+    /// hoisted work inside the branch that guards it.
+    fn lower_captured(
+        &self,
+        expr: &Expr,
+        expected: Option<&TypeRef>,
+        scope: &HashMap<String, TypeRef>,
+    ) -> Result<(Vec<IrStmt>, IrExpr), IrLoweringError> {
+        let saved = self.try_prelude.borrow().len();
+        let lowered = self.lower_expr_expected(expr, expected, scope)?;
+        let prelude: Vec<IrStmt> = self.try_prelude.borrow_mut().drain(saved..).collect();
+        Ok((prelude, lowered))
+    }
+
+    /// A type-correct zero value for `ty`, used as the dead initializer of an
+    /// inline-conditional temporary. Only scalars and `string` are supported
+    /// (semantics enforces this with `L0436`); anything else is a lowering bug.
+    fn zero_ir_expr(&self, ty: &TypeRef, span: Span) -> Result<IrExpr, IrLoweringError> {
+        let kind = match ty.name.as_str() {
+            "i64" | "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize"
+            | "byte" => IrExprKind::Integer(0),
+            "bool" => IrExprKind::Bool(false),
+            "char" => IrExprKind::Char('\0'),
+            "f64" | "f32" => IrExprKind::Float(0.0),
+            "string" => IrExprKind::String(String::new()),
+            other => {
+                return Err(IrLoweringError::new(
+                    format!(
+                        "inline conditional over `{other}` is not supported; use an `if` statement"
+                    ),
+                    Some(span),
+                ));
+            }
+        };
+        Ok(IrExpr {
+            kind,
+            ty: ty.clone(),
+            span,
+        })
     }
 
     /// Lower a built-in `option`/`result` constructor to a variant `Call` IR

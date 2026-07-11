@@ -453,6 +453,104 @@ fn runs_inferred_let_fixture_on_all_backends() {
     }
 }
 
+/// Inline conditional (`THEN if COND else ELSE`) — nested, in a `let`, in a
+/// function body, and driving the result — computes 115 identically on all three
+/// interpreter backends.
+#[test]
+fn runs_conditional_fixture_on_all_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_conditional.lby");
+    for backend in [None, Some("ir"), Some("bytecode")] {
+        let mut args = vec!["run".to_string()];
+        if let Some(b) = backend {
+            args.push("--backend".to_string());
+            args.push(b.to_string());
+        }
+        args.push(fixture.to_str().expect("fixture path").to_string());
+        let output = lullaby().args(&args).output().expect("run cli");
+        assert!(output.status.success(), "{backend:?}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "115",
+            "backend {backend:?}"
+        );
+    }
+}
+
+/// The inline conditional desugars to a plain `if` statement, so the native
+/// backend compiles it; when the platform can link, the `.exe` exit code equals
+/// the interpreter result (115 mod 256).
+#[test]
+fn native_conditional_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_conditional.lby");
+    let out = std::env::temp_dir().join("lullaby_native_conditional_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 115, "fixture main computes 115");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld and/or kernel32.lib not available; skipping native link+run parity");
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(exit, (interp.rem_euclid(256)) as i32);
+}
+
+/// An inline-conditional condition must be `bool` (`L0305`, shared with `if`).
+#[test]
+fn rejects_conditional_non_bool_condition() {
+    let fixture =
+        workspace_root().join("tests/fixtures/invalid/conditional_condition_not_bool.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr(&output).contains("L0305"), "{}", stderr(&output));
+}
+
+/// The two branches of an inline conditional must have the same type (`L0435`).
+#[test]
+fn rejects_conditional_branch_type_mismatch() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/conditional_branch_mismatch.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr(&output).contains("L0435"), "{}", stderr(&output));
+}
+
+/// An inline conditional over an aggregate/heap result type is rejected with a
+/// clear diagnostic (`L0436`); an `if` statement selects those instead.
+#[test]
+fn rejects_conditional_aggregate_result() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/conditional_aggregate_result.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr(&output).contains("L0436"), "{}", stderr(&output));
+}
+
 #[test]
 fn runs_parallel_map_fixture_on_all_backends() {
     // `parallel_map` runs `sq` on separate OS threads and returns the mapped

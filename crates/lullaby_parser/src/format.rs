@@ -494,7 +494,7 @@ fn render_expr(expr: &Expr) -> String {
         // Inline closure literal `fn <name type ...> -> <body>`. Parameters render
         // as `name type` pairs (the top-level `fn` shape); the single-expression
         // body renders inline after `->`. The body re-parses correctly because a
-        // closure body is `parse_binary(0)`, which stops at a `,`/`)`/newline.
+        // closure body is `parse_conditional()`, which stops at a `,`/`)`/newline.
         ExprKind::Closure { params, body, .. } => {
             let mut out = String::from("fn");
             for param in params {
@@ -503,6 +503,33 @@ fn render_expr(expr: &Expr) -> String {
             out.push_str(&format!(" -> {}", render_expr(body)));
             out
         }
+        // Inline conditional `THEN if COND else ELSE`. `then`/`cond` are
+        // parenthesized when they are themselves ternaries so the source
+        // re-parses with the same structure; the `else` branch renders bare so a
+        // right-associative `x if a else y if b else z` chain round-trips.
+        ExprKind::Conditional {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            format!(
+                "{} if {} else {}",
+                render_ternary_branch(then_branch),
+                render_ternary_branch(cond),
+                render_expr(else_branch),
+            )
+        }
+    }
+}
+
+/// Render a `then`/`cond` position of an inline conditional, parenthesizing a
+/// nested ternary so it does not merge into the surrounding one on re-parse.
+fn render_ternary_branch(child: &Expr) -> String {
+    let rendered = render_expr(child);
+    if matches!(child.kind, ExprKind::Conditional { .. }) {
+        format!("({rendered})")
+    } else {
+        rendered
     }
 }
 
@@ -511,6 +538,11 @@ fn render_expr(expr: &Expr) -> String {
 /// all operators are left-associative).
 fn render_operand(child: &Expr, parent_prec: u8, is_right: bool) -> String {
     let rendered = render_expr(child);
+    // A ternary binds looser than every binary operator, so it always needs
+    // parentheses as a binary operand.
+    if matches!(child.kind, ExprKind::Conditional { .. }) {
+        return format!("({rendered})");
+    }
     if let ExprKind::Binary { op, .. } = &child.kind {
         let child_prec = binary_precedence(op);
         let needs = if is_right {
@@ -527,7 +559,10 @@ fn render_operand(child: &Expr, parent_prec: u8, is_right: bool) -> String {
 
 fn render_unary_operand(child: &Expr) -> String {
     let rendered = render_expr(child);
-    if matches!(child.kind, ExprKind::Binary { .. }) {
+    if matches!(
+        child.kind,
+        ExprKind::Binary { .. } | ExprKind::Conditional { .. }
+    ) {
         format!("({rendered})")
     } else {
         rendered
@@ -542,6 +577,7 @@ fn render_postfix_target(target: &Expr) -> String {
             | ExprKind::Unary { .. }
             | ExprKind::Match { .. }
             | ExprKind::Await { .. }
+            | ExprKind::Conditional { .. }
     ) {
         format!("({rendered})")
     } else {
@@ -654,6 +690,31 @@ mod tests {
         // An `asm` block renders as `asm b0, b1, ...` and is idempotent.
         let source = "fn main -> i64\n    unsafe\n        asm 72, 199, 192, 42, 0, 0, 0\n";
         assert_eq!(fmt(source), source);
+    }
+
+    #[test]
+    fn formats_inline_conditional() {
+        // A ternary in tail position renders as `THEN if COND else ELSE`.
+        assert_eq!(
+            fmt("fn f a i64 b i64 c bool -> i64\n    a if c else b\n"),
+            "fn f a i64 b i64 c bool -> i64\n    a if c else b\n"
+        );
+        // A ternary binds looser than every binary operator, so it is
+        // parenthesized as a binary operand.
+        assert_eq!(
+            fmt("fn f a i64 b i64 c bool -> i64\n    (a if c else b) + 1\n"),
+            "fn f a i64 b i64 c bool -> i64\n    (a if c else b) + 1\n"
+        );
+        // The right-associative `else` chain keeps no redundant parentheses.
+        assert_eq!(
+            fmt("fn f a i64 b i64 c bool -> i64\n    1 if c else (2 if a > b else 3)\n"),
+            "fn f a i64 b i64 c bool -> i64\n    1 if c else 2 if a > b else 3\n"
+        );
+    }
+
+    #[test]
+    fn conditional_fixture_is_idempotent() {
+        assert_fixture_idempotent("run_conditional");
     }
 
     #[test]

@@ -1852,6 +1852,15 @@ fn collect_closures_in_expr<'a>(
             }
         }
         ExprKind::Try(inner) => collect_closures_in_expr(inner, table),
+        ExprKind::Conditional {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_closures_in_expr(cond, table);
+            collect_closures_in_expr(then_branch, table);
+            collect_closures_in_expr(else_branch, table);
+        }
     }
 }
 
@@ -4107,6 +4116,20 @@ impl<'a> Runtime<'a> {
                 id: *id,
                 captured: env.snapshot_locals(),
             })),
+            // Inline conditional `THEN if COND else ELSE`: evaluate the
+            // condition, then evaluate exactly the taken branch. Semantics has
+            // already verified `cond` is `bool` and the branch types agree.
+            ExprKind::Conditional {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                if self.eval_expr(cond, env)?.as_bool()? {
+                    self.eval_expr(then_branch, env)
+                } else {
+                    self.eval_expr(else_branch, env)
+                }
+            }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
     }
@@ -6263,6 +6286,15 @@ fn expr_mentions_var(expr: &Expr, name: &str) -> bool {
         ExprKind::Await { expr } => expr_mentions_var(expr, name),
         ExprKind::Try(inner) => expr_mentions_var(inner, name),
         ExprKind::Closure { body, .. } => expr_mentions_var(body, name),
+        ExprKind::Conditional {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            expr_mentions_var(cond, name)
+                || expr_mentions_var(then_branch, name)
+                || expr_mentions_var(else_branch, name)
+        }
     }
 }
 

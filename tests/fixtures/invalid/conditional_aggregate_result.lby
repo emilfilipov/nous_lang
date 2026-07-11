@@ -1,0 +1,5 @@
+fn pick c bool -> array<i64>
+    [1, 2] if c else [3, 4]
+
+fn main -> i64
+    len(pick(true))

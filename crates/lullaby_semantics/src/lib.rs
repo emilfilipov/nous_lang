@@ -1947,6 +1947,15 @@ impl<'a> Checker<'a> {
             // A closure body may reference a freed binding through capture, so
             // recurse into it under the same freed set.
             ExprKind::Closure { body, .. } => self.check_freed_uses(body, freed, function),
+            ExprKind::Conditional {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                self.check_freed_uses(cond, freed, function);
+                self.check_freed_uses(then_branch, freed, function);
+                self.check_freed_uses(else_branch, freed, function);
+            }
             ExprKind::Integer(_)
             | ExprKind::Float(_)
             | ExprKind::Bool(_)
@@ -2364,6 +2373,62 @@ impl<'a> Checker<'a> {
                 let param_types: Vec<TypeRef> =
                     params.iter().map(|param| param.ty.clone()).collect();
                 Some(function_type(&param_types, &body_type))
+            }
+            // Inline conditional `THEN if COND else ELSE`: the condition must be
+            // `bool` (`L0305`, shared with `if`/`while`), and both branches must
+            // have the same type (`L0435`), which becomes the expression's type.
+            // The contextual `expected` type flows into both branches so
+            // `none`/`ok`/`err` branches resolve to the right `option`/`result`.
+            ExprKind::Conditional {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_type = self.check_expr(cond, scope, function);
+                if cond_type.as_ref() != Some(&TypeRef::new("bool")) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0305",
+                        "the condition of an inline conditional must be bool",
+                        Some(function.name.clone()),
+                        cond.span,
+                    ));
+                }
+                let then_type = self.check_expr_expected(then_branch, expected, scope, function);
+                let else_type = self.check_expr_expected(else_branch, expected, scope, function);
+                match (then_type, else_type) {
+                    (Some(then_ty), Some(else_ty)) => {
+                        if then_ty != else_ty {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0435",
+                                format!(
+                                    "the branches of an inline conditional must have the same type, but the `then` branch is `{}` and the `else` branch is `{}`",
+                                    then_ty.name, else_ty.name
+                                ),
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                            None
+                        } else if !is_inline_conditional_type(&then_ty) {
+                            // The IR desugar hoists a zero-initialized temporary,
+                            // which only has a well-typed zero for scalars and
+                            // `string`. Reject aggregate/heap results with a clear
+                            // message; an `if` statement selects those instead.
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0436",
+                                format!(
+                                    "an inline conditional currently supports scalar and `string` result types, but these branches are `{}`; use an `if` statement to select a `{}` value",
+                                    then_ty.name, then_ty.name
+                                ),
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                            None
+                        } else {
+                            Some(then_ty)
+                        }
+                    }
+                    _ => None,
+                }
             }
         };
 
@@ -5968,6 +6033,31 @@ fn future_type(inner: &TypeRef) -> TypeRef {
 /// The awaited inner type of a `Future<T>` spelling, if `ty` is one.
 fn future_inner(ty: &TypeRef) -> Option<TypeRef> {
     ty.generic_arg("Future")
+}
+
+/// Result types an inline conditional (`THEN if COND else ELSE`) may produce.
+/// Limited to scalars and `string` because the IR desugar seeds a
+/// zero-initialized temporary, which only has a well-typed zero for these.
+fn is_inline_conditional_type(ty: &TypeRef) -> bool {
+    matches!(
+        ty.name.as_str(),
+        "i64"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "isize"
+            | "usize"
+            | "byte"
+            | "bool"
+            | "char"
+            | "f64"
+            | "f32"
+            | "string"
+    )
 }
 
 /// If both operand types are the same numeric type (`i64` or `f64`), return it.
