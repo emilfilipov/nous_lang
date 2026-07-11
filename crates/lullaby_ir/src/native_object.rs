@@ -4515,8 +4515,73 @@ fn emit_cmp_rax_imm(code: &mut Vec<u8>, imm: i64) {
     }
 }
 
-/// Lower an `if`/`elif`/`else` chain. Each branch: evaluate condition into rax,
-/// `test rax,rax`; `jz next`; body; `jmp end`. The final else falls through.
+/// If `cond` is a plain `i64`-vs-`i64` comparison, emit it fused with its branch:
+/// lower both operands, `cmp rcx, rax`, then a single conditional jump taken when
+/// the condition is FALSE (so control falls through into the guarded body only
+/// when it holds). Returns the rel32 patch site of that jump for the caller to
+/// point at the skip target, or `None` when `cond` is not a fusable i64
+/// comparison — in which case the caller lowers the condition to a 0/1 in rax and
+/// uses the generic `test rax,rax; jz` path.
+///
+/// This reuses the exact operand lowering and `cmp rcx, rax` that the boolean
+/// comparison in `emit_i64_binop_from_stack` performs; it only replaces the
+/// trailing `setcc; movzx rax,al; test rax,rax; jz` (four instructions that
+/// materialize a 0/1 and re-test it) with one flag-based conditional jump —
+/// exactly what a C compiler emits for `if (a < b)`. Fixed-width ints, floats,
+/// strings, and non-comparison conditions fall back to the generic path.
+fn try_emit_fused_i64_condition_branch(
+    ctx: &mut NativeCtx,
+    cond: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<Option<usize>, String> {
+    let BytecodeExprKind::Binary { left, op, right } = &cond.kind else {
+        return Ok(None);
+    };
+    // Only plain signed `i64` operands: the jumps below are the signed forms and
+    // mirror the signed `setl`/`setle`/… the generic comparison path uses.
+    if left.ty.name != "i64" || right.ty.name != "i64" {
+        return Ok(None);
+    }
+    // Second byte of the `0F 8x` conditional jump taken when the comparison is
+    // FALSE (the inverse of the operator), so the guarded body runs only when the
+    // condition holds.
+    let jump_when_false: u8 = match op {
+        BinaryOp::Less => 0x8D,         // jge
+        BinaryOp::LessEqual => 0x8F,    // jg
+        BinaryOp::Greater => 0x8E,      // jle
+        BinaryOp::GreaterEqual => 0x8C, // jl
+        BinaryOp::Equal => 0x85,        // jne
+        BinaryOp::NotEqual => 0x84,     // je
+        _ => return Ok(None),
+    };
+    // Constant right operand (the common `n < 2` / `i < len` idiom): lower the
+    // left operand into rax and compare against the immediate directly, skipping
+    // the operand-stack shuffle (`emit_cmp_rax_imm` uses the imm32 form, or
+    // materializes a full i64 into rcx). `cmp rax, imm` computes left - right,
+    // so the same inverted jump applies.
+    if let BytecodeExprKind::Integer(rhs) = &right.kind {
+        lower_native_expr(ctx, left, code)?;
+        emit_cmp_rax_imm(code, *rhs); // cmp rax(left), right
+        code.extend_from_slice(&[0x0F, jump_when_false]); // j<!cc> rel32 (patched by caller)
+        let site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+        return Ok(Some(site));
+    }
+
+    lower_native_expr(ctx, left, code)?;
+    code.push(0x50); // push rax (left)
+    lower_native_expr(ctx, right, code)?; // right → rax
+    code.push(0x59); // pop rcx (left)
+    code.extend_from_slice(&[0x48, 0x39, 0xC1]); // cmp rcx, rax
+    code.extend_from_slice(&[0x0F, jump_when_false]); // j<!cc> rel32 (patched by caller)
+    let site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    Ok(Some(site))
+}
+
+/// Lower an `if`/`elif`/`else` chain. Each branch: test the condition (fused into
+/// a `cmp`+conditional jump for an `i64` comparison, else `eval into rax` +
+/// `test rax,rax`); `j.. next`; body; `jmp end`. The final else falls through.
 fn lower_native_if(
     ctx: &mut NativeCtx,
     branches: &[BytecodeIfBranch],
@@ -4527,12 +4592,20 @@ fn lower_native_if(
     let mut end_jumps: Vec<usize> = Vec::new();
 
     for branch in branches {
-        lower_native_expr(ctx, &branch.condition, code)?;
-        code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
-        // jz next_branch (rel32, patched below).
-        code.extend_from_slice(&[0x0F, 0x84]);
-        let jz_site = code.len();
-        code.extend_from_slice(&[0, 0, 0, 0]);
+        // Fused `cmp`+conditional-jump for an i64 comparison; else the generic
+        // "evaluate to 0/1 in rax, `test rax,rax`, `jz`" path. Both yield a rel32
+        // site that jumps to the next branch when the condition is false.
+        let jz_site = match try_emit_fused_i64_condition_branch(ctx, &branch.condition, code)? {
+            Some(site) => site,
+            None => {
+                lower_native_expr(ctx, &branch.condition, code)?;
+                code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+                code.extend_from_slice(&[0x0F, 0x84]); // jz next_branch (patched below)
+                let site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+                site
+            }
+        };
 
         lower_native_stmts(ctx, &branch.body, code, loops)?;
 
@@ -4567,11 +4640,20 @@ fn lower_native_while(
     loops: &mut Vec<NativeLoop>,
 ) -> Result<(), String> {
     let top = code.len();
-    lower_native_expr(ctx, condition, code)?;
-    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
-    code.extend_from_slice(&[0x0F, 0x84]); // jz end (patched)
-    let exit_site = code.len();
-    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Fused `cmp`+conditional-jump for an i64 comparison; else the generic
+    // "evaluate to 0/1 in rax, `test rax,rax`, `jz`" path. Both jump to `end`
+    // when the loop condition is false.
+    let exit_site = match try_emit_fused_i64_condition_branch(ctx, condition, code)? {
+        Some(site) => site,
+        None => {
+            lower_native_expr(ctx, condition, code)?;
+            code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+            code.extend_from_slice(&[0x0F, 0x84]); // jz end (patched)
+            let site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            site
+        }
+    };
 
     loops.push(NativeLoop {
         continue_target: Some(top),
@@ -10870,19 +10952,27 @@ mod native_program_tests {
             vec!["fib".to_string(), "main".to_string()]
         );
 
-        // The compiled `fib` code must contain a `test rax, rax` (the `if`
-        // condition test) and a `setl al` (the `<` comparison).
+        // The `if n < 2` condition lowers as a fused compare-and-branch against
+        // the immediate: `cmp rax, 2` (48 3D 02 00 00 00) then `jge rel32`
+        // (0F 8D ..) — the inverse of `<`, taken when the condition is false.
+        // This replaces the old `setl al; movzx; test rax,rax; jz` sequence, so
+        // the boolean is never materialized: there is no `setl al` for this `<`.
         let sec = COFF_HEADER_SIZE as usize;
         let text_offset = read_u32(&program.bytes, sec + 20) as usize;
         let text_size = read_u32(&program.bytes, sec + 16) as usize;
         let text = &program.bytes[text_offset..text_offset + text_size];
         assert!(
-            text.windows(3).any(|w| w == [0x48, 0x85, 0xC0]),
-            "expected a `test rax, rax`"
+            text.windows(6)
+                .any(|w| w == [0x48, 0x3D, 0x02, 0x00, 0x00, 0x00]),
+            "expected a fused `cmp rax, 2` against the immediate"
         );
         assert!(
-            text.windows(3).any(|w| w == [0x0F, 0x9C, 0xC0]),
-            "expected a `setl al` for `<`"
+            text.windows(2).any(|w| w == [0x0F, 0x8D]),
+            "expected a fused `jge` branch (inverted `<`)"
+        );
+        assert!(
+            !text.windows(3).any(|w| w == [0x0F, 0x9C, 0xC0]),
+            "the `<` should be fused into the branch, not materialized as `setl al`"
         );
     }
 
