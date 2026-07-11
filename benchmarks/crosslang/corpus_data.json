@@ -13,8 +13,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 95,
-     "source": "fn binary_search a array<i64> n i64 x i64 -> i64\n    let lo = 0\n    let hi = n - 1\n    while lo <= hi\n        let mid = (lo + hi) / 2\n        if a[mid] == x\n            return mid\n        elif a[mid] < x\n            lo = mid + 1\n        else\n            hi = mid - 1\n    -1"
+     "tokens": 94,
+     "source": "fn binary_search a array<i64> x i64 -> i64\n    let lo = 0\n    let hi = len(a) - 1\n    while lo <= hi\n        let mid = (lo + hi) / 2\n        if a[mid] == x\n            return mid\n        elif a[mid] < x\n            lo = mid + 1\n        else\n            hi = mid - 1\n    -1"
     },
     "C": {
      "tokens": 108,
@@ -44,8 +44,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 111,
-     "source": "fn bubble_sort_checksum a array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        for j from 0 to n - 2 - i\n            if a[j] > a[j + 1]\n                let t = a[j]\n                a[j] = a[j + 1]\n                a[j + 1] = t\n    let sum = 0\n    for i from 0 to n - 1\n        sum += i * a[i]\n    sum"
+     "tokens": 115,
+     "source": "fn bubble_sort_checksum a array<i64> -> i64\n    let n = len(a)\n    for i from 0 to n - 1\n        for j from 0 to n - 2 - i\n            if a[j] > a[j + 1]\n                let t = a[j]\n                a[j] = a[j + 1]\n                a[j + 1] = t\n    let sum = 0\n    for i from 0 to n - 1\n        sum += i * a[i]\n    sum"
     },
     "C": {
      "tokens": 172,
@@ -75,8 +75,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 68,
-     "source": "fn count_distinct_sorted a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
+     "tokens": 69,
+     "source": "fn count_distinct_sorted a array<i64> -> i64\n    if len(a) == 0\n        return 0\n    let count = 1\n    for i from 1 to len(a) - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
     },
     "C": {
      "tokens": 77,
@@ -106,8 +106,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn count_equal a array<i64> n i64 x i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
+     "tokens": 42,
+     "source": "fn count_equal a array<i64> x i64 -> i64\n    let count = 0\n    for v in a\n        if v == x\n            count += 1\n    count"
     },
     "C": {
      "tokens": 64,
@@ -137,8 +137,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn count_positive a array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] > 0\n            count += 1\n    count"
+     "tokens": 40,
+     "source": "fn count_positive a array<i64> -> i64\n    let count = 0\n    for x in a\n        if x > 0\n            count += 1\n    count"
     },
     "C": {
      "tokens": 60,
@@ -168,8 +168,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn dot_product a array<i64> b array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i] * b[i]\n    sum"
+     "tokens": 50,
+     "source": "fn dot_product a array<i64> b array<i64> -> i64\n    let sum = 0\n    for i from 0 to len(a) - 1\n        sum += a[i] * b[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -199,8 +199,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn index_of a array<i64> n i64 x i64 -> i64\n    for i from 0 to n - 1\n        if a[i] == x\n            return i\n    -1"
+     "tokens": 44,
+     "source": "fn index_of a array<i64> x i64 -> i64\n    for i from 0 to len(a) - 1\n        if a[i] == x\n            return i\n    -1"
     },
     "C": {
      "tokens": 57,
@@ -230,8 +230,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn is_sorted_asc a array<i64> n i64 -> i64\n    for i from 1 to n - 1\n        if a[i] < a[i - 1]\n            return 0\n    1"
+     "tokens": 48,
+     "source": "fn is_sorted_asc a array<i64> -> i64\n    for i from 1 to len(a) - 1\n        if a[i] < a[i - 1]\n            return 0\n    1"
     },
     "C": {
      "tokens": 59,
@@ -261,8 +261,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn max_array a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+     "tokens": 39,
+     "source": "fn max_array a array<i64> -> i64\n    let m = a[0]\n    for x in a\n        if x > m\n            m = x\n    m"
     },
     "C": {
      "tokens": 63,
@@ -292,8 +292,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 24,
-     "source": "fn mean_floor a array<i64> n i64 -> i64\n    sum_array(a, n) / n"
+     "tokens": 21,
+     "source": "fn mean_floor a array<i64> -> i64\n    sum_array(a) / len(a)"
     },
     "C": {
      "tokens": 30,
@@ -323,8 +323,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn min_array a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] < m\n            m = a[i]\n    m"
+     "tokens": 39,
+     "source": "fn min_array a array<i64> -> i64\n    let m = a[0]\n    for x in a\n        if x < m\n            m = x\n    m"
     },
     "C": {
      "tokens": 63,
@@ -354,8 +354,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 43,
-     "source": "fn prefix_sum_last a array<i64> n i64 -> i64\n    let prefix = 0\n    for i from 0 to n - 1\n        prefix += a[i]\n    prefix"
+     "tokens": 33,
+     "source": "fn prefix_sum_last a array<i64> -> i64\n    let prefix = 0\n    for x in a\n        prefix += x\n    prefix"
     },
     "C": {
      "tokens": 55,
@@ -385,8 +385,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 29,
-     "source": "fn range_span a array<i64> n i64 -> i64\n    max_array(a, n) - min_array(a, n)"
+     "tokens": 22,
+     "source": "fn range_span a array<i64> -> i64\n    max_array(a) - min_array(a)"
     },
     "C": {
      "tokens": 34,
@@ -416,8 +416,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 101,
-     "source": "fn second_largest a array<i64> n i64 -> i64\n    let first = a[0]\n    let second = a[1]\n    if second > first\n        let t = first\n        first = second\n        second = t\n    for i from 2 to n - 1\n        if a[i] > first\n            second = first\n            first = a[i]\n        elif a[i] > second\n            second = a[i]\n    second"
+     "tokens": 100,
+     "source": "fn second_largest a array<i64> -> i64\n    let first = a[0]\n    let second = a[1]\n    if second > first\n        let t = first\n        first = second\n        second = t\n    for i from 2 to len(a) - 1\n        if a[i] > first\n            second = first\n            first = a[i]\n        elif a[i] > second\n            second = a[i]\n    second"
     },
     "C": {
      "tokens": 119,
@@ -447,8 +447,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn sum_array a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i]\n    sum"
+     "tokens": 32,
+     "source": "fn sum_array a array<i64> -> i64\n    let sum = 0\n    for x in a\n        sum += x\n    sum"
     },
     "C": {
      "tokens": 54,
@@ -13281,7 +13281,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 23229,
+  "Lullaby": 23153,
   "C": 26030,
   "C++": 26894,
   "Rust": 24867,
@@ -13290,7 +13290,7 @@
  },
  "categories": {
   "arrays": {
-   "Lullaby": 864,
+   "Lullaby": 788,
    "C": 1080,
    "C++": 1186,
    "Rust": 968,

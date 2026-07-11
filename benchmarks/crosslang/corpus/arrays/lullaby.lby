@@ -1,53 +1,54 @@
-# Cross-language arrays suite (Lullaby). Real-world array/statistics operations
-# over an i64 array and a length. Lullaby arrays pass by value, so a function
-# receives a private copy it may sort in place without affecting the caller.
+# Cross-language arrays suite (Lullaby). Real-world array operations over an i64
+# array. Lullaby arrays carry their length and pass by value, so a function takes
+# just the array (no separate length), iterates with `for x in a`, and may sort
+# its private copy in place without affecting the caller.
 
-fn sum_array a array<i64> n i64 -> i64
+fn sum_array a array<i64> -> i64
     let sum = 0
-    for i from 0 to n - 1
-        sum += a[i]
+    for x in a
+        sum += x
     sum
 
-fn max_array a array<i64> n i64 -> i64
+fn max_array a array<i64> -> i64
     let m = a[0]
-    for i from 1 to n - 1
-        if a[i] > m
-            m = a[i]
+    for x in a
+        if x > m
+            m = x
     m
 
-fn min_array a array<i64> n i64 -> i64
+fn min_array a array<i64> -> i64
     let m = a[0]
-    for i from 1 to n - 1
-        if a[i] < m
-            m = a[i]
+    for x in a
+        if x < m
+            m = x
     m
 
-fn mean_floor a array<i64> n i64 -> i64
-    sum_array(a, n) / n
+fn mean_floor a array<i64> -> i64
+    sum_array(a) / len(a)
 
-fn count_positive a array<i64> n i64 -> i64
+fn count_positive a array<i64> -> i64
     let count = 0
-    for i from 0 to n - 1
-        if a[i] > 0
+    for x in a
+        if x > 0
             count += 1
     count
 
-fn count_equal a array<i64> n i64 x i64 -> i64
+fn count_equal a array<i64> x i64 -> i64
     let count = 0
-    for i from 0 to n - 1
-        if a[i] == x
+    for v in a
+        if v == x
             count += 1
     count
 
-fn index_of a array<i64> n i64 x i64 -> i64
-    for i from 0 to n - 1
+fn index_of a array<i64> x i64 -> i64
+    for i from 0 to len(a) - 1
         if a[i] == x
             return i
     -1
 
-fn binary_search a array<i64> n i64 x i64 -> i64
+fn binary_search a array<i64> x i64 -> i64
     let lo = 0
-    let hi = n - 1
+    let hi = len(a) - 1
     while lo <= hi
         let mid = (lo + hi) / 2
         if a[mid] == x
@@ -58,38 +59,38 @@ fn binary_search a array<i64> n i64 x i64 -> i64
             hi = mid - 1
     -1
 
-fn is_sorted_asc a array<i64> n i64 -> i64
-    for i from 1 to n - 1
+fn is_sorted_asc a array<i64> -> i64
+    for i from 1 to len(a) - 1
         if a[i] < a[i - 1]
             return 0
     1
 
-fn range_span a array<i64> n i64 -> i64
-    max_array(a, n) - min_array(a, n)
+fn range_span a array<i64> -> i64
+    max_array(a) - min_array(a)
 
-fn dot_product a array<i64> b array<i64> n i64 -> i64
+fn dot_product a array<i64> b array<i64> -> i64
     let sum = 0
-    for i from 0 to n - 1
+    for i from 0 to len(a) - 1
         sum += a[i] * b[i]
     sum
 
-fn count_distinct_sorted a array<i64> n i64 -> i64
-    if n == 0
+fn count_distinct_sorted a array<i64> -> i64
+    if len(a) == 0
         return 0
     let count = 1
-    for i from 1 to n - 1
+    for i from 1 to len(a) - 1
         if a[i] != a[i - 1]
             count += 1
     count
 
-fn second_largest a array<i64> n i64 -> i64
+fn second_largest a array<i64> -> i64
     let first = a[0]
     let second = a[1]
     if second > first
         let t = first
         first = second
         second = t
-    for i from 2 to n - 1
+    for i from 2 to len(a) - 1
         if a[i] > first
             second = first
             first = a[i]
@@ -97,13 +98,14 @@ fn second_largest a array<i64> n i64 -> i64
             second = a[i]
     second
 
-fn prefix_sum_last a array<i64> n i64 -> i64
+fn prefix_sum_last a array<i64> -> i64
     let prefix = 0
-    for i from 0 to n - 1
-        prefix += a[i]
+    for x in a
+        prefix += x
     prefix
 
-fn bubble_sort_checksum a array<i64> n i64 -> i64
+fn bubble_sort_checksum a array<i64> -> i64
+    let n = len(a)
     for i from 0 to n - 1
         for j from 0 to n - 2 - i
             if a[j] > a[j + 1]
@@ -118,18 +120,18 @@ fn bubble_sort_checksum a array<i64> n i64 -> i64
 fn main -> void
     let t array<i64> = [5, 3, 8, 1, 9, 2]
     let s array<i64> = [1, 2, 2, 3, 5, 8]
-    println("sum_array=" + to_string(sum_array(t, 6)))
-    println("max_array=" + to_string(max_array(t, 6)))
-    println("min_array=" + to_string(min_array(t, 6)))
-    println("mean_floor=" + to_string(mean_floor(t, 6)))
-    println("count_positive=" + to_string(count_positive(t, 6)))
-    println("count_equal=" + to_string(count_equal(t, 6, 8)))
-    println("index_of=" + to_string(index_of(t, 6, 1)))
-    println("binary_search=" + to_string(binary_search(s, 6, 5)))
-    println("is_sorted_asc=" + to_string(is_sorted_asc(s, 6)))
-    println("range_span=" + to_string(range_span(t, 6)))
-    println("dot_product=" + to_string(dot_product(t, s, 6)))
-    println("count_distinct_sorted=" + to_string(count_distinct_sorted(s, 6)))
-    println("second_largest=" + to_string(second_largest(t, 6)))
-    println("prefix_sum_last=" + to_string(prefix_sum_last(t, 6)))
-    println("bubble_sort_checksum=" + to_string(bubble_sort_checksum(t, 6)))
+    println("sum_array=" + to_string(sum_array(t)))
+    println("max_array=" + to_string(max_array(t)))
+    println("min_array=" + to_string(min_array(t)))
+    println("mean_floor=" + to_string(mean_floor(t)))
+    println("count_positive=" + to_string(count_positive(t)))
+    println("count_equal=" + to_string(count_equal(t, 8)))
+    println("index_of=" + to_string(index_of(t, 1)))
+    println("binary_search=" + to_string(binary_search(s, 5)))
+    println("is_sorted_asc=" + to_string(is_sorted_asc(s)))
+    println("range_span=" + to_string(range_span(t)))
+    println("dot_product=" + to_string(dot_product(t, s)))
+    println("count_distinct_sorted=" + to_string(count_distinct_sorted(s)))
+    println("second_largest=" + to_string(second_largest(t)))
+    println("prefix_sum_last=" + to_string(prefix_sum_last(t)))
+    println("bubble_sort_checksum=" + to_string(bubble_sort_checksum(t)))
