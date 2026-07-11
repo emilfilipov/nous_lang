@@ -7,11 +7,11 @@
       "unit": "ms (whole-program wall time, best-of-5; Python best-of-1)",
       "checksum": 25997,
       "results": [
-        {"lang": "Rust (rustc -O)", "value": 26.1, "vsC": 0.91},
-        {"lang": "C++ (cl /O2)", "value": 28.3, "vsC": 0.98},
-        {"lang": "C (cl /O2)", "value": 28.8, "vsC": 1.0},
-        {"lang": "Lullaby (native)", "value": 45.1, "vsC": 1.57},
-        {"lang": "Python (CPython)", "value": 782.4, "vsC": 27.17}
+        {"lang": "Rust (rustc -O)", "value": 25.9, "vsC": 0.92},
+        {"lang": "C (cl /O2)", "value": 28.3, "vsC": 1.0},
+        {"lang": "C++ (cl /O2)", "value": 29.1, "vsC": 1.03},
+        {"lang": "Lullaby (native)", "value": 29.3, "vsC": 1.04},
+        {"lang": "Python (CPython)", "value": 741.6, "vsC": 26.2}
       ]
     },
     {
@@ -43,6 +43,7 @@
     "note": "Native backend progression this campaign (fib ns/call vs C, and loop ns/iter vs C).",
     "native_fib_vs_c": [{"stage": "baseline", "vsC": 1.72}, {"stage": "compare-fusion + imm-fold", "vsC": 1.35}, {"stage": "+register promotion", "vsC": 1.2}],
     "native_loop_vs_c": [{"stage": "compare-fusion + imm-fold", "vsC": 5.6}, {"stage": "+register promotion", "vsC": 2.1}],
+    "native_primes_vs_c": [{"stage": "before (call per iter)", "vsC": 1.57}, {"stage": "+for-loop reg promotion", "vsC": 1.53}, {"stage": "+leaf-helper inlining", "vsC": 1.04}],
     "interpreter_fib_ns": [{"stage": "baseline", "value": 435}, {"stage": "+release profile", "value": 383}, {"stage": "+env pooling", "value": 230}]
   }
 }
