@@ -23,15 +23,15 @@ struct Vec3
 
 fn abs_val n i64 -> i64
     if n < 0
-        return 0 - n
+        return -n
     n
 
 fn manhattan a Point b Point -> i64
     abs_val(a.x - b.x) + abs_val(a.y - b.y)
 
 fn chebyshev a Point b Point -> i64
-    let dx i64 = abs_val(a.x - b.x)
-    let dy i64 = abs_val(a.y - b.y)
+    let dx = abs_val(a.x - b.x)
+    let dy = abs_val(a.y - b.y)
     if dx > dy
         dx
     else
@@ -65,19 +65,19 @@ fn interval_overlaps a Interval b Interval -> i64
         0
 
 fn interval_length a Interval -> i64
-    let n i64 = a.hi - a.lo
+    let n = a.hi - a.lo
     if n < 0
         return 0
     n
 
 fn interval_intersect_len a Interval b Interval -> i64
-    let lo i64 = a.lo
+    let lo = a.lo
     if b.lo > lo
         lo = b.lo
-    let hi i64 = a.hi
+    let hi = a.hi
     if b.hi < hi
         hi = b.hi
-    let n i64 = hi - lo
+    let n = hi - lo
     if n < 0
         return 0
     n
@@ -116,5 +116,5 @@ fn main -> void
     println("vec3_dot=" + to_string(vec3_dot(u, w)))
     let s Vec3 = vec3_add(u, w)
     println("vec3_add.x=" + to_string(s.x))
-    println("vec3_manhattan_norm=" + to_string(vec3_manhattan_norm(Vec3(0 - 1, 2, 0 - 3))))
+    println("vec3_manhattan_norm=" + to_string(vec3_manhattan_norm(Vec3(-1, 2, -3))))
     println("midpoint_x=" + to_string(midpoint_x(p, q)))

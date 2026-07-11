@@ -20,7 +20,7 @@ fn simple_interest principal i64 rate_bp i64 years i64 -> i64
     principal * rate_bp * years / 10000
 
 fn compound_interest principal i64 rate_bp i64 years i64 -> i64
-    let amount i64 = principal
+    let amount = principal
     for y from 1 to years
         amount = amount + amount * rate_bp / 10000
     amount
@@ -51,8 +51,8 @@ fn round_to_nearest cents i64 step i64 -> i64
     (cents + step / 2) / step * step
 
 fn future_value_years principal i64 rate_bp i64 years i64 -> i64
-    let amount i64 = principal
-    let y i64 = 0
+    let amount = principal
+    let y = 0
     while y < years
         amount += amount * rate_bp / 10000
         y += 1

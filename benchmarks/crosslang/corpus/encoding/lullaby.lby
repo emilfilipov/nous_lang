@@ -4,28 +4,28 @@
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
 fn sum_bytes a array<i64> n i64 -> i64
-    let total i64 = 0
+    let total = 0
     for i from 0 to n - 1
         total += a[i]
     total
 
 fn add_checksum_mod256 a array<i64> n i64 -> i64
-    let total i64 = 0
+    let total = 0
     for i from 0 to n - 1
         total += a[i]
     total % 256
 
 fn fletcher16 a array<i64> n i64 -> i64
-    let sum1 i64 = 0
-    let sum2 i64 = 0
+    let sum1 = 0
+    let sum2 = 0
     for i from 0 to n - 1
         sum1 = (sum1 + a[i]) % 255
         sum2 = (sum2 + sum1) % 255
     sum2 * 256 + sum1
 
 fn adler32_small a array<i64> n i64 -> i64
-    let s1 i64 = 1
-    let s2 i64 = 0
+    let s1 = 1
+    let s2 = 0
     for i from 0 to n - 1
         s1 = (s1 + a[i]) % 65521
         s2 = (s2 + s1) % 65521
@@ -49,7 +49,7 @@ fn rot13_val c i64 -> i64
     c
 
 fn count_set_bits x i64 -> i64
-    let count i64 = 0
+    let count = 0
     while x > 0
         count += x % 2
         x = x / 2
@@ -58,7 +58,7 @@ fn count_set_bits x i64 -> i64
 fn to_binary_length x i64 -> i64
     if x == 0
         return 1
-    let len i64 = 0
+    let len = 0
     while x > 0
         len += 1
         x = x / 2
@@ -69,7 +69,7 @@ fn hex_digit_value c i64 -> i64
         return c - 48
     if c >= 97 and c <= 102
         return c - 97 + 10
-    0 - 1
+    -1
 
 fn nibble_to_hex_code v i64 -> i64
     if v < 10
@@ -77,9 +77,9 @@ fn nibble_to_hex_code v i64 -> i64
     97 + v - 10
 
 fn luhn_from_array a array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
-        let d i64 = a[n - 1 - i]
+        let d = a[n - 1 - i]
         if i % 2 == 1
             d = d * 2
             if d > 9
@@ -91,13 +91,13 @@ fn luhn_from_array a array<i64> n i64 -> i64
         0
 
 fn parity_bit a array<i64> n i64 -> i64
-    let ones i64 = 0
+    let ones = 0
     for i from 0 to n - 1
         ones += a[i]
     ones % 2
 
 fn crc8_simple a array<i64> n i64 -> i64
-    let crc i64 = 0
+    let crc = 0
     for i from 0 to n - 1
         crc = (crc + a[i]) % 256
         crc = crc * 2 % 256 + crc / 128
@@ -105,10 +105,10 @@ fn crc8_simple a array<i64> n i64 -> i64
 
 fn digit_product x i64 -> i64
     if x < 0
-        x = 0 - x
+        x = -x
     if x == 0
         return 0
-    let p i64 = 1
+    let p = 1
     while x > 0
         p = p * (x % 10)
         x = x / 10

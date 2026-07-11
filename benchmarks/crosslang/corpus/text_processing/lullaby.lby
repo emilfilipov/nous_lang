@@ -6,9 +6,9 @@
 
 fn word_count s string -> i64
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
-    let count i64 = 0
-    let in_word i64 = 0
+    let n = len(cs)
+    let count = 0
+    let in_word = 0
     for i from 0 to n - 1
         let c char = get(cs, i)
         if is_whitespace(c)
@@ -24,8 +24,8 @@ fn char_count s string -> i64
 fn count_char s string c string -> i64
     let target char = get(chars(c), 0)
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
-    let count i64 = 0
+    let n = len(cs)
+    let count = 0
     for i from 0 to n - 1
         if get(cs, i) == target
             count += 1
@@ -33,7 +33,7 @@ fn count_char s string c string -> i64
 
 fn is_blank s string -> i64
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
+    let n = len(cs)
     for i from 0 to n - 1
         if not is_whitespace(get(cs, i))
             return 0
@@ -59,11 +59,11 @@ fn contains_sub s string sub string -> i64
 
 fn to_upper_ascii s string -> string
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
+    let n = len(cs)
     let out string = ""
     for i from 0 to n - 1
         let c char = get(cs, i)
-        let code i64 = char_code(c)
+        let code = char_code(c)
         if code >= 97 and code <= 122
             out = out + to_string(char_from(code - 32))
         else
@@ -72,11 +72,11 @@ fn to_upper_ascii s string -> string
 
 fn to_lower_ascii s string -> string
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
+    let n = len(cs)
     let out string = ""
     for i from 0 to n - 1
         let c char = get(cs, i)
-        let code i64 = char_code(c)
+        let code = char_code(c)
         if code >= 65 and code <= 90
             out = out + to_string(char_from(code + 32))
         else
@@ -86,7 +86,7 @@ fn to_lower_ascii s string -> string
 fn reverse_str s string -> string
     let cs list<char> = chars(s)
     let out string = ""
-    let i i64 = len(cs) - 1
+    let i = len(cs) - 1
     while i >= 0
         out = out + to_string(get(cs, i))
         i -= 1
@@ -99,7 +99,7 @@ fn repeat_str s string n i64 -> string
     out
 
 fn left_pad s string width i64 c string -> string
-    let pad i64 = width - len(s)
+    let pad = width - len(s)
     let out string = ""
     for i from 1 to pad
         out = out + c
@@ -112,8 +112,8 @@ fn truncate_ellipsis s string max i64 -> string
 
 fn count_vowels s string -> i64
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
-    let count i64 = 0
+    let n = len(cs)
+    let count = 0
     for i from 0 to n - 1
         let c char = get(cs, i)
         if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'
@@ -122,16 +122,16 @@ fn count_vowels s string -> i64
 
 fn initials name string -> string
     let cs list<char> = chars(name)
-    let n i64 = len(cs)
+    let n = len(cs)
     let out string = ""
-    let in_word i64 = 0
+    let in_word = 0
     for i from 0 to n - 1
         let c char = get(cs, i)
         if is_whitespace(c)
             in_word = 0
         elif in_word == 0
             in_word = 1
-            let code i64 = char_code(c)
+            let code = char_code(c)
             if code >= 97 and code <= 122
                 out = out + to_string(char_from(code - 32))
             else

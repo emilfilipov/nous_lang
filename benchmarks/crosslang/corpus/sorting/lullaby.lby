@@ -8,15 +8,15 @@ fn is_even x i64 -> bool
     x - (x / 2) * 2 == 0
 
 fn checksum a array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += i * a[i]
     sum
 
 fn insertion_sorted a array<i64> n i64 -> array<i64>
     for i from 1 to n - 1
-        let key i64 = a[i]
-        let j i64 = i - 1
+        let key = a[i]
+        let j = i - 1
         while j >= 0 and a[j] > key
             a[j + 1] = a[j]
             j -= 1
@@ -25,8 +25,8 @@ fn insertion_sorted a array<i64> n i64 -> array<i64>
 
 fn insertion_sort_checksum a array<i64> n i64 -> i64
     for i from 1 to n - 1
-        let key i64 = a[i]
-        let j i64 = i - 1
+        let key = a[i]
+        let j = i - 1
         while j >= 0 and a[j] > key
             a[j + 1] = a[j]
             j -= 1
@@ -35,47 +35,47 @@ fn insertion_sort_checksum a array<i64> n i64 -> i64
 
 fn selection_sort_checksum a array<i64> n i64 -> i64
     for i from 0 to n - 2
-        let mi i64 = i
+        let mi = i
         for j from i + 1 to n - 1
             if a[j] < a[mi]
                 mi = j
-        let t i64 = a[i]
+        let t = a[i]
         a[i] = a[mi]
         a[mi] = t
     checksum(a, n)
 
 fn bubble_sort_swaps a array<i64> n i64 -> i64
-    let swaps i64 = 0
+    let swaps = 0
     for i from 0 to n - 1
         for j from 0 to n - 2 - i
             if a[j] > a[j + 1]
-                let t i64 = a[j]
+                let t = a[j]
                 a[j] = a[j + 1]
                 a[j + 1] = t
                 swaps += 1
     swaps
 
 fn gnome_sort_checksum a array<i64> n i64 -> i64
-    let i i64 = 0
+    let i = 0
     while i < n
         if i == 0 or a[i] >= a[i - 1]
             i += 1
         else
-            let t i64 = a[i]
+            let t = a[i]
             a[i] = a[i - 1]
             a[i - 1] = t
             i -= 1
     checksum(a, n)
 
 fn cocktail_sort_checksum a array<i64> n i64 -> i64
-    let lo i64 = 0
-    let hi i64 = n - 1
+    let lo = 0
+    let hi = n - 1
     let swapped bool = true
     while swapped
         swapped = false
         for i from lo to hi - 1
             if a[i] > a[i + 1]
-                let t i64 = a[i]
+                let t = a[i]
                 a[i] = a[i + 1]
                 a[i + 1] = t
                 swapped = true
@@ -83,10 +83,10 @@ fn cocktail_sort_checksum a array<i64> n i64 -> i64
             return checksum(a, n)
         hi -= 1
         swapped = false
-        let k i64 = hi - 1
+        let k = hi - 1
         while k >= lo
             if a[k] > a[k + 1]
-                let u i64 = a[k]
+                let u = a[k]
                 a[k] = a[k + 1]
                 a[k + 1] = u
                 swapped = true
@@ -95,7 +95,7 @@ fn cocktail_sort_checksum a array<i64> n i64 -> i64
     checksum(a, n)
 
 fn comb_sort_checksum a array<i64> n i64 -> i64
-    let gap i64 = n
+    let gap = n
     let swapped bool = true
     while gap > 1 or swapped
         gap = (gap * 10) / 13
@@ -104,14 +104,14 @@ fn comb_sort_checksum a array<i64> n i64 -> i64
         swapped = false
         for i from 0 to n - 1 - gap
             if a[i] > a[i + gap]
-                let t i64 = a[i]
+                let t = a[i]
                 a[i] = a[i + gap]
                 a[i + gap] = t
                 swapped = true
     checksum(a, n)
 
 fn count_inversions a array<i64> n i64 -> i64
-    let count i64 = 0
+    let count = 0
     for i from 0 to n - 1
         for j from i + 1 to n - 1
             if a[i] > a[j]
@@ -125,10 +125,10 @@ fn is_sorted_desc a array<i64> n i64 -> i64
     1
 
 fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64 -> i64
-    let i i64 = 0
-    let j i64 = 0
-    let k i64 = 0
-    let sum i64 = 0
+    let i = 0
+    let j = 0
+    let k = 0
+    let sum = 0
     while i < la and j < lb
         if a[i] <= b[j]
             sum += k * a[i]
@@ -148,26 +148,26 @@ fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64 -> i64
     sum
 
 fn partition_lomuto_index a array<i64> n i64 -> i64
-    let pivot i64 = a[n - 1]
-    let i i64 = 0
+    let pivot = a[n - 1]
+    let i = 0
     for j from 0 to n - 2
         if a[j] < pivot
-            let t i64 = a[i]
+            let t = a[i]
             a[i] = a[j]
             a[j] = t
             i += 1
-    let u i64 = a[i]
+    let u = a[i]
     a[i] = a[n - 1]
     a[n - 1] = u
     i
 
 fn kth_smallest a array<i64> n i64 k i64 -> i64
     for i from 0 to k - 1
-        let mi i64 = i
+        let mi = i
         for j from i + 1 to n - 1
             if a[j] < a[mi]
                 mi = j
-        let t i64 = a[i]
+        let t = a[i]
         a[i] = a[mi]
         a[mi] = t
     a[k - 1]
@@ -175,21 +175,21 @@ fn kth_smallest a array<i64> n i64 k i64 -> i64
 fn count_sorted_runs a array<i64> n i64 -> i64
     if n == 0
         return 0
-    let runs i64 = 1
+    let runs = 1
     for i from 1 to n - 1
         if a[i] < a[i - 1]
             runs += 1
     runs
 
 fn min_swaps_selection a array<i64> n i64 -> i64
-    let swaps i64 = 0
+    let swaps = 0
     for i from 0 to n - 2
-        let mi i64 = i
+        let mi = i
         for j from i + 1 to n - 1
             if a[j] < a[mi]
                 mi = j
         if mi != i
-            let t i64 = a[i]
+            let t = a[i]
             a[i] = a[mi]
             a[mi] = t
             swaps += 1
@@ -201,8 +201,8 @@ fn sorted_median a array<i64> n i64 -> i64
 
 fn sort_evens_first_checksum a array<i64> n i64 -> i64
     let s array<i64> = insertion_sorted(a, n)
-    let sum i64 = 0
-    let k i64 = 0
+    let sum = 0
+    let k = 0
     for i from 0 to n - 1
         if is_even(s[i])
             sum += k * s[i]
@@ -214,25 +214,25 @@ fn sort_evens_first_checksum a array<i64> n i64 -> i64
     sum
 
 fn reverse_checksum a array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += i * a[n - 1 - i]
     sum
 
 fn max_gap_sorted a array<i64> n i64 -> i64
     let s array<i64> = insertion_sorted(a, n)
-    let g i64 = 0
+    let g = 0
     for i from 1 to n - 1
-        let d i64 = s[i] - s[i - 1]
+        let d = s[i] - s[i - 1]
         if d > g
             g = d
     g
 
 fn second_smallest a array<i64> n i64 -> i64
-    let first i64 = a[0]
-    let second i64 = a[1]
+    let first = a[0]
+    let second = a[1]
     if second < first
-        let t i64 = first
+        let t = first
         first = second
         second = t
     for i from 2 to n - 1

@@ -3,20 +3,20 @@
 # receives a private copy it may sort in place without affecting the caller.
 
 fn sum_array a array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += a[i]
     sum
 
 fn max_array a array<i64> n i64 -> i64
-    let m i64 = a[0]
+    let m = a[0]
     for i from 1 to n - 1
         if a[i] > m
             m = a[i]
     m
 
 fn min_array a array<i64> n i64 -> i64
-    let m i64 = a[0]
+    let m = a[0]
     for i from 1 to n - 1
         if a[i] < m
             m = a[i]
@@ -26,14 +26,14 @@ fn mean_floor a array<i64> n i64 -> i64
     sum_array(a, n) / n
 
 fn count_positive a array<i64> n i64 -> i64
-    let count i64 = 0
+    let count = 0
     for i from 0 to n - 1
         if a[i] > 0
             count += 1
     count
 
 fn count_equal a array<i64> n i64 x i64 -> i64
-    let count i64 = 0
+    let count = 0
     for i from 0 to n - 1
         if a[i] == x
             count += 1
@@ -43,20 +43,20 @@ fn index_of a array<i64> n i64 x i64 -> i64
     for i from 0 to n - 1
         if a[i] == x
             return i
-    0 - 1
+    -1
 
 fn binary_search a array<i64> n i64 x i64 -> i64
-    let lo i64 = 0
-    let hi i64 = n - 1
+    let lo = 0
+    let hi = n - 1
     while lo <= hi
-        let mid i64 = (lo + hi) / 2
+        let mid = (lo + hi) / 2
         if a[mid] == x
             return mid
         elif a[mid] < x
             lo = mid + 1
         else
             hi = mid - 1
-    0 - 1
+    -1
 
 fn is_sorted_asc a array<i64> n i64 -> i64
     for i from 1 to n - 1
@@ -68,7 +68,7 @@ fn range_span a array<i64> n i64 -> i64
     max_array(a, n) - min_array(a, n)
 
 fn dot_product a array<i64> b array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += a[i] * b[i]
     sum
@@ -76,17 +76,17 @@ fn dot_product a array<i64> b array<i64> n i64 -> i64
 fn count_distinct_sorted a array<i64> n i64 -> i64
     if n == 0
         return 0
-    let count i64 = 1
+    let count = 1
     for i from 1 to n - 1
         if a[i] != a[i - 1]
             count += 1
     count
 
 fn second_largest a array<i64> n i64 -> i64
-    let first i64 = a[0]
-    let second i64 = a[1]
+    let first = a[0]
+    let second = a[1]
     if second > first
-        let t i64 = first
+        let t = first
         first = second
         second = t
     for i from 2 to n - 1
@@ -98,7 +98,7 @@ fn second_largest a array<i64> n i64 -> i64
     second
 
 fn prefix_sum_last a array<i64> n i64 -> i64
-    let prefix i64 = 0
+    let prefix = 0
     for i from 0 to n - 1
         prefix += a[i]
     prefix
@@ -107,10 +107,10 @@ fn bubble_sort_checksum a array<i64> n i64 -> i64
     for i from 0 to n - 1
         for j from 0 to n - 2 - i
             if a[j] > a[j + 1]
-                let t i64 = a[j]
+                let t = a[j]
                 a[j] = a[j + 1]
                 a[j + 1] = t
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += i * a[i]
     sum

@@ -71,14 +71,14 @@ fn opposite d Direction -> Direction
 fn dir_dx d Direction -> i64
     match d
         East -> 1
-        West -> 0 - 1
+        West -> -1
         North -> 0
         South -> 0
 
 fn dir_dy d Direction -> i64
     match d
         North -> 1
-        South -> 0 - 1
+        South -> -1
         East -> 0
         West -> 0
 

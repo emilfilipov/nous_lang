@@ -11,7 +11,7 @@ fn min2 a i64 b i64 -> i64
 
 # HTTP status family: 2..5 for 2xx..5xx, 0 for anything outside 200..599.
 fn http_status_class code i64 -> i64
-    let cls i64 = code / 100
+    let cls = code / 100
     if cls >= 2 and cls <= 5
         return cls
     return 0
@@ -30,8 +30,8 @@ fn method_is_safe_code m i64 -> i64
 
 # Exponential backoff base * 2^attempt, capped at 60000 ms.
 fn retry_backoff_ms attempt i64 base i64 -> i64
-    let d i64 = base
-    let i i64 = 0
+    let d = base
+    let i = 0
     while i < attempt
         d = d * 2
         if d >= 60000
@@ -79,7 +79,7 @@ fn cache_ttl_valid now i64 created i64 ttl i64 -> i64
 
 # Scheduling priority 0..3 from a status code (5xx highest, 2xx lowest).
 fn priority_from_code code i64 -> i64
-    let cls i64 = http_status_class(code)
+    let cls = http_status_class(code)
     if cls == 5
         return 0
     if cls == 4

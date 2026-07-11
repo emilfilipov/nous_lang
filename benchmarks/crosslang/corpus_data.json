@@ -13,8 +13,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 104,
-     "source": "fn binary_search a array<i64> n i64 x i64 -> i64\n    let lo i64 = 0\n    let hi i64 = n - 1\n    while lo <= hi\n        let mid i64 = (lo + hi) / 2\n        if a[mid] == x\n            return mid\n        elif a[mid] < x\n            lo = mid + 1\n        else\n            hi = mid - 1\n    0 - 1"
+     "tokens": 95,
+     "source": "fn binary_search a array<i64> n i64 x i64 -> i64\n    let lo = 0\n    let hi = n - 1\n    while lo <= hi\n        let mid = (lo + hi) / 2\n        if a[mid] == x\n            return mid\n        elif a[mid] < x\n            lo = mid + 1\n        else\n            hi = mid - 1\n    -1"
     },
     "C": {
      "tokens": 108,
@@ -44,8 +44,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 115,
-     "source": "fn bubble_sort_checksum a array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        for j from 0 to n - 2 - i\n            if a[j] > a[j + 1]\n                let t i64 = a[j]\n                a[j] = a[j + 1]\n                a[j + 1] = t\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += i * a[i]\n    sum"
+     "tokens": 111,
+     "source": "fn bubble_sort_checksum a array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        for j from 0 to n - 2 - i\n            if a[j] > a[j + 1]\n                let t = a[j]\n                a[j] = a[j + 1]\n                a[j + 1] = t\n    let sum = 0\n    for i from 0 to n - 1\n        sum += i * a[i]\n    sum"
     },
     "C": {
      "tokens": 172,
@@ -75,8 +75,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn count_distinct_sorted a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count i64 = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
+     "tokens": 68,
+     "source": "fn count_distinct_sorted a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
     },
     "C": {
      "tokens": 77,
@@ -106,8 +106,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn count_equal a array<i64> n i64 x i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
+     "tokens": 53,
+     "source": "fn count_equal a array<i64> n i64 x i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
     },
     "C": {
      "tokens": 64,
@@ -137,8 +137,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn count_positive a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] > 0\n            count += 1\n    count"
+     "tokens": 51,
+     "source": "fn count_positive a array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] > 0\n            count += 1\n    count"
     },
     "C": {
      "tokens": 60,
@@ -168,8 +168,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn dot_product a array<i64> b array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i] * b[i]\n    sum"
+     "tokens": 51,
+     "source": "fn dot_product a array<i64> b array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i] * b[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -199,8 +199,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn index_of a array<i64> n i64 x i64 -> i64\n    for i from 0 to n - 1\n        if a[i] == x\n            return i\n    0 - 1"
+     "tokens": 45,
+     "source": "fn index_of a array<i64> n i64 x i64 -> i64\n    for i from 0 to n - 1\n        if a[i] == x\n            return i\n    -1"
     },
     "C": {
      "tokens": 57,
@@ -261,8 +261,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn max_array a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+     "tokens": 51,
+     "source": "fn max_array a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
     },
     "C": {
      "tokens": 63,
@@ -323,8 +323,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn min_array a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] < m\n            m = a[i]\n    m"
+     "tokens": 51,
+     "source": "fn min_array a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] < m\n            m = a[i]\n    m"
     },
     "C": {
      "tokens": 63,
@@ -354,8 +354,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn prefix_sum_last a array<i64> n i64 -> i64\n    let prefix i64 = 0\n    for i from 0 to n - 1\n        prefix += a[i]\n    prefix"
+     "tokens": 43,
+     "source": "fn prefix_sum_last a array<i64> n i64 -> i64\n    let prefix = 0\n    for i from 0 to n - 1\n        prefix += a[i]\n    prefix"
     },
     "C": {
      "tokens": 55,
@@ -416,8 +416,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 107,
-     "source": "fn second_largest a array<i64> n i64 -> i64\n    let first i64 = a[0]\n    let second i64 = a[1]\n    if second > first\n        let t i64 = first\n        first = second\n        second = t\n    for i from 2 to n - 1\n        if a[i] > first\n            second = first\n            first = a[i]\n        elif a[i] > second\n            second = a[i]\n    second"
+     "tokens": 101,
+     "source": "fn second_largest a array<i64> n i64 -> i64\n    let first = a[0]\n    let second = a[1]\n    if second > first\n        let t = first\n        first = second\n        second = t\n    for i from 2 to n - 1\n        if a[i] > first\n            second = first\n            first = a[i]\n        elif a[i] > second\n            second = a[i]\n    second"
     },
     "C": {
      "tokens": 119,
@@ -447,8 +447,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 44,
-     "source": "fn sum_array a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i]\n    sum"
+     "tokens": 42,
+     "source": "fn sum_array a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i]\n    sum"
     },
     "C": {
      "tokens": 54,
@@ -540,8 +540,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn count_leading_zeros_64 x i64 -> i64\n    if x == 0\n        return 64\n    let count i64 = 64\n    while x > 0\n        count -= 1\n        x = x / 2\n    count"
+     "tokens": 57,
+     "source": "fn count_leading_zeros_64 x i64 -> i64\n    if x == 0\n        return 64\n    let count = 64\n    while x > 0\n        count -= 1\n        x = x / 2\n    count"
     },
     "C": {
      "tokens": 65,
@@ -571,8 +571,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn count_set_bits x i64 -> i64\n    let count i64 = 0\n    while x > 0\n        count += x % 2\n        x = x / 2\n    count"
+     "tokens": 43,
+     "source": "fn count_set_bits x i64 -> i64\n    let count = 0\n    while x > 0\n        count += x % 2\n        x = x / 2\n    count"
     },
     "C": {
      "tokens": 51,
@@ -633,8 +633,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 72,
-     "source": "fn hamming_distance_bits a i64 b i64 -> i64\n    let dist i64 = 0\n    while a > 0 or b > 0\n        if a % 2 != b % 2\n            dist += 1\n        a = a / 2\n        b = b / 2\n    dist"
+     "tokens": 70,
+     "source": "fn hamming_distance_bits a i64 b i64 -> i64\n    let dist = 0\n    while a > 0 or b > 0\n        if a % 2 != b % 2\n            dist += 1\n        a = a / 2\n        b = b / 2\n    dist"
     },
     "C": {
      "tokens": 78,
@@ -664,8 +664,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn highest_bit_pos x i64 -> i64\n    let pos i64 = 0 - 1\n    while x > 0\n        pos += 1\n        x = x / 2\n    pos"
+     "tokens": 41,
+     "source": "fn highest_bit_pos x i64 -> i64\n    let pos = -1\n    while x > 0\n        pos += 1\n        x = x / 2\n    pos"
     },
     "C": {
      "tokens": 49,
@@ -757,8 +757,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 61,
-     "source": "fn lowest_bit_pos x i64 -> i64\n    if x == 0\n        return 0 - 1\n    let pos i64 = 0\n    while x % 2 == 0\n        pos += 1\n        x = x / 2\n    pos"
+     "tokens": 56,
+     "source": "fn lowest_bit_pos x i64 -> i64\n    if x == 0\n        return -1\n    let pos = 0\n    while x % 2 == 0\n        pos += 1\n        x = x / 2\n    pos"
     },
     "C": {
      "tokens": 64,
@@ -788,8 +788,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 38,
-     "source": "fn merge_bits a i64 b i64 mask_count i64 -> i64\n    let m i64 = pow2(mask_count)\n    a - a % m + b % m"
+     "tokens": 36,
+     "source": "fn merge_bits a i64 b i64 mask_count i64 -> i64\n    let m = pow2(mask_count)\n    a - a % m + b % m"
     },
     "C": {
      "tokens": 46,
@@ -819,8 +819,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 37,
-     "source": "fn next_power_of_two x i64 -> i64\n    let p i64 = 1\n    while p < x\n        p = p * 2\n    p"
+     "tokens": 35,
+     "source": "fn next_power_of_two x i64 -> i64\n    let p = 1\n    while p < x\n        p = p * 2\n    p"
     },
     "C": {
      "tokens": 41,
@@ -881,8 +881,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 41,
-     "source": "fn popcount_range lo i64 hi i64 -> i64\n    let total i64 = 0\n    for v from lo to hi\n        total += count_set_bits(v)\n    total"
+     "tokens": 39,
+     "source": "fn popcount_range lo i64 hi i64 -> i64\n    let total = 0\n    for v from lo to hi\n        total += count_set_bits(v)\n    total"
     },
     "C": {
      "tokens": 54,
@@ -912,8 +912,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 38,
-     "source": "fn pow2 n i64 -> i64\n    let p i64 = 1\n    for i from 1 to n\n        p = p * 2\n    p"
+     "tokens": 36,
+     "source": "fn pow2 n i64 -> i64\n    let p = 1\n    for i from 1 to n\n        p = p * 2\n    p"
     },
     "C": {
      "tokens": 49,
@@ -943,8 +943,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 58,
-     "source": "fn reverse_bits_n x i64 n i64 -> i64\n    let result i64 = 0\n    for i from 0 to n - 1\n        result = result * 2 + x % 2\n        x = x / 2\n    result"
+     "tokens": 56,
+     "source": "fn reverse_bits_n x i64 n i64 -> i64\n    let result = 0\n    for i from 0 to n - 1\n        result = result * 2 + x % 2\n        x = x / 2\n    result"
     },
     "C": {
      "tokens": 70,
@@ -974,8 +974,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn rotate_left_n x i64 n i64 bits i64 -> i64\n    let width i64 = pow2(bits)\n    x = x % width\n    n = n % bits\n    let hi i64 = x * pow2(n) % width\n    let lo i64 = x / pow2(bits - n)\n    hi + lo"
+     "tokens": 68,
+     "source": "fn rotate_left_n x i64 n i64 bits i64 -> i64\n    let width = pow2(bits)\n    x = x % width\n    n = n % bits\n    let hi = x * pow2(n) % width\n    let lo = x / pow2(bits - n)\n    hi + lo"
     },
     "C": {
      "tokens": 83,
@@ -1098,8 +1098,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn bulk_price qty i64 unit_cents i64 -> i64\n    let base i64 = qty * unit_cents\n    if qty >= 100\n        return base - base * 10 / 100\n    base"
+     "tokens": 46,
+     "source": "fn bulk_price qty i64 unit_cents i64 -> i64\n    let base = qty * unit_cents\n    if qty >= 100\n        return base - base * 10 / 100\n    base"
     },
     "C": {
      "tokens": 54,
@@ -1563,8 +1563,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 119,
-     "source": "fn tax_bracket income i64 -> i64\n    let tax i64 = 0\n    if income > 8500000\n        tax += (income - 8500000) * 30 / 100\n        income = 8500000\n    if income > 4000000\n        tax += (income - 4000000) * 20 / 100\n        income = 4000000\n    if income > 1000000\n        tax += (income - 1000000) * 10 / 100\n    tax"
+     "tokens": 117,
+     "source": "fn tax_bracket income i64 -> i64\n    let tax = 0\n    if income > 8500000\n        tax += (income - 8500000) * 30 / 100\n        income = 8500000\n    if income > 4000000\n        tax += (income - 4000000) * 20 / 100\n        income = 4000000\n    if income > 1000000\n        tax += (income - 1000000) * 10 / 100\n    tax"
     },
     "C": {
      "tokens": 135,
@@ -1625,8 +1625,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 90,
-     "source": "fn chunk_sum_max a array<i64> n i64 k i64 -> i64\n    let window i64 = 0\n    for i from 0 to k - 1\n        window += a[i]\n    let best i64 = window\n    for i from k to n - 1\n        window += a[i] - a[i - k]\n        if window > best\n            best = window\n    best"
+     "tokens": 86,
+     "source": "fn chunk_sum_max a array<i64> n i64 k i64 -> i64\n    let window = 0\n    for i from 0 to k - 1\n        window += a[i]\n    let best = window\n    for i from k to n - 1\n        window += a[i] - a[i - k]\n        if window > best\n            best = window\n    best"
     },
     "C": {
      "tokens": 110,
@@ -1656,8 +1656,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn count_distinct_sorted a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count i64 = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
+     "tokens": 68,
+     "source": "fn count_distinct_sorted a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
     },
     "C": {
      "tokens": 77,
@@ -1687,8 +1687,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn count_even a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] % 2 == 0\n            count += 1\n    count"
+     "tokens": 54,
+     "source": "fn count_even a array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] % 2 == 0\n            count += 1\n    count"
     },
     "C": {
      "tokens": 63,
@@ -1718,8 +1718,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn count_frequency_of a array<i64> n i64 x i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
+     "tokens": 54,
+     "source": "fn count_frequency_of a array<i64> n i64 x i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
     },
     "C": {
      "tokens": 65,
@@ -1749,8 +1749,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 65,
-     "source": "fn count_in_range a array<i64> n i64 lo i64 hi i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] >= lo and a[i] <= hi\n            count += 1\n    count"
+     "tokens": 63,
+     "source": "fn count_in_range a array<i64> n i64 lo i64 hi i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] >= lo and a[i] <= hi\n            count += 1\n    count"
     },
     "C": {
      "tokens": 76,
@@ -1780,8 +1780,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn count_odd a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] % 2 != 0\n            count += 1\n    count"
+     "tokens": 55,
+     "source": "fn count_odd a array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] % 2 != 0\n            count += 1\n    count"
     },
     "C": {
      "tokens": 64,
@@ -1811,8 +1811,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 101,
-     "source": "fn dedup_sorted_checksum a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let sum i64 = 0\n    let pos i64 = 0\n    let prev i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] != prev\n            pos = pos + 1\n            sum += pos * a[i]\n            prev = a[i]\n    sum"
+     "tokens": 95,
+     "source": "fn dedup_sorted_checksum a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let sum = 0\n    let pos = 0\n    let prev = a[0]\n    for i from 1 to n - 1\n        if a[i] != prev\n            pos = pos + 1\n            sum += pos * a[i]\n            prev = a[i]\n    sum"
     },
     "C": {
      "tokens": 102,
@@ -1842,8 +1842,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn first_duplicate_value a array<i64> n i64 -> i64\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            return a[i]\n    0 - 1"
+     "tokens": 48,
+     "source": "fn first_duplicate_value a array<i64> n i64 -> i64\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            return a[i]\n    -1"
     },
     "C": {
      "tokens": 58,
@@ -1873,8 +1873,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 99,
-     "source": "fn has_pair_sum a array<i64> n i64 target i64 -> i64\n    let lo i64 = 0\n    let hi i64 = n - 1\n    while lo < hi\n        let s i64 = a[lo] + a[hi]\n        if s == target\n            return 1\n        elif s < target\n            lo = lo + 1\n        else\n            hi = hi - 1\n    0"
+     "tokens": 93,
+     "source": "fn has_pair_sum a array<i64> n i64 target i64 -> i64\n    let lo = 0\n    let hi = n - 1\n    while lo < hi\n        let s = a[lo] + a[hi]\n        if s == target\n            return 1\n        elif s < target\n            lo = lo + 1\n        else\n            hi = hi - 1\n    0"
     },
     "C": {
      "tokens": 96,
@@ -1904,8 +1904,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 122,
-     "source": "fn intersect_count_sorted a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i i64 = 0\n    let j i64 = 0\n    let count i64 = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            count += 1\n            i = i + 1\n            j = j + 1\n        elif a[i] < b[j]\n            i = i + 1\n        else\n            j = j + 1\n    count"
+     "tokens": 116,
+     "source": "fn intersect_count_sorted a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i = 0\n    let j = 0\n    let count = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            count += 1\n            i = i + 1\n            j = j + 1\n        elif a[i] < b[j]\n            i = i + 1\n        else\n            j = j + 1\n    count"
     },
     "C": {
      "tokens": 104,
@@ -1935,8 +1935,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 116,
-     "source": "fn is_subset_sorted a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i i64 = 0\n    let j i64 = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            i = i + 1\n            j = j + 1\n        elif a[i] > b[j]\n            j = j + 1\n        else\n            return 0\n    if i < la\n        return 0\n    1"
+     "tokens": 112,
+     "source": "fn is_subset_sorted a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i = 0\n    let j = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            i = i + 1\n            j = j + 1\n        elif a[i] > b[j]\n            j = j + 1\n        else\n            return 0\n    if i < la\n        return 0\n    1"
     },
     "C": {
      "tokens": 107,
@@ -1966,8 +1966,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 97,
-     "source": "fn max_frequency a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best i64 = 1\n    let run i64 = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n    best"
+     "tokens": 93,
+     "source": "fn max_frequency a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best = 1\n    let run = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n    best"
     },
     "C": {
      "tokens": 103,
@@ -1997,8 +1997,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 105,
-     "source": "fn most_common_sorted a array<i64> n i64 -> i64\n    let best_val i64 = a[0]\n    let best i64 = 1\n    let run i64 = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n            best_val = a[i]\n    best_val"
+     "tokens": 99,
+     "source": "fn most_common_sorted a array<i64> n i64 -> i64\n    let best_val = a[0]\n    let best = 1\n    let run = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n            best_val = a[i]\n    best_val"
     },
     "C": {
      "tokens": 108,
@@ -2059,8 +2059,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn rotate_left_checksum a array<i64> n i64 k i64 -> i64\n    let shift i64 = k % n\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let idx i64 = i + shift\n        if idx >= n\n            idx = idx - n\n        sum += i * a[idx]\n    sum"
+     "tokens": 77,
+     "source": "fn rotate_left_checksum a array<i64> n i64 k i64 -> i64\n    let shift = k % n\n    let sum = 0\n    for i from 0 to n - 1\n        let idx = i + shift\n        if idx >= n\n            idx = idx - n\n        sum += i * a[idx]\n    sum"
     },
     "C": {
      "tokens": 93,
@@ -2090,8 +2090,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn running_total_last a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total"
+     "tokens": 43,
+     "source": "fn running_total_last a array<i64> n i64 -> i64\n    let total = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total"
     },
     "C": {
      "tokens": 55,
@@ -2121,8 +2121,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 174,
-     "source": "fn union_count_sorted a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i i64 = 0\n    let j i64 = 0\n    let count i64 = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            count += 1\n            i = i + 1\n            j = j + 1\n        elif a[i] < b[j]\n            count += 1\n            i = i + 1\n        else\n            count += 1\n            j = j + 1\n    while i < la\n        count += 1\n        i = i + 1\n    while j < lb\n        count += 1\n        j = j + 1\n    count"
+     "tokens": 168,
+     "source": "fn union_count_sorted a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i = 0\n    let j = 0\n    let count = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            count += 1\n            i = i + 1\n            j = j + 1\n        elif a[i] < b[j]\n            count += 1\n            i = i + 1\n        else\n            count += 1\n            j = j + 1\n    while i < la\n        count += 1\n        i = i + 1\n    while j < lb\n        count += 1\n        j = j + 1\n    count"
     },
     "C": {
      "tokens": 138,
@@ -2152,8 +2152,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn zip_sum a array<i64> b array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i] + b[i]\n    sum"
+     "tokens": 51,
+     "source": "fn zip_sum a array<i64> b array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i] + b[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -2183,8 +2183,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 40,
-     "source": "fn bell_number n i64 -> i64\n    let sum i64 = 0\n    for k from 0 to n\n        sum += stirling_second(n, k)\n    sum"
+     "tokens": 38,
+     "source": "fn bell_number n i64 -> i64\n    let sum = 0\n    for k from 0 to n\n        sum += stirling_second(n, k)\n    sum"
     },
     "C": {
      "tokens": 55,
@@ -2245,8 +2245,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn catalan n i64 -> i64\n    let result i64 = 1\n    for i from 0 to n - 1\n        result = result * 2 * (2 * i + 1) / (i + 2)\n    result"
+     "tokens": 54,
+     "source": "fn catalan n i64 -> i64\n    let result = 1\n    for i from 0 to n - 1\n        result = result * 2 * (2 * i + 1) / (i + 2)\n    result"
     },
     "C": {
      "tokens": 68,
@@ -2276,8 +2276,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn combinations_count n i64 r i64 -> i64\n    let result i64 = 1\n    for i from 1 to r\n        result = result * (n - r + i) / i\n    result"
+     "tokens": 46,
+     "source": "fn combinations_count n i64 r i64 -> i64\n    let result = 1\n    for i from 1 to r\n        result = result * (n - r + i) / i\n    result"
     },
     "C": {
      "tokens": 65,
@@ -2307,8 +2307,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 92,
-     "source": "fn derangement_count n i64 -> i64\n    if n == 0\n        return 1\n    if n == 1\n        return 0\n    let a i64 = 1\n    let b i64 = 0\n    for i from 2 to n\n        let c i64 = (i - 1) * (a + b)\n        a = b\n        b = c\n    b"
+     "tokens": 86,
+     "source": "fn derangement_count n i64 -> i64\n    if n == 0\n        return 1\n    if n == 1\n        return 0\n    let a = 1\n    let b = 0\n    for i from 2 to n\n        let c = (i - 1) * (a + b)\n        a = b\n        b = c\n    b"
     },
     "C": {
      "tokens": 103,
@@ -2338,8 +2338,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 36,
-     "source": "fn factorial n i64 -> i64\n    let result i64 = 1\n    for i from 2 to n\n        result = result * i\n    result"
+     "tokens": 34,
+     "source": "fn factorial n i64 -> i64\n    let result = 1\n    for i from 2 to n\n        result = result * i\n    result"
     },
     "C": {
      "tokens": 51,
@@ -2369,8 +2369,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 71,
-     "source": "fn fibonacci_iter n i64 -> i64\n    if n == 0\n        return 0\n    let a i64 = 0\n    let b i64 = 1\n    for i from 2 to n\n        let c i64 = a + b\n        a = b\n        b = c\n    b"
+     "tokens": 65,
+     "source": "fn fibonacci_iter n i64 -> i64\n    if n == 0\n        return 0\n    let a = 0\n    let b = 1\n    for i from 2 to n\n        let c = a + b\n        a = b\n        b = c\n    b"
     },
     "C": {
      "tokens": 82,
@@ -2400,8 +2400,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 88,
-     "source": "fn jacobsthal n i64 -> i64\n    if n == 0\n        return 0\n    if n == 1\n        return 1\n    let a i64 = 0\n    let b i64 = 1\n    for i from 2 to n\n        let c i64 = b + 2 * a\n        a = b\n        b = c\n    b"
+     "tokens": 82,
+     "source": "fn jacobsthal n i64 -> i64\n    if n == 0\n        return 0\n    if n == 1\n        return 1\n    let a = 0\n    let b = 1\n    for i from 2 to n\n        let c = b + 2 * a\n        a = b\n        b = c\n    b"
     },
     "C": {
      "tokens": 99,
@@ -2431,8 +2431,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn lucas n i64 -> i64\n    if n == 0\n        return 2\n    if n == 1\n        return 1\n    let a i64 = 2\n    let b i64 = 1\n    for i from 2 to n\n        let c i64 = a + b\n        a = b\n        b = c\n    b"
+     "tokens": 77,
+     "source": "fn lucas n i64 -> i64\n    if n == 0\n        return 2\n    if n == 1\n        return 1\n    let a = 2\n    let b = 1\n    for i from 2 to n\n        let c = a + b\n        a = b\n        b = c\n    b"
     },
     "C": {
      "tokens": 94,
@@ -2462,8 +2462,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn padovan n i64 -> i64\n    if n <= 2\n        return 1\n    let a i64 = 1\n    let b i64 = 1\n    let c i64 = 1\n    for i from 3 to n\n        let d i64 = b + a\n        a = b\n        b = c\n        c = d\n    c"
+     "tokens": 77,
+     "source": "fn padovan n i64 -> i64\n    if n <= 2\n        return 1\n    let a = 1\n    let b = 1\n    let c = 1\n    for i from 3 to n\n        let d = b + a\n        a = b\n        b = c\n        c = d\n    c"
     },
     "C": {
      "tokens": 92,
@@ -2586,8 +2586,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn permutations_count n i64 r i64 -> i64\n    let result i64 = 1\n    for i from 0 to r - 1\n        result = result * (n - i)\n    result"
+     "tokens": 44,
+     "source": "fn permutations_count n i64 r i64 -> i64\n    let result = 1\n    for i from 0 to r - 1\n        result = result * (n - i)\n    result"
     },
     "C": {
      "tokens": 60,
@@ -2648,8 +2648,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn subfactorial n i64 -> i64\n    let d i64 = 1\n    let sign i64 = 1\n    for i from 1 to n\n        sign = -sign\n        d = i * d + sign\n    d"
+     "tokens": 51,
+     "source": "fn subfactorial n i64 -> i64\n    let d = 1\n    let sign = 1\n    for i from 1 to n\n        sign = -sign\n        d = i * d + sign\n    d"
     },
     "C": {
      "tokens": 66,
@@ -2679,8 +2679,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 99,
-     "source": "fn tribonacci n i64 -> i64\n    if n == 0\n        return 0\n    if n <= 2\n        return 1\n    let a i64 = 0\n    let b i64 = 1\n    let c i64 = 1\n    for i from 3 to n\n        let d i64 = a + b + c\n        a = b\n        b = c\n        c = d\n    c"
+     "tokens": 91,
+     "source": "fn tribonacci n i64 -> i64\n    if n == 0\n        return 0\n    if n <= 2\n        return 1\n    let a = 0\n    let b = 1\n    let c = 1\n    for i from 3 to n\n        let d = a + b + c\n        a = b\n        b = c\n        c = d\n    c"
     },
     "C": {
      "tokens": 106,
@@ -2710,8 +2710,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return 0 - n\n    n"
+     "tokens": 24,
+     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return -n\n    n"
     },
     "C": {
      "tokens": 28,
@@ -2729,8 +2729,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn chebyshev a Point b Point -> i64\n    let dx i64 = abs_val(a.x - b.x)\n    let dy i64 = abs_val(a.y - b.y)\n    if dx > dy\n        dx\n    else\n        dy"
+     "tokens": 50,
+     "source": "fn chebyshev a Point b Point -> i64\n    let dx = abs_val(a.x - b.x)\n    let dy = abs_val(a.y - b.y)\n    if dx > dy\n        dx\n    else\n        dy"
     },
     "C": {
      "tokens": 52,
@@ -2760,8 +2760,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 84,
-     "source": "fn interval_intersect_len a Interval b Interval -> i64\n    let lo i64 = a.lo\n    if b.lo > lo\n        lo = b.lo\n    let hi i64 = a.hi\n    if b.hi < hi\n        hi = b.hi\n    let n i64 = hi - lo\n    if n < 0\n        return 0\n    n"
+     "tokens": 78,
+     "source": "fn interval_intersect_len a Interval b Interval -> i64\n    let lo = a.lo\n    if b.lo > lo\n        lo = b.lo\n    let hi = a.hi\n    if b.hi < hi\n        hi = b.hi\n    let n = hi - lo\n    if n < 0\n        return 0\n    n"
     },
     "C": {
      "tokens": 78,
@@ -2791,8 +2791,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 36,
-     "source": "fn interval_length a Interval -> i64\n    let n i64 = a.hi - a.lo\n    if n < 0\n        return 0\n    n"
+     "tokens": 34,
+     "source": "fn interval_length a Interval -> i64\n    let n = a.hi - a.lo\n    if n < 0\n        return 0\n    n"
     },
     "C": {
      "tokens": 36,
@@ -3225,8 +3225,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 61,
-     "source": "fn age_years yb i64 mb i64 db i64 yn i64 mn i64 dn i64 -> i64\n    let years i64 = yn - yb\n    if mn < mb or (mn == mb and dn < db)\n        years -= 1\n    years"
+     "tokens": 59,
+     "source": "fn age_years yb i64 mb i64 db i64 yn i64 mn i64 dn i64 -> i64\n    let years = yn - yb\n    if mn < mb or (mn == mb and dn < db)\n        years -= 1\n    years"
     },
     "C": {
      "tokens": 76,
@@ -3256,8 +3256,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 43,
-     "source": "fn clock_add_minutes h i64 mi i64 add i64 -> i64\n    let total i64 = (h * 60 + mi + add) % 1440\n    total / 60"
+     "tokens": 41,
+     "source": "fn clock_add_minutes h i64 mi i64 add i64 -> i64\n    let total = (h * 60 + mi + add) % 1440\n    total / 60"
     },
     "C": {
      "tokens": 44,
@@ -3287,8 +3287,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn day_of_year y i64 m i64 d i64 -> i64\n    let total i64 = d\n    for mm from 1 to m - 1\n        total += days_in_month(y, mm)\n    total"
+     "tokens": 47,
+     "source": "fn day_of_year y i64 m i64 d i64 -> i64\n    let total = d\n    for mm from 1 to m - 1\n        total += days_in_month(y, mm)\n    total"
     },
     "C": {
      "tokens": 61,
@@ -3349,8 +3349,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 183,
-     "source": "fn days_from_civil y i64 m i64 d i64 -> i64\n    if m <= 2\n        y = y - 1\n    let era i64 = 0\n    if y >= 0\n        era = y / 400\n    else\n        era = (y - 399) / 400\n    let yoe i64 = y - era * 400\n    let mp i64 = 0\n    if m > 2\n        mp = m - 3\n    else\n        mp = m + 9\n    let doy i64 = (153 * mp + 2) / 5 + d - 1\n    let doe i64 = yoe * 365 + yoe / 4 - yoe / 100 + doy\n    era * 146097 + doe - 719468"
+     "tokens": 173,
+     "source": "fn days_from_civil y i64 m i64 d i64 -> i64\n    if m <= 2\n        y = y - 1\n    let era = 0\n    if y >= 0\n        era = y / 400\n    else\n        era = (y - 399) / 400\n    let yoe = y - era * 400\n    let mp = 0\n    if m > 2\n        mp = m - 3\n    else\n        mp = m + 9\n    let doy = (153 * mp + 2) / 5 + d - 1\n    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy\n    era * 146097 + doe - 719468"
     },
     "C": {
      "tokens": 147,
@@ -3628,8 +3628,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 220,
-     "source": "fn year_from_days z i64 -> i64\n    z = z + 719468\n    let era i64 = 0\n    if z >= 0\n        era = z / 146097\n    else\n        era = (z - 146096) / 146097\n    let doe i64 = z - era * 146097\n    let yoe i64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365\n    let y i64 = yoe + era * 400\n    let doy i64 = doe - (365 * yoe + yoe / 4 - yoe / 100)\n    let mp i64 = (5 * doy + 2) / 153\n    let m i64 = 0\n    if mp < 10\n        m = mp + 3\n    else\n        m = mp - 9\n    if m <= 2\n        y = y + 1\n    y"
+     "tokens": 206,
+     "source": "fn year_from_days z i64 -> i64\n    z = z + 719468\n    let era = 0\n    if z >= 0\n        era = z / 146097\n    else\n        era = (z - 146096) / 146097\n    let doe = z - era * 146097\n    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365\n    let y = yoe + era * 400\n    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)\n    let mp = (5 * doy + 2) / 153\n    let m = 0\n    if mp < 10\n        m = mp + 3\n    else\n        m = mp - 9\n    if m <= 2\n        y = y + 1\n    y"
     },
     "C": {
      "tokens": 181,
@@ -3659,8 +3659,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 116,
-     "source": "fn zeller_dow y i64 m i64 d i64 -> i64\n    if m < 3\n        m = m + 12\n        y = y - 1\n    let k i64 = y % 100\n    let j i64 = y / 100\n    let h i64 = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7\n    (h + 6) % 7"
+     "tokens": 110,
+     "source": "fn zeller_dow y i64 m i64 d i64 -> i64\n    if m < 3\n        m = m + 12\n        y = y - 1\n    let k = y % 100\n    let j = y / 100\n    let h = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7\n    (h + 6) % 7"
     },
     "C": {
      "tokens": 121,
@@ -3690,8 +3690,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn add_checksum_mod256 a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total % 256"
+     "tokens": 47,
+     "source": "fn add_checksum_mod256 a array<i64> n i64 -> i64\n    let total = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total % 256"
     },
     "C": {
      "tokens": 59,
@@ -3721,8 +3721,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 91,
-     "source": "fn adler32_small a array<i64> n i64 -> i64\n    let s1 i64 = 1\n    let s2 i64 = 0\n    for i from 0 to n - 1\n        s1 = (s1 + a[i]) % 65521\n        s2 = (s2 + s1) % 65521\n    s2 * 65536 + s1"
+     "tokens": 87,
+     "source": "fn adler32_small a array<i64> n i64 -> i64\n    let s1 = 1\n    let s2 = 0\n    for i from 0 to n - 1\n        s1 = (s1 + a[i]) % 65521\n        s2 = (s2 + s1) % 65521\n    s2 * 65536 + s1"
     },
     "C": {
      "tokens": 101,
@@ -3814,8 +3814,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn count_set_bits x i64 -> i64\n    let count i64 = 0\n    while x > 0\n        count += x % 2\n        x = x / 2\n    count"
+     "tokens": 43,
+     "source": "fn count_set_bits x i64 -> i64\n    let count = 0\n    while x > 0\n        count += x % 2\n        x = x / 2\n    count"
     },
     "C": {
      "tokens": 51,
@@ -3845,8 +3845,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 68,
-     "source": "fn crc8_simple a array<i64> n i64 -> i64\n    let crc i64 = 0\n    for i from 0 to n - 1\n        crc = (crc + a[i]) % 256\n        crc = crc * 2 % 256 + crc / 128\n    crc"
+     "tokens": 66,
+     "source": "fn crc8_simple a array<i64> n i64 -> i64\n    let crc = 0\n    for i from 0 to n - 1\n        crc = (crc + a[i]) % 256\n        crc = crc * 2 % 256 + crc / 128\n    crc"
     },
     "C": {
      "tokens": 84,
@@ -3876,8 +3876,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn digit_product x i64 -> i64\n    if x < 0\n        x = 0 - x\n    if x == 0\n        return 0\n    let p i64 = 1\n    while x > 0\n        p = p * (x % 10)\n        x = x / 10\n    p"
+     "tokens": 70,
+     "source": "fn digit_product x i64 -> i64\n    if x < 0\n        x = -x\n    if x == 0\n        return 0\n    let p = 1\n    while x > 0\n        p = p * (x % 10)\n        x = x / 10\n    p"
     },
     "C": {
      "tokens": 78,
@@ -3907,8 +3907,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 87,
-     "source": "fn fletcher16 a array<i64> n i64 -> i64\n    let sum1 i64 = 0\n    let sum2 i64 = 0\n    for i from 0 to n - 1\n        sum1 = (sum1 + a[i]) % 255\n        sum2 = (sum2 + sum1) % 255\n    sum2 * 256 + sum1"
+     "tokens": 83,
+     "source": "fn fletcher16 a array<i64> n i64 -> i64\n    let sum1 = 0\n    let sum2 = 0\n    for i from 0 to n - 1\n        sum1 = (sum1 + a[i]) % 255\n        sum2 = (sum2 + sum1) % 255\n    sum2 * 256 + sum1"
     },
     "C": {
      "tokens": 97,
@@ -3938,8 +3938,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 58,
-     "source": "fn hex_digit_value c i64 -> i64\n    if c >= 48 and c <= 57\n        return c - 48\n    if c >= 97 and c <= 102\n        return c - 97 + 10\n    0 - 1"
+     "tokens": 55,
+     "source": "fn hex_digit_value c i64 -> i64\n    if c >= 48 and c <= 57\n        return c - 48\n    if c >= 97 and c <= 102\n        return c - 97 + 10\n    -1"
     },
     "C": {
      "tokens": 59,
@@ -3969,8 +3969,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 110,
-     "source": "fn luhn_from_array a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = a[n - 1 - i]\n        if i % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
+     "tokens": 106,
+     "source": "fn luhn_from_array a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        let d = a[n - 1 - i]\n        if i % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 122,
@@ -4031,8 +4031,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 47,
-     "source": "fn parity_bit a array<i64> n i64 -> i64\n    let ones i64 = 0\n    for i from 0 to n - 1\n        ones += a[i]\n    ones % 2"
+     "tokens": 45,
+     "source": "fn parity_bit a array<i64> n i64 -> i64\n    let ones = 0\n    for i from 0 to n - 1\n        ones += a[i]\n    ones % 2"
     },
     "C": {
      "tokens": 57,
@@ -4093,8 +4093,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 44,
-     "source": "fn sum_bytes a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total"
+     "tokens": 42,
+     "source": "fn sum_bytes a array<i64> n i64 -> i64\n    let total = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total"
     },
     "C": {
      "tokens": 54,
@@ -4124,8 +4124,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn to_binary_length x i64 -> i64\n    if x == 0\n        return 1\n    let len i64 = 0\n    while x > 0\n        len += 1\n        x = x / 2\n    len"
+     "tokens": 53,
+     "source": "fn to_binary_length x i64 -> i64\n    if x == 0\n        return 1\n    let len = 0\n    while x > 0\n        len += 1\n        x = x / 2\n    len"
     },
     "C": {
      "tokens": 58,
@@ -4279,8 +4279,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn compound_interest principal i64 rate_bp i64 years i64 -> i64\n    let amount i64 = principal\n    for y from 1 to years\n        amount = amount + amount * rate_bp / 10000\n    amount"
+     "tokens": 48,
+     "source": "fn compound_interest principal i64 rate_bp i64 years i64 -> i64\n    let amount = principal\n    for y from 1 to years\n        amount = amount + amount * rate_bp / 10000\n    amount"
     },
     "C": {
      "tokens": 69,
@@ -4310,8 +4310,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 62,
-     "source": "fn future_value_years principal i64 rate_bp i64 years i64 -> i64\n    let amount i64 = principal\n    let y i64 = 0\n    while y < years\n        amount += amount * rate_bp / 10000\n        y += 1\n    amount"
+     "tokens": 58,
+     "source": "fn future_value_years principal i64 rate_bp i64 years i64 -> i64\n    let amount = principal\n    let y = 0\n    while y < years\n        amount += amount * rate_bp / 10000\n        y += 1\n    amount"
     },
     "C": {
      "tokens": 71,
@@ -4651,8 +4651,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 124,
-     "source": "fn blackjack_value cards array<i64> n i64 -> i64\n    let sum i64 = 0\n    let aces i64 = 0\n    for i from 0 to n - 1\n        let c i64 = cards[i]\n        if c == 1\n            aces += 1\n            sum += 11\n        elif c >= 10\n            sum += 10\n        else\n            sum += c\n    while sum > 21 and aces > 0\n        sum -= 10\n        aces -= 1\n    sum"
+     "tokens": 118,
+     "source": "fn blackjack_value cards array<i64> n i64 -> i64\n    let sum = 0\n    let aces = 0\n    for i from 0 to n - 1\n        let c = cards[i]\n        if c == 1\n            aces += 1\n            sum += 11\n        elif c >= 10\n            sum += 10\n        else\n            sum += c\n    while sum > 21 and aces > 0\n        sum -= 10\n        aces -= 1\n    sum"
     },
     "C": {
      "tokens": 129,
@@ -4744,8 +4744,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn count_value a array<i64> n i64 v i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] == v\n            count += 1\n    count"
+     "tokens": 53,
+     "source": "fn count_value a array<i64> n i64 v i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == v\n            count += 1\n    count"
     },
     "C": {
      "tokens": 64,
@@ -4775,8 +4775,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 37,
-     "source": "fn damage_calc atk i64 def i64 -> i64\n    let d i64 = atk - def\n    if d < 1\n        return 1\n    d"
+     "tokens": 35,
+     "source": "fn damage_calc atk i64 def i64 -> i64\n    let d = atk - def\n    if d < 1\n        return 1\n    d"
     },
     "C": {
      "tokens": 39,
@@ -4837,8 +4837,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 44,
-     "source": "fn dice_sum rolls array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += rolls[i]\n    sum"
+     "tokens": 42,
+     "source": "fn dice_sum rolls array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += rolls[i]\n    sum"
     },
     "C": {
      "tokens": 55,
@@ -4868,8 +4868,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn grid_move_valid x i64 y i64 dx i64 dy i64 w i64 h i64 -> i64\n    let nx i64 = x + dx\n    let ny i64 = y + dy\n    if nx >= 0 and nx < w and ny >= 0 and ny < h\n        return 1\n    0"
+     "tokens": 70,
+     "source": "fn grid_move_valid x i64 y i64 dx i64 dy i64 w i64 h i64 -> i64\n    let nx = x + dx\n    let ny = y + dy\n    if nx >= 0 and nx < w and ny >= 0 and ny < h\n        return 1\n    0"
     },
     "C": {
      "tokens": 82,
@@ -4899,8 +4899,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn high_card a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+     "tokens": 51,
+     "source": "fn high_card a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
     },
     "C": {
      "tokens": 63,
@@ -4992,8 +4992,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn level_from_xp xp i64 -> i64\n    let level i64 = 0\n    while xp_for_level(level + 1) <= xp\n        level += 1\n    level"
+     "tokens": 40,
+     "source": "fn level_from_xp xp i64 -> i64\n    let level = 0\n    while xp_for_level(level + 1) <= xp\n        level += 1\n    level"
     },
     "C": {
      "tokens": 43,
@@ -5054,8 +5054,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn pair_count a array<i64> n i64 -> i64\n    let count i64 = 0\n    let i i64 = 0\n    while i < n\n        let j i64 = i\n        while j < n and a[j] == a[i]\n            j += 1\n        count += (j - i) / 2\n        i = j\n    count"
+     "tokens": 79,
+     "source": "fn pair_count a array<i64> n i64 -> i64\n    let count = 0\n    let i = 0\n    while i < n\n        let j = i\n        while j < n and a[j] == a[i]\n            j += 1\n        count += (j - i) / 2\n        i = j\n    count"
     },
     "C": {
      "tokens": 88,
@@ -5147,8 +5147,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 253,
-     "source": "fn tic_tac_toe_winner board array<i64> -> i64\n    let w i64 = 0\n    w = line_winner(board, 0, 1, 2)\n    if w != 0\n        return w\n    w = line_winner(board, 3, 4, 5)\n    if w != 0\n        return w\n    w = line_winner(board, 6, 7, 8)\n    if w != 0\n        return w\n    w = line_winner(board, 0, 3, 6)\n    if w != 0\n        return w\n    w = line_winner(board, 1, 4, 7)\n    if w != 0\n        return w\n    w = line_winner(board, 2, 5, 8)\n    if w != 0\n        return w\n    w = line_winner(board, 0, 4, 8)\n    if w != 0\n        return w\n    w = line_winner(board, 2, 4, 6)\n    if w != 0\n        return w\n    0"
+     "tokens": 251,
+     "source": "fn tic_tac_toe_winner board array<i64> -> i64\n    let w = 0\n    w = line_winner(board, 0, 1, 2)\n    if w != 0\n        return w\n    w = line_winner(board, 3, 4, 5)\n    if w != 0\n        return w\n    w = line_winner(board, 6, 7, 8)\n    if w != 0\n        return w\n    w = line_winner(board, 0, 3, 6)\n    if w != 0\n        return w\n    w = line_winner(board, 1, 4, 7)\n    if w != 0\n        return w\n    w = line_winner(board, 2, 5, 8)\n    if w != 0\n        return w\n    w = line_winner(board, 0, 4, 8)\n    if w != 0\n        return w\n    w = line_winner(board, 2, 4, 6)\n    if w != 0\n        return w\n    0"
     },
     "C": {
      "tokens": 206,
@@ -5178,8 +5178,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 39,
-     "source": "fn xp_for_level lvl i64 -> i64\n    let total i64 = 0\n    for i from 1 to lvl\n        total += i * 100\n    total"
+     "tokens": 37,
+     "source": "fn xp_for_level lvl i64 -> i64\n    let total = 0\n    for i from 1 to lvl\n        total += i * 100\n    total"
     },
     "C": {
      "tokens": 50,
@@ -5209,8 +5209,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return 0 - n\n    n"
+     "tokens": 24,
+     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return -n\n    n"
     },
     "C": {
      "tokens": 27,
@@ -5290,8 +5290,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 43,
-     "source": "fn dist_sq a Point b Point -> i64\n    let dx i64 = a.x - b.x\n    let dy i64 = a.y - b.y\n    dx * dx + dy * dy"
+     "tokens": 39,
+     "source": "fn dist_sq a Point b Point -> i64\n    let dx = a.x - b.x\n    let dy = a.y - b.y\n    dx * dx + dy * dy"
     },
     "C": {
      "tokens": 47,
@@ -5487,8 +5487,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 71,
-     "source": "fn on_segment_x a Point b Point px i64 -> i64\n    let lo i64 = a.x\n    let hi i64 = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    if px >= lo and px <= hi\n        1\n    else\n        0"
+     "tokens": 67,
+     "source": "fn on_segment_x a Point b Point px i64 -> i64\n    let lo = a.x\n    let hi = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    if px >= lo and px <= hi\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 73,
@@ -5704,8 +5704,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 77,
-     "source": "fn common_neighbors_count g array<i64> n i64 a i64 b i64 -> i64\n    let count i64 = 0\n    for k from 0 to n - 1\n        if g[a * n + k] == 1\n            if g[b * n + k] == 1\n                count += 1\n    count"
+     "tokens": 75,
+     "source": "fn common_neighbors_count g array<i64> n i64 a i64 b i64 -> i64\n    let count = 0\n    for k from 0 to n - 1\n        if g[a * n + k] == 1\n            if g[b * n + k] == 1\n                count += 1\n    count"
     }
    },
    "present": 1
@@ -5715,8 +5715,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 572,
-     "source": "fn connected_components_count g array<i64> n i64 -> i64\n    let visited array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let queue array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let components i64 = 0\n    for s from 0 to n - 1\n        if visited[s] == 0\n            components += 1\n            let head i64 = 0\n            let tail i64 = 0\n            visited[s] = 1\n            queue[0] = s\n            tail = 1\n            while head < tail\n                let v i64 = queue[head]\n                head += 1\n                for c from 0 to n - 1\n                    if g[v * n + c] == 1\n                        if visited[c] == 0\n                            visited[c] = 1\n                            queue[tail] = c\n                            tail += 1\n    components"
+     "tokens": 564,
+     "source": "fn connected_components_count g array<i64> n i64 -> i64\n    let visited array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let queue array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let components = 0\n    for s from 0 to n - 1\n        if visited[s] == 0\n            components += 1\n            let head = 0\n            let tail = 0\n            visited[s] = 1\n            queue[0] = s\n            tail = 1\n            while head < tail\n                let v = queue[head]\n                head += 1\n                for c from 0 to n - 1\n                    if g[v * n + c] == 1\n                        if visited[c] == 0\n                            visited[c] = 1\n                            queue[tail] = c\n                            tail += 1\n    components"
     }
    },
    "present": 1
@@ -5726,8 +5726,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 60,
-     "source": "fn count_isolated_vertices g array<i64> n i64 -> i64\n    let count i64 = 0\n    for v from 0 to n - 1\n        if total_degree(g, n, v) == 0\n            count += 1\n    count"
+     "tokens": 58,
+     "source": "fn count_isolated_vertices g array<i64> n i64 -> i64\n    let count = 0\n    for v from 0 to n - 1\n        if total_degree(g, n, v) == 0\n            count += 1\n    count"
     }
    },
    "present": 1
@@ -5737,8 +5737,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn count_leaves g array<i64> n i64 -> i64\n    let count i64 = 0\n    for v from 0 to n - 1\n        if out_degree(g, n, v) == 1\n            count += 1\n    count"
+     "tokens": 57,
+     "source": "fn count_leaves g array<i64> n i64 -> i64\n    let count = 0\n    for v from 0 to n - 1\n        if out_degree(g, n, v) == 1\n            count += 1\n    count"
     }
    },
    "present": 1
@@ -5748,8 +5748,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn count_self_loops g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        count += g[i * n + i]\n    count"
+     "tokens": 48,
+     "source": "fn count_self_loops g array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        count += g[i * n + i]\n    count"
     }
    },
    "present": 1
@@ -5759,8 +5759,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 112,
-     "source": "fn count_triangles g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            for k from j + 1 to n - 1\n                if g[i * n + j] == 1\n                    if g[j * n + k] == 1\n                        if g[i * n + k] == 1\n                            count += 1\n    count"
+     "tokens": 110,
+     "source": "fn count_triangles g array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            for k from j + 1 to n - 1\n                if g[i * n + j] == 1\n                    if g[j * n + k] == 1\n                        if g[i * n + k] == 1\n                            count += 1\n    count"
     }
    },
    "present": 1
@@ -5770,8 +5770,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn edge_count_directed g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n * n - 1\n        count += g[i]\n    count"
+     "tokens": 46,
+     "source": "fn edge_count_directed g array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n * n - 1\n        count += g[i]\n    count"
     }
    },
    "present": 1
@@ -5781,8 +5781,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn edge_count_undirected g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            if g[i * n + j] == 1\n                count += 1\n    count"
+     "tokens": 72,
+     "source": "fn edge_count_undirected g array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            if g[i * n + j] == 1\n                count += 1\n    count"
     }
    },
    "present": 1
@@ -5803,8 +5803,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn in_degree g array<i64> n i64 v i64 -> i64\n    let sum i64 = 0\n    for r from 0 to n - 1\n        sum += g[r * n + v]\n    sum"
+     "tokens": 49,
+     "source": "fn in_degree g array<i64> n i64 v i64 -> i64\n    let sum = 0\n    for r from 0 to n - 1\n        sum += g[r * n + v]\n    sum"
     }
    },
    "present": 1
@@ -5825,8 +5825,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 65,
-     "source": "fn is_regular g array<i64> n i64 -> i64\n    let d0 i64 = out_degree(g, n, 0)\n    for v from 1 to n - 1\n        if out_degree(g, n, v) != d0\n            return 0\n    1"
+     "tokens": 63,
+     "source": "fn is_regular g array<i64> n i64 -> i64\n    let d0 = out_degree(g, n, 0)\n    for v from 1 to n - 1\n        if out_degree(g, n, v) != d0\n            return 0\n    1"
     }
    },
    "present": 1
@@ -5847,8 +5847,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 90,
-     "source": "fn max_degree_vertex g array<i64> n i64 -> i64\n    let best_v i64 = 0\n    let best_d i64 = out_degree(g, n, 0)\n    for v from 1 to n - 1\n        let d i64 = out_degree(g, n, v)\n        if d > best_d\n            best_d = d\n            best_v = v\n    best_v"
+     "tokens": 84,
+     "source": "fn max_degree_vertex g array<i64> n i64 -> i64\n    let best_v = 0\n    let best_d = out_degree(g, n, 0)\n    for v from 1 to n - 1\n        let d = out_degree(g, n, v)\n        if d > best_d\n            best_d = d\n            best_v = v\n    best_v"
     }
    },
    "present": 1
@@ -5858,8 +5858,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn out_degree g array<i64> n i64 v i64 -> i64\n    let sum i64 = 0\n    for c from 0 to n - 1\n        sum += g[v * n + c]\n    sum"
+     "tokens": 49,
+     "source": "fn out_degree g array<i64> n i64 v i64 -> i64\n    let sum = 0\n    for c from 0 to n - 1\n        sum += g[v * n + c]\n    sum"
     }
    },
    "present": 1
@@ -5880,8 +5880,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 555,
-     "source": "fn reachable_count_bfs g array<i64> n i64 start i64 -> i64\n    let visited array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let queue array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let head i64 = 0\n    let tail i64 = 0\n    visited[start] = 1\n    queue[tail] = start\n    tail += 1\n    let count i64 = 0\n    while head < tail\n        let v i64 = queue[head]\n        head += 1\n        count += 1\n        for c from 0 to n - 1\n            if g[v * n + c] == 1\n                if visited[c] == 0\n                    visited[c] = 1\n                    queue[tail] = c\n                    tail += 1\n    count"
+     "tokens": 547,
+     "source": "fn reachable_count_bfs g array<i64> n i64 start i64 -> i64\n    let visited array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let queue array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let head = 0\n    let tail = 0\n    visited[start] = 1\n    queue[tail] = start\n    tail += 1\n    let count = 0\n    while head < tail\n        let v = queue[head]\n        head += 1\n        count += 1\n        for c from 0 to n - 1\n            if g[v * n + c] == 1\n                if visited[c] == 0\n                    visited[c] = 1\n                    queue[tail] = c\n                    tail += 1\n    count"
     }
    },
    "present": 1
@@ -5902,8 +5902,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 92,
-     "source": "fn digit_hash x i64 -> i64\n    if x < 0\n        x = 0 - x\n    if x == 0\n        return 0\n    let m i64 = 1000000007\n    let h i64 = 7\n    while x > 0\n        h = (h * 31 + x % 10) % m\n        x = x / 10\n    h"
+     "tokens": 86,
+     "source": "fn digit_hash x i64 -> i64\n    if x < 0\n        x = -x\n    if x == 0\n        return 0\n    let m = 1000000007\n    let h = 7\n    while x > 0\n        h = (h * 31 + x % 10) % m\n        x = x / 10\n    h"
     },
     "C": {
      "tokens": 92,
@@ -5933,8 +5933,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 68,
-     "source": "fn djb2_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 5381\n    for i from 0 to n - 1\n        h = (h * 33 + a[i]) % m\n    h"
+     "tokens": 64,
+     "source": "fn djb2_hash a array<i64> n i64 -> i64\n    let m = 1000000007\n    let h = 5381\n    for i from 0 to n - 1\n        h = (h * 33 + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 74,
@@ -5995,8 +5995,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn fnv1a_arithmetic a array<i64> n i64 -> i64\n    let m i64 = 100000007\n    let prime i64 = 16777619\n    let h i64 = 2166136261 % m\n    for i from 0 to n - 1\n        h = (h + a[i]) * prime % m\n    h"
+     "tokens": 77,
+     "source": "fn fnv1a_arithmetic a array<i64> n i64 -> i64\n    let m = 100000007\n    let prime = 16777619\n    let h = 2166136261 % m\n    for i from 0 to n - 1\n        h = (h + a[i]) * prime % m\n    h"
     },
     "C": {
      "tokens": 91,
@@ -6026,8 +6026,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn length_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    if n <= 0\n        return 0\n    (n * 2654435761 + a[0]) % m"
+     "tokens": 53,
+     "source": "fn length_hash a array<i64> n i64 -> i64\n    let m = 1000000007\n    if n <= 0\n        return 0\n    (n * 2654435761 + a[0]) % m"
     },
     "C": {
      "tokens": 62,
@@ -6088,8 +6088,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn mod_sum_hash a array<i64> n i64 m i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h + a[i]) % m\n    h"
+     "tokens": 52,
+     "source": "fn mod_sum_hash a array<i64> n i64 m i64 -> i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 66,
@@ -6119,8 +6119,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 37,
-     "source": "fn pair_hash a i64 b i64 -> i64\n    let s i64 = a + b\n    s * (s + 1) / 2 + b"
+     "tokens": 35,
+     "source": "fn pair_hash a i64 b i64 -> i64\n    let s = a + b\n    s * (s + 1) / 2 + b"
     },
     "C": {
      "tokens": 43,
@@ -6150,8 +6150,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 109,
-     "source": "fn pearson_like a array<i64> n i64 -> i64\n    let t array<i64> = [7, 3, 11, 15, 0, 9, 5, 13, 1, 14, 6, 10, 2, 12, 4, 8]\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = t[(h + a[i]) % 16]\n    h"
+     "tokens": 107,
+     "source": "fn pearson_like a array<i64> n i64 -> i64\n    let t array<i64> = [7, 3, 11, 15, 0, 9, 5, 13, 1, 14, 6, 10, 2, 12, 4, 8]\n    let h = 0\n    for i from 0 to n - 1\n        h = t[(h + a[i]) % 16]\n    h"
     },
     "C": {
      "tokens": 121,
@@ -6181,8 +6181,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 58,
-     "source": "fn poly_hash a array<i64> n i64 base i64 modulus i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h * base + a[i]) % modulus\n    h"
+     "tokens": 56,
+     "source": "fn poly_hash a array<i64> n i64 base i64 modulus i64 -> i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h * base + a[i]) % modulus\n    h"
     },
     "C": {
      "tokens": 72,
@@ -6212,8 +6212,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn product_hash a array<i64> n i64 m i64 -> i64\n    let h i64 = 1\n    for i from 0 to n - 1\n        h = h * (a[i] + 1) % m\n    h"
+     "tokens": 55,
+     "source": "fn product_hash a array<i64> n i64 m i64 -> i64\n    let h = 1\n    for i from 0 to n - 1\n        h = h * (a[i] + 1) % m\n    h"
     },
     "C": {
      "tokens": 70,
@@ -6243,8 +6243,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn rolling_hash a array<i64> n i64 modulus i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h * 256 + a[i]) % modulus\n    h"
+     "tokens": 54,
+     "source": "fn rolling_hash a array<i64> n i64 modulus i64 -> i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h * 256 + a[i]) % modulus\n    h"
     },
     "C": {
      "tokens": 68,
@@ -6274,8 +6274,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 95,
-     "source": "fn rotate_hash a array<i64> n i64 -> i64\n    let m i64 = 1073741824\n    let half i64 = 536870912\n    let h i64 = 0\n    for i from 0 to n - 1\n        let carry i64 = h / half\n        h = h * 2 % m + carry\n        h = (h + a[i]) % m\n    h"
+     "tokens": 87,
+     "source": "fn rotate_hash a array<i64> n i64 -> i64\n    let m = 1073741824\n    let half = 536870912\n    let h = 0\n    for i from 0 to n - 1\n        let carry = h / half\n        h = h * 2 % m + carry\n        h = (h + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 103,
@@ -6305,8 +6305,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 69,
-     "source": "fn sdbm_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (a[i] + h * 65599) % m\n    h"
+     "tokens": 65,
+     "source": "fn sdbm_hash a array<i64> n i64 -> i64\n    let m = 1000000007\n    let h = 0\n    for i from 0 to n - 1\n        h = (a[i] + h * 65599) % m\n    h"
     },
     "C": {
      "tokens": 75,
@@ -6336,8 +6336,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 44,
-     "source": "fn sum_hash a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total"
+     "tokens": 42,
+     "source": "fn sum_hash a array<i64> n i64 -> i64\n    let total = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total"
     },
     "C": {
      "tokens": 54,
@@ -6367,8 +6367,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn weighted_pos_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h + (i + 1) * a[i]) % m\n    h"
+     "tokens": 66,
+     "source": "fn weighted_pos_hash a array<i64> n i64 -> i64\n    let m = 1000000007\n    let h = 0\n    for i from 0 to n - 1\n        h = (h + (i + 1) * a[i]) % m\n    h"
     },
     "C": {
      "tokens": 76,
@@ -6398,8 +6398,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn xor_free_checksum a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total % 256"
+     "tokens": 46,
+     "source": "fn xor_free_checksum a array<i64> n i64 -> i64\n    let total = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total % 256"
     },
     "C": {
      "tokens": 58,
@@ -6429,8 +6429,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn col_sum m array<i64> n i64 c i64 -> i64\n    let sum i64 = 0\n    for r from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
+     "tokens": 49,
+     "source": "fn col_sum m array<i64> n i64 c i64 -> i64\n    let sum = 0\n    for r from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
     },
     "C": {
      "tokens": 63,
@@ -6460,8 +6460,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn col_sum_max m array<i64> n i64 -> i64\n    let best i64 = col_sum(m, n, 0)\n    for c from 1 to n - 1\n        let s i64 = col_sum(m, n, c)\n        if s > best\n            best = s\n    best"
+     "tokens": 66,
+     "source": "fn col_sum_max m array<i64> n i64 -> i64\n    let best = col_sum(m, n, 0)\n    for c from 1 to n - 1\n        let s = col_sum(m, n, c)\n        if s > best\n            best = s\n    best"
     },
     "C": {
      "tokens": 84,
@@ -6529,8 +6529,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn diagonal_sum_anti m array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += m[i * n + (n - 1 - i)]\n    sum"
+     "tokens": 54,
+     "source": "fn diagonal_sum_anti m array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += m[i * n + (n - 1 - i)]\n    sum"
     },
     "C": {
      "tokens": 66,
@@ -6560,8 +6560,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn diagonal_sum_main m array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += m[i * n + i]\n    sum"
+     "tokens": 47,
+     "source": "fn diagonal_sum_main m array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += m[i * n + i]\n    sum"
     },
     "C": {
      "tokens": 59,
@@ -6672,8 +6672,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn matrix_add_checksum a array<i64> b array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n * n - 1\n        sum += i * (a[i] + b[i])\n    sum"
+     "tokens": 57,
+     "source": "fn matrix_add_checksum a array<i64> b array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n * n - 1\n        sum += i * (a[i] + b[i])\n    sum"
     },
     "C": {
      "tokens": 71,
@@ -6703,8 +6703,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn matrix_mul_trace a array<i64> b array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        for k from 0 to n - 1\n            sum += a[i * n + k] * b[k * n + i]\n    sum"
+     "tokens": 72,
+     "source": "fn matrix_mul_trace a array<i64> b array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        for k from 0 to n - 1\n            sum += a[i * n + k] * b[k * n + i]\n    sum"
     },
     "C": {
      "tokens": 92,
@@ -6772,8 +6772,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn row_sum m array<i64> n i64 r i64 -> i64\n    let sum i64 = 0\n    for c from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
+     "tokens": 49,
+     "source": "fn row_sum m array<i64> n i64 r i64 -> i64\n    let sum = 0\n    for c from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
     },
     "C": {
      "tokens": 63,
@@ -6803,8 +6803,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn row_sum_max m array<i64> n i64 -> i64\n    let best i64 = row_sum(m, n, 0)\n    for r from 1 to n - 1\n        let s i64 = row_sum(m, n, r)\n        if s > best\n            best = s\n    best"
+     "tokens": 66,
+     "source": "fn row_sum_max m array<i64> n i64 -> i64\n    let best = row_sum(m, n, 0)\n    for r from 1 to n - 1\n        let s = row_sum(m, n, r)\n        if s > best\n            best = s\n    best"
     },
     "C": {
      "tokens": 84,
@@ -6834,8 +6834,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn scalar_mul_checksum m array<i64> n i64 k i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n * n - 1\n        sum += i * (m[i] * k)\n    sum"
+     "tokens": 54,
+     "source": "fn scalar_mul_checksum m array<i64> n i64 k i64 -> i64\n    let sum = 0\n    for i from 0 to n * n - 1\n        sum += i * (m[i] * k)\n    sum"
     },
     "C": {
      "tokens": 68,
@@ -6896,8 +6896,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn transpose_checksum m array<i64> n i64 -> i64\n    let sum i64 = 0\n    for r from 0 to n - 1\n        for c from 0 to n - 1\n            let i i64 = r * n + c\n            sum += i * m[c * n + r]\n    sum"
+     "tokens": 70,
+     "source": "fn transpose_checksum m array<i64> n i64 -> i64\n    let sum = 0\n    for r from 0 to n - 1\n        for c from 0 to n - 1\n            let i = r * n + c\n            sum += i * m[c * n + r]\n    sum"
     },
     "C": {
      "tokens": 93,
@@ -6927,8 +6927,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn count_coprime_below n i64 -> i64\n    let count i64 = 0\n    for k from 1 to n - 1\n        if gcd(k, n) == 1\n            count += 1\n    count"
+     "tokens": 52,
+     "source": "fn count_coprime_below n i64 -> i64\n    let count = 0\n    for k from 1 to n - 1\n        if gcd(k, n) == 1\n            count += 1\n    count"
     },
     "C": {
      "tokens": 67,
@@ -6958,8 +6958,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn count_trailing_zeros_factorial n i64 -> i64\n    let count i64 = 0\n    let power i64 = 5\n    while power <= n\n        count += n / power\n        power = power * 5\n    count"
+     "tokens": 52,
+     "source": "fn count_trailing_zeros_factorial n i64 -> i64\n    let count = 0\n    let power = 5\n    while power <= n\n        count += n / power\n        power = power * 5\n    count"
     },
     "C": {
      "tokens": 62,
@@ -6989,8 +6989,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn digital_root n i64 -> i64\n    while n >= 10\n        let s i64 = 0\n        while n > 0\n            s += n % 10\n            n = n / 10\n        n = s\n    n"
+     "tokens": 54,
+     "source": "fn digital_root n i64 -> i64\n    while n >= 10\n        let s = 0\n        while n > 0\n            s += n % 10\n            n = n / 10\n        n = s\n    n"
     },
     "C": {
      "tokens": 68,
@@ -7020,8 +7020,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 73,
-     "source": "fn divisor_count n i64 -> i64\n    let count i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if n % d == 0\n            count += 1\n            if d != n / d\n                count += 1\n        d += 1\n    count"
+     "tokens": 69,
+     "source": "fn divisor_count n i64 -> i64\n    let count = 0\n    let d = 1\n    while d * d <= n\n        if n % d == 0\n            count += 1\n            if d != n / d\n                count += 1\n        d += 1\n    count"
     },
     "C": {
      "tokens": 74,
@@ -7051,8 +7051,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 79,
-     "source": "fn divisor_sum n i64 -> i64\n    let sum i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if n % d == 0\n            sum += d\n            let other i64 = n / d\n            if other != d\n                sum += other\n        d += 1\n    sum"
+     "tokens": 73,
+     "source": "fn divisor_sum n i64 -> i64\n    let sum = 0\n    let d = 1\n    while d * d <= n\n        if n % d == 0\n            sum += d\n            let other = n / d\n            if other != d\n                sum += other\n        d += 1\n    sum"
     },
     "C": {
      "tokens": 86,
@@ -7082,8 +7082,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 95,
-     "source": "fn euler_totient n i64 -> i64\n    let result i64 = n\n    let p i64 = 2\n    while p * p <= n\n        if n % p == 0\n            while n % p == 0\n                n = n / p\n            result = result - result / p\n        p += 1\n    if n > 1\n        result = result - result / n\n    result"
+     "tokens": 91,
+     "source": "fn euler_totient n i64 -> i64\n    let result = n\n    let p = 2\n    while p * p <= n\n        if n % p == 0\n            while n % p == 0\n                n = n / p\n            result = result - result / p\n        p += 1\n    if n > 1\n        result = result - result / n\n    result"
     },
     "C": {
      "tokens": 102,
@@ -7113,8 +7113,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 41,
-     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t i64 = a % b\n        a = b\n        b = t\n    a"
+     "tokens": 39,
+     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t = a % b\n        a = b\n        b = t\n    a"
     },
     "C": {
      "tokens": 51,
@@ -7144,8 +7144,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 40,
-     "source": "fn gcd_of_range lo i64 hi i64 -> i64\n    let g i64 = lo\n    for k from lo to hi\n        g = gcd(g, k)\n    g"
+     "tokens": 38,
+     "source": "fn gcd_of_range lo i64 hi i64 -> i64\n    let g = lo\n    for k from lo to hi\n        g = gcd(g, k)\n    g"
     },
     "C": {
      "tokens": 57,
@@ -7175,8 +7175,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 40,
-     "source": "fn int_pow base i64 exp i64 -> i64\n    let r i64 = 1\n    for i from 1 to exp\n        r = r * base\n    r"
+     "tokens": 38,
+     "source": "fn int_pow base i64 exp i64 -> i64\n    let r = 1\n    for i from 1 to exp\n        r = r * base\n    r"
     },
     "C": {
      "tokens": 57,
@@ -7206,8 +7206,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 81,
-     "source": "fn is_armstrong n i64 -> i64\n    let d i64 = num_digits(n)\n    let sum i64 = 0\n    let m i64 = n\n    while m > 0\n        sum += int_pow(m % 10, d)\n        m = m / 10\n    if sum == n\n        1\n    else\n        0"
+     "tokens": 75,
+     "source": "fn is_armstrong n i64 -> i64\n    let d = num_digits(n)\n    let sum = 0\n    let m = n\n    while m > 0\n        sum += int_pow(m % 10, d)\n        m = m / 10\n    if sum == n\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 83,
@@ -7237,8 +7237,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 66,
-     "source": "fn is_happy n i64 -> i64\n    let steps i64 = 0\n    while n != 1 and steps < 1000\n        n = sum_of_squares_digits(n)\n        steps += 1\n    if n == 1\n        1\n    else\n        0"
+     "tokens": 64,
+     "source": "fn is_happy n i64 -> i64\n    let steps = 0\n    while n != 1 and steps < 1000\n        n = sum_of_squares_digits(n)\n        steps += 1\n    if n == 1\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 65,
@@ -7361,8 +7361,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn num_digits n i64 -> i64\n    if n == 0\n        return 1\n    let c i64 = 0\n    while n > 0\n        c += 1\n        n = n / 10\n    c"
+     "tokens": 52,
+     "source": "fn num_digits n i64 -> i64\n    if n == 0\n        return 1\n    let c = 0\n    while n > 0\n        c += 1\n        n = n / 10\n    c"
     },
     "C": {
      "tokens": 59,
@@ -7392,8 +7392,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn reverse_digits n i64 -> i64\n    let r i64 = 0\n    while n > 0\n        r = r * 10 + n % 10\n        n = n / 10\n    r"
+     "tokens": 47,
+     "source": "fn reverse_digits n i64 -> i64\n    let r = 0\n    while n > 0\n        r = r * 10 + n % 10\n        n = n / 10\n    r"
     },
     "C": {
      "tokens": 57,
@@ -7423,8 +7423,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn sum_of_squares_digits n i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        let d i64 = n % 10\n        sum += d * d\n        n = n / 10\n    sum"
+     "tokens": 53,
+     "source": "fn sum_of_squares_digits n i64 -> i64\n    let sum = 0\n    while n > 0\n        let d = n % 10\n        sum += d * d\n        n = n / 10\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -7454,8 +7454,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 47,
-     "source": "fn to_base_digit_sum n i64 b i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        sum += n % b\n        n = n / b\n    sum"
+     "tokens": 45,
+     "source": "fn to_base_digit_sum n i64 b i64 -> i64\n    let sum = 0\n    while n > 0\n        sum += n % b\n        n = n / b\n    sum"
     },
     "C": {
      "tokens": 57,
@@ -7485,8 +7485,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 121,
-     "source": "fn bin_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0 - 1\n    let val i64 = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == '0'\n            val = val * 2\n        elif c == '1'\n            val = val * 2 + 1\n        else\n            return 0 - 1\n    val"
+     "tokens": 111,
+     "source": "fn bin_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return -1\n    let val = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == '0'\n            val = val * 2\n        elif c == '1'\n            val = val * 2 + 1\n        else\n            return -1\n    val"
     },
     "C": {
      "tokens": 110,
@@ -7516,8 +7516,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 96,
-     "source": "fn char_class_count s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n            count += 1\n    count"
+     "tokens": 90,
+     "source": "fn char_class_count s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n            count += 1\n    count"
     },
     "C": {
      "tokens": 70,
@@ -7547,8 +7547,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn count_digits_in s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code >= 48 and code <= 57\n            count += 1\n    count"
+     "tokens": 77,
+     "source": "fn count_digits_in s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if code >= 48 and code <= 57\n            count += 1\n    count"
     },
     "C": {
      "tokens": 56,
@@ -7578,8 +7578,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 82,
-     "source": "fn count_fields s string sep string -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
+     "tokens": 78,
+     "source": "fn count_fields s string sep string -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
     },
     "C": {
      "tokens": 60,
@@ -7609,8 +7609,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 89,
-     "source": "fn count_lines s string -> i64\n    let nl char = char_from(10)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    let count i64 = 1\n    for i from 0 to n - 1\n        if get(cs, i) == nl\n            count += 1\n    count"
+     "tokens": 85,
+     "source": "fn count_lines s string -> i64\n    let nl char = char_from(10)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    let count = 1\n    for i from 0 to n - 1\n        if get(cs, i) == nl\n            count += 1\n    count"
     },
     "C": {
      "tokens": 71,
@@ -7640,8 +7640,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 99,
-     "source": "fn count_words s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    let in_word i64 = 0\n    for i from 0 to n - 1\n        if is_whitespace(get(cs, i))\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            count += 1\n    count"
+     "tokens": 93,
+     "source": "fn count_words s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    let in_word = 0\n    for i from 0 to n - 1\n        if is_whitespace(get(cs, i))\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            count += 1\n    count"
     },
     "C": {
      "tokens": 99,
@@ -7671,8 +7671,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 215,
-     "source": "fn eval_rpn tokens array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let stack array<i64> = tokens\n    let sp i64 = 0\n    for i from 0 to n - 1\n        let t i64 = tokens[i]\n        if t >= 0\n            stack[sp] = t\n            sp += 1\n        else\n            let a i64 = stack[sp - 2]\n            let b i64 = stack[sp - 1]\n            sp -= 2\n            let op i64 = 0 - t\n            let r i64 = 0\n            if op == 1\n                r = a + b\n            elif op == 2\n                r = a - b\n            elif op == 3\n                r = a * b\n            else\n                r = a / b\n            stack[sp] = r\n            sp += 1\n    stack[0]"
+     "tokens": 201,
+     "source": "fn eval_rpn tokens array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let stack array<i64> = tokens\n    let sp = 0\n    for i from 0 to n - 1\n        let t = tokens[i]\n        if t >= 0\n            stack[sp] = t\n            sp += 1\n        else\n            let a = stack[sp - 2]\n            let b = stack[sp - 1]\n            sp -= 2\n            let op = -t\n            let r = 0\n            if op == 1\n                r = a + b\n            elif op == 2\n                r = a - b\n            elif op == 3\n                r = a * b\n            else\n                r = a / b\n            stack[sp] = r\n            sp += 1\n    stack[0]"
     },
     "C": {
      "tokens": 200,
@@ -7702,8 +7702,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 183,
-     "source": "fn hex_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0 - 1\n    let val i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        let d i64 = 0 - 1\n        if code >= 48 and code <= 57\n            d = code - 48\n        elif code >= 97 and code <= 102\n            d = code - 97 + 10\n        elif code >= 65 and code <= 70\n            d = code - 65 + 10\n        if d < 0\n            return 0 - 1\n        val = val * 16 + d\n    val"
+     "tokens": 166,
+     "source": "fn hex_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return -1\n    let val = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        let d = -1\n        if code >= 48 and code <= 57\n            d = code - 48\n        elif code >= 97 and code <= 102\n            d = code - 97 + 10\n        elif code >= 65 and code <= 70\n            d = code - 65 + 10\n        if d < 0\n            return -1\n        val = val * 16 + d\n    val"
     },
     "C": {
      "tokens": 173,
@@ -7733,8 +7733,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 122,
-     "source": "fn is_valid_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    let start i64 = 0\n    if get(cs, 0) == '-'\n        start = 1\n    if start == n\n        return 0\n    for i from start to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n    1"
+     "tokens": 116,
+     "source": "fn is_valid_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    let start = 0\n    if get(cs, 0) == '-'\n        start = 1\n    if start == n\n        return 0\n    for i from start to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n    1"
     },
     "C": {
      "tokens": 104,
@@ -7764,8 +7764,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 144,
-     "source": "fn nth_field_len s string sep string nth i64 -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let field i64 = 0\n    let cur i64 = 0\n    let result i64 = 0 - 1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
+     "tokens": 133,
+     "source": "fn nth_field_len s string sep string nth i64 -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let field = 0\n    let cur = 0\n    let result = -1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
     },
     "C": {
      "tokens": 117,
@@ -7795,8 +7795,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 173,
-     "source": "fn parse_int_signed s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    let neg i64 = 0\n    let start i64 = 0\n    if get(cs, 0) == '-'\n        neg = 1\n        start = 1\n    if start == n\n        return 0\n    let val i64 = 0\n    for i from start to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n        val = val * 10 + (code - 48)\n    if neg == 1\n        return 0 - val\n    val"
+     "tokens": 161,
+     "source": "fn parse_int_signed s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    let neg = 0\n    let start = 0\n    if get(cs, 0) == '-'\n        neg = 1\n        start = 1\n    if start == n\n        return 0\n    let val = 0\n    for i from start to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n        val = val * 10 + (code - 48)\n    if neg == 1\n        return -val\n    val"
     },
     "C": {
      "tokens": 153,
@@ -7826,8 +7826,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 113,
-     "source": "fn parse_uint s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0 - 1\n    let val i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0 - 1\n        val = val * 10 + (code - 48)\n    val"
+     "tokens": 101,
+     "source": "fn parse_uint s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return -1\n    let val = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return -1\n        val = val * 10 + (code - 48)\n    val"
     },
     "C": {
      "tokens": 107,
@@ -7857,8 +7857,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 123,
-     "source": "fn roman_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let total i64 = 0\n    for i from 0 to n - 1\n        let v i64 = roman_value(get(cs, i))\n        let subtract i64 = 0\n        if i < n - 1\n            if v < roman_value(get(cs, i + 1))\n                subtract = 1\n        if subtract == 1\n            total -= v\n        else\n            total += v\n    total"
+     "tokens": 115,
+     "source": "fn roman_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let total = 0\n    for i from 0 to n - 1\n        let v = roman_value(get(cs, i))\n        let subtract = 0\n        if i < n - 1\n            if v < roman_value(get(cs, i + 1))\n                subtract = 1\n        if subtract == 1\n            total -= v\n        else\n            total += v\n    total"
     },
     "C": {
      "tokens": 91,
@@ -7919,8 +7919,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 71,
-     "source": "fn strip_leading_zeros_len s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let i i64 = 0\n    while i < n\n        if get(cs, i) != '0'\n            break\n        i += 1\n    n - i"
+     "tokens": 67,
+     "source": "fn strip_leading_zeros_len s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let i = 0\n    while i < n\n        if get(cs, i) != '0'\n            break\n        i += 1\n    n - i"
     },
     "C": {
      "tokens": 54,
@@ -8570,8 +8570,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn http_status_class code i64 -> i64\n    let cls i64 = code / 100\n    if cls >= 2 and cls <= 5\n        return cls\n    return 0"
+     "tokens": 40,
+     "source": "fn http_status_class code i64 -> i64\n    let cls = code / 100\n    if cls >= 2 and cls <= 5\n        return cls\n    return 0"
     },
     "C": {
      "tokens": 43,
@@ -8802,8 +8802,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 62,
-     "source": "fn priority_from_code code i64 -> i64\n    let cls i64 = http_status_class(code)\n    if cls == 5\n        return 0\n    if cls == 4\n        return 1\n    if cls == 3\n        return 2\n    return 3"
+     "tokens": 60,
+     "source": "fn priority_from_code code i64 -> i64\n    let cls = http_status_class(code)\n    if cls == 5\n        return 0\n    if cls == 4\n        return 1\n    if cls == 3\n        return 2\n    return 3"
     },
     "C": {
      "tokens": 65,
@@ -8895,8 +8895,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn retry_backoff_ms attempt i64 base i64 -> i64\n    let d i64 = base\n    let i i64 = 0\n    while i < attempt\n        d = d * 2\n        if d >= 60000\n            return 60000\n        i = i + 1\n    if d > 60000\n        return 60000\n    return d"
+     "tokens": 81,
+     "source": "fn retry_backoff_ms attempt i64 base i64 -> i64\n    let d = base\n    let i = 0\n    while i < attempt\n        d = d * 2\n        if d >= 60000\n            return 60000\n        i = i + 1\n    if d > 60000\n        return 60000\n    return d"
     },
     "C": {
      "tokens": 81,
@@ -9081,8 +9081,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 102,
-     "source": "fn bubble_sort_swaps a array<i64> n i64 -> i64\n    let swaps i64 = 0\n    for i from 0 to n - 1\n        for j from 0 to n - 2 - i\n            if a[j] > a[j + 1]\n                let t i64 = a[j]\n                a[j] = a[j + 1]\n                a[j + 1] = t\n                swaps += 1\n    swaps"
+     "tokens": 98,
+     "source": "fn bubble_sort_swaps a array<i64> n i64 -> i64\n    let swaps = 0\n    for i from 0 to n - 1\n        for j from 0 to n - 2 - i\n            if a[j] > a[j + 1]\n                let t = a[j]\n                a[j] = a[j + 1]\n                a[j + 1] = t\n                swaps += 1\n    swaps"
     },
     "C": {
      "tokens": 152,
@@ -9112,8 +9112,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn checksum a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += i * a[i]\n    sum"
+     "tokens": 43,
+     "source": "fn checksum a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += i * a[i]\n    sum"
     },
     "C": {
      "tokens": 56,
@@ -9143,8 +9143,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 215,
-     "source": "fn cocktail_sort_checksum a array<i64> n i64 -> i64\n    let lo i64 = 0\n    let hi i64 = n - 1\n    let swapped bool = true\n    while swapped\n        swapped = false\n        for i from lo to hi - 1\n            if a[i] > a[i + 1]\n                let t i64 = a[i]\n                a[i] = a[i + 1]\n                a[i + 1] = t\n                swapped = true\n        if not swapped\n            return checksum(a, n)\n        hi -= 1\n        swapped = false\n        let k i64 = hi - 1\n        while k >= lo\n            if a[k] > a[k + 1]\n                let u i64 = a[k]\n                a[k] = a[k + 1]\n                a[k + 1] = u\n                swapped = true\n            k -= 1\n        lo += 1\n    checksum(a, n)"
+     "tokens": 205,
+     "source": "fn cocktail_sort_checksum a array<i64> n i64 -> i64\n    let lo = 0\n    let hi = n - 1\n    let swapped bool = true\n    while swapped\n        swapped = false\n        for i from lo to hi - 1\n            if a[i] > a[i + 1]\n                let t = a[i]\n                a[i] = a[i + 1]\n                a[i + 1] = t\n                swapped = true\n        if not swapped\n            return checksum(a, n)\n        hi -= 1\n        swapped = false\n        let k = hi - 1\n        while k >= lo\n            if a[k] > a[k + 1]\n                let u = a[k]\n                a[k] = a[k + 1]\n                a[k + 1] = u\n                swapped = true\n            k -= 1\n        lo += 1\n    checksum(a, n)"
     },
     "C": {
      "tokens": 250,
@@ -9174,8 +9174,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 135,
-     "source": "fn comb_sort_checksum a array<i64> n i64 -> i64\n    let gap i64 = n\n    let swapped bool = true\n    while gap > 1 or swapped\n        gap = (gap * 10) / 13\n        if gap < 1\n            gap = 1\n        swapped = false\n        for i from 0 to n - 1 - gap\n            if a[i] > a[i + gap]\n                let t i64 = a[i]\n                a[i] = a[i + gap]\n                a[i + gap] = t\n                swapped = true\n    checksum(a, n)"
+     "tokens": 131,
+     "source": "fn comb_sort_checksum a array<i64> n i64 -> i64\n    let gap = n\n    let swapped bool = true\n    while gap > 1 or swapped\n        gap = (gap * 10) / 13\n        if gap < 1\n            gap = 1\n        swapped = false\n        for i from 0 to n - 1 - gap\n            if a[i] > a[i + gap]\n                let t = a[i]\n                a[i] = a[i + gap]\n                a[i + gap] = t\n                swapped = true\n    checksum(a, n)"
     },
     "C": {
      "tokens": 183,
@@ -9205,8 +9205,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 68,
-     "source": "fn count_inversions a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            if a[i] > a[j]\n                count += 1\n    count"
+     "tokens": 66,
+     "source": "fn count_inversions a array<i64> n i64 -> i64\n    let count = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            if a[i] > a[j]\n                count += 1\n    count"
     },
     "C": {
      "tokens": 80,
@@ -9236,8 +9236,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 69,
-     "source": "fn count_sorted_runs a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let runs i64 = 1\n    for i from 1 to n - 1\n        if a[i] < a[i - 1]\n            runs += 1\n    runs"
+     "tokens": 67,
+     "source": "fn count_sorted_runs a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let runs = 1\n    for i from 1 to n - 1\n        if a[i] < a[i - 1]\n            runs += 1\n    runs"
     },
     "C": {
      "tokens": 76,
@@ -9267,8 +9267,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 100,
-     "source": "fn gnome_sort_checksum a array<i64> n i64 -> i64\n    let i i64 = 0\n    while i < n\n        if i == 0 or a[i] >= a[i - 1]\n            i += 1\n        else\n            let t i64 = a[i]\n            a[i] = a[i - 1]\n            a[i - 1] = t\n            i -= 1\n    checksum(a, n)"
+     "tokens": 96,
+     "source": "fn gnome_sort_checksum a array<i64> n i64 -> i64\n    let i = 0\n    while i < n\n        if i == 0 or a[i] >= a[i - 1]\n            i += 1\n        else\n            let t = a[i]\n            a[i] = a[i - 1]\n            a[i - 1] = t\n            i -= 1\n    checksum(a, n)"
     },
     "C": {
      "tokens": 135,
@@ -9298,8 +9298,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 94,
-     "source": "fn insertion_sort_checksum a array<i64> n i64 -> i64\n    for i from 1 to n - 1\n        let key i64 = a[i]\n        let j i64 = i - 1\n        while j >= 0 and a[j] > key\n            a[j + 1] = a[j]\n            j -= 1\n        a[j + 1] = key\n    checksum(a, n)"
+     "tokens": 90,
+     "source": "fn insertion_sort_checksum a array<i64> n i64 -> i64\n    for i from 1 to n - 1\n        let key = a[i]\n        let j = i - 1\n        while j >= 0 and a[j] > key\n            a[j + 1] = a[j]\n            j -= 1\n        a[j + 1] = key\n    checksum(a, n)"
     },
     "C": {
      "tokens": 133,
@@ -9329,8 +9329,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 90,
-     "source": "fn insertion_sorted a array<i64> n i64 -> array<i64>\n    for i from 1 to n - 1\n        let key i64 = a[i]\n        let j i64 = i - 1\n        while j >= 0 and a[j] > key\n            a[j + 1] = a[j]\n            j -= 1\n        a[j + 1] = key\n    a"
+     "tokens": 86,
+     "source": "fn insertion_sorted a array<i64> n i64 -> array<i64>\n    for i from 1 to n - 1\n        let key = a[i]\n        let j = i - 1\n        while j >= 0 and a[j] > key\n            a[j + 1] = a[j]\n            j -= 1\n        a[j + 1] = key\n    a"
     }
    },
    "present": 1
@@ -9382,8 +9382,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 101,
-     "source": "fn kth_smallest a array<i64> n i64 k i64 -> i64\n    for i from 0 to k - 1\n        let mi i64 = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        let t i64 = a[i]\n        a[i] = a[mi]\n        a[mi] = t\n    a[k - 1]"
+     "tokens": 97,
+     "source": "fn kth_smallest a array<i64> n i64 k i64 -> i64\n    for i from 0 to k - 1\n        let mi = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        let t = a[i]\n        a[i] = a[mi]\n        a[mi] = t\n    a[k - 1]"
     },
     "C": {
      "tokens": 150,
@@ -9413,8 +9413,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 80,
-     "source": "fn max_gap_sorted a array<i64> n i64 -> i64\n    let s array<i64> = insertion_sorted(a, n)\n    let g i64 = 0\n    for i from 1 to n - 1\n        let d i64 = s[i] - s[i - 1]\n        if d > g\n            g = d\n    g"
+     "tokens": 76,
+     "source": "fn max_gap_sorted a array<i64> n i64 -> i64\n    let s array<i64> = insertion_sorted(a, n)\n    let g = 0\n    for i from 1 to n - 1\n        let d = s[i] - s[i - 1]\n        if d > g\n            g = d\n    g"
     },
     "C": {
      "tokens": 120,
@@ -9444,8 +9444,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 171,
-     "source": "fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i i64 = 0\n    let j i64 = 0\n    let k i64 = 0\n    let sum i64 = 0\n    while i < la and j < lb\n        if a[i] <= b[j]\n            sum += k * a[i]\n            i += 1\n        else\n            sum += k * b[j]\n            j += 1\n        k += 1\n    while i < la\n        sum += k * a[i]\n        i += 1\n        k += 1\n    while j < lb\n        sum += k * b[j]\n        j += 1\n        k += 1\n    sum"
+     "tokens": 163,
+     "source": "fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i = 0\n    let j = 0\n    let k = 0\n    let sum = 0\n    while i < la and j < lb\n        if a[i] <= b[j]\n            sum += k * a[i]\n            i += 1\n        else\n            sum += k * b[j]\n            j += 1\n        k += 1\n    while i < la\n        sum += k * a[i]\n        i += 1\n        k += 1\n    while j < lb\n        sum += k * b[j]\n        j += 1\n        k += 1\n    sum"
     },
     "C": {
      "tokens": 152,
@@ -9475,8 +9475,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 115,
-     "source": "fn min_swaps_selection a array<i64> n i64 -> i64\n    let swaps i64 = 0\n    for i from 0 to n - 2\n        let mi i64 = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        if mi != i\n            let t i64 = a[i]\n            a[i] = a[mi]\n            a[mi] = t\n            swaps += 1\n    swaps"
+     "tokens": 109,
+     "source": "fn min_swaps_selection a array<i64> n i64 -> i64\n    let swaps = 0\n    for i from 0 to n - 2\n        let mi = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        if mi != i\n            let t = a[i]\n            a[i] = a[mi]\n            a[mi] = t\n            swaps += 1\n    swaps"
     },
     "C": {
      "tokens": 167,
@@ -9506,8 +9506,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 121,
-     "source": "fn partition_lomuto_index a array<i64> n i64 -> i64\n    let pivot i64 = a[n - 1]\n    let i i64 = 0\n    for j from 0 to n - 2\n        if a[j] < pivot\n            let t i64 = a[i]\n            a[i] = a[j]\n            a[j] = t\n            i += 1\n    let u i64 = a[i]\n    a[i] = a[n - 1]\n    a[n - 1] = u\n    i"
+     "tokens": 113,
+     "source": "fn partition_lomuto_index a array<i64> n i64 -> i64\n    let pivot = a[n - 1]\n    let i = 0\n    for j from 0 to n - 2\n        if a[j] < pivot\n            let t = a[i]\n            a[i] = a[j]\n            a[j] = t\n            i += 1\n    let u = a[i]\n    a[i] = a[n - 1]\n    a[n - 1] = u\n    i"
     },
     "C": {
      "tokens": 160,
@@ -9537,8 +9537,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn reverse_checksum a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += i * a[n - 1 - i]\n    sum"
+     "tokens": 49,
+     "source": "fn reverse_checksum a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += i * a[n - 1 - i]\n    sum"
     },
     "C": {
      "tokens": 61,
@@ -9568,8 +9568,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 107,
-     "source": "fn second_smallest a array<i64> n i64 -> i64\n    let first i64 = a[0]\n    let second i64 = a[1]\n    if second < first\n        let t i64 = first\n        first = second\n        second = t\n    for i from 2 to n - 1\n        if a[i] < first\n            second = first\n            first = a[i]\n        elif a[i] < second\n            second = a[i]\n    second"
+     "tokens": 101,
+     "source": "fn second_smallest a array<i64> n i64 -> i64\n    let first = a[0]\n    let second = a[1]\n    if second < first\n        let t = first\n        first = second\n        second = t\n    for i from 2 to n - 1\n        if a[i] < first\n            second = first\n            first = a[i]\n        elif a[i] < second\n            second = a[i]\n    second"
     },
     "C": {
      "tokens": 119,
@@ -9599,8 +9599,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 97,
-     "source": "fn selection_sort_checksum a array<i64> n i64 -> i64\n    for i from 0 to n - 2\n        let mi i64 = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        let t i64 = a[i]\n        a[i] = a[mi]\n        a[mi] = t\n    checksum(a, n)"
+     "tokens": 93,
+     "source": "fn selection_sort_checksum a array<i64> n i64 -> i64\n    for i from 0 to n - 2\n        let mi = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        let t = a[i]\n        a[i] = a[mi]\n        a[mi] = t\n    checksum(a, n)"
     },
     "C": {
      "tokens": 147,
@@ -9641,8 +9641,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 119,
-     "source": "fn sort_evens_first_checksum a array<i64> n i64 -> i64\n    let s array<i64> = insertion_sorted(a, n)\n    let sum i64 = 0\n    let k i64 = 0\n    for i from 0 to n - 1\n        if is_even(s[i])\n            sum += k * s[i]\n            k += 1\n    for i from 0 to n - 1\n        if not is_even(s[i])\n            sum += k * s[i]\n            k += 1\n    sum"
+     "tokens": 115,
+     "source": "fn sort_evens_first_checksum a array<i64> n i64 -> i64\n    let s array<i64> = insertion_sorted(a, n)\n    let sum = 0\n    let k = 0\n    for i from 0 to n - 1\n        if is_even(s[i])\n            sum += k * s[i]\n            k += 1\n    for i from 0 to n - 1\n        if not is_even(s[i])\n            sum += k * s[i]\n            k += 1\n    sum"
     },
     "C": {
      "tokens": 162,
@@ -9734,8 +9734,8 @@
    "category": "state_machines",
    "langs": {
     "Lullaby": {
-     "tokens": 39,
-     "source": "fn dir_dx d Direction -> i64\n    match d\n        East -> 1\n        West -> 0 - 1\n        North -> 0\n        South -> 0"
+     "tokens": 36,
+     "source": "fn dir_dx d Direction -> i64\n    match d\n        East -> 1\n        West -> -1\n        North -> 0\n        South -> 0"
     },
     "C": {
      "tokens": 41,
@@ -9765,8 +9765,8 @@
    "category": "state_machines",
    "langs": {
     "Lullaby": {
-     "tokens": 40,
-     "source": "fn dir_dy d Direction -> i64\n    match d\n        North -> 1\n        South -> 0 - 1\n        East -> 0\n        West -> 0"
+     "tokens": 37,
+     "source": "fn dir_dy d Direction -> i64\n    match d\n        North -> 1\n        South -> -1\n        East -> 0\n        West -> 0"
     },
     "C": {
      "tokens": 42,
@@ -10210,8 +10210,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn abs_val x i64 -> i64\n    if x < 0\n        return 0 - x\n    x"
+     "tokens": 24,
+     "source": "fn abs_val x i64 -> i64\n    if x < 0\n        return -x\n    x"
     }
    },
    "present": 1
@@ -10221,8 +10221,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 66,
-     "source": "fn count_above_mean a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] > mean\n            count += 1\n    count"
+     "tokens": 62,
+     "source": "fn count_above_mean a array<i64> n i64 -> i64\n    let mean = mean_floor(a, n)\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] > mean\n            count += 1\n    count"
     },
     "C": {
      "tokens": 69,
@@ -10252,8 +10252,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn cumulative_max_last a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+     "tokens": 52,
+     "source": "fn cumulative_max_last a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
     },
     "C": {
      "tokens": 64,
@@ -10283,8 +10283,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn max_val a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+     "tokens": 51,
+     "source": "fn max_val a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
     },
     "C": {
      "tokens": 63,
@@ -10376,8 +10376,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn min_val a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] < m\n            m = a[i]\n    m"
+     "tokens": 51,
+     "source": "fn min_val a array<i64> n i64 -> i64\n    let m = a[0]\n    for i from 1 to n - 1\n        if a[i] < m\n            m = a[i]\n    m"
     },
     "C": {
      "tokens": 63,
@@ -10407,8 +10407,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 98,
-     "source": "fn mode_count_max a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best i64 = 1\n    let run i64 = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n    best"
+     "tokens": 94,
+     "source": "fn mode_count_max a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best = 1\n    let run = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n    best"
     },
     "C": {
      "tokens": 104,
@@ -10438,8 +10438,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 52,
-     "source": "fn product_mod a array<i64> n i64 m i64 -> i64\n    let prod i64 = 1\n    for i from 0 to n - 1\n        prod = prod * a[i] % m\n    prod"
+     "tokens": 50,
+     "source": "fn product_mod a array<i64> n i64 m i64 -> i64\n    let prod = 1\n    for i from 0 to n - 1\n        prod = prod * a[i] % m\n    prod"
     },
     "C": {
      "tokens": 65,
@@ -10500,8 +10500,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 89,
-     "source": "fn running_max_sum a array<i64> n i64 -> i64\n    let best i64 = a[0]\n    let cur i64 = a[0]\n    for i from 1 to n - 1\n        if cur + a[i] > a[i]\n            cur = cur + a[i]\n        else\n            cur = a[i]\n        if cur > best\n            best = cur\n    best"
+     "tokens": 85,
+     "source": "fn running_max_sum a array<i64> n i64 -> i64\n    let best = a[0]\n    let cur = a[0]\n    for i from 1 to n - 1\n        if cur + a[i] > a[i]\n            cur = cur + a[i]\n        else\n            cur = a[i]\n        if cur > best\n            best = cur\n    best"
     },
     "C": {
      "tokens": 94,
@@ -10531,8 +10531,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 62,
-     "source": "fn sum_abs_dev a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += abs_val(a[i] - mean)\n    sum"
+     "tokens": 58,
+     "source": "fn sum_abs_dev a array<i64> n i64 -> i64\n    let mean = mean_floor(a, n)\n    let sum = 0\n    for i from 0 to n - 1\n        sum += abs_val(a[i] - mean)\n    sum"
     },
     "C": {
      "tokens": 86,
@@ -10562,8 +10562,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 43,
-     "source": "fn total a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i]\n    sum"
+     "tokens": 41,
+     "source": "fn total a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i]\n    sum"
     },
     "C": {
      "tokens": 53,
@@ -10593,8 +10593,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 69,
-     "source": "fn variance_scaled a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = a[i] - mean\n        sum += d * d\n    sum"
+     "tokens": 63,
+     "source": "fn variance_scaled a array<i64> n i64 -> i64\n    let mean = mean_floor(a, n)\n    let sum = 0\n    for i from 0 to n - 1\n        let d = a[i] - mean\n        sum += d * d\n    sum"
     },
     "C": {
      "tokens": 79,
@@ -10624,8 +10624,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn weighted_sum a array<i64> w array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i] * w[i]\n    sum"
+     "tokens": 51,
+     "source": "fn weighted_sum a array<i64> w array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i] * w[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -10655,8 +10655,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 66,
-     "source": "fn zscore_sign_count a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] > mean\n            count += 1\n    count"
+     "tokens": 62,
+     "source": "fn zscore_sign_count a array<i64> n i64 -> i64\n    let mean = mean_floor(a, n)\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] > mean\n            count += 1\n    count"
     },
     "C": {
      "tokens": 69,
@@ -10686,8 +10686,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 114,
-     "source": "fn common_char_count a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i i64 = 0\n    let j i64 = 0\n    let count i64 = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            count += 1\n            i += 1\n            j += 1\n        elif a[i] < b[j]\n            i += 1\n        else\n            j += 1\n    count"
+     "tokens": 108,
+     "source": "fn common_char_count a array<i64> la i64 b array<i64> lb i64 -> i64\n    let i = 0\n    let j = 0\n    let count = 0\n    while i < la and j < lb\n        if a[i] == b[j]\n            count += 1\n            i += 1\n            j += 1\n        elif a[i] < b[j]\n            i += 1\n        else\n            j += 1\n    count"
     },
     "C": {
      "tokens": 104,
@@ -10717,8 +10717,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn count_distinct_chars a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count i64 = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
+     "tokens": 68,
+     "source": "fn count_distinct_chars a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let count = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            count += 1\n    count"
     },
     "C": {
      "tokens": 77,
@@ -10748,8 +10748,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 138,
-     "source": "fn count_occurrences text array<i64> tn i64 pat array<i64> pn i64 -> i64\n    if pn == 0\n        return 0\n    let count i64 = 0\n    let i i64 = 0\n    while i <= tn - pn\n        let j i64 = 0\n        let ok i64 = 1\n        while j < pn\n            if text[i + j] != pat[j]\n                ok = 0\n                j = pn\n            else\n                j += 1\n        if ok == 1\n            count += 1\n        i += 1\n    count"
+     "tokens": 130,
+     "source": "fn count_occurrences text array<i64> tn i64 pat array<i64> pn i64 -> i64\n    if pn == 0\n        return 0\n    let count = 0\n    let i = 0\n    while i <= tn - pn\n        let j = 0\n        let ok = 1\n        while j < pn\n            if text[i + j] != pat[j]\n                ok = 0\n                j = pn\n            else\n                j += 1\n        if ok == 1\n            count += 1\n        i += 1\n    count"
     },
     "C": {
      "tokens": 136,
@@ -10779,8 +10779,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn count_transitions a array<i64> n i64 -> i64\n    let c i64 = 0\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            c += 1\n    c"
+     "tokens": 55,
+     "source": "fn count_transitions a array<i64> n i64 -> i64\n    let c = 0\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            c += 1\n    c"
     },
     "C": {
      "tokens": 64,
@@ -10810,8 +10810,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 366,
-     "source": "fn edit_distance a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    for j from 0 to lb\n        dp[j] = j\n    for i from 1 to la\n        let prev i64 = dp[0]\n        dp[0] = i\n        for j from 1 to lb\n            let tmp i64 = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev\n            else\n                let m i64 = dp[j - 1]\n                if dp[j] < m\n                    m = dp[j]\n                if prev < m\n                    m = prev\n                dp[j] = m + 1\n            prev = tmp\n    dp[lb]"
+     "tokens": 360,
+     "source": "fn edit_distance a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    for j from 0 to lb\n        dp[j] = j\n    for i from 1 to la\n        let prev = dp[0]\n        dp[0] = i\n        for j from 1 to lb\n            let tmp = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev\n            else\n                let m = dp[j - 1]\n                if dp[j] < m\n                    m = dp[j]\n                if prev < m\n                    m = prev\n                dp[j] = m + 1\n            prev = tmp\n    dp[lb]"
     },
     "C": {
      "tokens": 217,
@@ -10841,8 +10841,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 81,
-     "source": "fn first_unique_index a array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        let count i64 = 0\n        for j from 0 to n - 1\n            if a[j] == a[i]\n                count += 1\n        if count == 1\n            return i\n    0 - 1"
+     "tokens": 76,
+     "source": "fn first_unique_index a array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        let count = 0\n        for j from 0 to n - 1\n            if a[j] == a[i]\n                count += 1\n        if count == 1\n            return i\n    -1"
     },
     "C": {
      "tokens": 93,
@@ -10872,8 +10872,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn hamming_distance a array<i64> b array<i64> n i64 -> i64\n    let d i64 = 0\n    for i from 0 to n - 1\n        if a[i] != b[i]\n            d += 1\n    d"
+     "tokens": 57,
+     "source": "fn hamming_distance a array<i64> b array<i64> n i64 -> i64\n    let d = 0\n    for i from 0 to n - 1\n        if a[i] != b[i]\n            d += 1\n    d"
     },
     "C": {
      "tokens": 68,
@@ -10934,8 +10934,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 144,
-     "source": "fn is_rotation a array<i64> b array<i64> n i64 -> i64\n    if n == 0\n        return 1\n    let k i64 = 0\n    while k < n\n        let ok i64 = 1\n        let i i64 = 0\n        while i < n\n            let idx i64 = i + k\n            if idx >= n\n                idx = idx - n\n            if a[idx] != b[i]\n                ok = 0\n                i = n\n            else\n                i += 1\n        if ok == 1\n            return 1\n        k += 1\n    0"
+     "tokens": 136,
+     "source": "fn is_rotation a array<i64> b array<i64> n i64 -> i64\n    if n == 0\n        return 1\n    let k = 0\n    while k < n\n        let ok = 1\n        let i = 0\n        while i < n\n            let idx = i + k\n            if idx >= n\n                idx = idx - n\n            if a[idx] != b[i]\n                ok = 0\n                i = n\n            else\n                i += 1\n        if ok == 1\n            return 1\n        k += 1\n    0"
     },
     "C": {
      "tokens": 141,
@@ -10965,8 +10965,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 338,
-     "source": "fn lcs_length a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    for j from 0 to lb\n        dp[j] = 0\n    for i from 1 to la\n        let prev i64 = 0\n        for j from 1 to lb\n            let tmp i64 = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev + 1\n            else\n                if dp[j - 1] > dp[j]\n                    dp[j] = dp[j - 1]\n            prev = tmp\n    dp[lb]"
+     "tokens": 334,
+     "source": "fn lcs_length a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    for j from 0 to lb\n        dp[j] = 0\n    for i from 1 to la\n        let prev = 0\n        for j from 1 to lb\n            let tmp = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev + 1\n            else\n                if dp[j - 1] > dp[j]\n                    dp[j] = dp[j - 1]\n            prev = tmp\n    dp[lb]"
     },
     "C": {
      "tokens": 189,
@@ -10996,8 +10996,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 80,
-     "source": "fn longest_common_prefix_len a array<i64> la i64 b array<i64> lb i64 -> i64\n    let m i64 = la\n    if lb < m\n        m = lb\n    let i i64 = 0\n    while i < m\n        if a[i] != b[i]\n            return i\n        i += 1\n    i"
+     "tokens": 76,
+     "source": "fn longest_common_prefix_len a array<i64> la i64 b array<i64> lb i64 -> i64\n    let m = la\n    if lb < m\n        m = lb\n    let i = 0\n    while i < m\n        if a[i] != b[i]\n            return i\n        i += 1\n    i"
     },
     "C": {
      "tokens": 86,
@@ -11027,8 +11027,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 99,
-     "source": "fn longest_increasing_run a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best i64 = 1\n    let cur i64 = 1\n    for i from 1 to n - 1\n        if a[i] > a[i - 1]\n            cur += 1\n        else\n            cur = 1\n        if cur > best\n            best = cur\n    best"
+     "tokens": 95,
+     "source": "fn longest_increasing_run a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best = 1\n    let cur = 1\n    for i from 1 to n - 1\n        if a[i] > a[i - 1]\n            cur += 1\n        else\n            cur = 1\n        if cur > best\n            best = cur\n    best"
     },
     "C": {
      "tokens": 103,
@@ -11058,8 +11058,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 97,
-     "source": "fn longest_run a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best i64 = 1\n    let cur i64 = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            cur += 1\n        else\n            cur = 1\n        if cur > best\n            best = cur\n    best"
+     "tokens": 93,
+     "source": "fn longest_run a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best = 1\n    let cur = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            cur += 1\n        else\n            cur = 1\n        if cur > best\n            best = cur\n    best"
     },
     "C": {
      "tokens": 101,
@@ -11089,8 +11089,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 98,
-     "source": "fn max_char_frequency a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best i64 = 1\n    let cur i64 = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            cur += 1\n        else\n            cur = 1\n        if cur > best\n            best = cur\n    best"
+     "tokens": 94,
+     "source": "fn max_char_frequency a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best = 1\n    let cur = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            cur += 1\n        else\n            cur = 1\n        if cur > best\n            best = cur\n    best"
     },
     "C": {
      "tokens": 102,
@@ -11120,8 +11120,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn palindrome_check a array<i64> n i64 -> i64\n    let i i64 = 0\n    let j i64 = n - 1\n    while i < j\n        if a[i] != a[j]\n            return 0\n        i += 1\n        j -= 1\n    1"
+     "tokens": 66,
+     "source": "fn palindrome_check a array<i64> n i64 -> i64\n    let i = 0\n    let j = n - 1\n    while i < j\n        if a[i] != a[j]\n            return 0\n        i += 1\n        j -= 1\n    1"
     },
     "C": {
      "tokens": 69,
@@ -11151,8 +11151,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn reverse_equal a array<i64> n i64 -> i64\n    let i i64 = 0\n    let j i64 = n - 1\n    while i < j\n        if a[i] != a[j]\n            return 0\n        i += 1\n        j -= 1\n    1"
+     "tokens": 66,
+     "source": "fn reverse_equal a array<i64> n i64 -> i64\n    let i = 0\n    let j = n - 1\n    while i < j\n        if a[i] != a[j]\n            return 0\n        i += 1\n        j -= 1\n    1"
     },
     "C": {
      "tokens": 69,
@@ -11182,8 +11182,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 69,
-     "source": "fn run_length_pairs a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let pairs i64 = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            pairs += 1\n    pairs"
+     "tokens": 67,
+     "source": "fn run_length_pairs a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let pairs = 1\n    for i from 1 to n - 1\n        if a[i] != a[i - 1]\n            pairs += 1\n    pairs"
     },
     "C": {
      "tokens": 76,
@@ -11306,8 +11306,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 81,
-     "source": "fn count_char s string c string -> i64\n    let target char = get(chars(c), 0)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
+     "tokens": 77,
+     "source": "fn count_char s string c string -> i64\n    let target char = get(chars(c), 0)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
     },
     "C": {
      "tokens": 54,
@@ -11337,8 +11337,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 99,
-     "source": "fn count_vowels s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'\n            count += 1\n    count"
+     "tokens": 95,
+     "source": "fn count_vowels s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'\n            count += 1\n    count"
     },
     "C": {
      "tokens": 77,
@@ -11399,8 +11399,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 143,
-     "source": "fn initials name string -> string\n    let cs list<char> = chars(name)\n    let n i64 = len(cs)\n    let out string = \"\"\n    let in_word i64 = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            let code i64 = char_code(c)\n            if code >= 97 and code <= 122\n                out = out + to_string(char_from(code - 32))\n            else\n                out = out + to_string(c)\n    out"
+     "tokens": 137,
+     "source": "fn initials name string -> string\n    let cs list<char> = chars(name)\n    let n = len(cs)\n    let out string = \"\"\n    let in_word = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            let code = char_code(c)\n            if code >= 97 and code <= 122\n                out = out + to_string(char_from(code - 32))\n            else\n                out = out + to_string(c)\n    out"
     },
     "C": {
      "tokens": 138,
@@ -11430,8 +11430,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn is_blank s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    for i from 0 to n - 1\n        if not is_whitespace(get(cs, i))\n            return 0\n    1"
+     "tokens": 57,
+     "source": "fn is_blank s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    for i from 0 to n - 1\n        if not is_whitespace(get(cs, i))\n            return 0\n    1"
     },
     "C": {
      "tokens": 56,
@@ -11461,8 +11461,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn left_pad s string width i64 c string -> string\n    let pad i64 = width - len(s)\n    let out string = \"\"\n    for i from 1 to pad\n        out = out + c\n    out + s"
+     "tokens": 48,
+     "source": "fn left_pad s string width i64 c string -> string\n    let pad = width - len(s)\n    let out string = \"\"\n    for i from 1 to pad\n        out = out + c\n    out + s"
     },
     "C": {
      "tokens": 79,
@@ -11534,8 +11534,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 64,
-     "source": "fn reverse_str s string -> string\n    let cs list<char> = chars(s)\n    let out string = \"\"\n    let i i64 = len(cs) - 1\n    while i >= 0\n        out = out + to_string(get(cs, i))\n        i -= 1\n    out"
+     "tokens": 62,
+     "source": "fn reverse_str s string -> string\n    let cs list<char> = chars(s)\n    let out string = \"\"\n    let i = len(cs) - 1\n    while i >= 0\n        out = out + to_string(get(cs, i))\n        i -= 1\n    out"
     },
     "C": {
      "tokens": 59,
@@ -11596,8 +11596,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 106,
-     "source": "fn to_lower_ascii s string -> string\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let out string = \"\"\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        let code i64 = char_code(c)\n        if code >= 65 and code <= 90\n            out = out + to_string(char_from(code + 32))\n        else\n            out = out + to_string(c)\n    out"
+     "tokens": 102,
+     "source": "fn to_lower_ascii s string -> string\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let out string = \"\"\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        let code = char_code(c)\n        if code >= 65 and code <= 90\n            out = out + to_string(char_from(code + 32))\n        else\n            out = out + to_string(c)\n    out"
     },
     "C": {
      "tokens": 78,
@@ -11627,8 +11627,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 106,
-     "source": "fn to_upper_ascii s string -> string\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let out string = \"\"\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        let code i64 = char_code(c)\n        if code >= 97 and code <= 122\n            out = out + to_string(char_from(code - 32))\n        else\n            out = out + to_string(c)\n    out"
+     "tokens": 102,
+     "source": "fn to_upper_ascii s string -> string\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let out string = \"\"\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        let code = char_code(c)\n        if code >= 97 and code <= 122\n            out = out + to_string(char_from(code - 32))\n        else\n            out = out + to_string(c)\n    out"
     },
     "C": {
      "tokens": 78,
@@ -11689,8 +11689,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 106,
-     "source": "fn word_count s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    let in_word i64 = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            count += 1\n            in_word = 1\n    count"
+     "tokens": 100,
+     "source": "fn word_count s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    let in_word = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            count += 1\n            in_word = 1\n    count"
     },
     "C": {
      "tokens": 105,
@@ -12274,8 +12274,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn all_digits s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n    1"
+     "tokens": 81,
+     "source": "fn all_digits s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n    1"
     },
     "C": {
      "tokens": 77,
@@ -12305,8 +12305,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn checksum_mod10 digits array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += digits[i]\n    sum % 10"
+     "tokens": 46,
+     "source": "fn checksum_mod10 digits array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += digits[i]\n    sum % 10"
     },
     "C": {
      "tokens": 53,
@@ -12367,8 +12367,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 72,
-     "source": "fn even_parity bits array<i64> n i64 -> i64\n    let ones i64 = 0\n    for i from 0 to n - 1\n        if bits[i] == 1\n            ones += 1\n    if ones % 2 == 0\n        1\n    else\n        0"
+     "tokens": 70,
+     "source": "fn even_parity bits array<i64> n i64 -> i64\n    let ones = 0\n    for i from 0 to n - 1\n        if bits[i] == 1\n            ones += 1\n    if ones % 2 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 72,
@@ -12429,8 +12429,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 60,
-     "source": "fn is_ascii_alpha c string -> i64\n    let code i64 = char_code(get(chars(c), 0))\n    if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n        1\n    else\n        0"
+     "tokens": 58,
+     "source": "fn is_ascii_alpha c string -> i64\n    let code = char_code(get(chars(c), 0))\n    if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 58,
@@ -12460,8 +12460,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 47,
-     "source": "fn is_ascii_digit c string -> i64\n    let code i64 = char_code(get(chars(c), 0))\n    if code >= 48 and code <= 57\n        1\n    else\n        0"
+     "tokens": 45,
+     "source": "fn is_ascii_digit c string -> i64\n    let code = char_code(get(chars(c), 0))\n    if code >= 48 and code <= 57\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 38,
@@ -12491,8 +12491,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 144,
-     "source": "fn is_hex_string s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        let ok i64 = 0\n        if code >= 48 and code <= 57\n            ok = 1\n        if code >= 97 and code <= 102\n            ok = 1\n        if code >= 65 and code <= 70\n            ok = 1\n        if ok == 0\n            return 0\n    1"
+     "tokens": 138,
+     "source": "fn is_hex_string s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        let ok = 0\n        if code >= 48 and code <= 57\n            ok = 1\n        if code >= 97 and code <= 102\n            ok = 1\n        if code >= 65 and code <= 70\n            ok = 1\n        if ok == 0\n            return 0\n    1"
     },
     "C": {
      "tokens": 114,
@@ -12584,8 +12584,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 81,
-     "source": "fn is_valid_isbn10 digits array<i64> n i64 -> i64\n    if n != 10\n        return 0\n    let sum i64 = 0\n    for i from 0 to 9\n        sum += (10 - i) * digits[i]\n    if sum % 11 == 0\n        1\n    else\n        0"
+     "tokens": 79,
+     "source": "fn is_valid_isbn10 digits array<i64> n i64 -> i64\n    if n != 10\n        return 0\n    let sum = 0\n    for i from 0 to 9\n        sum += (10 - i) * digits[i]\n    if sum % 11 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 87,
@@ -12677,8 +12677,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 117,
-     "source": "fn luhn_check digits array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = digits[i]\n        let pos i64 = n - 1 - i\n        if pos % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
+     "tokens": 111,
+     "source": "fn luhn_check digits array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        let d = digits[i]\n        let pos = n - 1 - i\n        if pos % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 124,
@@ -12704,8 +12704,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 173,
-     "source": "fn password_score s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let score i64 = 0\n    if n >= 8\n        score += 1\n    let has_digit i64 = 0\n    let has_lower i64 = 0\n    let has_upper i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code >= 48 and code <= 57\n            has_digit = 1\n        elif code >= 97 and code <= 122\n            has_lower = 1\n        elif code >= 65 and code <= 90\n            has_upper = 1\n    score + has_digit + has_lower + has_upper"
+     "tokens": 161,
+     "source": "fn password_score s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let score = 0\n    if n >= 8\n        score += 1\n    let has_digit = 0\n    let has_lower = 0\n    let has_upper = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if code >= 48 and code <= 57\n            has_digit = 1\n        elif code >= 97 and code <= 122\n            has_lower = 1\n        elif code >= 65 and code <= 90\n            has_upper = 1\n    score + has_digit + has_lower + has_upper"
     },
     "C": {
      "tokens": 159,
@@ -13281,7 +13281,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 24183,
+  "Lullaby": 23350,
   "C": 26030,
   "C++": 26894,
   "Rust": 24867,
@@ -13290,7 +13290,7 @@
  },
  "categories": {
   "arrays": {
-   "Lullaby": 902,
+   "Lullaby": 864,
    "C": 1080,
    "C++": 1186,
    "Rust": 968,
@@ -13298,7 +13298,7 @@
    "JavaScript": 953
   },
   "bitwise": {
-   "Lullaby": 840,
+   "Lullaby": 808,
    "C": 954,
    "C++": 954,
    "Rust": 933,
@@ -13306,7 +13306,7 @@
    "JavaScript": 863
   },
   "business": {
-   "Lullaby": 672,
+   "Lullaby": 668,
    "C": 787,
    "C++": 787,
    "Rust": 823,
@@ -13314,7 +13314,7 @@
    "JavaScript": 705
   },
   "collections": {
-   "Lullaby": 1482,
+   "Lullaby": 1417,
    "C": 1536,
    "C++": 1738,
    "Rust": 1552,
@@ -13322,7 +13322,7 @@
    "JavaScript": 1241
   },
   "combinatorics": {
-   "Lullaby": 1205,
+   "Lullaby": 1151,
    "C": 1275,
    "C++": 1275,
    "Rust": 1200,
@@ -13330,7 +13330,7 @@
    "JavaScript": 1111
   },
   "data_records": {
-   "Lullaby": 526,
+   "Lullaby": 512,
    "C": 567,
    "C++": 600,
    "Rust": 500,
@@ -13338,7 +13338,7 @@
    "JavaScript": 416
   },
   "datetime": {
-   "Lullaby": 1055,
+   "Lullaby": 1019,
    "C": 1051,
    "C++": 1052,
    "Rust": 1056,
@@ -13346,7 +13346,7 @@
    "JavaScript": 968
   },
   "encoding": {
-   "Lullaby": 938,
+   "Lullaby": 907,
    "C": 1050,
    "C++": 1050,
    "Rust": 1025,
@@ -13354,7 +13354,7 @@
    "JavaScript": 982
   },
   "finance": {
-   "Lullaby": 410,
+   "Lullaby": 404,
    "C": 514,
    "C++": 514,
    "Rust": 519,
@@ -13362,7 +13362,7 @@
    "JavaScript": 456
   },
   "games": {
-   "Lullaby": 1144,
+   "Lullaby": 1114,
    "C": 1228,
    "C++": 1386,
    "Rust": 1238,
@@ -13370,7 +13370,7 @@
    "JavaScript": 1090
   },
   "geometry": {
-   "Lullaby": 586,
+   "Lullaby": 576,
    "C": 647,
    "C++": 727,
    "Rust": 632,
@@ -13386,7 +13386,7 @@
    "JavaScript": 0
   },
   "hashing": {
-   "Lullaby": 1077,
+   "Lullaby": 1027,
    "C": 1218,
    "C++": 1218,
    "Rust": 1170,
@@ -13394,7 +13394,7 @@
    "JavaScript": 1004
   },
   "matrix": {
-   "Lullaby": 784,
+   "Lullaby": 758,
    "C": 959,
    "C++": 1105,
    "Rust": 862,
@@ -13402,7 +13402,7 @@
    "JavaScript": 813
   },
   "number_theory": {
-   "Lullaby": 974,
+   "Lullaby": 928,
    "C": 1098,
    "C++": 1098,
    "Rust": 1089,
@@ -13410,7 +13410,7 @@
    "JavaScript": 1027
   },
   "parsing": {
-   "Lullaby": 1811,
+   "Lullaby": 1691,
    "C": 1553,
    "C++": 1424,
    "Rust": 1439,
@@ -13426,7 +13426,7 @@
    "JavaScript": 383
   },
   "services": {
-   "Lullaby": 716,
+   "Lullaby": 708,
    "C": 775,
    "C++": 870,
    "Rust": 736,
@@ -13434,7 +13434,7 @@
    "JavaScript": 602
   },
   "sorting": {
-   "Lullaby": 1875,
+   "Lullaby": 1797,
    "C": 2429,
    "C++": 2288,
    "Rust": 2053,
@@ -13442,7 +13442,7 @@
    "JavaScript": 1840
   },
   "state_machines": {
-   "Lullaby": 655,
+   "Lullaby": 649,
    "C": 701,
    "C++": 890,
    "Rust": 761,
@@ -13450,7 +13450,7 @@
    "JavaScript": 791
   },
   "statistics": {
-   "Lullaby": 837,
+   "Lullaby": 799,
    "C": 969,
    "C++": 1097,
    "Rust": 884,
@@ -13458,7 +13458,7 @@
    "JavaScript": 765
   },
   "string_algos": {
-   "Lullaby": 2065,
+   "Lullaby": 1996,
    "C": 1836,
    "C++": 2064,
    "Rust": 1836,
@@ -13466,7 +13466,7 @@
    "JavaScript": 1528
   },
   "text_processing": {
-   "Lullaby": 989,
+   "Lullaby": 955,
    "C": 1028,
    "C++": 863,
    "Rust": 584,
@@ -13482,7 +13482,7 @@
    "JavaScript": 319
   },
   "validation": {
-   "Lullaby": 1194,
+   "Lullaby": 1156,
    "C": 1131,
    "C++": 1067,
    "Rust": 1186,

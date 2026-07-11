@@ -6,12 +6,12 @@ struct Point
 
 fn abs_val n i64 -> i64
     if n < 0
-        return 0 - n
+        return -n
     n
 
 fn dist_sq a Point b Point -> i64
-    let dx i64 = a.x - b.x
-    let dy i64 = a.y - b.y
+    let dx = a.x - b.x
+    let dy = a.y - b.y
     dx * dx + dy * dy
 
 fn manhattan a Point b Point -> i64
@@ -39,8 +39,8 @@ fn collinear a Point b Point c Point -> i64
         0
 
 fn on_segment_x a Point b Point px i64 -> i64
-    let lo i64 = a.x
-    let hi i64 = b.x
+    let lo = a.x
+    let hi = b.x
     if hi < lo
         lo = b.x
         hi = a.x
@@ -102,4 +102,4 @@ fn main -> void
     println("midpoint_x=" + to_string(midpoint_x(a, c)))
     println("midpoint_y=" + to_string(midpoint_y(a, c)))
     println("taxicab_circle_points=" + to_string(taxicab_circle_points(3)))
-    println("quadrant=" + to_string(quadrant(0 - 2, 5)))
+    println("quadrant=" + to_string(quadrant(-2, 5)))

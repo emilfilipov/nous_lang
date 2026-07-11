@@ -3,13 +3,13 @@
 
 fn gcd a i64 b i64 -> i64
     while b != 0
-        let t i64 = a % b
+        let t = a % b
         a = b
         b = t
     a
 
 fn int_pow base i64 exp i64 -> i64
-    let r i64 = 1
+    let r = 1
     for i from 1 to exp
         r = r * base
     r
@@ -17,7 +17,7 @@ fn int_pow base i64 exp i64 -> i64
 fn num_digits n i64 -> i64
     if n == 0
         return 1
-    let c i64 = 0
+    let c = 0
     while n > 0
         c += 1
         n = n / 10
@@ -27,8 +27,8 @@ fn lcm a i64 b i64 -> i64
     a / gcd(a, b) * b
 
 fn divisor_count n i64 -> i64
-    let count i64 = 0
-    let d i64 = 1
+    let count = 0
+    let d = 1
     while d * d <= n
         if n % d == 0
             count += 1
@@ -38,12 +38,12 @@ fn divisor_count n i64 -> i64
     count
 
 fn divisor_sum n i64 -> i64
-    let sum i64 = 0
-    let d i64 = 1
+    let sum = 0
+    let d = 1
     while d * d <= n
         if n % d == 0
             sum += d
-            let other i64 = n / d
+            let other = n / d
             if other != d
                 sum += other
         d += 1
@@ -56,8 +56,8 @@ fn is_perfect n i64 -> i64
         0
 
 fn euler_totient n i64 -> i64
-    let result i64 = n
-    let p i64 = 2
+    let result = n
+    let p = 2
     while p * p <= n
         if n % p == 0
             while n % p == 0
@@ -69,7 +69,7 @@ fn euler_totient n i64 -> i64
     result
 
 fn count_coprime_below n i64 -> i64
-    let count i64 = 0
+    let count = 0
     for k from 1 to n - 1
         if gcd(k, n) == 1
             count += 1
@@ -77,7 +77,7 @@ fn count_coprime_below n i64 -> i64
 
 fn digital_root n i64 -> i64
     while n >= 10
-        let s i64 = 0
+        let s = 0
         while n > 0
             s += n % 10
             n = n / 10
@@ -85,9 +85,9 @@ fn digital_root n i64 -> i64
     n
 
 fn is_armstrong n i64 -> i64
-    let d i64 = num_digits(n)
-    let sum i64 = 0
-    let m i64 = n
+    let d = num_digits(n)
+    let sum = 0
+    let m = n
     while m > 0
         sum += int_pow(m % 10, d)
         m = m / 10
@@ -97,7 +97,7 @@ fn is_armstrong n i64 -> i64
         0
 
 fn reverse_digits n i64 -> i64
-    let r i64 = 0
+    let r = 0
     while n > 0
         r = r * 10 + n % 10
         n = n / 10
@@ -110,15 +110,15 @@ fn is_palindrome_number n i64 -> i64
         0
 
 fn sum_of_squares_digits n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     while n > 0
-        let d i64 = n % 10
+        let d = n % 10
         sum += d * d
         n = n / 10
     sum
 
 fn is_happy n i64 -> i64
-    let steps i64 = 0
+    let steps = 0
     while n != 1 and steps < 1000
         n = sum_of_squares_digits(n)
         steps += 1
@@ -128,22 +128,22 @@ fn is_happy n i64 -> i64
         0
 
 fn to_base_digit_sum n i64 b i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     while n > 0
         sum += n % b
         n = n / b
     sum
 
 fn count_trailing_zeros_factorial n i64 -> i64
-    let count i64 = 0
-    let power i64 = 5
+    let count = 0
+    let power = 5
     while power <= n
         count += n / power
         power = power * 5
     count
 
 fn gcd_of_range lo i64 hi i64 -> i64
-    let g i64 = lo
+    let g = lo
     for k from lo to hi
         g = gcd(g, k)
     g

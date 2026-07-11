@@ -9,7 +9,7 @@ fn stock_after stock i64 sold i64 received i64 -> i64
     stock - sold + received
 
 fn bulk_price qty i64 unit_cents i64 -> i64
-    let base i64 = qty * unit_cents
+    let base = qty * unit_cents
     if qty >= 100
         return base - base * 10 / 100
     base
@@ -24,7 +24,7 @@ fn shipping_cost weight_g i64 -> i64
     5000
 
 fn tax_bracket income i64 -> i64
-    let tax i64 = 0
+    let tax = 0
     if income > 8500000
         tax += (income - 8500000) * 30 / 100
         income = 8500000

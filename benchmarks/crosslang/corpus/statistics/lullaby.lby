@@ -4,11 +4,11 @@
 
 fn abs_val x i64 -> i64
     if x < 0
-        return 0 - x
+        return -x
     x
 
 fn total a array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += a[i]
     sum
@@ -17,22 +17,22 @@ fn mean_floor a array<i64> n i64 -> i64
     total(a, n) / n
 
 fn variance_scaled a array<i64> n i64 -> i64
-    let mean i64 = mean_floor(a, n)
-    let sum i64 = 0
+    let mean = mean_floor(a, n)
+    let sum = 0
     for i from 0 to n - 1
-        let d i64 = a[i] - mean
+        let d = a[i] - mean
         sum += d * d
     sum
 
 fn min_val a array<i64> n i64 -> i64
-    let m i64 = a[0]
+    let m = a[0]
     for i from 1 to n - 1
         if a[i] < m
             m = a[i]
     m
 
 fn max_val a array<i64> n i64 -> i64
-    let m i64 = a[0]
+    let m = a[0]
     for i from 1 to n - 1
         if a[i] > m
             m = a[i]
@@ -47,8 +47,8 @@ fn median_sorted a array<i64> n i64 -> i64
 fn mode_count_max a array<i64> n i64 -> i64
     if n == 0
         return 0
-    let best i64 = 1
-    let run i64 = 1
+    let best = 1
+    let run = 1
     for i from 1 to n - 1
         if a[i] == a[i - 1]
             run += 1
@@ -59,29 +59,29 @@ fn mode_count_max a array<i64> n i64 -> i64
     best
 
 fn count_above_mean a array<i64> n i64 -> i64
-    let mean i64 = mean_floor(a, n)
-    let count i64 = 0
+    let mean = mean_floor(a, n)
+    let count = 0
     for i from 0 to n - 1
         if a[i] > mean
             count += 1
     count
 
 fn sum_abs_dev a array<i64> n i64 -> i64
-    let mean i64 = mean_floor(a, n)
-    let sum i64 = 0
+    let mean = mean_floor(a, n)
+    let sum = 0
     for i from 0 to n - 1
         sum += abs_val(a[i] - mean)
     sum
 
 fn product_mod a array<i64> n i64 m i64 -> i64
-    let prod i64 = 1
+    let prod = 1
     for i from 0 to n - 1
         prod = prod * a[i] % m
     prod
 
 fn running_max_sum a array<i64> n i64 -> i64
-    let best i64 = a[0]
-    let cur i64 = a[0]
+    let best = a[0]
+    let cur = a[0]
     for i from 1 to n - 1
         if cur + a[i] > a[i]
             cur = cur + a[i]
@@ -92,28 +92,28 @@ fn running_max_sum a array<i64> n i64 -> i64
     best
 
 fn zscore_sign_count a array<i64> n i64 -> i64
-    let mean i64 = mean_floor(a, n)
-    let count i64 = 0
+    let mean = mean_floor(a, n)
+    let count = 0
     for i from 0 to n - 1
         if a[i] > mean
             count += 1
     count
 
 fn weighted_sum a array<i64> w array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += a[i] * w[i]
     sum
 
 fn cumulative_max_last a array<i64> n i64 -> i64
-    let m i64 = a[0]
+    let m = a[0]
     for i from 1 to n - 1
         if a[i] > m
             m = a[i]
     m
 
 fn main -> void
-    let d array<i64> = [3, 0 - 7, 4, 8, 0 - 2, 5]
+    let d array<i64> = [3, -7, 4, 8, -2, 5]
     let s array<i64> = [2, 2, 2, 5, 7, 8]
     let w array<i64> = [1, 2, 1, 3, 1, 2]
     println("total=" + to_string(total(d, 6)))

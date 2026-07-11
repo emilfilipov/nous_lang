@@ -5,10 +5,10 @@
 # comparison, so character classes go through `char_code`.
 
 fn luhn_check digits array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
-        let d i64 = digits[i]
-        let pos i64 = n - 1 - i
+        let d = digits[i]
+        let pos = n - 1 - i
         if pos % 2 == 1
             d = d * 2
             if d > 9
@@ -22,7 +22,7 @@ fn luhn_check digits array<i64> n i64 -> i64
 fn is_valid_isbn10 digits array<i64> n i64 -> i64
     if n != 10
         return 0
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to 9
         sum += (10 - i) * digits[i]
     if sum % 11 == 0
@@ -70,14 +70,14 @@ fn is_valid_day y i64 m i64 d i64 -> i64
     1
 
 fn is_ascii_digit c string -> i64
-    let code i64 = char_code(get(chars(c), 0))
+    let code = char_code(get(chars(c), 0))
     if code >= 48 and code <= 57
         1
     else
         0
 
 fn is_ascii_alpha c string -> i64
-    let code i64 = char_code(get(chars(c), 0))
+    let code = char_code(get(chars(c), 0))
     if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
         1
     else
@@ -85,26 +85,26 @@ fn is_ascii_alpha c string -> i64
 
 fn all_digits s string -> i64
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
+    let n = len(cs)
     if n == 0
         return 0
     for i from 0 to n - 1
-        let code i64 = char_code(get(cs, i))
+        let code = char_code(get(cs, i))
         if code < 48 or code > 57
             return 0
     1
 
 fn password_score s string -> i64
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
-    let score i64 = 0
+    let n = len(cs)
+    let score = 0
     if n >= 8
         score += 1
-    let has_digit i64 = 0
-    let has_lower i64 = 0
-    let has_upper i64 = 0
+    let has_digit = 0
+    let has_lower = 0
+    let has_upper = 0
     for i from 0 to n - 1
-        let code i64 = char_code(get(cs, i))
+        let code = char_code(get(cs, i))
         if code >= 48 and code <= 57
             has_digit = 1
         elif code >= 97 and code <= 122
@@ -115,12 +115,12 @@ fn password_score s string -> i64
 
 fn is_hex_string s string -> i64
     let cs list<char> = chars(s)
-    let n i64 = len(cs)
+    let n = len(cs)
     if n == 0
         return 0
     for i from 0 to n - 1
-        let code i64 = char_code(get(cs, i))
-        let ok i64 = 0
+        let code = char_code(get(cs, i))
+        let ok = 0
         if code >= 48 and code <= 57
             ok = 1
         if code >= 97 and code <= 102
@@ -132,7 +132,7 @@ fn is_hex_string s string -> i64
     1
 
 fn checksum_mod10 digits array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += digits[i]
     sum % 10
@@ -150,7 +150,7 @@ fn is_valid_rgb r i64 g i64 b i64 -> i64
         0
 
 fn even_parity bits array<i64> n i64 -> i64
-    let ones i64 = 0
+    let ones = 0
     for i from 0 to n - 1
         if bits[i] == 1
             ones += 1

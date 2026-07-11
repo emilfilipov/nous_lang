@@ -18,14 +18,14 @@ fn edit_distance a array<i64> la i64 b array<i64> lb i64 -> i64
     for j from 0 to lb
         dp[j] = j
     for i from 1 to la
-        let prev i64 = dp[0]
+        let prev = dp[0]
         dp[0] = i
         for j from 1 to lb
-            let tmp i64 = dp[j]
+            let tmp = dp[j]
             if a[i - 1] == b[j - 1]
                 dp[j] = prev
             else
-                let m i64 = dp[j - 1]
+                let m = dp[j - 1]
                 if dp[j] < m
                     m = dp[j]
                 if prev < m
@@ -40,9 +40,9 @@ fn lcs_length a array<i64> la i64 b array<i64> lb i64 -> i64
     for j from 0 to lb
         dp[j] = 0
     for i from 1 to la
-        let prev i64 = 0
+        let prev = 0
         for j from 1 to lb
-            let tmp i64 = dp[j]
+            let tmp = dp[j]
             if a[i - 1] == b[j - 1]
                 dp[j] = prev + 1
             else
@@ -52,17 +52,17 @@ fn lcs_length a array<i64> la i64 b array<i64> lb i64 -> i64
     dp[lb]
 
 fn hamming_distance a array<i64> b array<i64> n i64 -> i64
-    let d i64 = 0
+    let d = 0
     for i from 0 to n - 1
         if a[i] != b[i]
             d += 1
     d
 
 fn longest_common_prefix_len a array<i64> la i64 b array<i64> lb i64 -> i64
-    let m i64 = la
+    let m = la
     if lb < m
         m = lb
-    let i i64 = 0
+    let i = 0
     while i < m
         if a[i] != b[i]
             return i
@@ -73,11 +73,11 @@ fn count_occurrences text array<i64> tn i64 pat array<i64> pn i64 -> i64
     # Naive substring count (overlapping matches allowed).
     if pn == 0
         return 0
-    let count i64 = 0
-    let i i64 = 0
+    let count = 0
+    let i = 0
     while i <= tn - pn
-        let j i64 = 0
-        let ok i64 = 1
+        let j = 0
+        let ok = 1
         while j < pn
             if text[i + j] != pat[j]
                 ok = 0
@@ -94,12 +94,12 @@ fn is_rotation a array<i64> b array<i64> n i64 -> i64
     # No `%` operator, so the wrap is a single subtraction (i+k < 2n).
     if n == 0
         return 1
-    let k i64 = 0
+    let k = 0
     while k < n
-        let ok i64 = 1
-        let i i64 = 0
+        let ok = 1
+        let i = 0
         while i < n
-            let idx i64 = i + k
+            let idx = i + k
             if idx >= n
                 idx = idx - n
             if a[idx] != b[i]
@@ -122,8 +122,8 @@ fn is_anagram_sorted a array<i64> b array<i64> n i64 -> i64
 fn longest_run a array<i64> n i64 -> i64
     if n == 0
         return 0
-    let best i64 = 1
-    let cur i64 = 1
+    let best = 1
+    let cur = 1
     for i from 1 to n - 1
         if a[i] == a[i - 1]
             cur += 1
@@ -134,7 +134,7 @@ fn longest_run a array<i64> n i64 -> i64
     best
 
 fn count_transitions a array<i64> n i64 -> i64
-    let c i64 = 0
+    let c = 0
     for i from 1 to n - 1
         if a[i] != a[i - 1]
             c += 1
@@ -142,17 +142,17 @@ fn count_transitions a array<i64> n i64 -> i64
 
 fn first_unique_index a array<i64> n i64 -> i64
     for i from 0 to n - 1
-        let count i64 = 0
+        let count = 0
         for j from 0 to n - 1
             if a[j] == a[i]
                 count += 1
         if count == 1
             return i
-    0 - 1
+    -1
 
 fn palindrome_check a array<i64> n i64 -> i64
-    let i i64 = 0
-    let j i64 = n - 1
+    let i = 0
+    let j = n - 1
     while i < j
         if a[i] != a[j]
             return 0
@@ -163,8 +163,8 @@ fn palindrome_check a array<i64> n i64 -> i64
 fn longest_increasing_run a array<i64> n i64 -> i64
     if n == 0
         return 0
-    let best i64 = 1
-    let cur i64 = 1
+    let best = 1
+    let cur = 1
     for i from 1 to n - 1
         if a[i] > a[i - 1]
             cur += 1
@@ -178,7 +178,7 @@ fn count_distinct_chars a array<i64> n i64 -> i64
     # Input is sorted, so distinct values are the boundaries between runs.
     if n == 0
         return 0
-    let count i64 = 1
+    let count = 1
     for i from 1 to n - 1
         if a[i] != a[i - 1]
             count += 1
@@ -188,8 +188,8 @@ fn max_char_frequency a array<i64> n i64 -> i64
     # Input is sorted, so the most frequent value is the longest run.
     if n == 0
         return 0
-    let best i64 = 1
-    let cur i64 = 1
+    let best = 1
+    let cur = 1
     for i from 1 to n - 1
         if a[i] == a[i - 1]
             cur += 1
@@ -201,9 +201,9 @@ fn max_char_frequency a array<i64> n i64 -> i64
 
 fn common_char_count a array<i64> la i64 b array<i64> lb i64 -> i64
     # Multiset intersection size via a merge walk (both inputs sorted).
-    let i i64 = 0
-    let j i64 = 0
-    let count i64 = 0
+    let i = 0
+    let j = 0
+    let count = 0
     while i < la and j < lb
         if a[i] == b[j]
             count += 1
@@ -217,8 +217,8 @@ fn common_char_count a array<i64> la i64 b array<i64> lb i64 -> i64
 
 fn reverse_equal a array<i64> n i64 -> i64
     # Whether the array equals its own reverse (two-pointer scan).
-    let i i64 = 0
-    let j i64 = n - 1
+    let i = 0
+    let j = n - 1
     while i < j
         if a[i] != a[j]
             return 0
@@ -230,7 +230,7 @@ fn run_length_pairs a array<i64> n i64 -> i64
     # Number of (value, count) pairs a run-length encoding would emit.
     if n == 0
         return 0
-    let pairs i64 = 1
+    let pairs = 1
     for i from 1 to n - 1
         if a[i] != a[i - 1]
             pairs += 1

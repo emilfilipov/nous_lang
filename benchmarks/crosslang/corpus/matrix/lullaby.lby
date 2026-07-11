@@ -6,41 +6,41 @@ fn trace m array<i64> n i64 -> i64
     diagonal_sum_main(m, n)
 
 fn diagonal_sum_main m array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += m[i * n + i]
     sum
 
 fn diagonal_sum_anti m array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         sum += m[i * n + (n - 1 - i)]
     sum
 
 fn row_sum m array<i64> n i64 r i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for c from 0 to n - 1
         sum += m[r * n + c]
     sum
 
 fn col_sum m array<i64> n i64 c i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for r from 0 to n - 1
         sum += m[r * n + c]
     sum
 
 fn row_sum_max m array<i64> n i64 -> i64
-    let best i64 = row_sum(m, n, 0)
+    let best = row_sum(m, n, 0)
     for r from 1 to n - 1
-        let s i64 = row_sum(m, n, r)
+        let s = row_sum(m, n, r)
         if s > best
             best = s
     best
 
 fn col_sum_max m array<i64> n i64 -> i64
-    let best i64 = col_sum(m, n, 0)
+    let best = col_sum(m, n, 0)
     for c from 1 to n - 1
-        let s i64 = col_sum(m, n, c)
+        let s = col_sum(m, n, c)
         if s > best
             best = s
     best
@@ -53,21 +53,21 @@ fn is_symmetric m array<i64> n i64 -> i64
     1
 
 fn transpose_checksum m array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for r from 0 to n - 1
         for c from 0 to n - 1
-            let i i64 = r * n + c
+            let i = r * n + c
             sum += i * m[c * n + r]
     sum
 
 fn matrix_add_checksum a array<i64> b array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n * n - 1
         sum += i * (a[i] + b[i])
     sum
 
 fn scalar_mul_checksum m array<i64> n i64 k i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n * n - 1
         sum += i * (m[i] * k)
     sum
@@ -84,27 +84,27 @@ fn is_identity m array<i64> n i64 -> i64
     1
 
 fn matrix_mul_trace a array<i64> b array<i64> n i64 -> i64
-    let sum i64 = 0
+    let sum = 0
     for i from 0 to n - 1
         for k from 0 to n - 1
             sum += a[i * n + k] * b[k * n + i]
     sum
 
 fn main_diag_product m array<i64> n i64 -> i64
-    let product i64 = 1
+    let product = 1
     for i from 0 to n - 1
         product *= m[i * n + i]
     product
 
 fn max_element m array<i64> n i64 -> i64
-    let best i64 = m[0]
+    let best = m[0]
     for i from 1 to n * n - 1
         if m[i] > best
             best = m[i]
     best
 
 fn min_element m array<i64> n i64 -> i64
-    let best i64 = m[0]
+    let best = m[0]
     for i from 1 to n * n - 1
         if m[i] < best
             best = m[i]
