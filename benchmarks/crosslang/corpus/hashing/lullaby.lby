@@ -4,22 +4,19 @@
 # and products are kept below 2^53 so JavaScript doubles stay exact too.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn djb2_hash a array<i64> n i64 -> i64
     let m i64 = 1000000007
     let h i64 = 5381
     for i from 0 to n - 1
-        h = rem(h * 33 + a[i], m)
+        h = (h * 33 + a[i]) % m
     h
 
 fn fnv1a_arithmetic a array<i64> n i64 -> i64
     let m i64 = 100000007
     let prime i64 = 16777619
-    let h i64 = rem(2166136261, m)
+    let h i64 = 2166136261 % m
     for i from 0 to n - 1
-        h = rem((h + a[i]) * prime, m)
+        h = (h + a[i]) * prime % m
     h
 
 fn sum_hash a array<i64> n i64 -> i64
@@ -31,45 +28,45 @@ fn sum_hash a array<i64> n i64 -> i64
 fn poly_hash a array<i64> n i64 base i64 modulus i64 -> i64
     let h i64 = 0
     for i from 0 to n - 1
-        h = rem(h * base + a[i], modulus)
+        h = (h * base + a[i]) % modulus
     h
 
 fn rolling_hash a array<i64> n i64 modulus i64 -> i64
     let h i64 = 0
     for i from 0 to n - 1
-        h = rem(h * 256 + a[i], modulus)
+        h = (h * 256 + a[i]) % modulus
     h
 
 fn sdbm_hash a array<i64> n i64 -> i64
     let m i64 = 1000000007
     let h i64 = 0
     for i from 0 to n - 1
-        h = rem(a[i] + h * 65599, m)
+        h = (a[i] + h * 65599) % m
     h
 
 fn mod_sum_hash a array<i64> n i64 m i64 -> i64
     let h i64 = 0
     for i from 0 to n - 1
-        h = rem(h + a[i], m)
+        h = (h + a[i]) % m
     h
 
 fn weighted_pos_hash a array<i64> n i64 -> i64
     let m i64 = 1000000007
     let h i64 = 0
     for i from 0 to n - 1
-        h = rem(h + (i + 1) * a[i], m)
+        h = (h + (i + 1) * a[i]) % m
     h
 
 fn xor_free_checksum a array<i64> n i64 -> i64
     let total i64 = 0
     for i from 0 to n - 1
         total += a[i]
-    rem(total, 256)
+    total % 256
 
 fn product_hash a array<i64> n i64 m i64 -> i64
     let h i64 = 1
     for i from 0 to n - 1
-        h = rem(h * (a[i] + 1), m)
+        h = h * (a[i] + 1) % m
     h
 
 fn rotate_hash a array<i64> n i64 -> i64
@@ -78,22 +75,22 @@ fn rotate_hash a array<i64> n i64 -> i64
     let h i64 = 0
     for i from 0 to n - 1
         let carry i64 = h / half
-        h = rem(h * 2, m) + carry
-        h = rem(h + a[i], m)
+        h = h * 2 % m + carry
+        h = (h + a[i]) % m
     h
 
 fn pearson_like a array<i64> n i64 -> i64
     let t array<i64> = [7, 3, 11, 15, 0, 9, 5, 13, 1, 14, 6, 10, 2, 12, 4, 8]
     let h i64 = 0
     for i from 0 to n - 1
-        h = t[rem(h + a[i], 16)]
+        h = t[(h + a[i]) % 16]
     h
 
 fn length_hash a array<i64> n i64 -> i64
     let m i64 = 1000000007
     if n <= 0
         return 0
-    rem(n * 2654435761 + a[0], m)
+    (n * 2654435761 + a[0]) % m
 
 fn first_last_hash a array<i64> n i64 -> i64
     if n <= 0
@@ -113,7 +110,7 @@ fn digit_hash x i64 -> i64
     let m i64 = 1000000007
     let h i64 = 7
     while x > 0
-        h = rem(h * 31 + rem(x, 10), m)
+        h = (h * 31 + x % 10) % m
         x = x / 10
     h
 

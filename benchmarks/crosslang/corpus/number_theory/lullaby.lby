@@ -1,12 +1,9 @@
 # Cross-language number theory suite (Lullaby). Classic integer number theory.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn gcd a i64 b i64 -> i64
     while b != 0
-        let t i64 = rem(a, b)
+        let t i64 = a % b
         a = b
         b = t
     a
@@ -33,7 +30,7 @@ fn divisor_count n i64 -> i64
     let count i64 = 0
     let d i64 = 1
     while d * d <= n
-        if rem(n, d) == 0
+        if n % d == 0
             count += 1
             if d != n / d
                 count += 1
@@ -44,7 +41,7 @@ fn divisor_sum n i64 -> i64
     let sum i64 = 0
     let d i64 = 1
     while d * d <= n
-        if rem(n, d) == 0
+        if n % d == 0
             sum += d
             let other i64 = n / d
             if other != d
@@ -62,8 +59,8 @@ fn euler_totient n i64 -> i64
     let result i64 = n
     let p i64 = 2
     while p * p <= n
-        if rem(n, p) == 0
-            while rem(n, p) == 0
+        if n % p == 0
+            while n % p == 0
                 n = n / p
             result = result - result / p
         p += 1
@@ -82,7 +79,7 @@ fn digital_root n i64 -> i64
     while n >= 10
         let s i64 = 0
         while n > 0
-            s += rem(n, 10)
+            s += n % 10
             n = n / 10
         n = s
     n
@@ -92,7 +89,7 @@ fn is_armstrong n i64 -> i64
     let sum i64 = 0
     let m i64 = n
     while m > 0
-        sum += int_pow(rem(m, 10), d)
+        sum += int_pow(m % 10, d)
         m = m / 10
     if sum == n
         1
@@ -102,7 +99,7 @@ fn is_armstrong n i64 -> i64
 fn reverse_digits n i64 -> i64
     let r i64 = 0
     while n > 0
-        r = r * 10 + rem(n, 10)
+        r = r * 10 + n % 10
         n = n / 10
     r
 
@@ -115,7 +112,7 @@ fn is_palindrome_number n i64 -> i64
 fn sum_of_squares_digits n i64 -> i64
     let sum i64 = 0
     while n > 0
-        let d i64 = rem(n, 10)
+        let d i64 = n % 10
         sum += d * d
         n = n / 10
     sum
@@ -133,7 +130,7 @@ fn is_happy n i64 -> i64
 fn to_base_digit_sum n i64 b i64 -> i64
     let sum i64 = 0
     while n > 0
-        sum += rem(n, b)
+        sum += n % b
         n = n / b
     sum
 

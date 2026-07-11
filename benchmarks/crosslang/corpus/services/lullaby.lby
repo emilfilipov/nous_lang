@@ -4,9 +4,6 @@
 #
 # Lullaby has no `%` operator, so integer remainder goes through `rem`.
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn min2 a i64 b i64 -> i64
     if a < b
         return a
@@ -93,7 +90,7 @@ fn priority_from_code code i64 -> i64
 
 # Ring-buffer advance: (head + 1) mod cap.
 fn queue_next_index head i64 cap i64 -> i64
-    return rem(head + 1, cap)
+    return (head + 1) % cap
 
 # A session stays valid until it is idle longer than its timeout.
 fn session_valid now i64 last i64 timeout i64 -> i64
@@ -129,7 +126,7 @@ fn retry_should_give_up attempt i64 max i64 -> i64
 
 # Deterministic jittered backoff: exponential backoff plus a seed-derived offset.
 fn jitter_backoff attempt i64 base i64 seed i64 -> i64
-    return retry_backoff_ms(attempt, base) + rem(seed, base)
+    return retry_backoff_ms(attempt, base) + seed % base
 
 fn main -> void
     println("http_status_class(404)=" + to_string(http_status_class(404)))

@@ -1,9 +1,6 @@
 # Cross-language data_records suite (Lullaby). Structs + record operations.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 struct Point
     x i64
     y i64
@@ -59,7 +56,7 @@ fn money_dollars m Money -> i64
     m.cents / 100
 
 fn money_cents_part m Money -> i64
-    rem(m.cents, 100)
+    m.cents % 100
 
 fn interval_overlaps a Interval b Interval -> i64
     if a.lo < b.hi and b.lo < a.hi

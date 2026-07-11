@@ -5,9 +5,6 @@
 # value, so a function receives a private copy it may reorder freely.
 
 # Lullaby has no `%` operator, so remainder is a small helper (a real gap).
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn count_frequency_of a array<i64> n i64 x i64 -> i64
     let count i64 = 0
     for i from 0 to n - 1
@@ -78,14 +75,14 @@ fn most_common_sorted a array<i64> n i64 -> i64
 fn count_even a array<i64> n i64 -> i64
     let count i64 = 0
     for i from 0 to n - 1
-        if rem(a[i], 2) == 0
+        if a[i] % 2 == 0
             count += 1
     count
 
 fn count_odd a array<i64> n i64 -> i64
     let count i64 = 0
     for i from 0 to n - 1
-        if rem(a[i], 2) != 0
+        if a[i] % 2 != 0
             count += 1
     count
 
@@ -173,7 +170,7 @@ fn is_subset_sorted a array<i64> la i64 b array<i64> lb i64 -> i64
 
 # Rotate left by k, then checksum sum(i * value). Uses no extra storage.
 fn rotate_left_checksum a array<i64> n i64 k i64 -> i64
-    let shift i64 = rem(k, n)
+    let shift i64 = k % n
     let sum i64 = 0
     for i from 0 to n - 1
         let idx i64 = i + shift

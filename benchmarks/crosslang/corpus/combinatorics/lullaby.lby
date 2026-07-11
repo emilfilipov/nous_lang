@@ -3,9 +3,6 @@
 # Lullaby has no sized-array allocation, so `partition_count` seeds a fixed-size
 # `array<i64>` literal (indices 0..40) as its DP table — see the note there.
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn factorial n i64 -> i64
     let result i64 = 1
     for i from 2 to n
@@ -110,8 +107,8 @@ fn subfactorial n i64 -> i64
 
 fn binomial_mod n i64 r i64 m i64 -> i64
     if r == 0 or r == n
-        return rem(1, m)
-    rem(binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m), m)
+        return 1 % m
+    (binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m)) % m
 
 fn fibonacci_iter n i64 -> i64
     if n == 0

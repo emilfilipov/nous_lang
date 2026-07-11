@@ -1,11 +1,8 @@
 # Cross-language bitwise suite (Lullaby). Bit manipulation over i64 done with
 # ARITHMETIC only: Lullaby's alpha has no bitwise operators, so bits are read
-# with rem(x, 2) and shifted with / 2 (and multiplication by powers of two).
+# with x % 2 and shifted with / 2 (and multiplication by powers of two).
 # Every language in this category matches that arithmetic-only model. See
 # ../../SPEC.md. Lullaby has no `%` operator; `rem` is truncating remainder.
-
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
 
 fn pow2 n i64 -> i64
     let p i64 = 1
@@ -16,7 +13,7 @@ fn pow2 n i64 -> i64
 fn count_set_bits x i64 -> i64
     let count i64 = 0
     while x > 0
-        count += rem(x, 2)
+        count += x % 2
         x = x / 2
     count
 
@@ -39,16 +36,16 @@ fn lowest_bit_pos x i64 -> i64
     if x == 0
         return 0 - 1
     let pos i64 = 0
-    while rem(x, 2) == 0
+    while x % 2 == 0
         pos += 1
         x = x / 2
     pos
 
 fn bit_at x i64 i i64 -> i64
-    rem(x / pow2(i), 2)
+    x / pow2(i) % 2
 
 fn extract_bits x i64 start i64 count i64 -> i64
-    rem(x / pow2(start), pow2(count))
+    x / pow2(start) % pow2(count)
 
 fn set_bit x i64 i i64 -> i64
     if bit_at(x, i) == 1
@@ -74,14 +71,14 @@ fn popcount_range lo i64 hi i64 -> i64
 fn reverse_bits_n x i64 n i64 -> i64
     let result i64 = 0
     for i from 0 to n - 1
-        result = result * 2 + rem(x, 2)
+        result = result * 2 + x % 2
         x = x / 2
     result
 
 fn hamming_distance_bits a i64 b i64 -> i64
     let dist i64 = 0
     while a > 0 or b > 0
-        if rem(a, 2) != rem(b, 2)
+        if a % 2 != b % 2
             dist += 1
         a = a / 2
         b = b / 2
@@ -103,7 +100,7 @@ fn count_leading_zeros_64 x i64 -> i64
     count
 
 fn parity_bit x i64 -> i64
-    rem(count_set_bits(x), 2)
+    count_set_bits(x) % 2
 
 fn is_bit_palindrome x i64 n i64 -> i64
     if reverse_bits_n(x, n) == extract_bits(x, 0, n)
@@ -113,15 +110,15 @@ fn is_bit_palindrome x i64 n i64 -> i64
 
 fn rotate_left_n x i64 n i64 bits i64 -> i64
     let width i64 = pow2(bits)
-    x = rem(x, width)
-    n = rem(n, bits)
-    let hi i64 = rem(x * pow2(n), width)
+    x = x % width
+    n = n % bits
+    let hi i64 = x * pow2(n) % width
     let lo i64 = x / pow2(bits - n)
     hi + lo
 
 fn merge_bits a i64 b i64 mask_count i64 -> i64
     let m i64 = pow2(mask_count)
-    a - rem(a, m) + rem(b, m)
+    a - a % m + b % m
 
 fn main -> void
     println("count_set_bits=" + to_string(count_set_bits(181)))

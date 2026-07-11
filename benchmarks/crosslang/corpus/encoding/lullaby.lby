@@ -3,9 +3,6 @@
 # every language matches Lullaby's arithmetic-only model. See ../../SPEC.md.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn sum_bytes a array<i64> n i64 -> i64
     let total i64 = 0
     for i from 0 to n - 1
@@ -16,45 +13,45 @@ fn add_checksum_mod256 a array<i64> n i64 -> i64
     let total i64 = 0
     for i from 0 to n - 1
         total += a[i]
-    rem(total, 256)
+    total % 256
 
 fn fletcher16 a array<i64> n i64 -> i64
     let sum1 i64 = 0
     let sum2 i64 = 0
     for i from 0 to n - 1
-        sum1 = rem(sum1 + a[i], 255)
-        sum2 = rem(sum2 + sum1, 255)
+        sum1 = (sum1 + a[i]) % 255
+        sum2 = (sum2 + sum1) % 255
     sum2 * 256 + sum1
 
 fn adler32_small a array<i64> n i64 -> i64
     let s1 i64 = 1
     let s2 i64 = 0
     for i from 0 to n - 1
-        s1 = rem(s1 + a[i], 65521)
-        s2 = rem(s2 + s1, 65521)
+        s1 = (s1 + a[i]) % 65521
+        s2 = (s2 + s1) % 65521
     s2 * 65536 + s1
 
 fn caesar_encrypt_val c i64 k i64 -> i64
     if c >= 97 and c <= 122
-        return 97 + rem(c - 97 + rem(k, 26), 26)
+        return 97 + (c - 97 + k % 26) % 26
     c
 
 fn caesar_decrypt_val c i64 k i64 -> i64
     if c >= 97 and c <= 122
-        return 97 + rem(c - 97 + 26 - rem(k, 26), 26)
+        return 97 + (c - 97 + 26 - k % 26) % 26
     c
 
 fn rot13_val c i64 -> i64
     if c >= 97 and c <= 122
-        return 97 + rem(c - 97 + 13, 26)
+        return 97 + (c - 97 + 13) % 26
     if c >= 65 and c <= 90
-        return 65 + rem(c - 65 + 13, 26)
+        return 65 + (c - 65 + 13) % 26
     c
 
 fn count_set_bits x i64 -> i64
     let count i64 = 0
     while x > 0
-        count += rem(x, 2)
+        count += x % 2
         x = x / 2
     count
 
@@ -83,12 +80,12 @@ fn luhn_from_array a array<i64> n i64 -> i64
     let sum i64 = 0
     for i from 0 to n - 1
         let d i64 = a[n - 1 - i]
-        if rem(i, 2) == 1
+        if i % 2 == 1
             d = d * 2
             if d > 9
                 d = d - 9
         sum += d
-    if rem(sum, 10) == 0
+    if sum % 10 == 0
         1
     else
         0
@@ -97,13 +94,13 @@ fn parity_bit a array<i64> n i64 -> i64
     let ones i64 = 0
     for i from 0 to n - 1
         ones += a[i]
-    rem(ones, 2)
+    ones % 2
 
 fn crc8_simple a array<i64> n i64 -> i64
     let crc i64 = 0
     for i from 0 to n - 1
-        crc = rem(crc + a[i], 256)
-        crc = rem(crc * 2, 256) + crc / 128
+        crc = (crc + a[i]) % 256
+        crc = crc * 2 % 256 + crc / 128
     crc
 
 fn digit_product x i64 -> i64
@@ -113,7 +110,7 @@ fn digit_product x i64 -> i64
         return 0
     let p i64 = 1
     while x > 0
-        p = p * rem(x, 10)
+        p = p * (x % 10)
         x = x / 10
     p
 

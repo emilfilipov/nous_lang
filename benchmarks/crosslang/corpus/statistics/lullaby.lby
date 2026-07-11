@@ -2,9 +2,6 @@
 # array and a length: sums, spread, order statistics, and a Kadane max-subarray
 # scan. Lullaby has no `%`, so product_mod goes through a `rem` helper.
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn abs_val x i64 -> i64
     if x < 0
         return 0 - x
@@ -79,7 +76,7 @@ fn sum_abs_dev a array<i64> n i64 -> i64
 fn product_mod a array<i64> n i64 m i64 -> i64
     let prod i64 = 1
     for i from 0 to n - 1
-        prod = rem(prod * a[i], m)
+        prod = prod * a[i] % m
     prod
 
 fn running_max_sum a array<i64> n i64 -> i64

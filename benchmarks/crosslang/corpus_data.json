@@ -478,8 +478,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 24,
-     "source": "fn bit_at x i64 i i64 -> i64\n    rem(x / pow2(i), 2)"
+     "tokens": 23,
+     "source": "fn bit_at x i64 i i64 -> i64\n    x / pow2(i) % 2"
     },
     "C": {
      "tokens": 30,
@@ -571,8 +571,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn count_set_bits x i64 -> i64\n    let count i64 = 0\n    while x > 0\n        count += rem(x, 2)\n        x = x / 2\n    count"
+     "tokens": 45,
+     "source": "fn count_set_bits x i64 -> i64\n    let count i64 = 0\n    while x > 0\n        count += x % 2\n        x = x / 2\n    count"
     },
     "C": {
      "tokens": 51,
@@ -603,7 +603,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 28,
-     "source": "fn extract_bits x i64 start i64 count i64 -> i64\n    rem(x / pow2(start), pow2(count))"
+     "source": "fn extract_bits x i64 start i64 count i64 -> i64\n    x / pow2(start) % pow2(count)"
     },
     "C": {
      "tokens": 36,
@@ -633,8 +633,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 75,
-     "source": "fn hamming_distance_bits a i64 b i64 -> i64\n    let dist i64 = 0\n    while a > 0 or b > 0\n        if rem(a, 2) != rem(b, 2)\n            dist += 1\n        a = a / 2\n        b = b / 2\n    dist"
+     "tokens": 72,
+     "source": "fn hamming_distance_bits a i64 b i64 -> i64\n    let dist i64 = 0\n    while a > 0 or b > 0\n        if a % 2 != b % 2\n            dist += 1\n        a = a / 2\n        b = b / 2\n    dist"
     },
     "C": {
      "tokens": 78,
@@ -757,8 +757,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 63,
-     "source": "fn lowest_bit_pos x i64 -> i64\n    if x == 0\n        return 0 - 1\n    let pos i64 = 0\n    while rem(x, 2) == 0\n        pos += 1\n        x = x / 2\n    pos"
+     "tokens": 61,
+     "source": "fn lowest_bit_pos x i64 -> i64\n    if x == 0\n        return 0 - 1\n    let pos i64 = 0\n    while x % 2 == 0\n        pos += 1\n        x = x / 2\n    pos"
     },
     "C": {
      "tokens": 64,
@@ -788,8 +788,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn merge_bits a i64 b i64 mask_count i64 -> i64\n    let m i64 = pow2(mask_count)\n    a - rem(a, m) + rem(b, m)"
+     "tokens": 38,
+     "source": "fn merge_bits a i64 b i64 mask_count i64 -> i64\n    let m i64 = pow2(mask_count)\n    a - a % m + b % m"
     },
     "C": {
      "tokens": 46,
@@ -850,8 +850,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 20,
-     "source": "fn parity_bit x i64 -> i64\n    rem(count_set_bits(x), 2)"
+     "tokens": 19,
+     "source": "fn parity_bit x i64 -> i64\n    count_set_bits(x) % 2"
     },
     "C": {
      "tokens": 23,
@@ -939,23 +939,12 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "bitwise",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "reverse_bits_n",
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn reverse_bits_n x i64 n i64 -> i64\n    let result i64 = 0\n    for i from 0 to n - 1\n        result = result * 2 + rem(x, 2)\n        x = x / 2\n    result"
+     "tokens": 58,
+     "source": "fn reverse_bits_n x i64 n i64 -> i64\n    let result i64 = 0\n    for i from 0 to n - 1\n        result = result * 2 + x % 2\n        x = x / 2\n    result"
     },
     "C": {
      "tokens": 70,
@@ -985,8 +974,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 76,
-     "source": "fn rotate_left_n x i64 n i64 bits i64 -> i64\n    let width i64 = pow2(bits)\n    x = rem(x, width)\n    n = rem(n, bits)\n    let hi i64 = rem(x * pow2(n), width)\n    let lo i64 = x / pow2(bits - n)\n    hi + lo"
+     "tokens": 74,
+     "source": "fn rotate_left_n x i64 n i64 bits i64 -> i64\n    let width i64 = pow2(bits)\n    x = x % width\n    n = n % bits\n    let hi i64 = x * pow2(n) % width\n    let lo i64 = x / pow2(bits - n)\n    hi + lo"
     },
     "C": {
      "tokens": 83,
@@ -1698,8 +1687,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn count_even a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if rem(a[i], 2) == 0\n            count += 1\n    count"
+     "tokens": 56,
+     "source": "fn count_even a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] % 2 == 0\n            count += 1\n    count"
     },
     "C": {
      "tokens": 63,
@@ -1791,8 +1780,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 58,
-     "source": "fn count_odd a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if rem(a[i], 2) != 0\n            count += 1\n    count"
+     "tokens": 57,
+     "source": "fn count_odd a array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] % 2 != 0\n            count += 1\n    count"
     },
     "C": {
      "tokens": 64,
@@ -2066,23 +2055,12 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "collections",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "rotate_left_checksum",
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 84,
-     "source": "fn rotate_left_checksum a array<i64> n i64 k i64 -> i64\n    let shift i64 = rem(k, n)\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let idx i64 = i + shift\n        if idx >= n\n            idx = idx - n\n        sum += i * a[idx]\n    sum"
+     "tokens": 83,
+     "source": "fn rotate_left_checksum a array<i64> n i64 k i64 -> i64\n    let shift i64 = k % n\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let idx i64 = i + shift\n        if idx >= n\n            idx = idx - n\n        sum += i * a[idx]\n    sum"
     },
     "C": {
      "tokens": 93,
@@ -2236,8 +2214,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 68,
-     "source": "fn binomial_mod n i64 r i64 m i64 -> i64\n    if r == 0 or r == n\n        return rem(1, m)\n    rem(binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m), m)"
+     "tokens": 67,
+     "source": "fn binomial_mod n i64 r i64 m i64 -> i64\n    if r == 0 or r == n\n        return 1 % m\n    (binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m)) % m"
     },
     "C": {
      "tokens": 75,
@@ -2635,17 +2613,6 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "combinatorics",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "stirling_second",
    "category": "combinatorics",
    "langs": {
@@ -2979,8 +2946,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 20,
-     "source": "fn money_cents_part m Money -> i64\n    rem(m.cents, 100)"
+     "tokens": 18,
+     "source": "fn money_cents_part m Money -> i64\n    m.cents % 100"
     },
     "C": {
      "tokens": 22,
@@ -3128,17 +3095,6 @@
     }
    },
    "present": 6
-  },
-  {
-   "name": "rem",
-   "category": "data_records",
-   "langs": {
-    "Lullaby": {
-     "tokens": 88,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b\nstruct Point\n    x i64\n    y i64\nstruct Rect\n    w i64\n    h i64\nstruct Money\n    cents i64\nstruct Interval\n    lo i64\n    hi i64\nstruct Vec3\n    x i64\n    y i64\n    z i64"
-    }
-   },
-   "present": 1
   },
   {
    "name": "vec3_add",
@@ -3300,8 +3256,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn clock_add_minutes h i64 mi i64 add i64 -> i64\n    let total i64 = rem(h * 60 + mi + add, 1440)\n    total / 60"
+     "tokens": 43,
+     "source": "fn clock_add_minutes h i64 mi i64 add i64 -> i64\n    let total i64 = (h * 60 + mi + add) % 1440\n    total / 60"
     },
     "C": {
      "tokens": 44,
@@ -3486,8 +3442,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn is_leap_year y i64 -> i64\n    if rem(y, 4) == 0 and (rem(y, 100) != 0 or rem(y, 400) == 0)\n        1\n    else\n        0"
+     "tokens": 49,
+     "source": "fn is_leap_year y i64 -> i64\n    if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 49,
@@ -3637,17 +3593,6 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "datetime",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "seconds_in_days",
    "category": "datetime",
    "langs": {
@@ -3715,7 +3660,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 116,
-     "source": "fn zeller_dow y i64 m i64 d i64 -> i64\n    if m < 3\n        m = m + 12\n        y = y - 1\n    let k i64 = rem(y, 100)\n    let j i64 = y / 100\n    let h i64 = rem(d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j, 7)\n    rem(h + 6, 7)"
+     "source": "fn zeller_dow y i64 m i64 d i64 -> i64\n    if m < 3\n        m = m + 12\n        y = y - 1\n    let k i64 = y % 100\n    let j i64 = y / 100\n    let h i64 = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7\n    (h + 6) % 7"
     },
     "C": {
      "tokens": 121,
@@ -3745,8 +3690,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn add_checksum_mod256 a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    rem(total, 256)"
+     "tokens": 49,
+     "source": "fn add_checksum_mod256 a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total % 256"
     },
     "C": {
      "tokens": 59,
@@ -3776,8 +3721,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 89,
-     "source": "fn adler32_small a array<i64> n i64 -> i64\n    let s1 i64 = 1\n    let s2 i64 = 0\n    for i from 0 to n - 1\n        s1 = rem(s1 + a[i], 65521)\n        s2 = rem(s2 + s1, 65521)\n    s2 * 65536 + s1"
+     "tokens": 91,
+     "source": "fn adler32_small a array<i64> n i64 -> i64\n    let s1 i64 = 1\n    let s2 i64 = 0\n    for i from 0 to n - 1\n        s1 = (s1 + a[i]) % 65521\n        s2 = (s2 + s1) % 65521\n    s2 * 65536 + s1"
     },
     "C": {
      "tokens": 101,
@@ -3808,7 +3753,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 53,
-     "source": "fn caesar_decrypt_val c i64 k i64 -> i64\n    if c >= 97 and c <= 122\n        return 97 + rem(c - 97 + 26 - rem(k, 26), 26)\n    c"
+     "source": "fn caesar_decrypt_val c i64 k i64 -> i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + 26 - k % 26) % 26\n    c"
     },
     "C": {
      "tokens": 59,
@@ -3839,7 +3784,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 49,
-     "source": "fn caesar_encrypt_val c i64 k i64 -> i64\n    if c >= 97 and c <= 122\n        return 97 + rem(c - 97 + rem(k, 26), 26)\n    c"
+     "source": "fn caesar_encrypt_val c i64 k i64 -> i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + k % 26) % 26\n    c"
     },
     "C": {
      "tokens": 55,
@@ -3869,8 +3814,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn count_set_bits x i64 -> i64\n    let count i64 = 0\n    while x > 0\n        count += rem(x, 2)\n        x = x / 2\n    count"
+     "tokens": 45,
+     "source": "fn count_set_bits x i64 -> i64\n    let count i64 = 0\n    while x > 0\n        count += x % 2\n        x = x / 2\n    count"
     },
     "C": {
      "tokens": 51,
@@ -3900,8 +3845,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 71,
-     "source": "fn crc8_simple a array<i64> n i64 -> i64\n    let crc i64 = 0\n    for i from 0 to n - 1\n        crc = rem(crc + a[i], 256)\n        crc = rem(crc * 2, 256) + crc / 128\n    crc"
+     "tokens": 68,
+     "source": "fn crc8_simple a array<i64> n i64 -> i64\n    let crc i64 = 0\n    for i from 0 to n - 1\n        crc = (crc + a[i]) % 256\n        crc = crc * 2 % 256 + crc / 128\n    crc"
     },
     "C": {
      "tokens": 84,
@@ -3932,7 +3877,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 74,
-     "source": "fn digit_product x i64 -> i64\n    if x < 0\n        x = 0 - x\n    if x == 0\n        return 0\n    let p i64 = 1\n    while x > 0\n        p = p * rem(x, 10)\n        x = x / 10\n    p"
+     "source": "fn digit_product x i64 -> i64\n    if x < 0\n        x = 0 - x\n    if x == 0\n        return 0\n    let p i64 = 1\n    while x > 0\n        p = p * (x % 10)\n        x = x / 10\n    p"
     },
     "C": {
      "tokens": 78,
@@ -3962,8 +3907,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn fletcher16 a array<i64> n i64 -> i64\n    let sum1 i64 = 0\n    let sum2 i64 = 0\n    for i from 0 to n - 1\n        sum1 = rem(sum1 + a[i], 255)\n        sum2 = rem(sum2 + sum1, 255)\n    sum2 * 256 + sum1"
+     "tokens": 87,
+     "source": "fn fletcher16 a array<i64> n i64 -> i64\n    let sum1 i64 = 0\n    let sum2 i64 = 0\n    for i from 0 to n - 1\n        sum1 = (sum1 + a[i]) % 255\n        sum2 = (sum2 + sum1) % 255\n    sum2 * 256 + sum1"
     },
     "C": {
      "tokens": 97,
@@ -4024,8 +3969,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 114,
-     "source": "fn luhn_from_array a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = a[n - 1 - i]\n        if rem(i, 2) == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if rem(sum, 10) == 0\n        1\n    else\n        0"
+     "tokens": 110,
+     "source": "fn luhn_from_array a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = a[n - 1 - i]\n        if i % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 122,
@@ -4086,8 +4031,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn parity_bit a array<i64> n i64 -> i64\n    let ones i64 = 0\n    for i from 0 to n - 1\n        ones += a[i]\n    rem(ones, 2)"
+     "tokens": 47,
+     "source": "fn parity_bit a array<i64> n i64 -> i64\n    let ones i64 = 0\n    for i from 0 to n - 1\n        ones += a[i]\n    ones % 2"
     },
     "C": {
      "tokens": 57,
@@ -4113,23 +4058,12 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "encoding",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "rot13_val",
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 71,
-     "source": "fn rot13_val c i64 -> i64\n    if c >= 97 and c <= 122\n        return 97 + rem(c - 97 + 13, 26)\n    if c >= 65 and c <= 90\n        return 65 + rem(c - 65 + 13, 26)\n    c"
+     "tokens": 73,
+     "source": "fn rot13_val c i64 -> i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + 13) % 26\n    if c >= 65 and c <= 90\n        return 65 + (c - 65 + 13) % 26\n    c"
     },
     "C": {
      "tokens": 77,
@@ -4283,8 +4217,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 18,
-     "source": "fn cents_part cents i64 -> i64\n    rem(cents, 100)"
+     "tokens": 15,
+     "source": "fn cents_part cents i64 -> i64\n    cents % 100"
     },
     "C": {
      "tokens": 19,
@@ -4527,17 +4461,6 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "finance",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "round_to_nearest",
    "category": "finance",
    "langs": {
@@ -4635,8 +4558,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 21,
-     "source": "fn split_remainder cents i64 people i64 -> i64\n    rem(cents, people)"
+     "tokens": 18,
+     "source": "fn split_remainder cents i64 people i64 -> i64\n    cents % people"
     },
     "C": {
      "tokens": 24,
@@ -5777,12 +5700,210 @@
    "present": 6
   },
   {
+   "name": "common_neighbors_count",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 77,
+     "source": "fn common_neighbors_count g array<i64> n i64 a i64 b i64 -> i64\n    let count i64 = 0\n    for k from 0 to n - 1\n        if g[a * n + k] == 1\n            if g[b * n + k] == 1\n                count += 1\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "connected_components_count",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 572,
+     "source": "fn connected_components_count g array<i64> n i64 -> i64\n    let visited array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let queue array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let components i64 = 0\n    for s from 0 to n - 1\n        if visited[s] == 0\n            components += 1\n            let head i64 = 0\n            let tail i64 = 0\n            visited[s] = 1\n            queue[0] = s\n            tail = 1\n            while head < tail\n                let v i64 = queue[head]\n                head += 1\n                for c from 0 to n - 1\n                    if g[v * n + c] == 1\n                        if visited[c] == 0\n                            visited[c] = 1\n                            queue[tail] = c\n                            tail += 1\n    components"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "count_isolated_vertices",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 60,
+     "source": "fn count_isolated_vertices g array<i64> n i64 -> i64\n    let count i64 = 0\n    for v from 0 to n - 1\n        if total_degree(g, n, v) == 0\n            count += 1\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "count_leaves",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 59,
+     "source": "fn count_leaves g array<i64> n i64 -> i64\n    let count i64 = 0\n    for v from 0 to n - 1\n        if out_degree(g, n, v) == 1\n            count += 1\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "count_self_loops",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 50,
+     "source": "fn count_self_loops g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        count += g[i * n + i]\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "count_triangles",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 112,
+     "source": "fn count_triangles g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            for k from j + 1 to n - 1\n                if g[i * n + j] == 1\n                    if g[j * n + k] == 1\n                        if g[i * n + k] == 1\n                            count += 1\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "edge_count_directed",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 48,
+     "source": "fn edge_count_directed g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n * n - 1\n        count += g[i]\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "edge_count_undirected",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 74,
+     "source": "fn edge_count_undirected g array<i64> n i64 -> i64\n    let count i64 = 0\n    for i from 0 to n - 1\n        for j from i + 1 to n - 1\n            if g[i * n + j] == 1\n                count += 1\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "has_edge",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 29,
+     "source": "fn has_edge g array<i64> n i64 r i64 c i64 -> i64\n    g[r * n + c]"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "in_degree",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 51,
+     "source": "fn in_degree g array<i64> n i64 v i64 -> i64\n    let sum i64 = 0\n    for r from 0 to n - 1\n        sum += g[r * n + v]\n    sum"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "is_complete_graph",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 67,
+     "source": "fn is_complete_graph g array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        for j from 0 to n - 1\n            if i != j\n                if g[i * n + j] != 1\n                    return 0\n    1"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "is_regular",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 65,
+     "source": "fn is_regular g array<i64> n i64 -> i64\n    let d0 i64 = out_degree(g, n, 0)\n    for v from 1 to n - 1\n        if out_degree(g, n, v) != d0\n            return 0\n    1"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "is_symmetric",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 65,
+     "source": "fn is_symmetric g array<i64> n i64 -> i64\n    for i from 0 to n - 1\n        for j from 0 to n - 1\n            if g[i * n + j] != g[j * n + i]\n                return 0\n    1"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "max_degree_vertex",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 90,
+     "source": "fn max_degree_vertex g array<i64> n i64 -> i64\n    let best_v i64 = 0\n    let best_d i64 = out_degree(g, n, 0)\n    for v from 1 to n - 1\n        let d i64 = out_degree(g, n, v)\n        if d > best_d\n            best_d = d\n            best_v = v\n    best_v"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "out_degree",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 51,
+     "source": "fn out_degree g array<i64> n i64 v i64 -> i64\n    let sum i64 = 0\n    for c from 0 to n - 1\n        sum += g[v * n + c]\n    sum"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "path_exists_len2",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 69,
+     "source": "fn path_exists_len2 g array<i64> n i64 s i64 t i64 -> i64\n    for k from 0 to n - 1\n        if g[s * n + k] == 1\n            if g[k * n + t] == 1\n                return 1\n    0"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "reachable_count_bfs",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 555,
+     "source": "fn reachable_count_bfs g array<i64> n i64 start i64 -> i64\n    let visited array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let queue array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    let head i64 = 0\n    let tail i64 = 0\n    visited[start] = 1\n    queue[tail] = start\n    tail += 1\n    let count i64 = 0\n    while head < tail\n        let v i64 = queue[head]\n        head += 1\n        count += 1\n        for c from 0 to n - 1\n            if g[v * n + c] == 1\n                if visited[c] == 0\n                    visited[c] = 1\n                    queue[tail] = c\n                    tail += 1\n    count"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "total_degree",
+   "category": "graph_algos",
+   "langs": {
+    "Lullaby": {
+     "tokens": 36,
+     "source": "fn total_degree g array<i64> n i64 v i64 -> i64\n    out_degree(g, n, v) + in_degree(g, n, v)"
+    }
+   },
+   "present": 1
+  },
+  {
    "name": "digit_hash",
    "category": "hashing",
    "langs": {
     "Lullaby": {
      "tokens": 92,
-     "source": "fn digit_hash x i64 -> i64\n    if x < 0\n        x = 0 - x\n    if x == 0\n        return 0\n    let m i64 = 1000000007\n    let h i64 = 7\n    while x > 0\n        h = rem(h * 31 + rem(x, 10), m)\n        x = x / 10\n    h"
+     "source": "fn digit_hash x i64 -> i64\n    if x < 0\n        x = 0 - x\n    if x == 0\n        return 0\n    let m i64 = 1000000007\n    let h i64 = 7\n    while x > 0\n        h = (h * 31 + x % 10) % m\n        x = x / 10\n    h"
     },
     "C": {
      "tokens": 92,
@@ -5812,8 +5933,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 67,
-     "source": "fn djb2_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 5381\n    for i from 0 to n - 1\n        h = rem(h * 33 + a[i], m)\n    h"
+     "tokens": 68,
+     "source": "fn djb2_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 5381\n    for i from 0 to n - 1\n        h = (h * 33 + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 74,
@@ -5874,8 +5995,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn fnv1a_arithmetic a array<i64> n i64 -> i64\n    let m i64 = 100000007\n    let prime i64 = 16777619\n    let h i64 = rem(2166136261, m)\n    for i from 0 to n - 1\n        h = rem((h + a[i]) * prime, m)\n    h"
+     "tokens": 83,
+     "source": "fn fnv1a_arithmetic a array<i64> n i64 -> i64\n    let m i64 = 100000007\n    let prime i64 = 16777619\n    let h i64 = 2166136261 % m\n    for i from 0 to n - 1\n        h = (h + a[i]) * prime % m\n    h"
     },
     "C": {
      "tokens": 91,
@@ -5906,7 +6027,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 55,
-     "source": "fn length_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    if n <= 0\n        return 0\n    rem(n * 2654435761 + a[0], m)"
+     "source": "fn length_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    if n <= 0\n        return 0\n    (n * 2654435761 + a[0]) % m"
     },
     "C": {
      "tokens": 62,
@@ -5967,8 +6088,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn mod_sum_hash a array<i64> n i64 m i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = rem(h + a[i], m)\n    h"
+     "tokens": 54,
+     "source": "fn mod_sum_hash a array<i64> n i64 m i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 66,
@@ -6030,7 +6151,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 109,
-     "source": "fn pearson_like a array<i64> n i64 -> i64\n    let t array<i64> = [7, 3, 11, 15, 0, 9, 5, 13, 1, 14, 6, 10, 2, 12, 4, 8]\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = t[rem(h + a[i], 16)]\n    h"
+     "source": "fn pearson_like a array<i64> n i64 -> i64\n    let t array<i64> = [7, 3, 11, 15, 0, 9, 5, 13, 1, 14, 6, 10, 2, 12, 4, 8]\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = t[(h + a[i]) % 16]\n    h"
     },
     "C": {
      "tokens": 121,
@@ -6060,8 +6181,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn poly_hash a array<i64> n i64 base i64 modulus i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = rem(h * base + a[i], modulus)\n    h"
+     "tokens": 58,
+     "source": "fn poly_hash a array<i64> n i64 base i64 modulus i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h * base + a[i]) % modulus\n    h"
     },
     "C": {
      "tokens": 72,
@@ -6092,7 +6213,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 57,
-     "source": "fn product_hash a array<i64> n i64 m i64 -> i64\n    let h i64 = 1\n    for i from 0 to n - 1\n        h = rem(h * (a[i] + 1), m)\n    h"
+     "source": "fn product_hash a array<i64> n i64 m i64 -> i64\n    let h i64 = 1\n    for i from 0 to n - 1\n        h = h * (a[i] + 1) % m\n    h"
     },
     "C": {
      "tokens": 70,
@@ -6118,23 +6239,12 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "hashing",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "rolling_hash",
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn rolling_hash a array<i64> n i64 modulus i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = rem(h * 256 + a[i], modulus)\n    h"
+     "tokens": 56,
+     "source": "fn rolling_hash a array<i64> n i64 modulus i64 -> i64\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h * 256 + a[i]) % modulus\n    h"
     },
     "C": {
      "tokens": 68,
@@ -6164,8 +6274,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 96,
-     "source": "fn rotate_hash a array<i64> n i64 -> i64\n    let m i64 = 1073741824\n    let half i64 = 536870912\n    let h i64 = 0\n    for i from 0 to n - 1\n        let carry i64 = h / half\n        h = rem(h * 2, m) + carry\n        h = rem(h + a[i], m)\n    h"
+     "tokens": 95,
+     "source": "fn rotate_hash a array<i64> n i64 -> i64\n    let m i64 = 1073741824\n    let half i64 = 536870912\n    let h i64 = 0\n    for i from 0 to n - 1\n        let carry i64 = h / half\n        h = h * 2 % m + carry\n        h = (h + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 103,
@@ -6195,8 +6305,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 68,
-     "source": "fn sdbm_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = rem(a[i] + h * 65599, m)\n    h"
+     "tokens": 69,
+     "source": "fn sdbm_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (a[i] + h * 65599) % m\n    h"
     },
     "C": {
      "tokens": 75,
@@ -6257,8 +6367,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 69,
-     "source": "fn weighted_pos_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = rem(h + (i + 1) * a[i], m)\n    h"
+     "tokens": 70,
+     "source": "fn weighted_pos_hash a array<i64> n i64 -> i64\n    let m i64 = 1000000007\n    let h i64 = 0\n    for i from 0 to n - 1\n        h = (h + (i + 1) * a[i]) % m\n    h"
     },
     "C": {
      "tokens": 76,
@@ -6288,8 +6398,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn xor_free_checksum a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    rem(total, 256)"
+     "tokens": 48,
+     "source": "fn xor_free_checksum a array<i64> n i64 -> i64\n    let total i64 = 0\n    for i from 0 to n - 1\n        total += a[i]\n    total % 256"
     },
     "C": {
      "tokens": 58,
@@ -6879,8 +6989,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn digital_root n i64 -> i64\n    while n >= 10\n        let s i64 = 0\n        while n > 0\n            s += rem(n, 10)\n            n = n / 10\n        n = s\n    n"
+     "tokens": 56,
+     "source": "fn digital_root n i64 -> i64\n    while n >= 10\n        let s i64 = 0\n        while n > 0\n            s += n % 10\n            n = n / 10\n        n = s\n    n"
     },
     "C": {
      "tokens": 68,
@@ -6910,8 +7020,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 75,
-     "source": "fn divisor_count n i64 -> i64\n    let count i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if rem(n, d) == 0\n            count += 1\n            if d != n / d\n                count += 1\n        d += 1\n    count"
+     "tokens": 73,
+     "source": "fn divisor_count n i64 -> i64\n    let count i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if n % d == 0\n            count += 1\n            if d != n / d\n                count += 1\n        d += 1\n    count"
     },
     "C": {
      "tokens": 74,
@@ -6941,8 +7051,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 81,
-     "source": "fn divisor_sum n i64 -> i64\n    let sum i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if rem(n, d) == 0\n            sum += d\n            let other i64 = n / d\n            if other != d\n                sum += other\n        d += 1\n    sum"
+     "tokens": 79,
+     "source": "fn divisor_sum n i64 -> i64\n    let sum i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if n % d == 0\n            sum += d\n            let other i64 = n / d\n            if other != d\n                sum += other\n        d += 1\n    sum"
     },
     "C": {
      "tokens": 86,
@@ -6972,8 +7082,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 99,
-     "source": "fn euler_totient n i64 -> i64\n    let result i64 = n\n    let p i64 = 2\n    while p * p <= n\n        if rem(n, p) == 0\n            while rem(n, p) == 0\n                n = n / p\n            result = result - result / p\n        p += 1\n    if n > 1\n        result = result - result / n\n    result"
+     "tokens": 95,
+     "source": "fn euler_totient n i64 -> i64\n    let result i64 = n\n    let p i64 = 2\n    while p * p <= n\n        if n % p == 0\n            while n % p == 0\n                n = n / p\n            result = result - result / p\n        p += 1\n    if n > 1\n        result = result - result / n\n    result"
     },
     "C": {
      "tokens": 102,
@@ -7003,8 +7113,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t i64 = rem(a, b)\n        a = b\n        b = t\n    a"
+     "tokens": 41,
+     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t i64 = a % b\n        a = b\n        b = t\n    a"
     },
     "C": {
      "tokens": 51,
@@ -7096,8 +7206,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 82,
-     "source": "fn is_armstrong n i64 -> i64\n    let d i64 = num_digits(n)\n    let sum i64 = 0\n    let m i64 = n\n    while m > 0\n        sum += int_pow(rem(m, 10), d)\n        m = m / 10\n    if sum == n\n        1\n    else\n        0"
+     "tokens": 81,
+     "source": "fn is_armstrong n i64 -> i64\n    let d i64 = num_digits(n)\n    let sum i64 = 0\n    let m i64 = n\n    while m > 0\n        sum += int_pow(m % 10, d)\n        m = m / 10\n    if sum == n\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 83,
@@ -7278,23 +7388,12 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "number_theory",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "reverse_digits",
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn reverse_digits n i64 -> i64\n    let r i64 = 0\n    while n > 0\n        r = r * 10 + rem(n, 10)\n        n = n / 10\n    r"
+     "tokens": 49,
+     "source": "fn reverse_digits n i64 -> i64\n    let r i64 = 0\n    while n > 0\n        r = r * 10 + n % 10\n        n = n / 10\n    r"
     },
     "C": {
      "tokens": 57,
@@ -7324,8 +7423,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 58,
-     "source": "fn sum_of_squares_digits n i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        let d i64 = rem(n, 10)\n        sum += d * d\n        n = n / 10\n    sum"
+     "tokens": 57,
+     "source": "fn sum_of_squares_digits n i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        let d i64 = n % 10\n        sum += d * d\n        n = n / 10\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -7355,8 +7454,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn to_base_digit_sum n i64 b i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        sum += rem(n, b)\n        n = n / b\n    sum"
+     "tokens": 47,
+     "source": "fn to_base_digit_sum n i64 b i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        sum += n % b\n        n = n / b\n    sum"
     },
     "C": {
      "tokens": 57,
@@ -8502,8 +8601,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 34,
-     "source": "fn jitter_backoff attempt i64 base i64 seed i64 -> i64\n    return retry_backoff_ms(attempt, base) + rem(seed, base)"
+     "tokens": 32,
+     "source": "fn jitter_backoff attempt i64 base i64 seed i64 -> i64\n    return retry_backoff_ms(attempt, base) + seed % base"
     },
     "C": {
      "tokens": 39,
@@ -8735,7 +8834,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 24,
-     "source": "fn queue_next_index head i64 cap i64 -> i64\n    return rem(head + 1, cap)"
+     "source": "fn queue_next_index head i64 cap i64 -> i64\n    return (head + 1) % cap"
     },
     "C": {
      "tokens": 29,
@@ -8790,17 +8889,6 @@
     }
    },
    "present": 6
-  },
-  {
-   "name": "rem",
-   "category": "services",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
   },
   {
    "name": "retry_backoff_ms",
@@ -10351,7 +10439,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 52,
-     "source": "fn product_mod a array<i64> n i64 m i64 -> i64\n    let prod i64 = 1\n    for i from 0 to n - 1\n        prod = rem(prod * a[i], m)\n    prod"
+     "source": "fn product_mod a array<i64> n i64 m i64 -> i64\n    let prod i64 = 1\n    for i from 0 to n - 1\n        prod = prod * a[i] % m\n    prod"
     },
     "C": {
      "tokens": 65,
@@ -10406,17 +10494,6 @@
     }
    },
    "present": 6
-  },
-  {
-   "name": "rem",
-   "category": "statistics",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
   },
   {
    "name": "running_max_sum",
@@ -12228,8 +12305,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn checksum_mod10 digits array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += digits[i]\n    rem(sum, 10)"
+     "tokens": 48,
+     "source": "fn checksum_mod10 digits array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += digits[i]\n    sum % 10"
     },
     "C": {
      "tokens": 53,
@@ -12290,8 +12367,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 75,
-     "source": "fn even_parity bits array<i64> n i64 -> i64\n    let ones i64 = 0\n    for i from 0 to n - 1\n        if bits[i] == 1\n            ones += 1\n    if rem(ones, 2) == 0\n        1\n    else\n        0"
+     "tokens": 72,
+     "source": "fn even_parity bits array<i64> n i64 -> i64\n    let ones i64 = 0\n    for i from 0 to n - 1\n        if bits[i] == 1\n            ones += 1\n    if ones % 2 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 72,
@@ -12445,8 +12522,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 66,
-     "source": "fn is_leap_year y i64 -> i64\n    if rem(y, 400) == 0\n        return 1\n    if rem(y, 100) == 0\n        return 0\n    if rem(y, 4) == 0\n        return 1\n    0"
+     "tokens": 60,
+     "source": "fn is_leap_year y i64 -> i64\n    if y % 400 == 0\n        return 1\n    if y % 100 == 0\n        return 0\n    if y % 4 == 0\n        return 1\n    0"
     },
     "C": {
      "tokens": 58,
@@ -12507,8 +12584,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn is_valid_isbn10 digits array<i64> n i64 -> i64\n    if n != 10\n        return 0\n    let sum i64 = 0\n    for i from 0 to 9\n        sum += (10 - i) * digits[i]\n    if rem(sum, 11) == 0\n        1\n    else\n        0"
+     "tokens": 81,
+     "source": "fn is_valid_isbn10 digits array<i64> n i64 -> i64\n    if n != 10\n        return 0\n    let sum i64 = 0\n    for i from 0 to 9\n        sum += (10 - i) * digits[i]\n    if sum % 11 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 87,
@@ -12600,8 +12677,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 121,
-     "source": "fn luhn_check digits array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = digits[i]\n        let pos i64 = n - 1 - i\n        if rem(pos, 2) == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if rem(sum, 10) == 0\n        1\n    else\n        0"
+     "tokens": 117,
+     "source": "fn luhn_check digits array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = digits[i]\n        let pos i64 = n - 1 - i\n        if pos % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
     },
     "C": {
      "tokens": 124,
@@ -12652,17 +12729,6 @@
     }
    },
    "present": 6
-  },
-  {
-   "name": "rem",
-   "category": "validation",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
   },
   {
    "name": "require",
@@ -13215,7 +13281,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 24254,
+  "Lullaby": 24183,
   "C": 26030,
   "C++": 26894,
   "Rust": 24867,
@@ -13232,7 +13298,7 @@
    "JavaScript": 953
   },
   "bitwise": {
-   "Lullaby": 855,
+   "Lullaby": 840,
    "C": 954,
    "C++": 954,
    "Rust": 933,
@@ -13248,7 +13314,7 @@
    "JavaScript": 705
   },
   "collections": {
-   "Lullaby": 1485,
+   "Lullaby": 1482,
    "C": 1536,
    "C++": 1738,
    "Rust": 1552,
@@ -13256,7 +13322,7 @@
    "JavaScript": 1241
   },
   "combinatorics": {
-   "Lullaby": 1206,
+   "Lullaby": 1205,
    "C": 1275,
    "C++": 1275,
    "Rust": 1200,
@@ -13264,7 +13330,7 @@
    "JavaScript": 1111
   },
   "data_records": {
-   "Lullaby": 528,
+   "Lullaby": 526,
    "C": 567,
    "C++": 600,
    "Rust": 500,
@@ -13272,7 +13338,7 @@
    "JavaScript": 416
   },
   "datetime": {
-   "Lullaby": 1060,
+   "Lullaby": 1055,
    "C": 1051,
    "C++": 1052,
    "Rust": 1056,
@@ -13280,7 +13346,7 @@
    "JavaScript": 968
   },
   "encoding": {
-   "Lullaby": 945,
+   "Lullaby": 938,
    "C": 1050,
    "C++": 1050,
    "Rust": 1025,
@@ -13288,7 +13354,7 @@
    "JavaScript": 982
   },
   "finance": {
-   "Lullaby": 416,
+   "Lullaby": 410,
    "C": 514,
    "C++": 514,
    "Rust": 519,
@@ -13311,8 +13377,16 @@
    "Python": 558,
    "JavaScript": 513
   },
+  "graph_algos": {
+   "Lullaby": 0,
+   "C": 0,
+   "C++": 0,
+   "Rust": 0,
+   "Python": 0,
+   "JavaScript": 0
+  },
   "hashing": {
-   "Lullaby": 1076,
+   "Lullaby": 1077,
    "C": 1218,
    "C++": 1218,
    "Rust": 1170,
@@ -13328,7 +13402,7 @@
    "JavaScript": 813
   },
   "number_theory": {
-   "Lullaby": 988,
+   "Lullaby": 974,
    "C": 1098,
    "C++": 1098,
    "Rust": 1089,
@@ -13352,7 +13426,7 @@
    "JavaScript": 383
   },
   "services": {
-   "Lullaby": 718,
+   "Lullaby": 716,
    "C": 775,
    "C++": 870,
    "Rust": 736,
@@ -13408,7 +13482,7 @@
    "JavaScript": 319
   },
   "validation": {
-   "Lullaby": 1211,
+   "Lullaby": 1194,
    "C": 1131,
    "C++": 1067,
    "Rust": 1186,

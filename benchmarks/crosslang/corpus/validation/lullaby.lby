@@ -4,20 +4,17 @@
 # 1-char string args carry a single ASCII character; strings have no ordering
 # comparison, so character classes go through `char_code`.
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
-
 fn luhn_check digits array<i64> n i64 -> i64
     let sum i64 = 0
     for i from 0 to n - 1
         let d i64 = digits[i]
         let pos i64 = n - 1 - i
-        if rem(pos, 2) == 1
+        if pos % 2 == 1
             d = d * 2
             if d > 9
                 d = d - 9
         sum += d
-    if rem(sum, 10) == 0
+    if sum % 10 == 0
         1
     else
         0
@@ -28,7 +25,7 @@ fn is_valid_isbn10 digits array<i64> n i64 -> i64
     let sum i64 = 0
     for i from 0 to 9
         sum += (10 - i) * digits[i]
-    if rem(sum, 11) == 0
+    if sum % 11 == 0
         1
     else
         0
@@ -40,11 +37,11 @@ fn in_range x i64 lo i64 hi i64 -> i64
         0
 
 fn is_leap_year y i64 -> i64
-    if rem(y, 400) == 0
+    if y % 400 == 0
         return 1
-    if rem(y, 100) == 0
+    if y % 100 == 0
         return 0
-    if rem(y, 4) == 0
+    if y % 4 == 0
         return 1
     0
 
@@ -138,7 +135,7 @@ fn checksum_mod10 digits array<i64> n i64 -> i64
     let sum i64 = 0
     for i from 0 to n - 1
         sum += digits[i]
-    rem(sum, 10)
+    sum % 10
 
 fn valid_percentage x i64 -> i64
     if x >= 0 and x <= 100
@@ -157,7 +154,7 @@ fn even_parity bits array<i64> n i64 -> i64
     for i from 0 to n - 1
         if bits[i] == 1
             ones += 1
-    if rem(ones, 2) == 0
+    if ones % 2 == 0
         1
     else
         0
