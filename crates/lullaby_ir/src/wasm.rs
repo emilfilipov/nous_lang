@@ -1433,6 +1433,7 @@ fn assign_binop(op: lullaby_parser::AssignOp) -> BinaryOp {
         lullaby_parser::AssignOp::Subtract => BinaryOp::Subtract,
         lullaby_parser::AssignOp::Multiply => BinaryOp::Multiply,
         lullaby_parser::AssignOp::Divide => BinaryOp::Divide,
+        lullaby_parser::AssignOp::Remainder => BinaryOp::Remainder,
         lullaby_parser::AssignOp::Replace => unreachable!("Replace handled by caller"),
     }
 }
@@ -3686,6 +3687,17 @@ fn emit_fixed_binop(
             }
             emit_normalize_i64(kind, out);
         }
+        BinaryOp::Remainder => {
+            // WASM `rem_s`/`rem_u` need no overflow guard: `rem_s` returns 0 for
+            // `MIN % -1` (matching `wrapping_rem`) and traps only on a zero
+            // divisor, exactly like the interpreters' remainder path.
+            if kind.is_unsigned() {
+                out.push(0x82); // i64.rem_u
+            } else {
+                out.push(0x81); // i64.rem_s
+            }
+            emit_normalize_i64(kind, out);
+        }
         // Equality is width-agnostic on the normalized cells.
         BinaryOp::Equal => out.push(0x51),    // i64.eq
         BinaryOp::NotEqual => out.push(0x52), // i64.ne
@@ -5644,7 +5656,8 @@ fn emit_i64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::Add => 0x7c,
         BinaryOp::Subtract => 0x7d,
         BinaryOp::Multiply => 0x7e,
-        BinaryOp::Divide => 0x7f, // i64.div_s (traps on 0)
+        BinaryOp::Divide => 0x7f,    // i64.div_s (traps on 0)
+        BinaryOp::Remainder => 0x81, // i64.rem_s (traps on 0; returns 0 for MIN%-1)
         BinaryOp::Equal => 0x51,
         BinaryOp::NotEqual => 0x52,
         BinaryOp::Less => 0x53,         // lt_s
@@ -5714,10 +5727,11 @@ fn emit_f64_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::LessEqual => 0x65,
         BinaryOp::Greater => 0x64,
         BinaryOp::GreaterEqual => 0x66,
-        // `and`/`or` short-circuit and the integer bitwise ops are deferred on
-        // this backend; both are routed away before reaching this opcode table.
+        // `and`/`or` short-circuit, `%` is integer-only, and the integer bitwise
+        // ops are deferred; all are routed away before reaching this opcode table.
         BinaryOp::And
         | BinaryOp::Or
+        | BinaryOp::Remainder
         | BinaryOp::BitAnd
         | BinaryOp::BitOr
         | BinaryOp::BitXor
@@ -5745,10 +5759,11 @@ fn emit_f32_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::Greater => 0x5e,
         BinaryOp::LessEqual => 0x5f,
         BinaryOp::GreaterEqual => 0x60,
-        // `and`/`or` short-circuit and the integer bitwise ops are deferred on
-        // this backend; both are routed away before reaching this opcode table.
+        // `and`/`or` short-circuit, `%` is integer-only, and the integer bitwise
+        // ops are deferred; all are routed away before reaching this opcode table.
         BinaryOp::And
         | BinaryOp::Or
+        | BinaryOp::Remainder
         | BinaryOp::BitAnd
         | BinaryOp::BitOr
         | BinaryOp::BitXor
@@ -5766,7 +5781,8 @@ fn emit_i32_binop(op: BinaryOp, out: &mut Vec<u8>) -> Result<(), String> {
         BinaryOp::Add => 0x6a,
         BinaryOp::Subtract => 0x6b,
         BinaryOp::Multiply => 0x6c,
-        BinaryOp::Divide => 0x6d, // i32.div_s
+        BinaryOp::Divide => 0x6d,    // i32.div_s
+        BinaryOp::Remainder => 0x6f, // i32.rem_s
         BinaryOp::Equal => 0x46,
         BinaryOp::NotEqual => 0x47,
         BinaryOp::Less => 0x48,         // lt_s

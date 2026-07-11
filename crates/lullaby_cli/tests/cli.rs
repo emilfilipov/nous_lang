@@ -195,6 +195,43 @@ fn runs_standard_streams_across_backends() {
 }
 
 #[test]
+fn runs_modulo_across_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_modulo.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        // `17 % 5 = 2`, `-17 % 5 = -2` (sign of dividend), `100 %= 7 -> 2`, and the
+        // fizzbuzz score using `%` over 1..=20 is 14. Every backend must agree.
+        assert_eq!(
+            stdout(&output).replace("\r\n", "\n").trim(),
+            "2\n-2\n2\n14",
+            "{backend} stdout mismatch"
+        );
+    }
+}
+
+#[test]
+fn rejects_modulo_on_float() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/modulo_on_float.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("L0307"));
+}
+
+#[test]
 fn rejects_user_facing_invalid_examples() {
     let examples_dir = workspace_root().join("examples/invalid");
     let mut examples = std::fs::read_dir(&examples_dir)

@@ -1,0 +1,25 @@
+fn fizzbuzz_score n i64 -> i64
+    let i i64 = 1
+    let sum i64 = 0
+    while i <= n
+        if i % 15 == 0
+            sum += 3
+        elif i % 3 == 0
+            sum += 1
+        elif i % 5 == 0
+            sum += 2
+        i += 1
+    return sum
+
+fn main -> void
+    # basic remainder
+    wasm_log(17 % 5)
+    # remainder takes the sign of the dividend (truncated, like C/Rust)
+    let neg i64 = 0 - 17
+    wasm_log(neg % 5)
+    # compound remainder-assign
+    let acc i64 = 100
+    acc %= 7
+    wasm_log(acc)
+    # remainder inside control flow
+    wasm_log(fizzbuzz_score(20))

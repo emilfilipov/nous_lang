@@ -1476,6 +1476,16 @@ impl<'a> Checker<'a> {
                             value.span,
                         ));
                     }
+                } else if *op == AssignOp::Remainder {
+                    // `%=` is integer remainder: floats are not allowed.
+                    if expected.name.as_str() != "i64" || value_type.as_ref() != Some(&expected) {
+                        self.diagnostics.push(SemanticDiagnostic::at(
+                            "L0315",
+                            format!("compound assignment `%=` to {target} requires matching i64 operands"),
+                            Some(function.name.clone()),
+                            value.span,
+                        ));
+                    }
                 } else if !matches!(expected.name.as_str(), "i64" | "f64")
                     || value_type.as_ref() != Some(&expected)
                 {
@@ -2055,6 +2065,31 @@ impl<'a> Checker<'a> {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0307",
                                 "arithmetic operands must both be the same numeric type",
+                                Some(function.name.clone()),
+                                expr.span,
+                            ));
+                            None
+                        }
+                    }
+                    BinaryOp::Remainder => {
+                        // `%` is integer remainder only (like `& | ^ << >>`):
+                        // both operands must be the same integer type and the
+                        // result is that type. Floats are rejected (use integer
+                        // arithmetic, or a future `fmod` builtin).
+                        let is_integer = |ty: &Option<TypeRef>| {
+                            ty.as_ref().is_some_and(|t| {
+                                t.name == "i64" || is_fixed_width_int_name(&t.name)
+                            })
+                        };
+                        if left_type == right_type
+                            && is_integer(&left_type)
+                            && is_integer(&right_type)
+                        {
+                            left_type
+                        } else {
+                            self.diagnostics.push(SemanticDiagnostic::at(
+                                "L0307",
+                                "operands of `%` must both be the same integer type",
                                 Some(function.name.clone()),
                                 expr.span,
                             ));

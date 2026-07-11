@@ -398,6 +398,7 @@ fn render_assign_op(op: &AssignOp) -> &'static str {
         AssignOp::Subtract => "-=",
         AssignOp::Multiply => "*=",
         AssignOp::Divide => "/=",
+        AssignOp::Remainder => "%=",
     }
 }
 
@@ -550,7 +551,7 @@ fn binary_precedence(op: &BinaryOp) -> u8 {
         BinaryOp::BitAnd => 6,
         BinaryOp::Shl | BinaryOp::Shr => 7,
         BinaryOp::Add | BinaryOp::Subtract => 8,
-        BinaryOp::Multiply | BinaryOp::Divide => 9,
+        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => 9,
     }
 }
 
@@ -560,6 +561,7 @@ fn render_binary_op(op: &BinaryOp) -> &'static str {
         BinaryOp::Subtract => "-",
         BinaryOp::Multiply => "*",
         BinaryOp::Divide => "/",
+        BinaryOp::Remainder => "%",
         BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
         BinaryOp::Less => "<",

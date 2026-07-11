@@ -440,6 +440,13 @@ fn main -> i64
     total</code></pre>
         <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_count_assignment.lby</code>.</p>
         <p>Numeric literals may use <code>_</code> as a digit separator between digits for readability &mdash; <code>1_000_000</code> and <code>3.141_592</code> &mdash; which does not change the value. A leading, trailing, doubled, or <code>.</code>-adjacent underscore is a malformed-literal parse error, and <code>lullaby fmt</code> renders literals without separators. Integers may also be written in hexadecimal (<code>0xFF</code>), binary (<code>0b1010</code>), or octal (<code>0o17</code>), with the same digit-separator rules; a base-prefixed literal is integer-only and an empty, out-of-radix, or fractional form is a parse error.</p>
+        <p>Alongside <code>+ - * /</code>, the <strong>integer remainder</strong> operator <code>%</code> (and its compound form <code>%=</code>) computes the truncated remainder of two operands of the same integer type. The sign follows the dividend, exactly like C and Rust: <code>17 % 5</code> is <code>2</code> and <code>-17 % 5</code> is <code>-2</code>. <code>%</code> binds at the same precedence as <code>*</code> and <code>/</code>, is <strong>not</strong> defined on floats (a float operand is the <code>L0307</code> operand-type error), and a zero divisor is the same runtime error (<code>L0404</code>) as integer division. It evaluates identically across the AST, IR, bytecode, native, and WASM backends.</p>
+        <pre data-fixture="tests/fixtures/valid/docs_modulo.lby" data-mode="run"><code>fn main -> void
+    wasm_log(17 % 5)
+    let acc i64 = 100
+    acc %= 7
+    wasm_log(acc)</code></pre>
+        <p class="example-status">Executable fixture: <code>tests/fixtures/valid/docs_modulo.lby</code>.</p>
       </section>
 
       <section id="arrays">

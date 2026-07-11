@@ -555,6 +555,7 @@ pub enum AssignOp {
     Subtract,
     Multiply,
     Divide,
+    Remainder,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -682,6 +683,10 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    /// Integer remainder (`%`): truncated remainder (sign of the dividend, like
+    /// C and Rust) of two operands of the same integer type. Not defined on
+    /// floats.
+    Remainder,
     Equal,
     NotEqual,
     Less,
@@ -2222,7 +2227,7 @@ impl<'a> Parser<'a> {
         }
         match self.tokens.get(index).map(|token| &token.kind) {
             Some(TokenKind::Symbol(symbol))
-                if matches!(symbol.as_str(), "=" | "+=" | "-=" | "*=" | "/=") =>
+                if matches!(symbol.as_str(), "=" | "+=" | "-=" | "*=" | "/=" | "%=") =>
             {
                 Some(index)
             }
@@ -2241,6 +2246,7 @@ impl<'a> Parser<'a> {
             "-=" => AssignOp::Subtract,
             "*=" => AssignOp::Multiply,
             "/=" => AssignOp::Divide,
+            "%=" => AssignOp::Remainder,
             _ => {
                 self.error("L0208", "expected assignment operator", self.peek().span);
                 return None;
@@ -2709,6 +2715,7 @@ impl<'a> ExprParser<'a> {
                 "-" => (BinaryOp::Subtract, 8),
                 "*" => (BinaryOp::Multiply, 9),
                 "/" => (BinaryOp::Divide, 9),
+                "%" => (BinaryOp::Remainder, 9),
                 _ => return None,
             }),
             _ => None,

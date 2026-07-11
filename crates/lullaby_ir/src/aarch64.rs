@@ -99,6 +99,12 @@ fn sdiv_reg(rd: u32, rn: u32, rm: u32) -> u32 {
     0x9AC0_0C00 | (rm << 16) | (rn << 5) | rd
 }
 
+/// `msub Xd, Xn, Xm, Xa` (`Xd = Xa - Xn*Xm`). Used with `sdiv` to compute the
+/// truncated remainder `a - (a/b)*b`.
+fn msub_reg(rd: u32, rn: u32, rm: u32, ra: u32) -> u32 {
+    0x9B00_8000 | (rm << 16) | (ra << 10) | (rn << 5) | rd
+}
+
 /// `and Xd, Xn, Xm` (bitwise, shifted register).
 fn and_reg(rd: u32, rn: u32, rm: u32) -> u32 {
     0x8A00_0000 | (rm << 16) | (rn << 5) | rd
@@ -557,12 +563,17 @@ fn lower_stmt(fg: &mut FnGen, stmt: &BytecodeInstruction) -> Result<(), String> 
                     lower_expr(fg, value)?;
                     fg.emit(str_local(0, X29, slot));
                 }
-                AssignOp::Add | AssignOp::Subtract | AssignOp::Multiply | AssignOp::Divide => {
+                AssignOp::Add
+                | AssignOp::Subtract
+                | AssignOp::Multiply
+                | AssignOp::Divide
+                | AssignOp::Remainder => {
                     let bin = match op {
                         AssignOp::Add => BinaryOp::Add,
                         AssignOp::Subtract => BinaryOp::Subtract,
                         AssignOp::Multiply => BinaryOp::Multiply,
                         AssignOp::Divide => BinaryOp::Divide,
+                        AssignOp::Remainder => BinaryOp::Remainder,
                         AssignOp::Replace => unreachable!("handled above"),
                     };
                     fg.emit(ldr_local(0, X29, slot)); // x0 = current (left)
@@ -570,7 +581,7 @@ fn lower_stmt(fg: &mut FnGen, stmt: &BytecodeInstruction) -> Result<(), String> 
                     lower_expr(fg, value)?; // x0 = right
                     fg.emit(mov_reg(1, 0)); // x1 = right
                     fg.emit(pop_reg(0)); // x0 = left
-                    emit_arith(fg, bin);
+                    emit_binary_op(fg, bin); // handles Divide (sdiv) and Remainder (sdiv+msub)
                     fg.emit(str_local(0, X29, slot));
                 }
             }
@@ -872,6 +883,14 @@ fn emit_binary_op(fg: &mut FnGen, op: BinaryOp) {
         | BinaryOp::BitXor
         | BinaryOp::Shl
         | BinaryOp::Shr => emit_arith(fg, op),
+        // Remainder has no single AArch64 instruction: `x0 = x0 - (x0/x1)*x1`
+        // via `sdiv` into a scratch register, then `msub`. This also yields the
+        // correct `0` for `i64::MIN % -1` (sdiv wraps to i64::MIN, and
+        // `i64::MIN - i64::MIN*(-1)` wraps back to 0), matching the interpreters.
+        BinaryOp::Remainder => {
+            fg.emit(sdiv_reg(2, 0, 1)); // x2 = x0 / x1
+            fg.emit(msub_reg(0, 2, 1, 0)); // x0 = x0 - x2*x1
+        }
         BinaryOp::Equal => emit_compare(fg, COND_EQ),
         BinaryOp::NotEqual => emit_compare(fg, COND_NE),
         BinaryOp::Less => emit_compare(fg, COND_LT),

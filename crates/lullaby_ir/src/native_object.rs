@@ -563,12 +563,13 @@ impl<'a> NativeFunctionCodegen<'a> {
                     AssignOp::Add => code.extend_from_slice(&[0x48, 0x01, 0xC8]),
                     AssignOp::Subtract => code.extend_from_slice(&[0x48, 0x29, 0xC8]),
                     AssignOp::Multiply => code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC1]),
-                    AssignOp::Replace | AssignOp::Divide => unreachable!(),
+                    AssignOp::Replace | AssignOp::Divide | AssignOp::Remainder => unreachable!(),
                 }
             }
-            AssignOp::Divide => {
+            AssignOp::Divide | AssignOp::Remainder => {
                 return self.unsupported(
-                    "prototype emitter does not support native i64 division assignment".to_string(),
+                    "prototype emitter does not support native i64 division/remainder assignment"
+                        .to_string(),
                 );
             }
         }
@@ -3866,7 +3867,7 @@ fn lower_native_stmt(
                             AssignOp::Subtract => BinaryOp::Subtract,
                             AssignOp::Multiply => BinaryOp::Multiply,
                             AssignOp::Divide => BinaryOp::Divide,
-                            AssignOp::Replace => unreachable!(),
+                            AssignOp::Replace | AssignOp::Remainder => unreachable!(),
                         };
                         // Compute the RHS into xmm0, spill it, load current into
                         // xmm0, restore RHS into xmm1, then apply left <op> right.
@@ -3877,6 +3878,9 @@ fn lower_native_stmt(
                         pop_xmm1(code); // xmm1 = RHS (right)
                         emit_float_arith(code, bin, store_width);
                         store_float_local(code, slot, store_width);
+                    }
+                    AssignOp::Remainder => {
+                        unreachable!("`%=` requires integer operands (rejected by semantics)")
                     }
                 }
                 return Ok(());
@@ -4010,6 +4014,7 @@ fn lower_native_stmt(
                         AssignOp::Subtract => BinaryOp::Subtract,
                         AssignOp::Multiply => BinaryOp::Multiply,
                         AssignOp::Divide => BinaryOp::Divide,
+                        AssignOp::Remainder => BinaryOp::Remainder,
                         AssignOp::Replace => unreachable!(),
                     };
                     match place {
@@ -6535,6 +6540,21 @@ fn emit_fixed_binop_from_stack(
             }
             emit_normalize_rax(code, kind);
         }
+        BinaryOp::Remainder => {
+            // left % right: the same div/idiv leaves the remainder in rdx (rather
+            // than the quotient in rax). Move it into rax and re-normalize.
+            code.push(0x59); // pop rcx (left = dividend)
+            code.extend_from_slice(&[0x49, 0x89, 0xC0]); // mov r8, rax (divisor)
+            code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx (dividend)
+            if kind.is_unsigned() {
+                code.extend_from_slice(&[0x48, 0x31, 0xD2]); // xor rdx, rdx
+                code.extend_from_slice(&[0x49, 0xF7, 0xF0]); // div r8
+            } else {
+                emit_signed_irem_r8(code); // guarded so `x % -1 == 0` (rdx = 0)
+            }
+            code.extend_from_slice(&[0x48, 0x89, 0xD0]); // mov rax, rdx (remainder)
+            emit_normalize_rax(code, kind);
+        }
         BinaryOp::Equal | BinaryOp::NotEqual => {
             // Equality is width-agnostic on the normalized cells.
             code.push(0x59); // pop rcx (left)
@@ -6929,6 +6949,15 @@ fn emit_i64_binop_from_stack(code: &mut Vec<u8>, op: BinaryOp) -> Result<(), Str
             code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx (dividend)
             emit_signed_idiv_r8(code); // guarded against i64::MIN / -1 overflow
         }
+        BinaryOp::Remainder => {
+            // left % right: the same idiv leaves the remainder in rdx; move it
+            // into rax. `x % -1 == 0` is handled inside emit_signed_irem_r8.
+            code.push(0x59); // pop rcx (left = dividend)
+            code.extend_from_slice(&[0x49, 0x89, 0xC0]); // mov r8, rax (divisor)
+            code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx (dividend)
+            emit_signed_irem_r8(code);
+            code.extend_from_slice(&[0x48, 0x89, 0xD0]); // mov rax, rdx (remainder)
+        }
         BinaryOp::Equal
         | BinaryOp::NotEqual
         | BinaryOp::Less
@@ -6982,6 +7011,28 @@ fn emit_signed_idiv_r8(code: &mut Vec<u8>) {
     // cqo  (sign-extend rax into rdx:rax)
     code.extend_from_slice(&[0x48, 0x99]);
     // idiv r8
+    code.extend_from_slice(&[0x49, 0xF7, 0xF8]);
+}
+
+/// Emit a signed 64-bit remainder of `rax` (dividend) by `r8` (divisor), leaving
+/// the remainder in `rdx` (the caller moves it where it needs it). Like
+/// [`emit_signed_idiv_r8`], the plain `idiv` raises #DE on `i64::MIN / -1`, but
+/// the true remainder there is `0` (`i64::MIN % -1 == 0`, matching `wrapping_rem`
+/// in the interpreters). Special-case a divisor of `-1` by setting the remainder
+/// to `0` directly and skipping the trapping `idiv`. The caller must guarantee a
+/// non-zero divisor.
+fn emit_signed_irem_r8(code: &mut Vec<u8>) {
+    // cmp r8, -1
+    code.extend_from_slice(&[0x49, 0x83, 0xF8, 0xFF]);
+    // jne +5  (skip the xor/jmp pair, fall through to cqo/idiv)
+    code.extend_from_slice(&[0x75, 0x05]);
+    // xor rdx, rdx  (remainder of x % -1 is 0 for the whole i64 range)
+    code.extend_from_slice(&[0x48, 0x31, 0xD2]);
+    // jmp +5  (skip cqo/idiv)
+    code.extend_from_slice(&[0xEB, 0x05]);
+    // cqo  (sign-extend rax into rdx:rax)
+    code.extend_from_slice(&[0x48, 0x99]);
+    // idiv r8  (quotient -> rax, remainder -> rdx)
     code.extend_from_slice(&[0x49, 0xF7, 0xF8]);
 }
 

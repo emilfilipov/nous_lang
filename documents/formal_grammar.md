@@ -180,7 +180,7 @@ Expression precedence, from lowest to highest:
 2. `and`
 3. equality and ordering: `==`, `!=`, `<`, `<=`, `>`, `>=`
 4. addition and subtraction: `+`, `-`
-5. multiplication and division: `*`, `/`
+5. multiplication, division, and remainder: `*`, `/`, `%`
 6. unary: `not`, unary `-`
 7. postfix indexing: `target[index]`
 8. primary expressions
@@ -205,7 +205,7 @@ additive_expr =
     multiplicative_expr { ("+" | "-") multiplicative_expr } ;
 
 multiplicative_expr =
-    unary_expr { ("*" | "/") unary_expr } ;
+    unary_expr { ("*" | "/" | "%") unary_expr } ;
 
 unary_expr =
     "not" unary_expr

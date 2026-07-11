@@ -280,6 +280,19 @@ pub fn int_div(left: i64, right: i64, ty: IntKind) -> i64 {
     }
 }
 
+/// Signedness-aware remainder of two normalized `i64` cells tagged `ty`; the
+/// caller guarantees a non-zero divisor. Signed kinds use the truncated
+/// remainder (sign of the dividend, like C/Rust `%`); unsigned kinds take the
+/// remainder on the `u64` reinterpretation. The result magnitude is smaller than
+/// the divisor, so it is already normalized to the kind's width.
+pub fn int_rem(left: i64, right: i64, ty: IntKind) -> i64 {
+    if ty.is_unsigned() {
+        (left as u64).wrapping_rem(right as u64) as i64
+    } else {
+        left.wrapping_rem(right)
+    }
+}
+
 /// Left shift of a normalized fixed-width cell, with the shift amount masked to
 /// the kind's width (`amount & (width-1)` — total and deterministic, like the
 /// `i64` shift) and the result re-normalized to the width.
@@ -4069,6 +4082,9 @@ impl<'a> Runtime<'a> {
                 BinaryOp::Subtract => Value::F64(l - r),
                 BinaryOp::Multiply => Value::F64(l * r),
                 BinaryOp::Divide => Value::F64(l / r),
+                BinaryOp::Remainder => {
+                    unreachable!("`%` requires integer operands (rejected by semantics)")
+                }
                 BinaryOp::Equal => Value::Bool(l == r),
                 BinaryOp::NotEqual => Value::Bool(l != r),
                 BinaryOp::Less => Value::Bool(l < r),
@@ -4096,6 +4112,9 @@ impl<'a> Runtime<'a> {
                 BinaryOp::Subtract => Value::F32(l - r),
                 BinaryOp::Multiply => Value::F32(l * r),
                 BinaryOp::Divide => Value::F32(l / r),
+                BinaryOp::Remainder => {
+                    unreachable!("`%` requires integer operands (rejected by semantics)")
+                }
                 BinaryOp::Equal => Value::Bool(l == r),
                 BinaryOp::NotEqual => Value::Bool(l != r),
                 BinaryOp::Less => Value::Bool(l < r),
@@ -4131,6 +4150,13 @@ impl<'a> Runtime<'a> {
                         Err(RuntimeError::new("L0404", "division by zero"))
                     } else {
                         Ok(Value::int(int_div(l, r, ty), ty))
+                    }
+                }
+                BinaryOp::Remainder => {
+                    if r == 0 {
+                        Err(RuntimeError::new("L0404", "remainder by zero"))
+                    } else {
+                        Ok(Value::int(int_rem(l, r, ty), ty))
                     }
                 }
                 BinaryOp::Equal => Ok(Value::Bool(l == r)),
@@ -4172,6 +4198,16 @@ impl<'a> Runtime<'a> {
                     // `i64::MIN` rather than panicking, matching `int_div` and the
                     // native backend's guarded `idiv`.
                     Ok(Value::I64(left.as_i64()?.wrapping_div(divisor)))
+                }
+            }
+            BinaryOp::Remainder => {
+                let divisor = right.as_i64()?;
+                if divisor == 0 {
+                    Err(RuntimeError::new("L0404", "remainder by zero"))
+                } else {
+                    // `i64::MIN % -1` is 0; `wrapping_rem` yields it without the
+                    // overflow panic, matching the native backend's guarded `idiv`.
+                    Ok(Value::I64(left.as_i64()?.wrapping_rem(divisor)))
                 }
             }
             BinaryOp::Equal => Ok(Value::Bool(left == right)),
@@ -5933,6 +5969,9 @@ pub fn apply_compound(current: Value, op: &AssignOp, rhs: Value) -> Result<Value
             AssignOp::Subtract => a - b,
             AssignOp::Multiply => a * b,
             AssignOp::Divide => a / b,
+            AssignOp::Remainder => {
+                unreachable!("`%=` requires integer operands (rejected by semantics)")
+            }
             AssignOp::Replace => b,
         }));
     }
@@ -5949,6 +5988,12 @@ pub fn apply_compound(current: Value, op: &AssignOp, rhs: Value) -> Result<Value
             // Wrap `i64::MIN /= -1` to `i64::MIN` instead of panicking, matching
             // the binary-division and native paths.
             a.wrapping_div(b)
+        }
+        AssignOp::Remainder => {
+            if b == 0 {
+                return Err(RuntimeError::new("L0404", "remainder by zero"));
+            }
+            a.wrapping_rem(b)
         }
         AssignOp::Replace => b,
     }))

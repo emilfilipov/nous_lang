@@ -1,0 +1,5 @@
+fn main -> f64
+    let a f64 = 7.5
+    let b f64 = 2.0
+    # `%` is integer-only; remainder on floats is rejected (L0307).
+    return a % b

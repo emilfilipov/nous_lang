@@ -1,0 +1,5 @@
+fn main -> void
+    wasm_log(17 % 5)
+    let acc i64 = 100
+    acc %= 7
+    wasm_log(acc)

@@ -19,7 +19,7 @@ use lullaby_runtime::{
     builtin_atomic_sub_ordered, builtin_atomic_swap_ordered, builtin_atomic_xor_ordered,
     builtin_fence, char_find, expect_atomic, expect_bool, expect_chan, expect_future, expect_i64,
     expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64,
-    get_place, http_exchange, int_cmp, int_div, int_shl, int_shr, join_task, list_extreme,
+    get_place, http_exchange, int_cmp, int_div, int_rem, int_shl, int_shr, join_task, list_extreme,
     list_sum_values, monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes,
     overflow_arith, process_exit_code, result_value, scalar_order_keys, set_place, shift_left,
     shift_right, sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
@@ -2323,7 +2323,7 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
         }
         (
             IrExprKind::Integer(_) | IrExprKind::Float(_),
-            BinaryOp::Divide,
+            BinaryOp::Divide | BinaryOp::Remainder,
             IrExprKind::Integer(0),
         ) => None,
         (IrExprKind::Integer(left), BinaryOp::Divide, IrExprKind::Integer(right)) => {
@@ -2331,6 +2331,11 @@ fn fold_binary(left: &IrExpr, op: BinaryOp, right: &IrExpr) -> Option<IrExprKind
             // (`i64::MIN / -1`) yields `i64::MIN` at compile time instead of
             // panicking, matching the runtime interpreters and native backend.
             Some(IrExprKind::Integer(left.wrapping_div(*right)))
+        }
+        (IrExprKind::Integer(left), BinaryOp::Remainder, IrExprKind::Integer(right)) => {
+            // `i64::MIN % -1` is 0; `wrapping_rem` yields it without panicking,
+            // matching the interpreters and native backend.
+            Some(IrExprKind::Integer(left.wrapping_rem(*right)))
         }
         (IrExprKind::Integer(left), BinaryOp::Equal, IrExprKind::Integer(right)) => {
             Some(IrExprKind::Bool(left == right))
@@ -3168,7 +3173,7 @@ fn loop_invariant_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
             combine_signatures(&format!("unary:{op:?}"), &expr.ty.name, vec![inner])
         }
         IrExprKind::Binary { left, op, right } => {
-            if matches!(op, BinaryOp::Divide) {
+            if matches!(op, BinaryOp::Divide | BinaryOp::Remainder) {
                 return None;
             }
             let left = loop_invariant_expr_signature(left)?;
@@ -4861,6 +4866,9 @@ impl<'a> IrRuntime<'a> {
                 BinaryOp::Subtract => Value::F64(l - r),
                 BinaryOp::Multiply => Value::F64(l * r),
                 BinaryOp::Divide => Value::F64(l / r),
+                BinaryOp::Remainder => {
+                    unreachable!("`%` requires integer operands (rejected by semantics)")
+                }
                 BinaryOp::Equal => Value::Bool(l == r),
                 BinaryOp::NotEqual => Value::Bool(l != r),
                 BinaryOp::Less => Value::Bool(l < r),
@@ -4888,6 +4896,9 @@ impl<'a> IrRuntime<'a> {
                 BinaryOp::Subtract => Value::F32(l - r),
                 BinaryOp::Multiply => Value::F32(l * r),
                 BinaryOp::Divide => Value::F32(l / r),
+                BinaryOp::Remainder => {
+                    unreachable!("`%` requires integer operands (rejected by semantics)")
+                }
                 BinaryOp::Equal => Value::Bool(l == r),
                 BinaryOp::NotEqual => Value::Bool(l != r),
                 BinaryOp::Less => Value::Bool(l < r),
@@ -4921,6 +4932,13 @@ impl<'a> IrRuntime<'a> {
                         Err(RuntimeError::new("L0404", "division by zero"))
                     } else {
                         Ok(Value::int(int_div(l, r, ty), ty))
+                    }
+                }
+                BinaryOp::Remainder => {
+                    if r == 0 {
+                        Err(RuntimeError::new("L0404", "remainder by zero"))
+                    } else {
+                        Ok(Value::int(int_rem(l, r, ty), ty))
                     }
                 }
                 BinaryOp::Equal => Ok(Value::Bool(l == r)),
@@ -4958,6 +4976,14 @@ impl<'a> IrRuntime<'a> {
                     // Wrap `i64::MIN / -1` to `i64::MIN` (rather than panicking),
                     // matching the AST runtime and the native backend.
                     Ok(Value::I64(left.as_i64()?.wrapping_div(divisor)))
+                }
+            }
+            BinaryOp::Remainder => {
+                let divisor = right.as_i64()?;
+                if divisor == 0 {
+                    Err(RuntimeError::new("L0404", "remainder by zero"))
+                } else {
+                    Ok(Value::I64(left.as_i64()?.wrapping_rem(divisor)))
                 }
             }
             BinaryOp::Equal => Ok(Value::Bool(left == right)),
@@ -8463,6 +8489,8 @@ impl<'a> Lowerer<'a> {
                     BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                         left.ty.clone()
                     }
+                    // `%` (integer remainder) preserves the operand's integer type.
+                    BinaryOp::Remainder => left.ty.clone(),
                     // Integer bitwise ops preserve the operand's integer type
                     // (`i64` or any fixed-width kind; both operands share it).
                     BinaryOp::BitAnd

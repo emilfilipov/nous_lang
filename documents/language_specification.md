@@ -190,14 +190,14 @@ none  // Represents absence of value
 
 Implemented today:
 
-**Arithmetic**: `+ - * /` (there is no `%` operator; use an integer-remainder helper)
+**Arithmetic**: `+ - * / %` (`%` is integer remainder, truncated toward zero so it takes the sign of the dividend, like C/Rust; it requires two operands of the same integer type and is not defined on floats)
 **Comparison**: `== != < > <= >=` (equality requires matching operand types; ordering is on numeric/char/byte operands)
 **Logical**: `and or not` (short-circuiting)
-**Assignment**: `= += -= *= /=` (compound operators on numeric locals)
+**Assignment**: `= += -= *= /= %=` (compound operators on numeric locals; `%=` is integer-only)
 **Bitwise**: `& | ^ ~ << >>`, plus bit intrinsics `rotate_left`/`rotate_right`/`count_ones`/`leading_zeros`/`trailing_zeros`/`reverse_bytes`
 **Error propagation**: postfix `?` on `option`/`result`
 
-Planned: a `%`/modulo operator, `xor`, `^=`, and closure-based functional helpers (`map`/`reduce`/`filter`). `min`/`max`/`sum`-style helpers exist as math/collection builtins — see [standard_library.md](standard_library.md).
+Planned: `xor`, `^=`, and closure-based functional helpers (`map`/`reduce`/`filter`). `min`/`max`/`sum`-style helpers exist as math/collection builtins — see [standard_library.md](standard_library.md).
 
 ### Control Flow
 ```lullaby
