@@ -1,16 +1,12 @@
 # Cross-language text-processing suite (Lullaby). Real-world string utilities.
-# Strings are walked as list<char> via chars()/get(); output strings are built by
-# concatenation. Lullaby has no `%`, but none of these need it. ASCII case folding
-# uses explicit code ranges (char_code/char_from) so it stays ASCII-only, unlike
-# the Unicode-aware is_upper/is_lower predicates. See ../SPEC.md.
+# Strings are walked directly with `for c in s` / `s[i]` and built up with `+=`.
+# ASCII case folding uses explicit code ranges (char_code/char_from) so it stays
+# ASCII-only, unlike the Unicode-aware is_upper/is_lower predicates. See ../SPEC.md.
 
 fn word_count s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let count = 0
     let in_word = 0
-    for i from 0 to n - 1
-        let c char = get(cs, i)
+    for c in s
         if is_whitespace(c)
             in_word = 0
         elif in_word == 0
@@ -22,20 +18,16 @@ fn char_count s string -> i64
     len(s)
 
 fn count_char s string c string -> i64
-    let target char = get(chars(c), 0)
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let target = c[0]
     let count = 0
-    for i from 0 to n - 1
-        if get(cs, i) == target
+    for ch in s
+        if ch == target
             count += 1
     count
 
 fn is_blank s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
-    for i from 0 to n - 1
-        if not is_whitespace(get(cs, i))
+    for c in s
+        if not is_whitespace(c)
             return 0
     1
 
@@ -58,51 +50,44 @@ fn contains_sub s string sub string -> i64
         0
 
 fn to_upper_ascii s string -> string
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let out string = ""
-    for i from 0 to n - 1
-        let c char = get(cs, i)
+    for c in s
         let code = char_code(c)
         if code >= 97 and code <= 122
-            out = out + to_string(char_from(code - 32))
+            out += to_string(char_from(code - 32))
         else
-            out = out + to_string(c)
+            out += to_string(c)
     out
 
 fn to_lower_ascii s string -> string
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let out string = ""
-    for i from 0 to n - 1
-        let c char = get(cs, i)
+    for c in s
         let code = char_code(c)
         if code >= 65 and code <= 90
-            out = out + to_string(char_from(code + 32))
+            out += to_string(char_from(code + 32))
         else
-            out = out + to_string(c)
+            out += to_string(c)
     out
 
 fn reverse_str s string -> string
-    let cs list<char> = chars(s)
     let out string = ""
-    let i = len(cs) - 1
+    let i = len(s) - 1
     while i >= 0
-        out = out + to_string(get(cs, i))
+        out += to_string(s[i])
         i -= 1
     out
 
 fn repeat_str s string n i64 -> string
     let out string = ""
     for i from 1 to n
-        out = out + s
+        out += s
     out
 
 fn left_pad s string width i64 c string -> string
     let pad = width - len(s)
     let out string = ""
     for i from 1 to pad
-        out = out + c
+        out += c
     out + s
 
 fn truncate_ellipsis s string max i64 -> string
@@ -111,31 +96,25 @@ fn truncate_ellipsis s string max i64 -> string
     substring(s, 0, max - 3) + "..."
 
 fn count_vowels s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let count = 0
-    for i from 0 to n - 1
-        let c char = get(cs, i)
+    for c in s
         if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'
             count += 1
     count
 
 fn initials name string -> string
-    let cs list<char> = chars(name)
-    let n = len(cs)
     let out string = ""
     let in_word = 0
-    for i from 0 to n - 1
-        let c char = get(cs, i)
+    for c in name
         if is_whitespace(c)
             in_word = 0
         elif in_word == 0
             in_word = 1
             let code = char_code(c)
             if code >= 97 and code <= 122
-                out = out + to_string(char_from(code - 32))
+                out += to_string(char_from(code - 32))
             else
-                out = out + to_string(c)
+                out += to_string(c)
     out
 
 fn main -> void

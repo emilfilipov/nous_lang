@@ -11306,8 +11306,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 77,
-     "source": "fn count_char s string c string -> i64\n    let target char = get(chars(c), 0)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
+     "tokens": 46,
+     "source": "fn count_char s string c string -> i64\n    let target = c[0]\n    let count = 0\n    for ch in s\n        if ch == target\n            count += 1\n    count"
     },
     "C": {
      "tokens": 54,
@@ -11337,8 +11337,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 95,
-     "source": "fn count_vowels s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'\n            count += 1\n    count"
+     "tokens": 62,
+     "source": "fn count_vowels s string -> i64\n    let count = 0\n    for c in s\n        if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'\n            count += 1\n    count"
     },
     "C": {
      "tokens": 77,
@@ -11399,8 +11399,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 137,
-     "source": "fn initials name string -> string\n    let cs list<char> = chars(name)\n    let n = len(cs)\n    let out string = \"\"\n    let in_word = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            let code = char_code(c)\n            if code >= 97 and code <= 122\n                out = out + to_string(char_from(code - 32))\n            else\n                out = out + to_string(c)\n    out"
+     "tokens": 100,
+     "source": "fn initials name string -> string\n    let out string = \"\"\n    let in_word = 0\n    for c in name\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            let code = char_code(c)\n            if code >= 97 and code <= 122\n                out += to_string(char_from(code - 32))\n            else\n                out += to_string(c)\n    out"
     },
     "C": {
      "tokens": 138,
@@ -11430,8 +11430,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 57,
-     "source": "fn is_blank s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    for i from 0 to n - 1\n        if not is_whitespace(get(cs, i))\n            return 0\n    1"
+     "tokens": 31,
+     "source": "fn is_blank s string -> i64\n    for c in s\n        if not is_whitespace(c)\n            return 0\n    1"
     },
     "C": {
      "tokens": 56,
@@ -11461,8 +11461,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn left_pad s string width i64 c string -> string\n    let pad = width - len(s)\n    let out string = \"\"\n    for i from 1 to pad\n        out = out + c\n    out + s"
+     "tokens": 46,
+     "source": "fn left_pad s string width i64 c string -> string\n    let pad = width - len(s)\n    let out string = \"\"\n    for i from 1 to pad\n        out += c\n    out + s"
     },
     "C": {
      "tokens": 79,
@@ -11492,8 +11492,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 35,
-     "source": "fn repeat_str s string n i64 -> string\n    let out string = \"\"\n    for i from 1 to n\n        out = out + s\n    out"
+     "tokens": 33,
+     "source": "fn repeat_str s string n i64 -> string\n    let out string = \"\"\n    for i from 1 to n\n        out += s\n    out"
     },
     "C": {
      "tokens": 73,
@@ -11534,8 +11534,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 62,
-     "source": "fn reverse_str s string -> string\n    let cs list<char> = chars(s)\n    let out string = \"\"\n    let i = len(cs) - 1\n    while i >= 0\n        out = out + to_string(get(cs, i))\n        i -= 1\n    out"
+     "tokens": 48,
+     "source": "fn reverse_str s string -> string\n    let out string = \"\"\n    let i = len(s) - 1\n    while i >= 0\n        out += to_string(s[i])\n        i -= 1\n    out"
     },
     "C": {
      "tokens": 59,
@@ -11596,8 +11596,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 102,
-     "source": "fn to_lower_ascii s string -> string\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let out string = \"\"\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        let code = char_code(c)\n        if code >= 65 and code <= 90\n            out = out + to_string(char_from(code + 32))\n        else\n            out = out + to_string(c)\n    out"
+     "tokens": 65,
+     "source": "fn to_lower_ascii s string -> string\n    let out string = \"\"\n    for c in s\n        let code = char_code(c)\n        if code >= 65 and code <= 90\n            out += to_string(char_from(code + 32))\n        else\n            out += to_string(c)\n    out"
     },
     "C": {
      "tokens": 78,
@@ -11627,8 +11627,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 102,
-     "source": "fn to_upper_ascii s string -> string\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let out string = \"\"\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        let code = char_code(c)\n        if code >= 97 and code <= 122\n            out = out + to_string(char_from(code - 32))\n        else\n            out = out + to_string(c)\n    out"
+     "tokens": 65,
+     "source": "fn to_upper_ascii s string -> string\n    let out string = \"\"\n    for c in s\n        let code = char_code(c)\n        if code >= 97 and code <= 122\n            out += to_string(char_from(code - 32))\n        else\n            out += to_string(c)\n    out"
     },
     "C": {
      "tokens": 78,
@@ -11689,8 +11689,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 100,
-     "source": "fn word_count s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    let in_word = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            count += 1\n            in_word = 1\n    count"
+     "tokens": 67,
+     "source": "fn word_count s string -> i64\n    let count = 0\n    let in_word = 0\n    for c in s\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            count += 1\n            in_word = 1\n    count"
     },
     "C": {
      "tokens": 105,
@@ -13281,7 +13281,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 22729,
+  "Lullaby": 22477,
   "C": 26030,
   "C++": 26894,
   "Rust": 24867,
@@ -13466,7 +13466,7 @@
    "JavaScript": 1528
   },
   "text_processing": {
-   "Lullaby": 955,
+   "Lullaby": 703,
    "C": 1028,
    "C++": 863,
    "Rust": 584,
