@@ -1,79 +1,68 @@
-# Cross-language parsing suite (Lullaby). Real-world parsing over strings and i64
-# arrays: number parsing, field/line splitting, RPN evaluation, radix and roman
-# numerals. Strings are walked as list<char> via chars()/get()/char_code(); the
-# RPN evaluator uses an i64 array as a fixed stack. Invalid numeric input returns
-# -1 (or 0 for the signed parser, whose full range includes -1). See ../SPEC.md.
+# Cross-language parsing suite (Lullaby). Real-world parsing over strings: number
+# parsing, field/line splitting, RPN evaluation, radix and roman numerals.
+# Strings are walked directly with `for c in s` / `s[i]` and the `is_digit` /
+# `is_whitespace` / `is_alpha` char predicates. Invalid numeric input returns -1
+# (or 0 for the signed parser, whose full range includes -1). See ../SPEC.md.
 
 fn parse_uint s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
-    if n == 0
+    if len(s) == 0
         return -1
     let val = 0
-    for i from 0 to n - 1
-        let code = char_code(get(cs, i))
-        if code < 48 or code > 57
+    for c in s
+        if not is_digit(c)
             return -1
-        val = val * 10 + (code - 48)
+        val = val * 10 + char_code(c) - 48
     val
 
 fn parse_int_signed s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let n = len(s)
     if n == 0
         return 0
     let neg = 0
     let start = 0
-    if get(cs, 0) == '-'
+    if s[0] == '-'
         neg = 1
         start = 1
     if start == n
         return 0
     let val = 0
     for i from start to n - 1
-        let code = char_code(get(cs, i))
-        if code < 48 or code > 57
+        if not is_digit(s[i])
             return 0
-        val = val * 10 + (code - 48)
+        val = val * 10 + char_code(s[i]) - 48
     if neg == 1
         return -val
     val
 
 fn is_valid_int s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let n = len(s)
     if n == 0
         return 0
     let start = 0
-    if get(cs, 0) == '-'
+    if s[0] == '-'
         start = 1
     if start == n
         return 0
     for i from start to n - 1
-        let code = char_code(get(cs, i))
-        if code < 48 or code > 57
+        if not is_digit(s[i])
             return 0
     1
 
 fn count_fields s string sep string -> i64
-    let target char = get(chars(sep), 0)
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let target = sep[0]
     let count = 1
-    for i from 0 to n - 1
-        if get(cs, i) == target
+    for c in s
+        if c == target
             count += 1
     count
 
 fn nth_field_len s string sep string nth i64 -> i64
-    let target char = get(chars(sep), 0)
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let target = sep[0]
     let field = 0
     let cur = 0
     let result = -1
-    for i from 0 to n - 1
-        if get(cs, i) == target
+    for c in s
+        if c == target
             if field == nth
                 result = cur
             field += 1
@@ -85,34 +74,30 @@ fn nth_field_len s string sep string nth i64 -> i64
     result
 
 fn count_lines s string -> i64
-    let nl char = char_from(10)
-    let cs list<char> = chars(s)
-    let n = len(cs)
-    if n == 0
+    if len(s) == 0
         return 0
+    let nl = char_from(10)
     let count = 1
-    for i from 0 to n - 1
-        if get(cs, i) == nl
+    for c in s
+        if c == nl
             count += 1
     count
 
 fn strip_leading_zeros_len s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let n = len(s)
     let i = 0
     while i < n
-        if get(cs, i) != '0'
+        if s[i] != '0'
             break
         i += 1
     n - i
 
-fn eval_rpn tokens array<i64> n i64 -> i64
-    if n == 0
+fn eval_rpn tokens array<i64> -> i64
+    if len(tokens) == 0
         return 0
     let stack array<i64> = tokens
     let sp = 0
-    for i from 0 to n - 1
-        let t = tokens[i]
+    for t in tokens
         if t >= 0
             stack[sp] = t
             sp += 1
@@ -135,22 +120,17 @@ fn eval_rpn tokens array<i64> n i64 -> i64
     stack[0]
 
 fn count_digits_in s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let count = 0
-    for i from 0 to n - 1
-        let code = char_code(get(cs, i))
-        if code >= 48 and code <= 57
+    for c in s
+        if is_digit(c)
             count += 1
     count
 
 fn count_words s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let count = 0
     let in_word = 0
-    for i from 0 to n - 1
-        if is_whitespace(get(cs, i))
+    for c in s
+        if is_whitespace(c)
             in_word = 0
         elif in_word == 0
             in_word = 1
@@ -158,33 +138,28 @@ fn count_words s string -> i64
     count
 
 fn hex_to_int s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
-    if n == 0
+    if len(s) == 0
         return -1
     let val = 0
-    for i from 0 to n - 1
-        let code = char_code(get(cs, i))
+    for c in s
+        let code = char_code(c)
         let d = -1
-        if code >= 48 and code <= 57
+        if is_digit(c)
             d = code - 48
         elif code >= 97 and code <= 102
-            d = code - 97 + 10
+            d = code - 87
         elif code >= 65 and code <= 70
-            d = code - 65 + 10
+            d = code - 55
         if d < 0
             return -1
         val = val * 16 + d
     val
 
 fn bin_to_int s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
-    if n == 0
+    if len(s) == 0
         return -1
     let val = 0
-    for i from 0 to n - 1
-        let c char = get(cs, i)
+    for c in s
         if c == '0'
             val = val * 2
         elif c == '1'
@@ -211,28 +186,20 @@ fn roman_value c char -> i64
     0
 
 fn roman_to_int s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
+    let n = len(s)
     let total = 0
     for i from 0 to n - 1
-        let v = roman_value(get(cs, i))
-        let subtract = 0
-        if i < n - 1
-            if v < roman_value(get(cs, i + 1))
-                subtract = 1
-        if subtract == 1
+        let v = roman_value(s[i])
+        if i < n - 1 and v < roman_value(s[i + 1])
             total -= v
         else
             total += v
     total
 
 fn char_class_count s string -> i64
-    let cs list<char> = chars(s)
-    let n = len(cs)
     let count = 0
-    for i from 0 to n - 1
-        let code = char_code(get(cs, i))
-        if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
+    for c in s
+        if is_alpha(c)
             count += 1
     count
 
@@ -246,7 +213,7 @@ fn main -> void
     println("nth_field_len=" + to_string(nth_field_len("a,bb,ccc", ",", 2)))
     println("count_lines=" + to_string(count_lines("a" + to_string(char_from(10)) + "b")))
     println("strip_leading_zeros_len=" + to_string(strip_leading_zeros_len("00042")))
-    println("eval_rpn=" + to_string(eval_rpn(rpn, 5)))
+    println("eval_rpn=" + to_string(eval_rpn(rpn)))
     println("count_digits_in=" + to_string(count_digits_in("ab12cd34")))
     println("count_words=" + to_string(count_words(text)))
     println("hex_to_int=" + to_string(hex_to_int("1a2f")))

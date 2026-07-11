@@ -7485,8 +7485,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 111,
-     "source": "fn bin_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return -1\n    let val = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == '0'\n            val = val * 2\n        elif c == '1'\n            val = val * 2 + 1\n        else\n            return -1\n    val"
+     "tokens": 80,
+     "source": "fn bin_to_int s string -> i64\n    if len(s) == 0\n        return -1\n    let val = 0\n    for c in s\n        if c == '0'\n            val = val * 2\n        elif c == '1'\n            val = val * 2 + 1\n        else\n            return -1\n    val"
     },
     "C": {
      "tokens": 110,
@@ -7516,8 +7516,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 90,
-     "source": "fn char_class_count s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n            count += 1\n    count"
+     "tokens": 37,
+     "source": "fn char_class_count s string -> i64\n    let count = 0\n    for c in s\n        if is_alpha(c)\n            count += 1\n    count"
     },
     "C": {
      "tokens": 70,
@@ -7547,8 +7547,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 77,
-     "source": "fn count_digits_in s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if code >= 48 and code <= 57\n            count += 1\n    count"
+     "tokens": 37,
+     "source": "fn count_digits_in s string -> i64\n    let count = 0\n    for c in s\n        if is_digit(c)\n            count += 1\n    count"
     },
     "C": {
      "tokens": 56,
@@ -7578,8 +7578,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 78,
-     "source": "fn count_fields s string sep string -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
+     "tokens": 46,
+     "source": "fn count_fields s string sep string -> i64\n    let target = sep[0]\n    let count = 1\n    for c in s\n        if c == target\n            count += 1\n    count"
     },
     "C": {
      "tokens": 60,
@@ -7609,8 +7609,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 85,
-     "source": "fn count_lines s string -> i64\n    let nl char = char_from(10)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    let count = 1\n    for i from 0 to n - 1\n        if get(cs, i) == nl\n            count += 1\n    count"
+     "tokens": 59,
+     "source": "fn count_lines s string -> i64\n    if len(s) == 0\n        return 0\n    let nl = char_from(10)\n    let count = 1\n    for c in s\n        if c == nl\n            count += 1\n    count"
     },
     "C": {
      "tokens": 71,
@@ -7640,8 +7640,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 93,
-     "source": "fn count_words s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let count = 0\n    let in_word = 0\n    for i from 0 to n - 1\n        if is_whitespace(get(cs, i))\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            count += 1\n    count"
+     "tokens": 67,
+     "source": "fn count_words s string -> i64\n    let count = 0\n    let in_word = 0\n    for c in s\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            count += 1\n    count"
     },
     "C": {
      "tokens": 99,
@@ -7671,8 +7671,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 201,
-     "source": "fn eval_rpn tokens array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let stack array<i64> = tokens\n    let sp = 0\n    for i from 0 to n - 1\n        let t = tokens[i]\n        if t >= 0\n            stack[sp] = t\n            sp += 1\n        else\n            let a = stack[sp - 2]\n            let b = stack[sp - 1]\n            sp -= 2\n            let op = -t\n            let r = 0\n            if op == 1\n                r = a + b\n            elif op == 2\n                r = a - b\n            elif op == 3\n                r = a * b\n            else\n                r = a / b\n            stack[sp] = r\n            sp += 1\n    stack[0]"
+     "tokens": 187,
+     "source": "fn eval_rpn tokens array<i64> -> i64\n    if len(tokens) == 0\n        return 0\n    let stack array<i64> = tokens\n    let sp = 0\n    for t in tokens\n        if t >= 0\n            stack[sp] = t\n            sp += 1\n        else\n            let a = stack[sp - 2]\n            let b = stack[sp - 1]\n            sp -= 2\n            let op = -t\n            let r = 0\n            if op == 1\n                r = a + b\n            elif op == 2\n                r = a - b\n            elif op == 3\n                r = a * b\n            else\n                r = a / b\n            stack[sp] = r\n            sp += 1\n    stack[0]"
     },
     "C": {
      "tokens": 200,
@@ -7702,8 +7702,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 166,
-     "source": "fn hex_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return -1\n    let val = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        let d = -1\n        if code >= 48 and code <= 57\n            d = code - 48\n        elif code >= 97 and code <= 102\n            d = code - 97 + 10\n        elif code >= 65 and code <= 70\n            d = code - 65 + 10\n        if d < 0\n            return -1\n        val = val * 16 + d\n    val"
+     "tokens": 130,
+     "source": "fn hex_to_int s string -> i64\n    if len(s) == 0\n        return -1\n    let val = 0\n    for c in s\n        let code = char_code(c)\n        let d = -1\n        if is_digit(c)\n            d = code - 48\n        elif code >= 97 and code <= 102\n            d = code - 87\n        elif code >= 65 and code <= 70\n            d = code - 55\n        if d < 0\n            return -1\n        val = val * 16 + d\n    val"
     },
     "C": {
      "tokens": 173,
@@ -7733,8 +7733,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 116,
-     "source": "fn is_valid_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    let start = 0\n    if get(cs, 0) == '-'\n        start = 1\n    if start == n\n        return 0\n    for i from start to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n    1"
+     "tokens": 89,
+     "source": "fn is_valid_int s string -> i64\n    let n = len(s)\n    if n == 0\n        return 0\n    let start = 0\n    if s[0] == '-'\n        start = 1\n    if start == n\n        return 0\n    for i from start to n - 1\n        if not is_digit(s[i])\n            return 0\n    1"
     },
     "C": {
      "tokens": 104,
@@ -7764,8 +7764,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 133,
-     "source": "fn nth_field_len s string sep string nth i64 -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let field = 0\n    let cur = 0\n    let result = -1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
+     "tokens": 101,
+     "source": "fn nth_field_len s string sep string nth i64 -> i64\n    let target = sep[0]\n    let field = 0\n    let cur = 0\n    let result = -1\n    for c in s\n        if c == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
     },
     "C": {
      "tokens": 117,
@@ -7795,8 +7795,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 161,
-     "source": "fn parse_int_signed s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return 0\n    let neg = 0\n    let start = 0\n    if get(cs, 0) == '-'\n        neg = 1\n        start = 1\n    if start == n\n        return 0\n    let val = 0\n    for i from start to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n        val = val * 10 + (code - 48)\n    if neg == 1\n        return -val\n    val"
+     "tokens": 137,
+     "source": "fn parse_int_signed s string -> i64\n    let n = len(s)\n    if n == 0\n        return 0\n    let neg = 0\n    let start = 0\n    if s[0] == '-'\n        neg = 1\n        start = 1\n    if start == n\n        return 0\n    let val = 0\n    for i from start to n - 1\n        if not is_digit(s[i])\n            return 0\n        val = val * 10 + char_code(s[i]) - 48\n    if neg == 1\n        return -val\n    val"
     },
     "C": {
      "tokens": 153,
@@ -7826,8 +7826,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 101,
-     "source": "fn parse_uint s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    if n == 0\n        return -1\n    let val = 0\n    for i from 0 to n - 1\n        let code = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return -1\n        val = val * 10 + (code - 48)\n    val"
+     "tokens": 66,
+     "source": "fn parse_uint s string -> i64\n    if len(s) == 0\n        return -1\n    let val = 0\n    for c in s\n        if not is_digit(c)\n            return -1\n        val = val * 10 + char_code(c) - 48\n    val"
     },
     "C": {
      "tokens": 107,
@@ -7857,8 +7857,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 115,
-     "source": "fn roman_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let total = 0\n    for i from 0 to n - 1\n        let v = roman_value(get(cs, i))\n        let subtract = 0\n        if i < n - 1\n            if v < roman_value(get(cs, i + 1))\n                subtract = 1\n        if subtract == 1\n            total -= v\n        else\n            total += v\n    total"
+     "tokens": 79,
+     "source": "fn roman_to_int s string -> i64\n    let n = len(s)\n    let total = 0\n    for i from 0 to n - 1\n        let v = roman_value(s[i])\n        if i < n - 1 and v < roman_value(s[i + 1])\n            total -= v\n        else\n            total += v\n    total"
     },
     "C": {
      "tokens": 91,
@@ -7919,8 +7919,8 @@
    "category": "parsing",
    "langs": {
     "Lullaby": {
-     "tokens": 67,
-     "source": "fn strip_leading_zeros_len s string -> i64\n    let cs list<char> = chars(s)\n    let n = len(cs)\n    let i = 0\n    while i < n\n        if get(cs, i) != '0'\n            break\n        i += 1\n    n - i"
+     "tokens": 55,
+     "source": "fn strip_leading_zeros_len s string -> i64\n    let n = len(s)\n    let i = 0\n    while i < n\n        if s[i] != '0'\n            break\n        i += 1\n    n - i"
     },
     "C": {
      "tokens": 54,
@@ -13281,7 +13281,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 23153,
+  "Lullaby": 22729,
   "C": 26030,
   "C++": 26894,
   "Rust": 24867,
@@ -13410,7 +13410,7 @@
    "JavaScript": 1027
   },
   "parsing": {
-   "Lullaby": 1691,
+   "Lullaby": 1267,
    "C": 1553,
    "C++": 1424,
    "Rust": 1439,
