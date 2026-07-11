@@ -1,0 +1,139 @@
+# Cross-language scalar function suite (Lullaby). Pure i64 — native-eligible and
+# register-promotable, so the "close to C" story holds. See ../SPEC.md.
+# Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
+
+fn rem a i64 b i64 -> i64
+    a - (a / b) * b
+
+fn add a i64 b i64 -> i64
+    a + b
+
+fn max2 a i64 b i64 -> i64
+    if a > b
+        a
+    else
+        b
+
+fn abs_val n i64 -> i64
+    if n < 0
+        return 0 - n
+    n
+
+fn is_even n i64 -> i64
+    if rem(n, 2) == 0
+        1
+    else
+        0
+
+fn clamp x i64 lo i64 hi i64 -> i64
+    if x < lo
+        return lo
+    if x > hi
+        return hi
+    x
+
+fn sign n i64 -> i64
+    if n < 0
+        return 0 - 1
+    if n > 0
+        return 1
+    0
+
+fn factorial n i64 -> i64
+    let r i64 = 1
+    for i from 2 to n
+        r = r * i
+    r
+
+fn gcd a i64 b i64 -> i64
+    while b != 0
+        let t i64 = rem(a, b)
+        a = b
+        b = t
+    a
+
+fn fib_iter n i64 -> i64
+    let a i64 = 0
+    let b i64 = 1
+    for i from 1 to n
+        let t i64 = a + b
+        a = b
+        b = t
+    a
+
+fn is_prime n i64 -> i64
+    if n < 2
+        return 0
+    let d i64 = 2
+    while d * d <= n
+        if rem(n, d) == 0
+            return 0
+        d += 1
+    1
+
+fn int_pow base i64 exp i64 -> i64
+    let r i64 = 1
+    for i from 1 to exp
+        r = r * base
+    r
+
+fn collatz_len n i64 -> i64
+    let steps i64 = 0
+    while n != 1
+        if rem(n, 2) == 0
+            n = n / 2
+        else
+            n = 3 * n + 1
+        steps += 1
+    steps
+
+fn digit_sum n i64 -> i64
+    if n < 0
+        n = 0 - n
+    let s i64 = 0
+    while n > 0
+        s += rem(n, 10)
+        n = n / 10
+    s
+
+fn count_primes_below n i64 -> i64
+    let count i64 = 0
+    for k from 2 to n - 1
+        if is_prime(k) == 1
+            count += 1
+    count
+
+fn power_mod base i64 exp i64 m i64 -> i64
+    let r i64 = 1
+    base = rem(base, m)
+    while exp > 0
+        if rem(exp, 2) == 1
+            r = rem(r * base, m)
+        exp = exp / 2
+        base = rem(base * base, m)
+    r
+
+fn ackermann m i64 n i64 -> i64
+    if m == 0
+        return n + 1
+    if n == 0
+        return ackermann(m - 1, 1)
+    ackermann(m - 1, ackermann(m, n - 1))
+
+fn main -> void
+    println("add(2,3)=" + to_string(add(2, 3)))
+    println("max2(3,7)=" + to_string(max2(3, 7)))
+    println("abs_val(-4)=" + to_string(abs_val(0 - 4)))
+    println("is_even(7)=" + to_string(is_even(7)))
+    println("clamp(5,0,3)=" + to_string(clamp(5, 0, 3)))
+    println("sign(-9)=" + to_string(sign(0 - 9)))
+    println("factorial(5)=" + to_string(factorial(5)))
+    println("gcd(48,18)=" + to_string(gcd(48, 18)))
+    println("fib_iter(10)=" + to_string(fib_iter(10)))
+    println("is_prime(97)=" + to_string(is_prime(97)))
+    println("int_pow(2,10)=" + to_string(int_pow(2, 10)))
+    println("collatz_len(6)=" + to_string(collatz_len(6)))
+    println("digit_sum(1234)=" + to_string(digit_sum(1234)))
+    println("count_primes_below(100)=" + to_string(count_primes_below(100)))
+    println("power_mod(7,256,13)=" + to_string(power_mod(7, 256, 13)))
+    println("ackermann(2,3)=" + to_string(ackermann(2, 3)))

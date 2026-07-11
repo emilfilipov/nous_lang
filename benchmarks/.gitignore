@@ -5,3 +5,8 @@
 fib_[0-9]*.lby
 loop_[0-9]*.lby
 results_*.csv
+
+# cross-language benchmark generated binaries
+*.pdb
+bench_*.exe
+*_scalar.exe

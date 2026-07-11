@@ -1,0 +1,19 @@
+fn rem a i64 b i64 -> i64
+    a - (a / b) * b
+fn is_prime n i64 -> i64
+    if n < 2
+        return 0
+    let d i64 = 2
+    while d * d <= n
+        if rem(n, d) == 0
+            return 0
+        d += 1
+    1
+fn count_primes_below n i64 -> i64
+    let count i64 = 0
+    for k from 2 to n - 1
+        if is_prime(k) == 1
+            count += 1
+    count
+fn main -> i64
+    count_primes_below(300000)
