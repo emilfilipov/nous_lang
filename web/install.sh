@@ -13,10 +13,10 @@
 # Overrides (environment variables):
 #   LULLABY_VERSION   install a specific tag (e.g. v1.0.0-preview) instead of latest
 #   LULLABY_PREFIX    install prefix (default: $HOME/.lullaby)
-#   LULLABY_REPO      owner/repo to pull releases from (default: emilfilipov/nous_lang)
+#   LULLABY_REPO      owner/repo to pull releases from (default: emilfilipov/lullaby-lang)
 set -eu
 
-REPO="${LULLABY_REPO:-emilfilipov/nous_lang}"
+REPO="${LULLABY_REPO:-emilfilipov/lullaby-lang}"
 PREFIX="${LULLABY_PREFIX:-${HOME:-}/.lullaby}"
 
 log() { printf '%s\n' "lullaby: $*"; }

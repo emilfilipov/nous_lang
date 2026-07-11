@@ -15,13 +15,13 @@
 # Overrides (environment variables or parameters):
 #   LULLABY_VERSION / -Version   install a specific tag instead of latest
 #   LULLABY_PREFIX  / -Prefix    install prefix (default: %LOCALAPPDATA%\Programs\Lullaby)
-#   LULLABY_REPO    / -Repo      owner/repo (default: emilfilipov/nous_lang)
+#   LULLABY_REPO    / -Repo      owner/repo (default: emilfilipov/lullaby-lang)
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
     [string]$Version = $env:LULLABY_VERSION,
     [string]$Prefix = $env:LULLABY_PREFIX,
-    [string]$Repo = $(if ($env:LULLABY_REPO) { $env:LULLABY_REPO } else { 'emilfilipov/nous_lang' })
+    [string]$Repo = $(if ($env:LULLABY_REPO) { $env:LULLABY_REPO } else { 'emilfilipov/lullaby-lang' })
 )
 
 $ErrorActionPreference = 'Stop'

@@ -52,7 +52,7 @@ Clearance) before first public publish:
 | Fedora/RHEL package | `lullaby` |
 | crates.io (compiler crates) | `lullaby_*` (already used in the workspace) |
 | VS Code extension id | `lullaby-lang.lullaby` |
-| GitHub org/repo | `lullaby-lang/lullaby` (rename the legacy `nous_lang` remote) |
+| GitHub repo | `emilfilipov/lullaby-lang` (renamed from the legacy `nous_lang`) |
 | Primary domain | `lullaby-lang.org` (fallbacks `lullabylang.org`, `lullaby.dev`) |
 | Windows install dir | `%LOCALAPPDATA%\Programs\Lullaby` (per-user) / `%ProgramFiles%\Lullaby` (machine) |
 | Unix install prefix | `/usr/local` (system) or `~/.lullaby` (per-user web installer) |
