@@ -3,14 +3,14 @@
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
 This note specifies the intended runtime semantics for concurrency primitives
-and decides which are in the alpha subset versus documented stubs. The broader
+and decides which are in the implemented subset versus documented stubs. The broader
 planned surface (thread pools, subprocess piping, async I/O) lives in
 [lullaby_input_output.md](lullaby_input_output.md). This document is the
 concurrency semantics deliverable those tickets require.
 
 ## Design Stance
 
-Concurrency is **not in the alpha executable subset.** The alpha runtime is a
+Concurrency is **not in the currently executable subset.** The current runtime is a
 single-threaded AST/IR/bytecode interpreter, and shipping unsound threading
 primitives would violate the project's memory-safety goal before lifetime and
 sharing analysis exist. Instead:
@@ -19,9 +19,9 @@ sharing analysis exist. Instead:
 - Any concurrency keyword or builtin that appears in source is **rejected with a
   clear diagnostic** rather than silently accepted or partially executed.
 
-## Alpha Subset vs Stubs
+## Implemented Subset vs Stubs
 
-| Primitive | Intended semantics | Alpha status |
+| Primitive | Intended semantics | Status |
 | :-- | :-- | :-- |
 | `spawn_thread(fn, args)` | Start `fn` on a new OS thread; returns a thread handle. | Stub — rejected |
 | `wait(thread)` | Block until the thread finishes; propagate its result or error. | Stub — rejected |

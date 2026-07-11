@@ -6,9 +6,9 @@ Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
 Input/output (I/O) and concurrency mechanisms in Lullaby are designed to be minimal, type-safe, and highly efficient. The design prioritizes simplicity for LLM comprehension while maintaining robustness for systems programming applications like operating system development.
 
-## Current Alpha I/O And System Subset
+## Current I/O And System Subset
 
-The executable Rust alpha implements a small, flat builtin surface. These names are available as ordinary function calls; dotted `io.*` syntax, stream handles, memory mapping, async, threads, sockets, and IPC remain planned design material below.
+The compiler implements a small, flat builtin surface. These names are available as ordinary function calls; dotted `io.*` syntax, stream handles, memory mapping, async, threads, sockets, and IPC remain planned design material below.
 
 | Builtin | Type | Behavior |
 | :--- | :--- | :--- |

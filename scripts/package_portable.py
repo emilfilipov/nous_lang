@@ -137,7 +137,7 @@ Optional PATH setup:
 - Run ./uninstall.sh from this directory to remove this package from your user PATH.
 """
 
-    return f"""Lullaby Alpha 1 portable package
+    return f"""Lullaby portable package
 Package: {package_name}
 Target: {target_tag}
 Commit: {commit}
@@ -233,7 +233,7 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     shutil.copy2(REPO_ROOT / "examples" / "README.md", package_root / "examples" / "README.md")
     copy_tree(REPO_ROOT / "examples" / "valid", package_root / "examples" / "valid")
     copy_tree(REPO_ROOT / "examples" / "invalid", package_root / "examples" / "invalid")
-    shutil.copy2(REPO_ROOT / "documents" / "alpha1_release_notes.md", package_root / "RELEASE_NOTES.md")
+    shutil.copy2(REPO_ROOT / "documents" / "release_notes.md", package_root / "RELEASE_NOTES.md")
 
     license_status, license_path = find_license()
     if license_path:

@@ -44,7 +44,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $RepoRoot "examples\README.md") -Destination (Join-Path $PackageRoot "examples\README.md")
     Copy-Item -LiteralPath (Join-Path $RepoRoot "examples\valid") -Destination (Join-Path $PackageRoot "examples\valid") -Recurse
     Copy-Item -LiteralPath (Join-Path $RepoRoot "examples\invalid") -Destination (Join-Path $PackageRoot "examples\invalid") -Recurse
-    Copy-Item -LiteralPath (Join-Path $RepoRoot "documents\alpha1_release_notes.md") -Destination (Join-Path $PackageRoot "RELEASE_NOTES.md")
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "documents\release_notes.md") -Destination (Join-Path $PackageRoot "RELEASE_NOTES.md")
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install_windows_path.ps1") -Destination (Join-Path $PackageRoot "install.ps1")
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\uninstall_windows_path.ps1") -Destination (Join-Path $PackageRoot "uninstall.ps1")
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\install.cmd") -Destination (Join-Path $PackageRoot "install.cmd")
@@ -68,7 +68,7 @@ try {
     }
 
     @"
-Lullaby Alpha 1 portable package
+Lullaby portable package
 Commit: $Commit
 $LicenseStatus
 

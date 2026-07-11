@@ -6,9 +6,9 @@ Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
 Lullaby implements a sophisticated yet minimal error handling system designed for systems programming. Unlike traditional languages that rely on verbose try-catch blocks and exception objects, Lullaby uses an operator-based approach optimized for both token efficiency and runtime performance.
 
-## Current Alpha Error Reporting
+## Current Error Reporting
 
-The Rust alpha reports compiler and runtime failures with stable `L####` diagnostic codes. Lexing and parser diagnostics include source spans when available, semantic diagnostics include the function where the error was found, and runtime failures include a category label in CLI output.
+The compiler reports compile-time and runtime failures with stable `L####` diagnostic codes. Lexing and parser diagnostics include source spans when available, semantic diagnostics include the function where the error was found, and runtime failures include a category label in CLI output.
 
 Current diagnostic ranges:
 
@@ -16,7 +16,7 @@ Current diagnostic ranges:
 | :--- | :--- | :--- |
 | `L0001-L0003` | Source path and host file loading/writing | Invalid extension, unreadable source file, or failed artifact write. |
 | `L0101-L0104` | Lexer | Forbidden curly braces or semicolon terminators. |
-| `L0201-L0211` | Parser | Missing function body indentation, malformed expression, or planned syntax rejected by the Alpha 1 parser. |
+| `L0201-L0211` | Parser | Missing function body indentation, malformed expression, or planned syntax rejected by the parser. |
 | `L0300-L0329` | Semantic validation | Unknown name, type mismatch, invalid loop control, invalid builtin arguments, and invalid executable entry points. |
 | `L0400-L0418` | Runtime and host resources | Missing `main`, division by zero, invalid pointer, missing file, failed command invocation. |
 | `L0501` | IR lowering | Typed IR lowering failed after semantic validation. |
@@ -35,11 +35,11 @@ The implemented runtime categories are:
 - `ir`: typed IR lowering failures reported before an IR or bytecode backend starts executing.
 - `bytecode`: compiled `.lbc` artifact loading failures before bytecode execution starts.
 
-Language-level `try`, `catch`, recovery blocks, and compact `!0xXX` error tokens are planned and are not accepted by the current parser. Planned syntax keywords now produce `L0211 [parser error]` so users can distinguish future syntax from malformed Alpha 1 code.
+Language-level `try`, `catch`, recovery blocks, and compact `!0xXX` error tokens are planned and are not accepted by the current parser. Planned syntax keywords now produce `L0211 [parser error]` so users can distinguish future syntax from malformed code.
 
 ## Epic 6 Diagnostics UX
 
-The alpha now has three CLI diagnostic modes:
+The compiler has three CLI diagnostic modes:
 
 ```text
 lullaby check file.lby
@@ -47,7 +47,7 @@ lullaby check --verbose file.lby
 lullaby check --format json file.lby
 ```
 
-The same flags are available for `lullaby compile`, `lullaby build`, `lullaby inspect`, and `lullaby run`. `lullaby run` defaults to the AST runtime and accepts `--backend ir` and `--backend bytecode` for the current alpha subset. `lullaby compile` emits a versioned `.lbc` bytecode artifact with function-table and memory-operation metadata, `lullaby build` is the same artifact-generation path under a build-oriented command name, `lullaby inspect file.lbc` summarizes that artifact, and `lullaby run file.lbc` executes it. IR lowering failures use code `L0501` and phase `ir`; bytecode artifact failures use code `L0601` and phase `bytecode`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
+The same flags are available for `lullaby compile`, `lullaby build`, `lullaby inspect`, and `lullaby run`. `lullaby run` defaults to the AST runtime and accepts `--backend ir` and `--backend bytecode` for the current implemented subset. `lullaby compile` emits a versioned `.lbc` bytecode artifact with function-table and memory-operation metadata, `lullaby build` is the same artifact-generation path under a build-oriented command name, `lullaby inspect file.lbc` summarizes that artifact, and `lullaby run file.lbc` executes it. IR lowering failures use code `L0501` and phase `ir`; bytecode artifact failures use code `L0601` and phase `bytecode`. The alias `--diagnostic-format json` is also accepted. Extra positional arguments are rejected so tools do not accidentally ignore misspelled paths or flags.
 
 ### Concise Output
 
@@ -163,7 +163,7 @@ The compiler performs extensive static analysis to detect errors before runtime:
 
 ## Error Reporting Format
 
-Current alpha:
+Currently:
 ```text
 L0102 at 1:9: curly braces are not block delimiters in Lullaby
 L0313 in `main`: argument 2 for `sys_status` must be `array<string>` but got `array<i64>`
@@ -191,7 +191,7 @@ Planned compact language-level representation:
 
 ## Example Usage
 
-The following is planned syntax, not accepted by the current alpha parser:
+The following is planned syntax, not accepted by the current parser:
 
 ```lullaby
 # Memory-safe array operation with error handling

@@ -1,6 +1,6 @@
 # Contributor Guide For Language Features
 
-Canonical language rules: see [core_language_rules.md](core_language_rules.md). Current implemented behavior: see [alpha1_language_surface.md](alpha1_language_surface.md) and [formal_grammar.md](formal_grammar.md).
+Canonical language rules: see [core_language_rules.md](core_language_rules.md). Current implemented behavior: see [language_surface.md](language_surface.md) and [formal_grammar.md](formal_grammar.md).
 
 This guide is for adding or changing a Lullaby language feature. Keep changes small enough that the parser, semantic checks, runtime or IR behavior, fixtures, docs, and verification can move together.
 
@@ -14,7 +14,7 @@ This guide is for adding or changing a Lullaby language feature. Keep changes sm
    - Control flow: [lullaby_control_structures.md](lullaby_control_structures.md).
    - I/O, syscalls, or concurrency: [lullaby_input_output.md](lullaby_input_output.md).
    - Errors and diagnostics: [lullaby_error_handling.md](lullaby_error_handling.md) and [diagnostic_registry.md](diagnostic_registry.md).
-3. Check the ClickUp task. If its acceptance criteria mention planned syntax that Alpha 1 does not support yet, narrow the implementation to the current feature surface or split the future work into a separate task.
+3. Check the ClickUp task. If its acceptance criteria mention planned syntax that the current surface does not support yet, narrow the implementation to the current feature surface or split the future work into a separate task.
 4. Inspect the current git state with `git status --short` and preserve unrelated user changes.
 
 ## Implementation Path
@@ -46,7 +46,7 @@ Prefer small fixtures that prove one behavior. If a fixture is intentionally inv
 
 Update docs in the same change as the implementation:
 
-- [alpha1_language_surface.md](alpha1_language_surface.md) when current accepted behavior changes.
+- [language_surface.md](language_surface.md) when current accepted behavior changes.
 - [formal_grammar.md](formal_grammar.md) when parser syntax changes.
 - [language_specification.md](language_specification.md) for the current implementation summary.
 - The subsystem design document listed in [repository_map.md](repository_map.md).
@@ -54,7 +54,7 @@ Update docs in the same change as the implementation:
 - `offline_docs/index.html` and `offline_docs/verify_offline_docs.py` when user-facing syntax, CLI usage, diagnostics, examples, installation, or package behavior changes.
 - [repository_map.md](repository_map.md) for new files, commands, fixtures, tests, responsibilities, or changed document ownership.
 
-Keep planned design material clearly separated from implemented Alpha behavior.
+Keep planned design material clearly separated from implemented behavior.
 
 ## Verification
 
@@ -81,7 +81,7 @@ If a required check cannot run, record the command, the blocker, and the residua
 
 Before closing a task:
 
-1. Confirm the implementation matches the current Alpha feature surface or explicitly records future-surface exclusions.
+1. Confirm the implementation matches the current feature surface or explicitly records future-surface exclusions.
 2. Confirm docs and offline docs are current.
 3. Confirm [repository_map.md](repository_map.md) is accurate.
 4. Commit with a focused message, for example `compiler: infer local binding types`.

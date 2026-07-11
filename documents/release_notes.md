@@ -1,4 +1,4 @@
-# Lullaby Alpha 1 Release Notes
+# Lullaby Release Notes
 
 Release: `v0.1.0-alpha.2`
 
@@ -8,7 +8,7 @@ Package artifact: `dist\lullaby-alpha1-windows-x64.zip`
 
 Checksum artifact: `dist\lullaby-alpha1-windows-x64.zip.sha256`
 
-Alpha 1 is the first installable Lullaby toolchain checkpoint. It is a minimal working language and tooling release, not the full systems language.
+This release is the first installable Lullaby toolchain checkpoint. It is a minimal working language and tooling release, not the full systems language.
 
 ## Package Contents
 
@@ -69,7 +69,7 @@ if ($actual -ne $expected) { throw "checksum mismatch" }
 - Safe program-plus-argv command builtins: `sys_status` and `sys_output`.
 - Executable source passed to `lullaby compile` or source `lullaby run` must define zero-argument `main`; helper-only files remain valid for `lullaby check`.
 
-See [alpha1_language_surface.md](alpha1_language_surface.md) for the frozen feature surface.
+See [language_surface.md](language_surface.md) for the frozen feature surface.
 
 ## CLI Surface
 
@@ -102,12 +102,12 @@ See [alpha1_language_surface.md](alpha1_language_surface.md) for the frozen feat
 
 ## Diagnostics
 
-Alpha 1 emits stable `L####` diagnostics for source, lexer, parser, semantic, IR, optimizer, bytecode, runtime, and resource failures. Concise, verbose, and JSON modes are covered by CLI tests for representative failures, including malformed bytecode artifacts and invalid bytecode instruction contracts.
+The toolchain emits stable `L####` diagnostics for source, lexer, parser, semantic, IR, optimizer, bytecode, runtime, and resource failures. Concise, verbose, and JSON modes are covered by CLI tests for representative failures, including malformed bytecode artifacts and invalid bytecode instruction contracts.
 
 Notable codes:
 
 - `L0003`: compiled artifact write failure.
-- `L0211`: planned syntax such as imports, modules, structs, or try/catch is not supported in Alpha 1.
+- `L0211`: planned syntax such as imports, modules, structs, or try/catch is not supported yet.
 - `L0329`: executable entry point is missing or has parameters.
 - `L0501`: IR lowering failure.
 - `L0502`: optimizer mode requires IR or bytecode backend.
@@ -164,9 +164,9 @@ powershell -ExecutionPolicy Bypass -File scripts\publish_github_release.ps1
 - No region memory, ARC/reference counting, lifetime analysis, or GC hooks yet.
 - I/O is limited to text file builtins and direct program-plus-argv command calls.
 - Offline docs have both a checked-in hand-authored entry page and a generated package entry page; release packages now generate and verify their offline docs during packaging.
-- Alpha 1 distribution is a Windows portable archive with optional user PATH helper scripts, not a full MSI/NSIS-style installer. The cross-platform portable package driver also prepares Unix `install.sh`/`uninstall.sh` helpers for Linux and macOS archives once those release assets are validated.
+- This distribution is a Windows portable archive with optional user PATH helper scripts, not a full MSI/NSIS-style installer. The cross-platform portable package driver also prepares Unix `install.sh`/`uninstall.sh` helpers for Linux and macOS archives once those release assets are validated.
 - Optimizer support is intentionally conservative: leaf-helper inlining (a call to a small non-recursive function whose body is one pure scalar expression is replaced inline when the arguments are simple), constant folding, block-local CSE for repeated pure bindings, conservative loop-invariant motion for safe loop-body bindings, block-local copy propagation for simple aliases, and block-local dead-code elimination are implemented. The native and WASM backends run the inlining pass before codegen, so a helper like `rem` called in a hot loop compiles to inline arithmetic instead of a `call` (about 29% faster on the prime-counting benchmark).
 
 ## Next Phase
 
-The next phase should keep the working AST runtime and installable package intact while hardening the typed IR and bytecode backend with broader backend snapshots, a fuller instruction-bytecode VM, target-triple package verification, and native-backend prerequisites. The active post-Alpha sequence is tracked in [post_alpha_roadmap.md](post_alpha_roadmap.md).
+The next phase should keep the working AST runtime and installable package intact while hardening the typed IR and bytecode backend with broader backend snapshots, a fuller instruction-bytecode VM, target-triple package verification, and native-backend prerequisites. The active development sequence is tracked in [roadmap.md](roadmap.md).

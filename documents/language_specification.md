@@ -14,7 +14,7 @@ Lullaby is a next-generation compiled systems programming language designed with
 
 ## Status
 
-Lullaby is a real, working language in active development toward its 1.0 release. It is **not** a frozen prototype: the Rust toolchain compiles and runs a broad, cohesive language across multiple backends today, and the remaining work is a defined set of primitives on the road to 1.0. The plan and the definition of 1.0 are canonical in [roadmap_1_0.md](roadmap_1_0.md); the earliest installable surface is preserved for reference in [alpha1_language_surface.md](alpha1_language_surface.md).
+Lullaby is a real, working language in active development toward its 1.0 release. It is **not** a frozen prototype: the Rust toolchain compiles and runs a broad, cohesive language across multiple backends today, and the remaining work is a defined set of primitives on the road to 1.0. The plan and the definition of 1.0 are canonical in [roadmap_1_0.md](roadmap_1_0.md); the earliest installable surface is preserved for reference in [language_surface.md](language_surface.md).
 
 1.0 is not yet released. Lullaby 1.0 is defined as being technically capable of expressing any program (shipping the spanning set of low-level primitives) *and* being easy to install across Windows, Linux, and macOS. This document describes the language as it exists now, and marks genuinely-planned work as roadmap items.
 
@@ -271,7 +271,7 @@ swap(a, b)           // Exchange values
 duplicate(value)     // Deep copy
 ```
 
-Current alpha memory form:
+Current memory form:
 ```lullaby
 fn main -> i64
     let ptr ptr_i64 = alloc(0)
@@ -282,7 +282,7 @@ fn main -> i64
 ```
 
 ### I/O Operations
-Current alpha text file and system command form:
+Current text file and system command form:
 ```lullaby
 fn main -> string
     write_file("target/example.txt", "alpha")

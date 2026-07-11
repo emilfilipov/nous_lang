@@ -8,7 +8,7 @@ built-in type and function in [standard_library.md](standard_library.md) is
 scalars, collections, memory intrinsics, and core I/O that a systems language
 must expose, but also full "batteries" like an HTTP/1.1 client and server helper,
 the string-convenience library, and math beyond core arithmetic. That prelude is
-honest for an alpha, but at 1.0 it over-claims: it says "these are the
+honest today, but at 1.0 it over-claims: it says "these are the
 primitives" while shipping a web client among them.
 
 The design here draws the line between **true language primitives** (which stay in
@@ -23,7 +23,7 @@ Related design: [modules_design.md](modules_design.md) (import/`pub`/manifest
 mechanics this builds on), [standard_library.md](standard_library.md) (the current
 flat prelude catalog), [stdlib_io_boundary.md](stdlib_io_boundary.md) (the
 existing intrinsic-vs-runtime I/O boundary this note generalizes), and
-[post_alpha_roadmap.md](post_alpha_roadmap.md) (packaging/installer sequencing to
+[roadmap.md](roadmap.md) (packaging/installer sequencing to
 coordinate with). ClickUp: list **"11 Standard Library and Collections"** owns the
 prelude/module classification and the string/math/collection work; list
 **"12 Modules and Packaging"** owns the module-resolution, namespacing, and
@@ -272,7 +272,7 @@ The move is staged so no existing program breaks at any step:
 ## On-disk and packaging layout
 
 Coordinate with the packaging sequence in
-[post_alpha_roadmap.md](post_alpha_roadmap.md) (§4 Installer Packaging), which
+[roadmap.md](roadmap.md) (§4 Installer Packaging), which
 already fixes `bin/`, `docs/`, `examples/` in the portable bundle.
 
 ### In the repository
@@ -292,7 +292,7 @@ repo/binary; in an installed bundle, relative to the executable (below).
 
 ### In the installed toolchain bundle
 
-Extend the bundle layout from [post_alpha_roadmap.md](post_alpha_roadmap.md):
+Extend the bundle layout from [roadmap.md](roadmap.md):
 
 ```
 <package-root>/
@@ -387,7 +387,7 @@ higher-level concurrency module.
 - **Stdlib on disk, resolved relative to the binary.** Keeps the offline,
   no-network, relocatable install guarantee — the stdlib is files beside `bin/`,
   never a fetch — and matches the packaging layout already planned in
-  [post_alpha_roadmap.md](post_alpha_roadmap.md).
+  [roadmap.md](roadmap.md).
 - **Flat now, qualified-ready later.** Keeping the flat namespace preserves
   one-line migrations while curated, disjoint module name sets guarantee a later
   `import math as m` is purely additive and never a breaking change.

@@ -1,7 +1,7 @@
 # Lullaby Standard Library and Prelude
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
-Installable surface: see [alpha1_language_surface.md](alpha1_language_surface.md).
+Installable surface: see [language_surface.md](language_surface.md).
 
 Everything in this document is **compiler-provided and always in scope** — this
 is Lullaby's prelude. There is no `import` needed for any of it: the built-in
@@ -361,7 +361,7 @@ Processes run identically on the AST, IR, and bytecode backends.
   spawn `cmd` with `args`, capturing stdout and stderr through pipes. `ok(handle)`
   on success; `err(message)` if the process cannot be started (e.g. the command
   is not found). No shell is invoked. The `args` array must be non-empty in the
-  current alpha (array literals require at least one element); pass a placeholder
+  current implementation (array literals require at least one element); pass a placeholder
   argument when a command takes none.
 - `proc_wait(p process) -> result<i64, string>` — block until the child exits and
   return its exit code as an `i64`. On Unix a child terminated by a signal has no

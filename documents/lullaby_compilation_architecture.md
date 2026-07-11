@@ -12,17 +12,17 @@ Lullaby implements a novel multi-phase compilation pipeline specifically optimiz
 
 ## Compilation Pipeline Stages
 
-## Current Alpha Pipeline
+## Current Pipeline
 
 The current Rust workspace implements a frontend and in-process execution pipeline:
 
 1. `lullaby_lexer` validates `.lby` paths, emits tokens, emits indentation/dedent structure, and rejects forbidden block delimiters.
 2. `lullaby_parser` builds an AST for functions, typed parameters, `let`, assignment, returns, break/continue, if/elif/else, while/loop/range-for blocks, calls, literals, array literals/indexing, variables, arithmetic, comparisons, and boolean logic.
 3. `lullaby_semantics` validates static types, explicit and inferred local bindings, assignments, function calls, return behavior, bool conditions, loop-control placement, arithmetic/comparison/logical operands, homogeneous non-empty arrays, array indexes, interim pointer-style memory builtins, text file I/O builtins, and safe system command builtins. Successful validation returns `CheckedProgram` metadata with function signatures and inferred expression types.
-4. `lullaby_ir` lowers a `CheckedProgram` into typed semantic IR for the current alpha subset, including typed functions, parameters, statements, control flow, calls, builtins, and expressions. It also exposes memory-operation analysis for current heap-slot operations and array bounds checks so optimizers, bytecode work, and later native backends can share one side-effect and safety model.
+4. `lullaby_ir` lowers a `CheckedProgram` into typed semantic IR for the current implemented subset, including typed functions, parameters, statements, control flow, calls, builtins, and expressions. It also exposes memory-operation analysis for current heap-slot operations and array bounds checks so optimizers, bytecode work, and later native backends can share one side-effect and safety model.
 5. `lullaby_runtime` executes the validated AST directly, including `main`, calls, scoped locals, assignment, branch result values, while/loop/range-for control flow, array literals/indexing with runtime bounds checks, arithmetic/comparisons, short-circuit boolean logic, heap-slot memory operations including `alloc`/`load`/`store`/`dealloc`, text file I/O, and safe system command builtins.
 6. `lullaby_ir` provides a deterministic optimization pass framework. Implemented passes are constant folding for pure literal arithmetic, comparisons, boolean logic, string equality, and unary `not`, conservative block-local common subexpression elimination for repeated pure bindings, conservative loop-invariant motion for safe loop-body bindings, conservative block-local copy propagation for simple variable aliases, plus dead-code elimination for statements after unconditional `return`, `break`, or `continue` in the same block. Constant folding and loop-invariant motion deliberately leave potentially failing divide-by-zero expressions in place so runtime diagnostics and zero-iteration loop behavior are preserved. Optimizer barriers are conservative around calls and bounds-checked indexing.
-7. `lullaby_ir` can also execute the lowered typed IR, lower it into an explicit instruction-bytecode module, and encode/decode a versioned `.lbc` bytecode artifact for the current alpha subset.
+7. `lullaby_ir` can also execute the lowered typed IR, lower it into an explicit instruction-bytecode module, and encode/decode a versioned `.lbc` bytecode artifact for the current implemented subset.
 8. `lullaby_cli` exposes the current pipeline as `lullaby check <file.lby>`, `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lby>`, `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] <file.lby>`, `lullaby inspect <file.lbc>`, `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] <file.lby|file.lbc>`, `lullaby docs`, and `lullaby examples`. Optimization is opt-in and applies only to IR/bytecode source runs and compiled bytecode artifacts.
 
 Additional optimization passes, native code generation, linking, and binary output remain planned architecture stages.
@@ -41,7 +41,7 @@ Each operation carries safety metadata for live-resource requirements, bounds-ch
 
 ### Native Backend Contract
 
-`lullaby_ir::native_contract` records the first Alpha 1 native backend contract before machine-code output exists. It defines the first prototype target, supported 64-bit target family, internal calling convention, stack-frame slot classes, current value layouts, pointer and array lowering rules, cleanup sequencing, and native diagnostic requirements.
+`lullaby_ir::native_contract` records the first native backend contract before machine-code output exists. It defines the first prototype target, supported 64-bit target family, internal calling convention, stack-frame slot classes, current value layouts, pointer and array lowering rules, cleanup sequencing, and native diagnostic requirements.
 
 The contract is serializable and unit-tested so object-emission work can consume stable data instead of embedding target policy directly into lowering code. See [native_backend_contract.md](native_backend_contract.md).
 
@@ -158,11 +158,11 @@ ir = [
 
 #### IR Optimizations Built-in
 - **Implemented now**: Opt-in constant folding through the `lullaby_ir` optimization framework and `lullaby run --backend ir|bytecode --optimize constant-fold`.
-- **Implemented now**: Conservative block-local common subexpression elimination for repeated pure `let` initializer expressions in the current alpha optimizer pipeline.
+- **Implemented now**: Conservative block-local common subexpression elimination for repeated pure `let` initializer expressions in the current optimizer pipeline.
 - **Implemented now**: Conservative loop-invariant motion for safe loop-body `let` initializers whose dependencies are available before the loop and are not declared or mutated inside the loop.
-- **Implemented now**: Conservative block-local copy propagation for simple variable aliases in the current alpha optimizer pipeline.
+- **Implemented now**: Conservative block-local copy propagation for simple variable aliases in the current optimizer pipeline.
 - **Implemented now**: Dead-code elimination for statements after explicit block terminators through `lullaby run --backend ir|bytecode --optimize dead-code`.
-- **Implemented now**: The current alpha pass pipeline through `lullaby run --backend ir|bytecode --optimize alpha`, running constant folding, CSE, loop-invariant motion, copy propagation, and dead-code elimination.
+- **Implemented now**: The current pass pipeline through `lullaby run --backend ir|bytecode --optimize alpha`, running constant folding, CSE, loop-invariant motion, copy propagation, and dead-code elimination.
 - **Planned**: Broader dead branch and unreachable control-flow elimination.
 - **Planned**: Type propagation to infer missing types through data flow analysis.
 - **Planned**: Memory layout optimization for cache-friendly variable placement.
@@ -176,7 +176,7 @@ Transforms IR into efficient machine code with systems-level optimizations.
 - Custom Lullaby bytecode (optional)
 - Direct hardware abstraction layer
 
-#### Current Alpha Bytecode Artifact
+#### Current Bytecode Artifact
 
 The current compiler artifact is a JSON `.lbc` file with a format marker, artifact version, metadata, entry point, function table, memory operation metadata, and instruction-bytecode module:
 

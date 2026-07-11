@@ -1,6 +1,6 @@
-# Post-Alpha Roadmap
+# Roadmap
 
-This document turns the current post-Alpha 1 backlog into repo-owned execution guidance. The ClickUp backlog mirrors this sequence, but this file is the stable source to consult before starting broad implementation work.
+This document turns the current development backlog into repo-owned execution guidance. The ClickUp backlog mirrors this sequence, but this file is the stable source to consult before starting broad implementation work.
 
 ## 1. Memory-Aware IR Operations
 
@@ -9,12 +9,12 @@ Goal: make allocation, loads, stores, deallocation, bounds checks, future region
 Current increment:
 
 - `crates/lullaby_ir` exposes `analyze_memory_operations` for typed IR modules.
-- The analysis reports current Alpha 1 heap-slot operations: `alloc`, `load`, `store`, and `dealloc`.
+- The analysis reports current heap-slot operations: `alloc`, `load`, `store`, and `dealloc`.
 - The analysis also reports array indexing as a bounds-checked access.
 - Each reported operation carries artifact-order sequence metadata plus safety metadata for live-resource requirements, bounds-check requirements, memory mutation, cleanup role, and unsafe-boundary handling.
 - The optimizer uses the same runtime-checking barrier model for memory calls and bounds-checked indexing, so future passes do not need to rediscover side effects ad hoc.
 - Version 5 `.lbc` artifacts preserve bytecode-level `memory_operations` with stable sequence numbers, artifact decoding validates those operations against module instructions, and `lullaby inspect` reports memory operation counts/details.
-- Backend snapshot tests under `crates/lullaby_ir/tests/memory_snapshots.rs` pin the current Alpha 1 bytecode memory metadata for heap-slot operations and bounds-checked array indexing.
+- Backend snapshot tests under `crates/lullaby_ir/tests/memory_snapshots.rs` pin the current bytecode memory metadata for heap-slot operations and bounds-checked array indexing.
 
 Delivered since:
 
@@ -34,7 +34,7 @@ Goal: replace the hand-authored-only offline docs process with a deterministic g
 Current increment:
 
 - `offline_docs/generate_offline_docs.py` builds a standalone HTML file from canonical Markdown using only the Python standard library.
-- The first generated source set includes the project overview, core language rules, Alpha 1 language surface, diagnostic registry, release notes, and this roadmap.
+- The first generated source set includes the project overview, core language rules, language surface, diagnostic registry, release notes, and this roadmap.
 - The default output is `target/offline_docs/index.html`, keeping generated artifacts out of source control.
 - The generated output includes fixture-backed examples and is verified with `python offline_docs/verify_offline_docs.py target/offline_docs/index.html --profile generated`.
 - The generated output now includes package-ready user sections for quick start, CLI command reference, portable package layout, diagnostics behavior, and current limitations.
@@ -55,7 +55,7 @@ Recommended sequence:
 
 - Keep Cargo as the compiler/runtime build engine.
 - Use `scripts/package_portable.py` as the initial cross-platform release driver for target tags, output layout, generated docs, examples, checksums, manifests, archives, and host-compatible smoke tests.
-- Preserve `scripts/package_windows_portable.ps1` as the Windows Alpha 1 implementation while `scripts/package_portable.py` reaches parity across non-Windows hosts.
+- Preserve `scripts/package_windows_portable.ps1` as the Windows implementation while `scripts/package_portable.py` reaches parity across non-Windows hosts.
 - `documents/portable_package_ci_workflow.yml` provides the GitHub Actions workflow to run formatting, tests, clippy, offline-doc verification, generated-doc verification, and explicit target-triple `scripts/package_portable.py --target <triple> --target-tag <os-arch> --verify` package jobs on Windows, Linux, and macOS hosts. It must be copied to `.github/workflows/portable-package.yml` from a session or token with GitHub `workflow` scope.
 
 Minimum target matrix:
@@ -94,8 +94,8 @@ Goal: reach native code generation only after the typed IR, bytecode contract, m
 
 Recommended sequence:
 
-- Freeze the typed IR contract for the Alpha 1 subset plus memory-effect metadata. Current status: bytecode memory metadata is versioned and ordered, and `crates/lullaby_ir::native_contract` records the first native backend contract.
-- Add backend snapshots for IR and bytecode before introducing machine-code output. Current status: bytecode memory metadata snapshots exist, the Alpha 1 native backend contract has a checked-in JSON snapshot, and COFF object-emission snapshots cover literal return, stack-backed `i64` local addition, and straight-line `i64` assignments.
+- Freeze the typed IR contract for the current subset plus memory-effect metadata. Current status: bytecode memory metadata is versioned and ordered, and `crates/lullaby_ir::native_contract` records the first native backend contract.
+- Add backend snapshots for IR and bytecode before introducing machine-code output. Current status: bytecode memory metadata snapshots exist, the native backend contract has a checked-in JSON snapshot, and COFF object-emission snapshots cover literal return, stack-backed `i64` local addition, and straight-line `i64` assignments.
 - Define calling convention, stack-frame, value layout, pointer, array, and resource-cleanup rules. Current status: see [native_backend_contract.md](native_backend_contract.md) and `alpha1_native_backend_contract()`.
 - Prototype object emission for one host target before adding a linker workflow. Current status: `lullaby_ir::native_object` emits a minimal `x86_64-pc-windows-msvc` COFF object for zero-argument `main` with literal return, `void`, literal `bool`, stack-backed `i64` local arithmetic, and straight-line `i64` assignment arithmetic; broader lowering and linker work remain pending.
 - Require native backend diagnostics to use the shared `L####` diagnostic model.

@@ -10,9 +10,9 @@ executable native contract lives in
 `crates/lullaby_ir/src/native_contract.rs`; the first object emitter lives in
 `crates/lullaby_ir/src/native_object.rs`.
 
-## Alpha Milestone: Validated Output Exists Today
+## Milestone: Validated Output Exists Today
 
-The Alpha 1 milestone deliberately validates a **bytecode** output rather than a
+The first milestone deliberately validates a **bytecode** output rather than a
 linked native binary, so the toolchain has an end-to-end, checkable output
 contract before native linking is attempted:
 
@@ -27,7 +27,7 @@ contract before native linking is attempted:
   `alpha1_locals_add.coff.json`, `alpha1_assignments.coff.json`) pin the
   `source -> typed IR -> bytecode -> COFF object` path deterministically.
 
-This satisfies "the alpha milestone has explicit binary-output or
+This satisfies "the first milestone has explicit binary-output or
 bytecode-output validation" and "verification reports are machine-readable and
 human-readable" against the current subset.
 
@@ -62,7 +62,7 @@ arguments), heap values, and ELF/Mach-O output remain future work.
 ## Symbol Resolution
 
 - **Symbol table.** Each compiled module publishes a symbol table keyed by a
-  mangled name. Alpha uses a flat, non-namespaced scheme: `main` exports as the
+  mangled name. The backend uses a flat, non-namespaced scheme: `main` exports as the
   platform entry symbol; user functions export as `nl$<function>`; builtins are
   not emitted as symbols (they lower inline or resolve to a small runtime).
 - **Binding classes.** `GLOBAL` for exported user functions and `main`, `LOCAL`
@@ -78,7 +78,7 @@ arguments), heap values, and ELF/Mach-O output remain future work.
 
 ## Relocation Assumptions
 
-- Alpha targets 64-bit only. Code is emitted position-independent-friendly with
+- The backend targets 64-bit only. Code is emitted position-independent-friendly with
   RIP-relative references on x86-64.
 - Relocation kinds needed for the first milestone:
   - PC-relative 32-bit for `call`/`jmp` to other functions
@@ -97,7 +97,7 @@ Consistent logical sections across object formats, mapped per target:
 | :-- | :-- | :-- | :-- | :-- |
 | code | `.text` | `.text` | `__TEXT,__text` | function machine code |
 | rodata | `.rdata` | `.rodata` | `__TEXT,__const` | string/array literals |
-| data | `.data` | `.data` | `__DATA,__data` | mutable globals (none in alpha) |
+| data | `.data` | `.data` | `__DATA,__data` | mutable globals (none currently) |
 | symbols | COFF symtab | `.symtab` | symtab | symbol table |
 | relocs | per-section | `.rela.*` | per-section | relocation entries |
 

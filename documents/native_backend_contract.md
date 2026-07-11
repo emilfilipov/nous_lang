@@ -1,8 +1,8 @@
-# Alpha 1 Native Backend Contract
+# Native Backend Contract
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
-This document records the first native backend contract for Alpha 1. The executable source of truth is `crates/lullaby_ir/src/native_contract.rs`.
+This document records the first native backend contract. The executable source of truth is `crates/lullaby_ir/src/native_contract.rs`.
 
 ## Status
 
@@ -10,7 +10,7 @@ Implemented now:
 
 - A serializable `NativeBackendContract` data model in `lullaby_ir`.
 - A deterministic `alpha1_native_backend_contract()` baseline.
-- `alpha1_value_layout(TypeRef)` coverage for the current Alpha 1 type surface: `void`, `i64`, `bool`, `string`, `array<T>`, and `ptr_*`.
+- `alpha1_value_layout(TypeRef)` coverage for the current type surface: `void`, `i64`, `bool`, `string`, `array<T>`, and `ptr_*`.
 - Unit tests for target selection, current value layouts, cleanup sequencing, and JSON round-trip stability.
 - A checked-in JSON snapshot under `crates/lullaby_ir/tests/snapshots/alpha1_native_backend_contract.json`.
 - A first `x86_64-pc-windows-msvc` COFF object emitter in `crates/lullaby_ir/src/native_object.rs` for zero-argument `main` functions that return a literal `i64`, literal `bool`, `void`, stack-backed `i64` local arithmetic, or straight-line `i64` local assignment arithmetic.
@@ -72,12 +72,12 @@ All current contract targets are 64-bit little-endian targets.
 
 ## Calling Convention
 
-The Alpha 1 backend uses an internal Lullaby ABI before adapting to platform object and linker conventions:
+The native backend uses an internal Lullaby ABI before adapting to platform object and linker conventions:
 
 - Parameters lower in source order.
 - `main` remains the zero-argument entry function for executable validation.
 - Scalar and handle return values are returned directly.
-- Variadic calls are not part of Alpha 1.
+- Variadic calls are not part of this backend.
 - Call boundaries require 16-byte alignment.
 
 ## Stack Frame
@@ -94,7 +94,7 @@ Cleanup order is driven by `IrMemoryOperation.sequence`, matching the bytecode a
 
 ## Value Layout
 
-The current Alpha 1 value layouts are:
+The current value layouts are:
 
 | Type pattern | Class | Size | Alignment | Pass/return mode |
 | :--- | :--- | :--- | :--- | :--- |
@@ -133,7 +133,7 @@ For literal `i64`, the prototype emits `mov rax, imm64; ret`. For `bool`, it emi
 
 ## Extended Native Program Emission And Link-To-Executable (DELIVERED, best-effort link)
 
-`lullaby_ir::native_object::emit_alpha1_native_program` extends the prototype into a linkable multi-function COFF object for the **i64-scalar subset** — the native mirror of the WASM backend's scalar subset, restricted to `i64` for this increment. It is exercised by `lullaby native` (see [alpha1_language_surface.md](alpha1_language_surface.md)).
+`lullaby_ir::native_object::emit_alpha1_native_program` extends the prototype into a linkable multi-function COFF object for the **i64-scalar subset** — the native mirror of the WASM backend's scalar subset, restricted to `i64` for this increment. It is exercised by `lullaby native` (see [language_surface.md](language_surface.md)).
 
 Eligibility and lowering:
 

@@ -2,19 +2,19 @@
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
-## Current Alpha Type Checker
+## Current Type Checker
 
-The Rust alpha currently validates `i64`, `bool`, `string`, `void`, interim pointer types such as `ptr_i64`, and homogeneous arrays spelled `array<T>`.
+The compiler currently validates `i64`, `bool`, `string`, `void`, interim pointer types such as `ptr_i64`, and homogeneous arrays spelled `array<T>`.
 
 Implemented local binding inference:
 - Explicit local annotations use `let name Type = expression`.
 - Omitted local annotations use `let name = expression` and infer the binding type from the initializer.
 - Literal, function-call, array-literal, index, unary, binary, and builtin-call expressions can provide inferred binding types when semantic validation succeeds.
-- Empty arrays and `void` initializers cannot provide a usable inferred local type in the current alpha.
+- Empty arrays and `void` initializers cannot provide a usable inferred local type in the current implementation.
 
 Implemented array rules:
 - Array literals use bracket syntax, for example `[1, 2, 3]`.
-- Array literals must be non-empty in the current alpha because empty-array inference is not implemented yet.
+- Array literals must be non-empty in the current implementation because empty-array inference is not implemented yet.
 - All array literal values must have the same static type.
 - Index expressions use `values[index]`.
 - Index expressions require an `array<T>` target and an `i64` index.

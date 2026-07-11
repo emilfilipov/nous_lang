@@ -1,9 +1,9 @@
-# Lullaby Alpha 1 Formal Grammar
+# Lullaby Formal Grammar
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
-Frozen Alpha 1 surface: see [alpha1_language_surface.md](alpha1_language_surface.md).
+Earliest installable surface: see [language_surface.md](language_surface.md).
 
-This document is the formal grammar draft for the current implemented Alpha 1 parser. It describes accepted source structure after lexical scanning has removed comments and produced indentation tokens. It does not describe the full planned systems language.
+This document is the formal grammar draft for the current implemented parser. It describes accepted source structure after lexical scanning has removed comments and produced indentation tokens. It does not describe the full planned systems language.
 
 ## Scope
 
@@ -81,7 +81,7 @@ program =
     { NEWLINE } { function_decl { NEWLINE } } EOF ;
 ```
 
-Only functions are valid top-level declarations in Alpha 1.
+Only functions are valid top-level declarations in this grammar.
 
 ## Functions
 
@@ -232,7 +232,7 @@ array_literal =
     "[" [ expr { "," expr } ] "]" ;
 ```
 
-The parser accepts empty array literals syntactically, but the Alpha 1 semantic layer rejects them because empty-array type inference is not implemented.
+The parser accepts empty array literals syntactically, but the semantic layer rejects them because empty-array type inference is not implemented.
 
 ## Builtins
 
@@ -243,7 +243,7 @@ builtin_call =
     IDENT "(" [ expr { "," expr } ] ")" ;
 ```
 
-The current Alpha 1 builtin names are documented in [alpha1_language_surface.md](alpha1_language_surface.md). Whether a call name is a user-defined function or a builtin is decided during semantic validation, not parsing.
+The current builtin names are documented in [language_surface.md](language_surface.md). Whether a call name is a user-defined function or a builtin is decided during semantic validation, not parsing.
 
 ## Planned Syntax Rejection
 
@@ -253,7 +253,7 @@ The lexer recognizes several planned keywords, including:
 module import package struct union trait interface class match switch try catch throw async await coroutine
 ```
 
-When these tokens appear where Alpha 1 grammar does not support them, the parser reports `L0211` planned-syntax diagnostics.
+When these tokens appear where this grammar does not support them, the parser reports `L0211` planned-syntax diagnostics.
 
 ## Grammar Versus Semantic Validation
 

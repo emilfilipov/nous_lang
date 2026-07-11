@@ -1,12 +1,12 @@
-# Alpha 1 Acceptance Criteria
+# Release Acceptance Criteria
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
-Alpha 1 is the first installable Lullaby toolchain checkpoint. It is not the full systems language, native compiler, or standard library. It is a minimal working language and tooling release that proves the frontend, semantic checks, diagnostics, runtime subset, bytecode artifact path, fixture discipline, offline documentation workflow, and Windows-first packaging are coherent.
+This checklist defines when an installable Lullaby toolchain release is acceptable. It proves the frontend, semantic checks, diagnostics, runtime subset, bytecode artifact path, fixture discipline, offline documentation workflow, and Windows-first packaging are coherent.
 
 ## Required Toolchain Surface
 
-Alpha 1 is acceptable when the repository provides:
+A release is acceptable when the repository provides:
 
 - A Rust workspace with stable crates for lexing, parsing, semantic validation, diagnostics, runtime execution, CLI entry points, typed IR work, and initial bytecode execution.
 - Source validation for the canonical `.lby` extension.
@@ -29,12 +29,12 @@ Alpha 1 is acceptable when the repository provides:
 
 ## Required Documentation Surface
 
-Alpha 1 documentation is acceptable when:
+Documentation is acceptable when:
 
-- `documents/language_specification.md` accurately lists the current executable alpha separately from planned design material.
-- `documents/alpha1_language_surface.md` is the canonical frozen feature surface for installable Alpha 1.
-- `documents/diagnostic_registry.md` lists every stable `L####` code emitted by the alpha.
-- `documents/implementation_plan.md` records which epics are alpha-complete, partially complete, or pending.
+- `documents/language_specification.md` accurately lists the current executable surface separately from planned design material.
+- `documents/language_surface.md` records the earliest installable feature surface, preserved for reference.
+- `documents/diagnostic_registry.md` lists every stable `L####` code emitted by the compiler.
+- `documents/implementation_plan.md` records which epics are complete, partially complete, or pending.
 - `documents/repository_map.md` accurately maps source layout, docs, fixtures, commands, and verification responsibilities.
 - `offline_docs/index.html` is self-contained and opens directly from disk without a server, CDN, remote font, or internet dependency.
 - Offline documentation is bundled with the release package and discoverable from the installed or unpacked toolchain.
@@ -43,7 +43,7 @@ Alpha 1 documentation is acceptable when:
 
 ## Required Verification Gate
 
-Alpha 1 cannot be called done unless all of these commands pass from the repository root:
+A release cannot be called done unless all of these commands pass from the repository root:
 
 ```powershell
 cargo fmt --check
@@ -55,7 +55,7 @@ git diff --check -- .
 
 `scripts/verify_markdown_refs.ps1` should pass. It covers stale-source markers, file-like local Markdown links, and backticked `.md` references while filtering out language examples such as `[FUNCTION_NAME]([ARGUMENTS])`.
 
-`scripts/verify_release.ps1` should be the release proof command for Alpha 1. It must also prove the packaged or release-built `lullaby` binary can:
+`scripts/verify_release.ps1` should be the release proof command. It must also prove the packaged or release-built `lullaby` binary can:
 
 - report `lullaby --version`;
 - report the local offline documentation path through `lullaby docs`;
@@ -71,7 +71,7 @@ git diff --check -- .
 
 ## Release Evidence
 
-The Alpha 1 release note should include:
+The release note should include:
 
 - The commit hash being released.
 - The exact verification commands and pass/fail outcome.
@@ -84,14 +84,14 @@ The Alpha 1 release note should include:
 
 ## Explicit Non-Goals
 
-Alpha 1 does not require:
+A release does not require:
 
 - Native code generation, linking, or binary output.
 - Modules, packages, structs, traits, interfaces, pattern matching, or user-defined generics beyond current `array<T>` spelling.
 - Full region memory, ARC/reference counting, lifetime analysis, or GC hooks.
 - Streams, binary I/O, memory mapping, async, sockets, IPC, or OS syscall abstractions beyond the current safe system command builtins.
-- A generated offline-docs pipeline from Markdown. The current hand-authored self-contained HTML bundle is acceptable for Alpha 1 if verification passes.
+- A generated offline-docs pipeline from Markdown. The current hand-authored self-contained HTML bundle is acceptable if verification passes.
 
-## Suggested Next Phase After Alpha 1
+## Suggested Next Phase
 
-Once Alpha 1 is accepted, the next phase should harden the typed semantic IR and initial bytecode backend with backend snapshot tests, stricter bytecode instruction validation, memory-operation metadata, and a fuller instruction-bytecode VM before native code generation. This keeps the project conservative: preserve the working AST runtime while proving that a lower-level contract can support later optimization and native backends. See [post_alpha_roadmap.md](post_alpha_roadmap.md) for the active sequence.
+Once a release is accepted, the next phase should harden the typed semantic IR and initial bytecode backend with backend snapshot tests, stricter bytecode instruction validation, memory-operation metadata, and a fuller instruction-bytecode VM before native code generation. This keeps the project conservative: preserve the working AST runtime while proving that a lower-level contract can support later optimization and native backends. See [roadmap.md](roadmap.md) for the active sequence.

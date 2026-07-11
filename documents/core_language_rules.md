@@ -2,12 +2,12 @@
 
 This file is the canonical location for global Lullaby rules that apply across all subsystem documents and implementation work.
 
-For the installable Alpha 1 feature freeze, see [alpha1_language_surface.md](alpha1_language_surface.md). Examples in this file may mention planned scoped constructs to show that indentation remains the universal block rule; they are not automatically implemented Alpha 1 syntax.
+For the earliest installable feature surface, see [language_surface.md](language_surface.md). Examples in this file may mention planned scoped constructs to show that indentation remains the universal block rule; they are not automatically implemented syntax.
 
 ## Canonical Source Extension
 
 Lullaby source files use the `.lby` file extension. It is the only accepted
-source extension; the original alpha extension `.lullaby` has been retired.
+source extension; the original `.lullaby` extension has been retired.
 
 Examples:
 

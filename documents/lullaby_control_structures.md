@@ -13,7 +13,7 @@ Control structures in Lullaby are designed to be minimal, readable, and highly e
 3. **Implicit Blocks**: Code blocks defined purely through indentation levels
 4. **Declarative Flow**: Control statements prefix operations rather than wrapping them
 
-## Current Alpha Implementation
+## Current Implementation
 
 The current Rust toolchain implements these control forms:
 

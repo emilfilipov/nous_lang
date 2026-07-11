@@ -56,7 +56,7 @@ Suggested public spelling:
 - Repository/package possibilities: `lullaby` or `lullaby-lang`
 - File extension: `.lby` (canonical and only accepted extension).
 
-The long `.lullaby` extension was used during early alpha because it is clear in
+The long `.lullaby` extension was used during early development because it is clear in
 examples and searchable in docs. It has since been shortened to the canonical
 `.lby` (following the follow-up decision below and the convention of short
 source extensions such as `.rs`, `.py`, and `.rb`). `.lby` is distinctive,

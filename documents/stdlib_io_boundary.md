@@ -21,7 +21,7 @@ lands, only the spelling of these names changes, not the boundary defined here.
   intrinsics.
 - A **runtime stdlib function** is a normal Lullaby function (eventually shipped
   as `.lby` source or a host shim) that may call one or more intrinsics. The
-  alpha ships no stdlib functions yet; every operation below is currently an
+  the compiler ships no stdlib functions yet; every operation below is currently an
   intrinsic so the surface stays small and each op has one authoritative
   implementation.
 
@@ -49,7 +49,7 @@ in terms of existing intrinsics, it belongs in the **runtime stdlib**.
 `read_line`/`print`/`println`/`warn` rather than first-class stream handles. A
 `file` handle type and `open`/`close`/read-write-on-handle are introduced only
 when buffered and binary I/O land; until then the whole-file and standard-stream
-intrinsics cover the alpha use cases.
+intrinsics cover the current use cases.
 
 ## Examples
 

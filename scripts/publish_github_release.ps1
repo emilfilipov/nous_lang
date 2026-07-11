@@ -12,7 +12,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 $ArchivePath = Join-Path $RepoRoot "dist\$PackageName.zip"
 $ChecksumPath = "$ArchivePath.sha256"
-$ReleaseNotes = Join-Path $RepoRoot "documents\alpha1_release_notes.md"
+$ReleaseNotes = Join-Path $RepoRoot "documents\release_notes.md"
 
 Push-Location $RepoRoot
 try {

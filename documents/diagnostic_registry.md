@@ -2,7 +2,7 @@
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
-This registry defines the stable diagnostic codes currently emitted by the Lullaby alpha. Diagnostics are designed for both human readers and LLM/tooling consumers.
+This registry defines the stable diagnostic codes currently emitted by the Lullaby compiler. Diagnostics are designed for both human readers and LLM/tooling consumers.
 
 ## Output Modes
 
@@ -62,7 +62,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `L0208` | parser | Expected assignment operator. | Assignment statement has malformed operator. | Use `=`, `+=`, `-=`, `*=`, or `/=`. |
 | `L0209` | parser | Expected `from` in for loop. | Range loop header is malformed. | Use `for name from start to end`. |
 | `L0210` | parser | Expected `to` in for loop. | Range loop header is missing its end marker. | Add `to end`. |
-| `L0211` | parser | Planned syntax is not supported in Alpha 1. | Source uses future constructs such as modules, imports, structs, pattern matching, or try/catch. | Remove the planned construct or rewrite with the current Alpha 1 surface. |
+| `L0211` | parser | Planned syntax is not supported yet. | Source uses future constructs such as modules, imports, structs, pattern matching, or try/catch. | Remove the planned construct or rewrite with the current surface. |
 | `L0212` | parser | Malformed type alias declaration. | An `alias NAME = TYPE` declaration lacks `=` or a target type. | Write `alias NAME = TYPE`, e.g. `alias Count = i64`. |
 | `L0213` | parser | `try` block missing its `catch`. | A `try` block was not followed by a `catch NAME` handler. | Add a `catch NAME` block after the `try` body. |
 | `L0216` | parser | Malformed `trait`/`impl` declaration. | A `trait` method signature or `impl Trait for Type` block is missing `fn`, the `self` receiver, `for`, `->`, or a method body. | Write `trait NAME` with `fn method self ... -> Ret` signatures, and `impl Trait for Type` with `fn method self ... -> Ret` bodies. |
@@ -89,7 +89,7 @@ Fields that are not known for a diagnostic are `null` or an empty array. Orderin
 | `L0320` | semantic | Logical operands are not both bool. | `and` or `or` used on non-bool values. | Use bool operands. |
 | `L0321` | semantic | For-loop bound is not `i64`. | `from` or `to` expression is non-`i64`. | Use `i64` bounds. |
 | `L0322` | semantic | For-loop step is not `i64`. | `by` expression is non-`i64`. | Use an `i64` step. |
-| `L0323` | semantic | Empty arrays unsupported in alpha. | Array literal contains no values. | Provide at least one value. |
+| `L0323` | semantic | Empty arrays unsupported. | Array literal contains no values. | Provide at least one value. |
 | `L0324` | semantic | Array literal type mismatch. | Array values are not homogeneous. | Use values of one type. |
 | `L0325` | semantic | Index target is not an array. | Index syntax used on a non-array value. | Index only `array<T>` values. |
 | `L0326` | semantic | Array index is not `i64`. | Index expression has wrong type. | Use an `i64` index. |
