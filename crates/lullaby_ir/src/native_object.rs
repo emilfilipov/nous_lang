@@ -3684,6 +3684,53 @@ fn lower_native_stmt(
                     // Evaluate the RHS, then store into the resolved scalar slot.
                     match place {
                         ScalarPlace::Const { slot } => {
+                            // `x = x + rhs` / `x = x - rhs`, where the assigned
+                            // local is also the left operand, folds into a
+                            // memory-destination `add`/`sub [rbp-slot], …`,
+                            // skipping the load of the target and the store back
+                            // (the dominant per-iteration cost in a counting loop).
+                            // Plain i64 only — fixed-width kinds need width
+                            // re-normalization, floats/aggregates are handled
+                            // above — and only when the left operand resolves to
+                            // this exact slot. `add`/`sub` on memory keep the low
+                            // 64 bits, matching the interpreters' wrapping add/sub.
+                            if let BytecodeExprKind::Binary {
+                                left,
+                                op: bop,
+                                right,
+                            } = &value.kind
+                                && matches!(bop, BinaryOp::Add | BinaryOp::Subtract)
+                                && left.ty.name == "i64"
+                                && right.ty.name == "i64"
+                                && let BytecodeExprKind::Variable(lname) = &left.kind
+                                && ctx.local_slot(lname).ok() == Some(slot)
+                            {
+                                let disp = (-slot).to_le_bytes();
+                                if let BytecodeExprKind::Integer(rhs) = &right.kind
+                                    && let Ok(imm) = i32::try_from(*rhs)
+                                {
+                                    // add/sub qword ptr [rbp-slot], imm32
+                                    let modrm = if matches!(bop, BinaryOp::Add) {
+                                        0x85
+                                    } else {
+                                        0xAD
+                                    };
+                                    code.extend_from_slice(&[0x48, 0x81, modrm]);
+                                    code.extend_from_slice(&disp);
+                                    code.extend_from_slice(&imm.to_le_bytes());
+                                } else {
+                                    lower_native_expr(ctx, right, code)?; // rhs → rax
+                                    // add/sub qword ptr [rbp-slot], rax
+                                    let opcode = if matches!(bop, BinaryOp::Add) {
+                                        0x01
+                                    } else {
+                                        0x29
+                                    };
+                                    code.extend_from_slice(&[0x48, opcode, 0x85]);
+                                    code.extend_from_slice(&disp);
+                                }
+                                return Ok(());
+                            }
                             lower_native_expr(ctx, value, code)?;
                             store_local(code, slot);
                         }
