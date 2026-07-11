@@ -108,7 +108,7 @@ curl -fsSL https://lullaby-lang.org/install.sh | sh
 
 Every channel installs the same logical bundle. The unit of distribution is the
 **Lullaby toolchain**, versioned as one semver number (matching the
-`lullaby_cli` crate version, currently `0.1.0-alpha.2`).
+`lullaby_cli` crate version, currently `1.0.0-preview`).
 
 | Component | Contents | Source today |
 | :--- | :--- | :--- |
@@ -254,7 +254,7 @@ manifest references.
   install/uninstall). We keep a `winget/` copy of the manifests in-repo for
   provenance and local `winget validate --manifest` runs.
 - **Constraint:** winget requires a **stable** (non-prerelease) version and a
-  publicly downloadable installer URL; alpha/beta tags are published to GitHub
+  publicly downloadable installer URL; prerelease tags are published to GitHub
   Releases and the web installer but not submitted to winget until the first
   stable `1.0.0`.
 
@@ -278,7 +278,7 @@ A single self-extracting `.exe` for users who prefer a double-click wizard over
 ### 3.4 Portable `.zip` (already shipping)
 
 `scripts/package_windows_portable.ps1` already produces
-`lullaby-alpha1-windows-x64.zip` + `.sha256` with `bin/`, `docs/`, `examples/`,
+`lullaby-windows-x64.zip` + `.sha256` with `bin/`, `docs/`, `examples/`,
 release notes, and `install.cmd`/`install.ps1` PATH helpers. Phase 8 keeps this,
 migrates it onto the canonical `share/lullaby/...` layout, and renames the archive
 to the versioned scheme in § 7.

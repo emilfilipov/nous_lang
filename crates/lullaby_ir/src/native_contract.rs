@@ -1,7 +1,7 @@
 use lullaby_parser::TypeRef;
 use serde::{Deserialize, Serialize};
 
-pub const ALPHA1_NATIVE_CONTRACT_NAME: &str = "alpha1-native-backend-contract";
+pub const NATIVE_CONTRACT_NAME: &str = "native-backend-contract";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeBackendContract {
@@ -162,11 +162,11 @@ pub enum NativeReturnMode {
     DirectPointerSizedHandle,
 }
 
-pub fn alpha1_native_backend_contract() -> NativeBackendContract {
+pub fn native_backend_contract() -> NativeBackendContract {
     let first_target = x86_64_windows_target();
 
     NativeBackendContract {
-        name: ALPHA1_NATIVE_CONTRACT_NAME.to_string(),
+        name: NATIVE_CONTRACT_NAME.to_string(),
         first_target: first_target.clone(),
         supported_targets: vec![
             first_target,
@@ -175,7 +175,7 @@ pub fn alpha1_native_backend_contract() -> NativeBackendContract {
             aarch64_macos_target(),
         ],
         calling_convention: NativeCallingConvention {
-            name: "lullaby-alpha1-internal-abi".to_string(),
+            name: "lullaby-internal-abi".to_string(),
             entry_function: "main".to_string(),
             parameter_order: NativeParameterOrder::SourceOrder,
             return_strategy: NativeReturnStrategy::DirectForScalarAndHandleValues,
@@ -208,7 +208,7 @@ pub fn alpha1_native_backend_contract() -> NativeBackendContract {
                 "length: i64".to_string(),
                 "data: pointer-sized contiguous element storage handle".to_string(),
             ],
-            element_layout_source: "alpha1_value_layout(element TypeRef)".to_string(),
+            element_layout_source: "native_value_layout(element TypeRef)".to_string(),
             safety_requirements: vec![
                 "index expressions are checked against descriptor length before element access"
                     .to_string(),
@@ -247,7 +247,7 @@ pub fn alpha1_native_backend_contract() -> NativeBackendContract {
     }
 }
 
-pub fn alpha1_value_layout(ty: &TypeRef) -> Option<NativeValueLayout> {
+pub fn native_value_layout(ty: &TypeRef) -> Option<NativeValueLayout> {
     match ty.name.as_str() {
         "void" => Some(NativeValueLayout {
             type_pattern: "void".to_string(),
@@ -385,10 +385,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alpha1_contract_names_first_target_and_supported_targets() {
-        let contract = alpha1_native_backend_contract();
+    fn contract_names_first_target_and_supported_targets() {
+        let contract = native_backend_contract();
 
-        assert_eq!(contract.name, ALPHA1_NATIVE_CONTRACT_NAME);
+        assert_eq!(contract.name, NATIVE_CONTRACT_NAME);
         assert_eq!(contract.first_target.triple, "x86_64-pc-windows-msvc");
         assert_eq!(
             contract.object_emission.first_target_triple,
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn alpha1_value_layout_covers_current_type_surface() {
+    fn native_value_layout_covers_current_type_surface() {
         let cases = [
             ("void", NativeValueClass::Void, 0, NativePassMode::NoPayload),
             (
@@ -437,7 +437,7 @@ mod tests {
         ];
 
         for (name, class, size_bytes, pass_mode) in cases {
-            let layout = alpha1_value_layout(&TypeRef::new(name)).expect("layout exists");
+            let layout = native_value_layout(&TypeRef::new(name)).expect("layout exists");
             assert_eq!(layout.class, class, "{name}");
             assert_eq!(layout.size_bytes, size_bytes, "{name}");
             assert_eq!(layout.pass_mode, pass_mode, "{name}");
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn cleanup_contract_uses_memory_operation_sequence() {
-        let contract = alpha1_native_backend_contract();
+        let contract = native_backend_contract();
 
         assert_eq!(
             contract.stack_frame.cleanup_order,
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn native_contract_round_trips_through_json() {
-        let contract = alpha1_native_backend_contract();
+        let contract = native_backend_contract();
         let encoded = serde_json::to_string_pretty(&contract).expect("encode contract");
         let decoded: NativeBackendContract =
             serde_json::from_str(&encoded).expect("decode contract");

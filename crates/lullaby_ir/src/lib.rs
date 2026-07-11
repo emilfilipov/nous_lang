@@ -38,8 +38,8 @@ pub mod wasm;
 
 pub use native_object::{
     DebugOptions, NATIVE_ENTRY_SYMBOL, NATIVE_NO_ELIGIBLE_CODE, NativeProgram, NativeProgramError,
-    NativeSkippedFunction, emit_alpha1_native_program, emit_alpha1_native_program_for_target,
-    emit_alpha1_native_program_with_debug,
+    NativeSkippedFunction, emit_native_program, emit_native_program_for_target,
+    emit_native_program_with_debug,
 };
 pub use wasm::{SkippedFunction, WasmArtifact, WasmError, emit_wasm_module};
 
@@ -47,7 +47,7 @@ pub const BYTECODE_ARTIFACT_FORMAT: &str = "lullaby-bytecode";
 pub const BYTECODE_ARTIFACT_EXTENSION: &str = "lbc";
 pub const BYTECODE_ARTIFACT_VERSION: u32 = 5;
 const BYTECODE_ARTIFACT_PAYLOAD: &str = "instruction-bytecode";
-const BYTECODE_ARTIFACT_TARGET: &str = "alpha1";
+const BYTECODE_ARTIFACT_TARGET: &str = "lullaby-vm";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrModule {
@@ -448,7 +448,7 @@ impl OptimizationConfig {
         }
     }
 
-    pub fn alpha_default() -> Self {
+    pub fn full() -> Self {
         Self {
             passes: vec![
                 OptimizationPass::Inlining,
@@ -472,7 +472,7 @@ impl OptimizationConfig {
 
 impl Default for OptimizationConfig {
     fn default() -> Self {
-        Self::alpha_default()
+        Self::full()
     }
 }
 
@@ -10028,7 +10028,7 @@ mod tests {
         let checked = validate_executable(&program).expect("semantic");
         let ir = lower(&checked).expect("lower");
         let bytecode = lower_to_bytecode(&ir);
-        let (optimized, _) = optimize(&ir, &OptimizationConfig::alpha_default());
+        let (optimized, _) = optimize(&ir, &OptimizationConfig::full());
         let optimized_bytecode = lower_to_bytecode(&optimized);
 
         (
@@ -10100,7 +10100,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_analysis_reports_alpha_memory_operations_and_safety_metadata() {
+    fn memory_analysis_reports_memory_operations_and_safety_metadata() {
         let source = "fn main -> i64\n    let ptr ptr_i64 = alloc(0)\n    store(ptr, 41)\n    let values array<i64> = [1, 2, 3]\n    let selected i64 = values[1]\n    let value i64 = load(ptr)\n    dealloc(ptr)\n    value + selected\n";
         let module = lower_source(source);
         let operations = analyze_memory_operations(&module);
@@ -10552,10 +10552,10 @@ mod tests {
     }
 
     #[test]
-    fn alpha_optimizer_runs_alpha_pass_pipeline() {
+    fn full_optimizer_runs_full_pass_pipeline() {
         let module =
             lower_source("fn main -> i64\n    let value i64 = 40 + 2\n    return value\n    0\n");
-        let (optimized, report) = optimize(&module, &OptimizationConfig::alpha_default());
+        let (optimized, report) = optimize(&module, &OptimizationConfig::full());
 
         assert_eq!(
             report.applied_passes,
@@ -10623,7 +10623,7 @@ mod tests {
 
         assert_eq!(artifact.format, BYTECODE_ARTIFACT_FORMAT);
         assert_eq!(artifact.version, BYTECODE_ARTIFACT_VERSION);
-        assert_eq!(artifact.metadata.target, "alpha1");
+        assert_eq!(artifact.metadata.target, "lullaby-vm");
         assert_eq!(artifact.metadata.payload, "instruction-bytecode");
         assert_eq!(artifact.entry, "main");
         assert_eq!(artifact.function_table.len(), 1);
@@ -10692,7 +10692,7 @@ mod tests {
     #[test]
     fn bytecode_artifact_rejects_old_structured_payload_version() {
         let invalid = format!(
-            "{{\"format\":\"{BYTECODE_ARTIFACT_FORMAT}\",\"version\":2,\"entry\":\"main\",\"metadata\":{{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"structured-bytecode\"}},\"function_table\":[],\"module\":{{\"functions\":[]}}}}"
+            "{{\"format\":\"{BYTECODE_ARTIFACT_FORMAT}\",\"version\":2,\"entry\":\"main\",\"metadata\":{{\"producer\":\"test\",\"target\":\"lullaby-vm\",\"payload\":\"structured-bytecode\"}},\"function_table\":[],\"module\":{{\"functions\":[]}}}}"
         );
         let error = decode_bytecode_artifact(&invalid).expect_err("old artifact");
 
@@ -10706,7 +10706,7 @@ mod tests {
     #[test]
     fn bytecode_artifact_rejects_missing_entry_function() {
         let invalid = format!(
-            "{{\"format\":\"{BYTECODE_ARTIFACT_FORMAT}\",\"version\":{BYTECODE_ARTIFACT_VERSION},\"entry\":\"main\",\"metadata\":{{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"instruction-bytecode\"}},\"function_table\":[],\"module\":{{\"functions\":[]}}}}"
+            "{{\"format\":\"{BYTECODE_ARTIFACT_FORMAT}\",\"version\":{BYTECODE_ARTIFACT_VERSION},\"entry\":\"main\",\"metadata\":{{\"producer\":\"test\",\"target\":\"lullaby-vm\",\"payload\":\"instruction-bytecode\"}},\"function_table\":[],\"module\":{{\"functions\":[]}}}}"
         );
         let error = decode_bytecode_artifact(&invalid).expect_err("missing entry");
 
@@ -10823,7 +10823,7 @@ mod tests {
         let program = parse(&tokens).expect("parse");
         let checked = validate(&program).expect("semantic");
         let ir = lower(&checked).expect("lower");
-        let (optimized, report) = optimize(&ir, &OptimizationConfig::alpha_default());
+        let (optimized, report) = optimize(&ir, &OptimizationConfig::full());
         let bytecode = lower_to_bytecode(&optimized);
 
         assert!(report.folded_expressions > 0);

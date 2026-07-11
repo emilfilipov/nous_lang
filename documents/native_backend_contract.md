@@ -9,13 +9,13 @@ This document records the first native backend contract. The executable source o
 Implemented now:
 
 - A serializable `NativeBackendContract` data model in `lullaby_ir`.
-- A deterministic `alpha1_native_backend_contract()` baseline.
-- `alpha1_value_layout(TypeRef)` coverage for the current type surface: `void`, `i64`, `bool`, `string`, `array<T>`, and `ptr_*`.
+- A deterministic `native_backend_contract()` baseline.
+- `native_value_layout(TypeRef)` coverage for the current type surface: `void`, `i64`, `bool`, `string`, `array<T>`, and `ptr_*`.
 - Unit tests for target selection, current value layouts, cleanup sequencing, and JSON round-trip stability.
-- A checked-in JSON snapshot under `crates/lullaby_ir/tests/snapshots/alpha1_native_backend_contract.json`.
+- A checked-in JSON snapshot under `crates/lullaby_ir/tests/snapshots/native_backend_contract.json`.
 - A first `x86_64-pc-windows-msvc` COFF object emitter in `crates/lullaby_ir/src/native_object.rs` for zero-argument `main` functions that return a literal `i64`, literal `bool`, `void`, stack-backed `i64` local arithmetic, or straight-line `i64` local assignment arithmetic.
-- Checked-in object-emission snapshots under `crates/lullaby_ir/tests/snapshots/alpha1_return_42.coff.json`, `crates/lullaby_ir/tests/snapshots/alpha1_locals_add.coff.json`, and `crates/lullaby_ir/tests/snapshots/alpha1_assignments.coff.json`.
-- An extended multi-function native program emitter (`emit_alpha1_native_program`) for the **i64-scalar subset** with control flow, calls, division, an entry stub, `ExitProcess` import, and COFF relocations, plus a best-effort `rust-lld` link-to-`.exe` behind the `lullaby native` command. See "Extended Native Program Emission And Link-To-Executable" below.
+- Checked-in object-emission snapshots under `crates/lullaby_ir/tests/snapshots/return_42.coff.json`, `crates/lullaby_ir/tests/snapshots/locals_add.coff.json`, and `crates/lullaby_ir/tests/snapshots/assignments.coff.json`.
+- An extended multi-function native program emitter (`emit_native_program`) for the **i64-scalar subset** with control flow, calls, division, an entry stub, `ExitProcess` import, and COFF relocations, plus a best-effort `rust-lld` link-to-`.exe` behind the `lullaby native` command. See "Extended Native Program Emission And Link-To-Executable" below.
 - **Stack-allocated scalar aggregates** on top of the i64-scalar subset: all-i64 (optionally nested) structs and fixed-length `i64` arrays as function locals, laid out contiguously in the stack frame. See "Stack-Allocated Scalar Structs And Fixed Arrays" below.
 - **First heap step: string constants + a bump heap.** String literals used by `len("...")` are emitted into a read-only `.rdata` section, referenced by REL32 relocations, copied into a `.bss` bump-allocated heap region at runtime, and scanned for their byte length so `main` can derive an i64 from string data. See "First Heap Step: String Constants And Bump Allocator" below.
 - **C-ABI FFI (calling C).** A body-less `extern fn NAME params -> Ret` declares an imported C function; a call lowers to a `call` of an undefined external symbol and links against the C runtime (`ucrt.lib`). Each argument is routed to the register selected by its **position and type** (integer/pointer → `rcx`/`rdx`/`r8`/`r9`; `f32`/`f64` → `xmm0..3`); the return is read from `rax` (integer/pointer, narrow-normalized) or `xmm0` (float). Marshalling now spans **beyond scalars**: a raw pointer `ptr<T>` (a C `T*`, real bump-heap/`malloc` address), the `cstr` parameter marker (a Lullaby `string` → NUL-terminated `const char*` via `__lullaby_to_cstr`), a `void` return, and **more than four arguments** (the 5th+ spill onto the stack above the shadow space). Struct-by-value and callback (function-pointer) parameters are the deferred FFI tail, rejected at check time with `L0424`. Calling an extern on an interpreter is `L0423`. See "C-ABI FFI (calling C)" and "Pointer, `cstr`, and >4-argument marshalling" below.
@@ -129,11 +129,11 @@ Native backend diagnostics must use the shared `L####` diagnostic model. Target-
 - the body may be empty `void`, `return <literal>`, a final literal expression, `i64` local bindings, `i64` `=`, `+=`, `-=`, and `*=` assignment, and an `i64` return expression using locals, literals, `+`, `-`, and `*`
 - unsupported bytecode returns a structured `NativeObjectError`
 
-For literal `i64`, the prototype emits `mov rax, imm64; ret`. For `bool`, it emits `mov eax, imm32; ret`. For `void`, it emits `ret`. For local `i64` arithmetic and assignment, it emits a frame pointer prologue, 16-byte-aligned stack slots, local loads/stores, arithmetic into `rax`, and a frame epilogue. This single-function prototype (`emit_alpha1_coff_object`) is retained and is still covered by the checked-in `native_object_snapshots` golden files.
+For literal `i64`, the prototype emits `mov rax, imm64; ret`. For `bool`, it emits `mov eax, imm32; ret`. For `void`, it emits `ret`. For local `i64` arithmetic and assignment, it emits a frame pointer prologue, 16-byte-aligned stack slots, local loads/stores, arithmetic into `rax`, and a frame epilogue. This single-function prototype (`emit_coff_object`) is retained and is still covered by the checked-in `native_object_snapshots` golden files.
 
 ## Extended Native Program Emission And Link-To-Executable (DELIVERED, best-effort link)
 
-`lullaby_ir::native_object::emit_alpha1_native_program` extends the prototype into a linkable multi-function COFF object for the **i64-scalar subset** — the native mirror of the WASM backend's scalar subset, restricted to `i64` for this increment. It is exercised by `lullaby native` (see [language_surface.md](language_surface.md)).
+`lullaby_ir::native_object::emit_native_program` extends the prototype into a linkable multi-function COFF object for the **i64-scalar subset** — the native mirror of the WASM backend's scalar subset, restricted to `i64` for this increment. It is exercised by `lullaby native` (see [language_surface.md](language_surface.md)).
 
 Eligibility and lowering:
 
@@ -152,7 +152,7 @@ The generated x86-64 machine code — the entry stub, the compiled functions, an
 
 ### Neutral object model
 
-`crates/lullaby_ir/src/object_model.rs` defines a container-neutral `ObjectModel` — a list of sections (`.text`, `.rodata`, `.bss`), a flat global symbol table (each symbol tagged code vs data, defined-in-section vs undefined-external), a target-machine tag (`ObjectMachine::X86_64` / `Aarch64`), and per-section relocations tagged `Branch` (an x86-64 `call`/`jmp` to a function), `PcRel32` (a RIP-relative `lea`/`mov` to a data symbol), or `Aarch64Call26` (an AArch64 `bl` call site). `emit_alpha1_native_program_for_target` builds this model from the same lowered functions the COFF path uses, then serializes it with the format-specific writer; the AArch64 backend (`aarch64.rs`) builds its own `Aarch64`-tagged model and serializes it through the same ELF writer. The **COFF path deliberately keeps its own writer** (`native_object.rs`) rather than flowing through the model, so its snapshot tests stay exact; the model is the shared source of truth for ELF and Mach-O.
+`crates/lullaby_ir/src/object_model.rs` defines a container-neutral `ObjectModel` — a list of sections (`.text`, `.rodata`, `.bss`), a flat global symbol table (each symbol tagged code vs data, defined-in-section vs undefined-external), a target-machine tag (`ObjectMachine::X86_64` / `Aarch64`), and per-section relocations tagged `Branch` (an x86-64 `call`/`jmp` to a function), `PcRel32` (a RIP-relative `lea`/`mov` to a data symbol), or `Aarch64Call26` (an AArch64 `bl` call site). `emit_native_program_for_target` builds this model from the same lowered functions the COFF path uses, then serializes it with the format-specific writer; the AArch64 backend (`aarch64.rs`) builds its own `Aarch64`-tagged model and serializes it through the same ELF writer. The **COFF path deliberately keeps its own writer** (`native_object.rs`) rather than flowing through the model, so its snapshot tests stay exact; the model is the shared source of truth for ELF and Mach-O.
 
 ### ELF64 (`x86_64-unknown-linux-gnu`)
 
@@ -168,7 +168,7 @@ The internal calling convention is **kept unchanged** across all three x86-64 pl
 
 ## AArch64 (ARM64) instruction-set backend (DELIVERED, link-and-run verified)
 
-`crates/lullaby_ir/src/aarch64.rs` is Lullaby's **second instruction set**. It consumes the *same* `BytecodeModule` the x86-64 backend lowers (`emit_alpha1_native_program_for_target` delegates to `aarch64::emit_aarch64_program` when the target architecture is `Aarch64`) and emits a freestanding **aarch64 ELF64** object through the shared neutral `ObjectModel` / `elf_object.rs` path.
+`crates/lullaby_ir/src/aarch64.rs` is Lullaby's **second instruction set**. It consumes the *same* `BytecodeModule` the x86-64 backend lowers (`emit_native_program_for_target` delegates to `aarch64::emit_aarch64_program` when the target architecture is `Aarch64`) and emits a freestanding **aarch64 ELF64** object through the shared neutral `ObjectModel` / `elf_object.rs` path.
 
 ### Covered subset (the `i64`-scalar core)
 
@@ -192,7 +192,7 @@ The x86-64 ELF and Mach-O objects are still verified **structurally only** (this
 
 ## Win64 Stack Arguments (5th+ Parameter) (DELIVERED)
 
-`emit_alpha1_native_program` passes a function's 5th and subsequent arguments on the stack per the Win64 stack-argument ABI, so there is **no fixed parameter-count cap** — a native-eligible function with five, six, eight, or more scalar parameters (`i64`/fixed-width/`bool`/`char`/`byte`/`f64`/`f32`), and calls between such functions, compile natively instead of demoting to the interpreters.
+`emit_native_program` passes a function's 5th and subsequent arguments on the stack per the Win64 stack-argument ABI, so there is **no fixed parameter-count cap** — a native-eligible function with five, six, eight, or more scalar parameters (`i64`/fixed-width/`bool`/`char`/`byte`/`f64`/`f32`), and calls between such functions, compile natively instead of demoting to the interpreters.
 
 ### Register vs. stack routing
 
@@ -217,7 +217,7 @@ The fixture `tests/fixtures/valid/native_many_args.lby` defines `six` (six `i64`
 
 ## Stack-Allocated Scalar Structs And Fixed Arrays (DELIVERED)
 
-`emit_alpha1_native_program` additionally lowers **fixed-size aggregates of `i64` laid out on the stack** — no heap, no strings. This extends the eligibility gate: a function using only `i64` scalars, all-`i64` structs, fixed `i64` arrays, and the already-supported control flow/arithmetic/calls is now accepted; a function using strings, heap/growable `list`/`map`, enums, `match`, or floats is still rejected with the existing `L0339` behavior and continues to run on the interpreters.
+`emit_native_program` additionally lowers **fixed-size aggregates of `i64` laid out on the stack** — no heap, no strings. This extends the eligibility gate: a function using only `i64` scalars, all-`i64` structs, fixed `i64` arrays, and the already-supported control flow/arithmetic/calls is now accepted; a function using strings, heap/growable `list`/`map`, enums, `match`, or floats is still rejected with the existing `L0339` behavior and continues to run on the interpreters.
 
 Supported aggregate features:
 
@@ -235,7 +235,7 @@ Aggregates as function parameters, return values, and call arguments are **now d
 
 ## First Heap Step: String Constants And Bump Allocator (DELIVERED)
 
-`emit_alpha1_native_program` takes the first heap step: string-literal constants live in a read-only data section and are copied into a runtime bump heap so a native function can derive an `i64` from string data. This is additive — the interpreters, IR, and bytecode backends are unchanged, and every string-free native program keeps its exact previous single-`.text` COFF layout (the string-free path is byte-for-byte identical, so the existing structural tests are untouched).
+`emit_native_program` takes the first heap step: string-literal constants live in a read-only data section and are copied into a runtime bump heap so a native function can derive an `i64` from string data. This is additive — the interpreters, IR, and bytecode backends are unchanged, and every string-free native program keeps its exact previous single-`.text` COFF layout (the string-free path is byte-for-byte identical, so the existing structural tests are untouched).
 
 Supported native string surface (this section documents the **original first heap step**; first-class string **values** and the string operations described in the dedicated string-values section below now supersede its "no string value yet" scope):
 
@@ -252,7 +252,7 @@ Object layout and codegen (only when a program references string constants):
 
 ## Stack-Allocated Enums And `match` (DELIVERED)
 
-`emit_alpha1_native_program` lowers **enum values with scalar or `string` payloads** and **`match`** over them. This covers the built-in generic enums `option<T>` and `result<T, E>` (when `T`/`E` are native scalars **or `string`**) — including `option<string>` (the `map_get` result on a `map<K, string>`) and `result<i64, string>` — and **user enums** whose variant payloads are all native scalars or `string`. It is additive: a function using only these plus the already-supported i64-scalar/aggregate/control-flow subset now compiles; anything outside it (a MUTABLE-heap-payload enum, or a `match` on an enum-returning call whose *arguments* are aggregates) is skipped with a clear reason and runs on the interpreters — never miscompiled.
+`emit_native_program` lowers **enum values with scalar or `string` payloads** and **`match`** over them. This covers the built-in generic enums `option<T>` and `result<T, E>` (when `T`/`E` are native scalars **or `string`**) — including `option<string>` (the `map_get` result on a `map<K, string>`) and `result<i64, string>` — and **user enums** whose variant payloads are all native scalars or `string`. It is additive: a function using only these plus the already-supported i64-scalar/aggregate/control-flow subset now compiles; anything outside it (a MUTABLE-heap-payload enum, or a `match` on an enum-returning call whose *arguments* are aggregates) is skipped with a clear reason and runs on the interpreters — never miscompiled.
 
 ### Enum layout
 
@@ -285,7 +285,7 @@ The fixtures `tests/fixtures/valid/native_enum_option.lby` (`option<i64>`, some=
 
 ## Scalar-Field Aggregates Across Function Boundaries (DELIVERED)
 
-`emit_alpha1_native_program` passes, returns, and mutates **scalar-field aggregates** — scalar-field structs (nested allowed), fixed arrays of scalars, and scalar-payload enums (`option`/`result`/user enums) — across native function boundaries, not just as locals. It preserves Lullaby's **value semantics** (an aggregate parameter/return/argument is an independent snapshot, exactly like the interpreters) and agrees bit-for-bit with the AST/IR/bytecode backends.
+`emit_native_program` passes, returns, and mutates **scalar-field aggregates** — scalar-field structs (nested allowed), fixed arrays of scalars, and scalar-payload enums (`option`/`result`/user enums) — across native function boundaries, not just as locals. It preserves Lullaby's **value semantics** (an aggregate parameter/return/argument is an independent snapshot, exactly like the interpreters) and agrees bit-for-bit with the AST/IR/bytecode backends.
 
 ### ABI: by hidden pointer, copy-in value semantics
 
@@ -338,7 +338,7 @@ Rules:
 
 ### Linking
 
-- When a program declares any `extern fn`, `emit_alpha1_native_program` reports the required C runtime import library (`ucrt.lib`) in `NativeProgram.import_libs`.
+- When a program declares any `extern fn`, `emit_native_program` reports the required C runtime import library (`ucrt.lib`) in `NativeProgram.import_libs`.
 - The `lullaby native` link step discovers `ucrt.lib` the same way it discovers `kernel32.lib` — via the MSVC `LIB` environment variable (a Developer Command Prompt) — and passes it to `rust-lld` alongside `kernel32.lib`. If `rust-lld` or any required import library cannot be located, linking degrades gracefully: the object is written and an explanation is printed, exactly like the existing native path.
 - The deterministic FFI fixture `tests/fixtures/native_only/ffi_llabs.lby` declares `extern fn llabs x i64 -> i64` and returns `llabs(-7)`; native-linked against `ucrt.lib`, the `.exe` calls the real C `llabs` and exits with code `7`. It lives under `tests/fixtures/native_only/` (not the auto-discovered parity directory) because it cannot run on the interpreters. `ffi_calls_c_abs_when_linkable` in `crates/lullaby_cli/tests/cli.rs` checks it, asserts `L0423` on every interpreter backend, and — when `rust-lld` + `kernel32.lib` + `ucrt.lib` are available — links and runs it asserting exit code 7.
 - The non-`i64`-width FFI fixture `tests/fixtures/native_only/ffi_toupper.lby` declares `extern fn toupper c i32 -> i32` and returns `to_i64(toupper(to_i32(97)))`; `toupper('a')` is `'A'` (65), so the linked `.exe` exits with code `65`. `ffi_calls_c_toupper_i32_when_linkable` in `crates/lullaby_cli/tests/cli.rs` checks it exactly like the `llabs` test (`L0423` on every interpreter; link+run when the toolchain is present), exercising the `i32` argument (low bits of `rcx`) and the `i32` return re-normalization (`movsxd rax, eax`).
@@ -432,7 +432,7 @@ The seven bytes above are `48 C7 C0 2A 00 00 00` = `mov rax, 42`. Because the Wi
 ### Native-only behavior and codegen
 
 - **Native-only.** Like `extern`, the AST, IR, and bytecode interpreters cannot execute raw machine code, so any `asm` statement is rejected at runtime with diagnostic **`L0425`** ("cannot execute an `asm` (inline assembly) statement on an interpreter; compile with `lullaby native` to emit and link the machine code"). It runs only after native codegen + linking.
-- **Codegen.** `emit_alpha1_native_program` copies the `asm` bytes verbatim into the function's `.text` at the statement's position. When `asm` is a function's last statement, the emitter emits it followed by the normal Win64 epilogue (restore `rsp`/`rbp`, `ret`) so `rax` is returned intact rather than clobbered by the fallthrough `xor eax,eax`; the programmer must therefore not emit their own `ret`. A non-tail `asm` is emitted inline between the surrounding statements.
+- **Codegen.** `emit_native_program` copies the `asm` bytes verbatim into the function's `.text` at the statement's position. When `asm` is a function's last statement, the emitter emits it followed by the normal Win64 epilogue (restore `rsp`/`rbp`, `ret`) so `rax` is returned intact rather than clobbered by the fallthrough `xor eax,eax`; the programmer must therefore not emit their own `ret`. A non-tail `asm` is emitted inline between the surrounding statements.
 
 ### Testing
 
@@ -494,7 +494,7 @@ Granularity is **per function** for this increment: each function symbol gets on
 
 ### The `--debug` flag and additive emission
 
-`--debug`/`-g` is **opt-in**. Without it, no `.debug$S` section is produced and the emitted object is **byte-for-byte identical** to the default native object, so the existing native snapshot/structural tests are unaffected. `emit_alpha1_native_program` keeps its exact prior behavior; a new `emit_alpha1_native_program_with_debug(module, Some(DebugOptions { source_file }))` adds the section. The CLI passes the `.lby` path as the source file and prints a `debug info: CodeView ...` notice; the object is written and linked exactly as before (the discardable `.debug$S` section links cleanly into the PDB when a PDB is produced, and is otherwise dropped).
+`--debug`/`-g` is **opt-in**. Without it, no `.debug$S` section is produced and the emitted object is **byte-for-byte identical** to the default native object, so the existing native snapshot/structural tests are unaffected. `emit_native_program` keeps its exact prior behavior; a new `emit_native_program_with_debug(module, Some(DebugOptions { source_file }))` adds the section. The CLI passes the `.lby` path as the source file and prints a `debug info: CodeView ...` notice; the object is written and linked exactly as before (the discardable `.debug$S` section links cleanly into the PDB when a PDB is produced, and is otherwise dropped).
 
 ### What a debugger can do with it
 
@@ -510,7 +510,7 @@ Deferred beyond this increment: a full PDB emitted by the compiler itself (this 
 
 ## Growable `list<T>` (scalar or `string` element) (DELIVERED)
 
-`emit_alpha1_native_program` compiles the core growable-list operations for a **scalar element type** (`i64`, every fixed-width integer, `bool`/`char`/`byte`, and `f32`/`f64`) **or a `string` element**: `list_new`, `push`, `get`, `set`, `len`, and `pop`. This mirrors the WASM backend's `list<T>` support (including `list<string>`) and agrees with the AST/IR/bytecode interpreters bit-for-bit, **including value semantics**. A `string` element is a single immutable heap pointer stored in one slot exactly like a scalar and, because strings are immutable, is shared (its pointer copied by value, never deep-recursed into the string record) on the value-semantic deep copy — matching the interpreters' cheap shared `Value::String` clone. It is additive: a function that also uses lists now compiles; a `list<struct>`/`list<list<…>>`/`list<map<…>>` (a **MUTABLE heap element**) is DEFERRED — it would need a recursive per-element deep copy, so the function skips gracefully with a clear reason and still runs on the interpreters, never miscompiled.
+`emit_native_program` compiles the core growable-list operations for a **scalar element type** (`i64`, every fixed-width integer, `bool`/`char`/`byte`, and `f32`/`f64`) **or a `string` element**: `list_new`, `push`, `get`, `set`, `len`, and `pop`. This mirrors the WASM backend's `list<T>` support (including `list<string>`) and agrees with the AST/IR/bytecode interpreters bit-for-bit, **including value semantics**. A `string` element is a single immutable heap pointer stored in one slot exactly like a scalar and, because strings are immutable, is shared (its pointer copied by value, never deep-recursed into the string record) on the value-semantic deep copy — matching the interpreters' cheap shared `Value::String` clone. It is additive: a function that also uses lists now compiles; a `list<struct>`/`list<list<…>>`/`list<map<…>>` (a **MUTABLE heap element**) is DEFERRED — it would need a recursive per-element deep copy, so the function skips gracefully with a clear reason and still runs on the interpreters, never miscompiled.
 
 ### List layout
 
@@ -546,7 +546,7 @@ The fixtures `tests/fixtures/valid/native_list_build.lby` (build a `list<i64>` v
 
 ## Growable `map<K, V>` (scalar key; scalar or `string` value) (DELIVERED)
 
-`emit_alpha1_native_program` compiles the core growable-map operations for an **integer-cell key** and a **scalar or `string` value**: `map_new`, `map_set`, `map_get`, `map_has`, and `map_len`. This mirrors the WASM backend's `map<K, V>` increment (including `map<K, string>`) and agrees with the AST/IR/bytecode interpreters bit-for-bit — an **insertion-ordered association list** scanned linearly with value equality — **including value semantics**. A `string` value is a single immutable heap pointer stored in the entry's value word exactly like a scalar and, because strings are immutable, is shared (its pointer copied by value, never deep-recursed) on the flat two-word entry copy. It is additive: a function that also uses maps now compiles; a `map<string, V>` (a **heap KEY**), a `map<K, list<…>>`/`map<K, struct>` (a **MUTABLE heap value**), or a **float-key** map is DEFERRED — the function skips gracefully with a clear reason and still runs on the interpreters, never miscompiled.
+`emit_native_program` compiles the core growable-map operations for an **integer-cell key** and a **scalar or `string` value**: `map_new`, `map_set`, `map_get`, `map_has`, and `map_len`. This mirrors the WASM backend's `map<K, V>` increment (including `map<K, string>`) and agrees with the AST/IR/bytecode interpreters bit-for-bit — an **insertion-ordered association list** scanned linearly with value equality — **including value semantics**. A `string` value is a single immutable heap pointer stored in the entry's value word exactly like a scalar and, because strings are immutable, is shared (its pointer copied by value, never deep-recursed) on the flat two-word entry copy. It is additive: a function that also uses maps now compiles; a `map<string, V>` (a **heap KEY**), a `map<K, list<…>>`/`map<K, struct>` (a **MUTABLE heap value**), or a **float-key** map is DEFERRED — the function skips gracefully with a clear reason and still runs on the interpreters, never miscompiled.
 
 ### Map layout
 
@@ -587,7 +587,7 @@ The fixtures `tests/fixtures/valid/native_map_build.lby` (build a `map<i64, i64>
 
 ## MUTABLE-heap collection elements and enum payloads (DELIVERED)
 
-`emit_alpha1_native_program` compiles growable collections and enums whose element/value/payload is a **one-level MUTABLE aggregate** — a `struct` or a nested `list<scalar|string>` — with correct value semantics, mirroring the WASM backend's `list<struct>`/`list<list<scalar>>`/`map<K, struct>`/`option<struct>` increment. Previously these deferred because the collection's value-semantic deep copy flat-copied each element/value word, which would SHARE a mutable element's pointer and let a mutation of one copy leak into another. Now the copy **recurses**, matching the interpreters' recursive `Value::clone` bit-for-bit.
+`emit_native_program` compiles growable collections and enums whose element/value/payload is a **one-level MUTABLE aggregate** — a `struct` or a nested `list<scalar|string>` — with correct value semantics, mirroring the WASM backend's `list<struct>`/`list<list<scalar>>`/`map<K, struct>`/`option<struct>` increment. Previously these deferred because the collection's value-semantic deep copy flat-copied each element/value word, which would SHARE a mutable element's pointer and let a mutation of one copy leak into another. Now the copy **recurses**, matching the interpreters' recursive `Value::clone` bit-for-bit.
 
 ### Heap-struct element representation
 
@@ -618,7 +618,7 @@ The fixture `tests/fixtures/valid/native_list_struct.lby` builds a `list<Point>`
 
 ## First-class heap `string` values (DELIVERED)
 
-`emit_alpha1_native_program` compiles first-class heap `string` **values**: a string is now a real value that can be a local, a parameter, a return, and a call argument, built by string literals, runtime `+` concatenation, and `to_string`, and read by `len`. This mirrors the WASM backend's string design and agrees with the AST/IR/bytecode interpreters bit-for-bit (including UTF-8 char counting). It is additive: a string-free native program keeps its exact prior layout, and a function using an unsupported string feature skips gracefully to the interpreters — never miscompiled.
+`emit_native_program` compiles first-class heap `string` **values**: a string is now a real value that can be a local, a parameter, a return, and a call argument, built by string literals, runtime `+` concatenation, and `to_string`, and read by `len`. This mirrors the WASM backend's string design and agrees with the AST/IR/bytecode interpreters bit-for-bit (including UTF-8 char counting). It is additive: a string-free native program keeps its exact prior layout, and a function using an unsupported string feature skips gracefully to the interpreters — never miscompiled.
 
 ### String layout
 

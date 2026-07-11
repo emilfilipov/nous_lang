@@ -86,7 +86,7 @@ Common commands (run from the repository root):
 cargo run -p lullaby_cli -- check examples\valid\calculator.lby
 cargo run -p lullaby_cli -- run examples\valid\calculator.lby
 cargo run -p lullaby_cli -- run --backend bytecode examples\valid\calculator.lby
-cargo run -p lullaby_cli -- compile --optimize alpha -o target\calculator.lbc examples\valid\calculator.lby
+cargo run -p lullaby_cli -- compile --optimize full -o target\calculator.lbc examples\valid\calculator.lby
 cargo run -p lullaby_cli -- inspect target\calculator.lbc
 cargo run -p lullaby_cli -- run target\calculator.lbc
 ```
@@ -108,9 +108,9 @@ Invoke the CLI during development with `cargo run -p lullaby_cli -- <command>`
   runnable `src/main.lby`, and a `.gitignore`).
 - `lullaby check [--verbose|--format json] <file.lby>` — type-check source,
   including helper/library files without `main`.
-- `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby>` — run source on any interpreter backend.
+- `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby>` — run source on any interpreter backend.
 - `lullaby run [--verbose|--format json] <file.lbc>` — run a compiled bytecode artifact.
-- `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>` — emit a versioned `.lbc` artifact.
+- `lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>` — emit a versioned `.lbc` artifact.
 - `lullaby build [--optimize ...] [-o output.lbc] [--verbose|--format json] <file.lby>` — artifact-generation alias for `compile`.
 - `lullaby inspect [--verbose|--format json] <file.lbc>` — summarize a `.lbc` artifact.
 - `lullaby fmt [--write|--check] <file.lby>` — canonical source formatter.

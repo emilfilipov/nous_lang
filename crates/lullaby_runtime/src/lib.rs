@@ -7640,7 +7640,7 @@ mod tests {
         // Spawning a command that does not exist on any platform deterministically
         // takes the `err` arm, so the program returns 1. This mirrors the
         // backend-invariant `run_process.lby` parity fixture. (Array literals must
-        // be non-empty in the current alpha, so a harmless arg is supplied; a
+        // be non-empty in the current implementation, so a harmless arg is supplied; a
         // missing command fails to spawn regardless of its arguments.)
         let source = concat!(
             "fn main -> i64\n",

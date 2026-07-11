@@ -1,5 +1,5 @@
 param(
-    [string]$PackageName = "lullaby-alpha1-windows-x64",
+    [string]$PackageName = "lullaby-windows-x64",
     [switch]$SkipBuild
 )
 
@@ -87,8 +87,8 @@ Quick start:
 4. Run: .\bin\lullaby.exe examples
 5. Run: .\bin\lullaby.exe check .\examples\valid\calculator.lby
 6. Run: .\bin\lullaby.exe run .\examples\valid\calculator.lby
-7. Run: .\bin\lullaby.exe compile --optimize alpha -o .\examples\valid\calculator.lbc .\examples\valid\calculator.lby
-8. Run: .\bin\lullaby.exe build --optimize alpha -o .\examples\valid\calculator-build.lbc .\examples\valid\calculator.lby
+7. Run: .\bin\lullaby.exe compile --optimize full -o .\examples\valid\calculator.lbc .\examples\valid\calculator.lby
+8. Run: .\bin\lullaby.exe build --optimize full -o .\examples\valid\calculator-build.lbc .\examples\valid\calculator.lby
 9. Run: .\bin\lullaby.exe inspect .\examples\valid\calculator.lbc
 10. Run: .\bin\lullaby.exe run .\examples\valid\calculator.lbc
 

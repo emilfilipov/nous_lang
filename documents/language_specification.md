@@ -48,7 +48,7 @@ The following are designed and planned but not yet fully implemented (see [roadm
 
 ### CLI summary
 
-Current commands: `lullaby check`, `compile`, `build`, `inspect`, `run` (with `--backend ast|ir|bytecode` and `--optimize none|constant-fold|dead-code|alpha`), `test`, `wasm`, `native` (with `--freestanding`/`--no-std`, `--debug`/`-g`), `fmt`, `lsp`, `docs`, `examples`, `help`, and `--version`. During development these are also available through `cargo run -p lullaby_cli -- ...`. `--format json` (alias `--diagnostic-format json`) selects deterministic JSON diagnostics.
+Current commands: `lullaby check`, `compile`, `build`, `inspect`, `run` (with `--backend ast|ir|bytecode` and `--optimize none|constant-fold|dead-code|full`), `test`, `wasm`, `native` (with `--freestanding`/`--no-std`, `--debug`/`-g`), `fmt`, `lsp`, `docs`, `examples`, `help`, and `--version`. During development these are also available through `cargo run -p lullaby_cli -- ...`. `--format json` (alias `--diagnostic-format json`) selects deterministic JSON diagnostics.
 
 ## Design Material Notes
 

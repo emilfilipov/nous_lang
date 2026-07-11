@@ -109,10 +109,10 @@ This document records the earliest installable language surface, preserved for r
 - The release package exposes `bin\lullaby.exe`.
 - Supported commands:
   - `lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>`
-  - `lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>`
-  - `lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>`
+  - `lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>`
+  - `lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>`
   - `lullaby inspect [--verbose|--format json] <file.lbc>`
-  - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]`
+  - `lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]`
   - `lullaby run [--verbose|--format json] <file.lbc>`
   - `lullaby test [--verbose] <file.lby | project-dir | lullaby.json>`
   - `lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>`

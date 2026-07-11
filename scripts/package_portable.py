@@ -158,7 +158,7 @@ Quick start:
 4. Run: {prefix}{exe} examples
 5. Run: {prefix}{exe} check {example}
 6. Run: {prefix}{exe} run {example}
-7. Run: {prefix}{exe} compile --optimize alpha -o {artifact} {example}
+7. Run: {prefix}{exe} compile --optimize full -o {artifact} {example}
 8. Run: {prefix}{exe} inspect {artifact}
 9. Run: {prefix}{exe} run {artifact}
 {optional_path}
@@ -193,7 +193,7 @@ def sha256_file(path: Path) -> str:
 
 def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     target_tag = args.target_tag or host_tag()
-    package_name = args.package_name or f"lullaby-alpha1-{target_tag}"
+    package_name = args.package_name or f"lullaby-{target_tag}"
     archive_extension = args.archive_extension or default_archive_extension(target_tag)
     dist_dir = args.dist_dir.resolve()
     package_root = dist_dir / package_name
@@ -341,7 +341,7 @@ def verify_package(package_root: Path, archive_path: Path, checksum_path: Path, 
         raise RuntimeError(f"invalid example unexpectedly passed check: {invalid_example}")
     if artifact.exists():
         artifact.unlink()
-    run([executable, "compile", "--optimize", "alpha", "-o", artifact, example])
+    run([executable, "compile", "--optimize", "full", "-o", artifact, example])
     run([executable, "inspect", artifact])
     run([executable, "run", artifact])
 

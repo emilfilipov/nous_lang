@@ -2742,7 +2742,7 @@ impl<'a> Checker<'a> {
         let Some((first, rest)) = values.split_first() else {
             self.diagnostics.push(SemanticDiagnostic::new(
                 "L0323",
-                "array literals must contain at least one value in the current alpha",
+                "array literals must contain at least one value",
                 Some(function.name.clone()),
             ));
             return None;

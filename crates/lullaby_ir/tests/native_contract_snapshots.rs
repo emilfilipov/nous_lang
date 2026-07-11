@@ -1,13 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lullaby_ir::native_contract::alpha1_native_backend_contract;
+use lullaby_ir::native_contract::native_backend_contract;
 
 const UPDATE_ENV: &str = "LULLABY_UPDATE_NATIVE_CONTRACT_SNAPSHOTS";
-const SNAPSHOT: &str = "tests/snapshots/alpha1_native_backend_contract.json";
+const SNAPSHOT: &str = "tests/snapshots/native_backend_contract.json";
 
 #[test]
-fn alpha1_native_backend_contract_matches_checked_in_snapshot() {
+fn native_backend_contract_matches_checked_in_snapshot() {
     let snapshot_path = ir_crate_root().join(SNAPSHOT);
     let actual = serialize_contract();
 
@@ -28,7 +28,7 @@ fn alpha1_native_backend_contract_matches_checked_in_snapshot() {
 }
 
 fn serialize_contract() -> String {
-    let mut json = serde_json::to_string_pretty(&alpha1_native_backend_contract())
+    let mut json = serde_json::to_string_pretty(&native_backend_contract())
         .expect("serialize native backend contract");
     json.push('\n');
     json

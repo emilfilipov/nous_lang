@@ -23,8 +23,8 @@ contract before native linking is attempted:
   memory-operation metadata in human-readable, `--verbose`, and `--format json`
   forms — the machine-readable and human-readable verification reports required
   by this ticket.
-- Object-emission snapshots (`alpha1_return_42.coff.json`,
-  `alpha1_locals_add.coff.json`, `alpha1_assignments.coff.json`) pin the
+- Object-emission snapshots (`return_42.coff.json`,
+  `locals_add.coff.json`, `assignments.coff.json`) pin the
   `source -> typed IR -> bytecode -> COFF object` path deterministically.
 
 This satisfies "the first milestone has explicit binary-output or
@@ -36,7 +36,7 @@ human-readable" against the current subset.
 The `x86_64-pc-windows-msvc` path now goes past bytecode validation to a real,
 runnable native binary for the **i64-scalar subset**:
 
-- `emit_alpha1_native_program` (`crates/lullaby_ir/src/native_object.rs`) emits a
+- `emit_native_program` (`crates/lullaby_ir/src/native_object.rs`) emits a
   single-`.text` COFF object holding an entry stub plus every eligible i64-scalar
   function, with `IMAGE_REL_AMD64_REL32` relocations for inter-function calls,
   the stub's call to `main`, and the stub's call to the imported `ExitProcess`

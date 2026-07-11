@@ -1,6 +1,6 @@
 """Cross-language bitwise suite (Python). Bit manipulation over int done with
 ARITHMETIC only: no bitwise operators (^ & | << >>) anywhere, to stay
-algorithm-identical to Lullaby, whose alpha has no bitwise operators. Bits are
+algorithm-identical to the Lullaby port, which models bit operations with arithmetic. Bits are
 read with % 2 and shifted with // 2 (or * a power of two)."""
 
 

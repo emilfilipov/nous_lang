@@ -70,7 +70,7 @@ if (Test-Path $natexe) {
 
 # interpreters
 foreach ($b in 'bytecode','ir','ast') {
-    $opt = if ($b -eq 'ast') { @() } else { @('--optimize','alpha') }
+    $opt = if ($b -eq 'ast') { @() } else { @('--optimize','full') }
     $got = (& $lb run --backend $b @opt $intLby | Select-Object -First 1)
     Row "lullaby $b" $InterpN (Best { & $lb run --backend $b @opt $intLby } $Reps) (Sum $InterpN) $got
 }

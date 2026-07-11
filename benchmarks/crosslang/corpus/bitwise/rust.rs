@@ -1,6 +1,6 @@
 // Cross-language bitwise suite (Rust). Bit manipulation over i64 done with
 // ARITHMETIC only: no bitwise operators (^ & | << >>) anywhere, to stay
-// algorithm-identical to Lullaby, whose alpha has no bitwise operators.
+// algorithm-identical to the Lullaby port, which models bit operations with arithmetic.
 // Bits are read with % 2 and shifted with / 2 (or * a power of two).
 
 fn pow2(n: i64) -> i64 {

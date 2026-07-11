@@ -1,6 +1,6 @@
 /* Cross-language bitwise suite (C). Bit manipulation over int64 done with
    ARITHMETIC only: no bitwise operators (^ & | << >>) anywhere, to stay
-   algorithm-identical to Lullaby, whose alpha has no bitwise operators.
+   algorithm-identical to the Lullaby port, which models bit operations with arithmetic.
    Bits are read with % 2 and shifted with / 2 (or * a power of two). */
 #include <stdio.h>
 #include <stdint.h>

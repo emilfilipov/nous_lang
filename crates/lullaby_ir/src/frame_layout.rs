@@ -1,4 +1,4 @@
-//! Deterministic stack-frame layout analysis for the Alpha 1 subset.
+//! Deterministic stack-frame layout analysis for the native subset.
 //!
 //! This module assigns every parameter, local binding, and loop variable of an
 //! [`IrFunction`] a stable stack slot, computes the total frame size, and
@@ -15,7 +15,7 @@
 use lullaby_parser::TypeRef;
 use serde::{Deserialize, Serialize};
 
-use crate::native_contract::alpha1_value_layout;
+use crate::native_contract::native_value_layout;
 use crate::{IrFunction, IrStmt};
 
 /// Stack alignment for the whole frame, in bytes.
@@ -239,7 +239,7 @@ impl LayoutBuilder {
 }
 
 fn slot_size(ty: &TypeRef) -> usize {
-    let raw = alpha1_value_layout(ty)
+    let raw = native_value_layout(ty)
         .map(|layout| usize::from(layout.size_bytes))
         .unwrap_or(SLOT_ALIGN);
     align_up(raw.max(1), SLOT_ALIGN)

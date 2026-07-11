@@ -11,7 +11,7 @@
 #   curl -fsSL https://lullaby.skazkasolutions.com/install.sh | sh -s -- uninstall
 #
 # Overrides (environment variables):
-#   LULLABY_VERSION   install a specific tag (e.g. v0.1.0-alpha.2) instead of latest
+#   LULLABY_VERSION   install a specific tag (e.g. v1.0.0-preview) instead of latest
 #   LULLABY_PREFIX    install prefix (default: $HOME/.lullaby)
 #   LULLABY_REPO      owner/repo to pull releases from (default: emilfilipov/nous_lang)
 set -eu

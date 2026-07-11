@@ -2,7 +2,7 @@
 //!
 //! This is Lullaby's second instruction-set backend. It consumes the *same*
 //! [`BytecodeModule`] the x86-64 backend lowers (see
-//! [`crate::native_object::emit_alpha1_native_program_for_target`]) and emits a
+//! [`crate::native_object::emit_native_program_for_target`]) and emits a
 //! freestanding AArch64 Linux **ELF64** relocatable object through the shared
 //! [`crate::object_model::ObjectModel`] / [`crate::elf_object`] path.
 //!

@@ -90,7 +90,7 @@ if (Test-Path $natexe) {
 
 # --- interpreter tiers (--optimize applies only to ir/bytecode) ---
 foreach ($b in 'bytecode','ir','ast') {
-    $opt = if ($b -eq 'ast') { @() } else { @('--optimize','alpha') }
+    $opt = if ($b -eq 'ast') { @() } else { @('--optimize','full') }
     $got = (& $lb run --backend $b @opt $intLby | Select-Object -First 1)
     Add-Row "lullaby $b" $InterpN (Best-Time { & $lb run --backend $b @opt $intLby } ([math]::Max(3,$Reps-2))) $expInt $got
 }

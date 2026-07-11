@@ -1,5 +1,5 @@
 param(
-    [string]$PackageName = "lullaby-alpha1-windows-x64"
+    [string]$PackageName = "lullaby-windows-x64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,10 +88,10 @@ try {
         throw "invalid example unexpectedly passed check: $InvalidExample"
     }
     Remove-Item -LiteralPath $Artifact -Force -ErrorAction SilentlyContinue
-    & $Lullaby compile --optimize alpha -o $Artifact $Example
+    & $Lullaby compile --optimize full -o $Artifact $Example
     if ($LASTEXITCODE -ne 0) { throw "lullaby compile failed: $Example" }
     Remove-Item -LiteralPath $BuildArtifact -Force -ErrorAction SilentlyContinue
-    & $Lullaby build --optimize alpha -o $BuildArtifact $Example
+    & $Lullaby build --optimize full -o $BuildArtifact $Example
     if ($LASTEXITCODE -ne 0) { throw "lullaby build failed: $Example" }
     & $Lullaby inspect $Artifact
     if ($LASTEXITCODE -ne 0) { throw "lullaby inspect failed: $Artifact" }

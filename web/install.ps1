@@ -10,7 +10,7 @@
 # To read before running, or to uninstall / pin a version:
 #   irm https://lullaby.skazkasolutions.com/install.ps1 -OutFile install.ps1
 #   ./install.ps1 -Uninstall
-#   $env:LULLABY_VERSION = 'v0.1.0-alpha.2'; ./install.ps1
+#   $env:LULLABY_VERSION = 'v1.0.0-preview'; ./install.ps1
 #
 # Overrides (environment variables or parameters):
 #   LULLABY_VERSION / -Version   install a specific tag instead of latest

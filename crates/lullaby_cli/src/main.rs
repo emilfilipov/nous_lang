@@ -11,7 +11,7 @@ use lullaby_ir::native_contract::{NativeObjectFormat, native_target_for_triple};
 use lullaby_ir::{
     BYTECODE_ARTIFACT_EXTENSION, BytecodeArtifact, BytecodeArtifactError, DebugOptions,
     IrCleanupRole, IrMemoryOperation, IrMemoryOperationKind, OptimizationConfig,
-    decode_bytecode_artifact, emit_alpha1_native_program_for_target, emit_wasm_module,
+    decode_bytecode_artifact, emit_native_program_for_target, emit_wasm_module,
     encode_bytecode_artifact, lower, lower_to_bytecode, optimize, run_bytecode_main,
     run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
 };
@@ -446,7 +446,7 @@ fn native_file(
 
     // Library mode: a `main` is not required. A program with `main` still emits a
     // runnable executable; an export-only program (only `export fn` functions)
-    // emits a C-callable library object. `emit_alpha1_native_program` requires at
+    // emits a C-callable library object. `emit_native_program` requires at
     // least a `main` or an eligible `export fn`, reporting `L0339` otherwise.
     let compiled = match compile(&path, SourceMode::Library) {
         Ok(compiled) => compiled,
@@ -469,7 +469,7 @@ fn native_file(
     // Inline small leaf helpers (e.g. `rem`, `is_even`) before native codegen so a
     // helper called in a hot loop becomes inline arithmetic instead of a `call`.
     // Only the inlining pass runs here: it produces pure scalar expressions the
-    // backend already compiles, without the other alpha passes' rewrites.
+    // backend already compiles, without the other optimization passes' rewrites.
     let (module, _report) = optimize(&module, &OptimizationConfig::inlining());
     let bytecode = lower_to_bytecode(&module);
 
@@ -479,25 +479,23 @@ fn native_file(
     let debug_options = debug.then(|| DebugOptions {
         source_file: compiled.path.display().to_string(),
     });
-    let program =
-        match emit_alpha1_native_program_for_target(&bytecode, &target, debug_options.as_ref()) {
-            Ok(program) => program,
-            Err(error) => {
-                let mut report =
-                    DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
-                        .with_source_path(compiled.path.display().to_string());
-                report = report.with_note(
+    let program = match emit_native_program_for_target(&bytecode, &target, debug_options.as_ref()) {
+        Ok(program) => program,
+        Err(error) => {
+            let mut report = DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
+                .with_source_path(compiled.path.display().to_string());
+            report = report.with_note(
                 "the native backend compiles only i64-scalar functions (params and return all i64)",
             );
-                let mut rendered = format_reports(&[report], mode, Some(&compiled.source));
-                if mode == OutputMode::Verbose {
-                    for skip in &error.skipped {
-                        rendered.push_str(&format!("\nskipped {}: {}", skip.name, skip.reason));
-                    }
+            let mut rendered = format_reports(&[report], mode, Some(&compiled.source));
+            if mode == OutputMode::Verbose {
+                for skip in &error.skipped {
+                    rendered.push_str(&format!("\nskipped {}: {}", skip.name, skip.reason));
                 }
-                return Err(rendered);
             }
-        };
+            return Err(rendered);
+        }
+    };
 
     // Freestanding / no-std mode guarantees a no-C-runtime executable. The emitted
     // program links only the minimal OS import (`kernel32!ExitProcess`); any
@@ -1145,8 +1143,8 @@ fn optimize_module(
             let (module, _report) = optimize(&module, &OptimizationConfig::dead_code_elimination());
             module
         }
-        OptimizationMode::Alpha => {
-            let (module, _report) = optimize(&module, &OptimizationConfig::alpha_default());
+        OptimizationMode::Full => {
+            let (module, _report) = optimize(&module, &OptimizationConfig::full());
             module
         }
     }
@@ -1466,7 +1464,7 @@ enum OptimizationMode {
     None,
     ConstantFold,
     DeadCode,
-    Alpha,
+    Full,
 }
 
 impl OptimizationMode {
@@ -1475,7 +1473,7 @@ impl OptimizationMode {
             "none" => Some(Self::None),
             "constant-fold" => Some(Self::ConstantFold),
             "dead-code" => Some(Self::DeadCode),
-            "alpha" => Some(Self::Alpha),
+            "full" => Some(Self::Full),
             _ => None,
         }
     }
@@ -1742,7 +1740,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 "--optimize requires --backend ir or --backend bytecode",
             )
             .with_note(
-                "usage: lullaby run --backend ir|bytecode --optimize none|constant-fold|dead-code|alpha <file.lby>",
+                "usage: lullaby run --backend ir|bytecode --optimize none|constant-fold|dead-code|full <file.lby>",
             )],
             mode,
             None,
@@ -1816,13 +1814,13 @@ fn parse_fmt_command(args: &[String]) -> Result<Option<Invocation>, String> {
 
 fn command_usage(command: &str) -> String {
     match command {
-        "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
-        "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
+        "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
+        "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
         "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
         "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-unknown-linux-gnu] [-o out] <file.lby>".to_string(),
-        "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
+        "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
         _ => "usage: lullaby check [--verbose|--format json] <file.lby>".to_string(),
     }
 }
@@ -1843,7 +1841,7 @@ fn display_version() -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|alpha] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|alpha] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby new <name>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby new <name>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
         display_version()
     );
 }

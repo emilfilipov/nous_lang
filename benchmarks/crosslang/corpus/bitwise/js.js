@@ -1,6 +1,6 @@
 // Cross-language bitwise suite (JavaScript). Bit manipulation over integers done
 // with ARITHMETIC only: no bitwise operators (^ & | << >>) anywhere, to stay
-// algorithm-identical to Lullaby, whose alpha has no bitwise operators. Bits are
+// algorithm-identical to the Lullaby port, which models bit operations with arithmetic. Bits are
 // read with % 2 and shifted with Math.trunc(x / 2) (or * a power of two).
 
 function pow2(n) {

@@ -32,3 +32,6 @@ test-results/
 
 crates/lullaby_wasm/pkg/
 crates/lullaby_wasm/target/
+
+# Native/C/C++ benchmark build artifacts
+*.obj

@@ -738,7 +738,7 @@ fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
         .args([
             "compile",
             "--optimize",
-            "alpha",
+            "full",
             "-o",
             artifact.to_str().expect("artifact path"),
             fixture.to_str().expect("fixture path"),
@@ -777,7 +777,7 @@ fn builds_fixture_to_bytecode_artifact_and_runs_it() {
         .args([
             "build",
             "--optimize",
-            "alpha",
+            "full",
             "-o",
             artifact.to_str().expect("artifact path"),
             fixture.to_str().expect("fixture path"),
@@ -949,7 +949,7 @@ fn rejects_planned_unsupported_syntax_with_dedicated_diagnostic() {
             "{fixture_name}: {stderr}"
         );
         assert!(
-            stderr.contains("planned beyond Alpha 1"),
+            stderr.contains("planned and is not supported"),
             "{fixture_name}: {stderr}"
         );
     }
@@ -1075,7 +1075,7 @@ fn reports_missing_bytecode_instructions_as_json() {
     let artifact = root.join("target/missing_instructions_artifact_json.lbc");
     std::fs::write(
         &artifact,
-        "{\"format\":\"lullaby-bytecode\",\"version\":4,\"metadata\":{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"span\":{\"line\":1,\"column\":1}}]}}",
+        "{\"format\":\"lullaby-bytecode\",\"version\":4,\"metadata\":{\"producer\":\"test\",\"target\":\"lullaby-vm\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"span\":{\"line\":1,\"column\":1}}]}}",
     )
     .expect("write missing instructions artifact");
 
@@ -1104,7 +1104,7 @@ fn reports_invalid_bytecode_instruction_contract_as_json() {
     let artifact = root.join("target/invalid_instruction_artifact_json.lbc");
     std::fs::write(
         &artifact,
-        "{\"format\":\"lullaby-bytecode\",\"version\":5,\"metadata\":{\"producer\":\"test\",\"target\":\"alpha1\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"}}],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"instructions\":[{\"Break\":{\"line\":1,\"column\":1}}],\"span\":{\"line\":1,\"column\":1}}]}}",
+        "{\"format\":\"lullaby-bytecode\",\"version\":5,\"metadata\":{\"producer\":\"test\",\"target\":\"lullaby-vm\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"}}],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"instructions\":[{\"Break\":{\"line\":1,\"column\":1}}],\"span\":{\"line\":1,\"column\":1}}]}}",
     )
     .expect("write invalid instruction artifact");
 
@@ -1195,7 +1195,7 @@ fn runs_logic_fixture_with_optimized_bytecode_backend() {
 }
 
 #[test]
-fn runs_arithmetic_fixture_with_alpha_optimized_ir_backend() {
+fn runs_arithmetic_fixture_with_full_optimized_ir_backend() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args([
@@ -1203,7 +1203,7 @@ fn runs_arithmetic_fixture_with_alpha_optimized_ir_backend() {
             "--backend",
             "ir",
             "--optimize",
-            "alpha",
+            "full",
             fixture.to_str().expect("fixture path"),
         ])
         .output()
@@ -1214,7 +1214,7 @@ fn runs_arithmetic_fixture_with_alpha_optimized_ir_backend() {
 }
 
 #[test]
-fn runs_arithmetic_fixture_with_alpha_optimized_bytecode_backend() {
+fn runs_arithmetic_fixture_with_full_optimized_bytecode_backend() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_arithmetic.lby");
     let output = lullaby()
         .args([
@@ -1222,7 +1222,7 @@ fn runs_arithmetic_fixture_with_alpha_optimized_bytecode_backend() {
             "--backend",
             "bytecode",
             "--optimize",
-            "alpha",
+            "full",
             fixture.to_str().expect("fixture path"),
         ])
         .output()

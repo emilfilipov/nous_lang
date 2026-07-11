@@ -203,7 +203,7 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
     DiagnosticEntry {
         code: "L0104",
         phase: DiagnosticPhase::Lexer,
-        explanation: "A string literal must close on the same line in the current alpha.",
+        explanation: "A string literal must close on the same line.",
         root_cause: "The lexer reached the end of the line before finding a closing quote.",
         suggested_fix: "Add the missing closing quote or split the text into supported string literals.",
     },
@@ -233,14 +233,14 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         phase: DiagnosticPhase::Parser,
         explanation: "The parser could not build a valid expression from this line.",
         root_cause: "The expression contains unsupported syntax, missing delimiters, or tokens in the wrong order.",
-        suggested_fix: "Use current alpha expression syntax: literals, variables, calls, arrays, indexing, arithmetic, comparisons, and logical operators.",
+        suggested_fix: "Use the supported expression syntax: literals, variables, calls, arrays, indexing, arithmetic, comparisons, and logical operators.",
     },
     DiagnosticEntry {
         code: "L0211",
         phase: DiagnosticPhase::Parser,
-        explanation: "The source uses syntax reserved for a planned language feature that is not implemented in Alpha 1.",
+        explanation: "The source uses syntax reserved for a planned language feature that this compiler does not implement yet.",
         root_cause: "The parser recognized a future construct such as modules, imports, structs, pattern matching, or try/catch.",
-        suggested_fix: "Remove the planned construct or rewrite the program using the current Alpha 1 function, local binding, control-flow, and builtin surface.",
+        suggested_fix: "Remove the planned construct or rewrite the program using the current function, local binding, control-flow, and builtin surface.",
     },
     DiagnosticEntry {
         code: "L0212",
@@ -315,7 +315,7 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
     DiagnosticEntry {
         code: "L0324",
         phase: DiagnosticPhase::Semantic,
-        explanation: "Array literals are homogeneous in the current alpha.",
+        explanation: "Array literals are homogeneous.",
         root_cause: "At least one array element has a different type from the first element.",
         suggested_fix: "Use values with the same type or split mixed values into separate arrays.",
     },
@@ -596,7 +596,7 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         code: "L0501",
         phase: DiagnosticPhase::Ir,
         explanation: "The checked source program could not be lowered into typed IR.",
-        root_cause: "The semantic program and IR lowering rules disagree about a supported alpha construct.",
+        root_cause: "The semantic program and IR lowering rules disagree about a supported construct.",
         suggested_fix: "Report the source as a compiler bug and try the AST backend as a temporary workaround.",
     },
     DiagnosticEntry {

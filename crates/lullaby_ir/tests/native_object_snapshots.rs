@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lullaby_ir::native_object::{emit_alpha1_coff_object, snapshot_native_object};
+use lullaby_ir::native_object::{emit_coff_object, snapshot_native_object};
 use lullaby_ir::{lower, lower_to_bytecode};
 use lullaby_lexer::lex;
 use lullaby_parser::parse;
@@ -17,20 +17,20 @@ struct SnapshotCase {
 const CASES: &[SnapshotCase] = &[
     SnapshotCase {
         source: "fn main -> i64\n    return 42\n",
-        snapshot: "tests/snapshots/alpha1_return_42.coff.json",
+        snapshot: "tests/snapshots/return_42.coff.json",
     },
     SnapshotCase {
         source: "fn main -> i64\n    let left i64 = 40\n    let right i64 = 2\n    return left + right\n",
-        snapshot: "tests/snapshots/alpha1_locals_add.coff.json",
+        snapshot: "tests/snapshots/locals_add.coff.json",
     },
     SnapshotCase {
         source: "fn main -> i64\n    let value i64 = 40\n    value += 2\n    value *= 2\n    value -= 42\n    return value\n",
-        snapshot: "tests/snapshots/alpha1_assignments.coff.json",
+        snapshot: "tests/snapshots/assignments.coff.json",
     },
 ];
 
 #[test]
-fn alpha1_coff_objects_match_checked_in_snapshots() {
+fn coff_objects_match_checked_in_snapshots() {
     let ir_crate = ir_crate_root();
     let update = std::env::var_os(UPDATE_ENV).is_some();
 
@@ -65,8 +65,8 @@ fn object_bytes(source: &str) -> Vec<u8> {
     let ir = lower(&checked).expect("lower");
     let bytecode = lower_to_bytecode(&ir);
     // The full native emitter (arrays, floats, strings) — same path the CLI uses,
-    // unlike the i64-only prototype `emit_alpha1_coff_object`.
-    lullaby_ir::native_object::emit_alpha1_native_program(&bytecode)
+    // unlike the i64-only prototype `emit_coff_object`.
+    lullaby_ir::native_object::emit_native_program(&bytecode)
         .expect("emit")
         .bytes
 }
@@ -107,7 +107,7 @@ fn snapshot_for(source: &str) -> String {
     let checked = validate_executable(&program).expect("validate native object snapshot source");
     let ir = lower(&checked).expect("lower native object snapshot source");
     let bytecode = lower_to_bytecode(&ir);
-    let object = emit_alpha1_coff_object(&bytecode).expect("emit native object snapshot");
+    let object = emit_coff_object(&bytecode).expect("emit native object snapshot");
     let mut json =
         serde_json::to_string_pretty(&snapshot_native_object(&object)).expect("serialize snapshot");
     json.push('\n');

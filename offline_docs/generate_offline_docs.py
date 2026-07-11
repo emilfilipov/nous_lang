@@ -225,7 +225,7 @@ def render_document() -> str:
 
     nav_items.append('<li><a href="#executable-examples">Executable Examples</a></li>')
     sections.append(render_examples_section())
-    for title, section_id, body in alpha_user_sections():
+    for title, section_id, body in user_sections():
         nav_items.append(f'<li><a href="#{section_id}">{html.escape(title)}</a></li>')
         sections.append(f'<section id="{section_id}"><h1>{html.escape(title)}</h1>{body}</section>')
 
@@ -253,7 +253,7 @@ def render_document() -> str:
 """
 
 
-def alpha_user_sections() -> list[tuple[str, str, str]]:
+def user_sections() -> list[tuple[str, str, str]]:
     return [
         (
             "Overview",
@@ -280,7 +280,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
               <li>Find packaged examples with <code>bin/lullaby examples</code>.</li>
               <li>Check a source file with <code>bin/lullaby check examples/valid/calculator.lby</code>.</li>
               <li>Run a source file with <code>bin/lullaby run examples/valid/calculator.lby</code>.</li>
-              <li>Compile a bytecode artifact with <code>bin/lullaby compile --optimize alpha -o examples/valid/calculator.lbc examples/valid/calculator.lby</code>.</li>
+              <li>Compile a bytecode artifact with <code>bin/lullaby compile --optimize full -o examples/valid/calculator.lbc examples/valid/calculator.lby</code>.</li>
               <li>Inspect and run the artifact with <code>bin/lullaby inspect examples/valid/calculator.lbc</code> and <code>bin/lullaby run examples/valid/calculator.lbc</code>.</li>
             </ol>
             """,
@@ -380,14 +380,14 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             <table>
               <tr><td><code>cargo run -p lullaby_cli -- new my_app</code><br><code>lullaby new &lt;name&gt;</code></td><td>Scaffold a new project directory: a <code>lullaby.json</code> manifest, a runnable <code>src/main.lby</code>, and a <code>.gitignore</code>. The name must be a valid identifier and the directory must not already exist. Follow with <code>lullaby run &lt;name&gt;</code>.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- check path/to/file.lby</code><br><code>lullaby check [--verbose|--format json] file.lby</code></td><td>Validate extension, lex, parse, and run semantic checks. This can check helper/library-style functions without <code>main</code>.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- compile --optimize alpha -o path/to/file.lbc path/to/file.lby</code><br><code>lullaby compile [--optimize none|constant-fold|dead-code|alpha] -o file.lbc file.lby</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current optimizer pipeline, and write a versioned <code>.lbc</code> instruction-bytecode artifact with metadata, a function table, ordered memory operation metadata, and dedicated function instructions.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- build --optimize alpha -o path/to/file.lbc path/to/file.lby</code><br><code>lullaby build</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- compile --optimize full -o path/to/file.lbc path/to/file.lby</code><br><code>lullaby compile [--optimize none|constant-fold|dead-code|full] -o file.lbc file.lby</code></td><td>Validate executable source with zero-argument main, lower through typed IR, run the current optimizer pipeline, and write a versioned <code>.lbc</code> instruction-bytecode artifact with metadata, a function table, ordered memory operation metadata, and dedicated function instructions.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- build --optimize full -o path/to/file.lbc path/to/file.lby</code><br><code>lullaby build</code></td><td>Use the same artifact-generation path as <code>compile</code> with a build-oriented command name.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- inspect path/to/file.lbc</code><br><code>lullaby inspect file.lbc</code></td><td>Print bytecode artifact metadata, function table details, memory operation counts, target, payload, entry point, and function count without executing the program; verbose/JSON modes include memory operation sequence numbers.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lby</code><br><code>lullaby run [--backend ast|ir|bytecode] file.lby</code></td><td>Execute source through the selected backend. Use <code>--backend ir</code> or <code>--backend bytecode</code> to select typed IR or bytecode execution.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- run path/to/file.lbc</code><br><code>lullaby run file.lbc</code></td><td>Execute a compiled bytecode artifact.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- native path/to/file.lby</code><br><code>lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [-o out.exe] file.lby</code></td><td>Compile the i64-scalar subset to an x86-64 Windows COFF object and, best-effort, link it into a runnable <code>.exe</code>. <code>--freestanding</code> (alias <code>--no-std</code>) builds a no-C-runtime executable: it links <code>kernel32.lib</code> only (zero <code>ucrt</code>/<code>vcruntime</code>/<code>msvcrt</code>) and terminates through the minimal OS import <code>kernel32!ExitProcess</code>. It is still a Windows PE, not a bare-metal binary. A freestanding build that declares an <code>extern fn</code> (which needs the C runtime) is rejected with <code>L0426</code>. <code>--debug</code> (alias <code>-g</code>) emits native source-line debug info: a CodeView <code>.debug$S</code> section maps each compiled function's entry offset to its <code>.lby</code> declaration line (per-function granularity) so a debugger can break at a function and show its source line. <code>--debug</code> is opt-in; without it the object bytes are unchanged.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- run --backend ir --optimize constant-fold path/to/file.lby</code></td><td>Run the IR backend with only the opt-in constant folding optimizer.</td></tr>
-              <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode --optimize dead-code path/to/file.lby</code></td><td>Run the bytecode backend with block-local dead-code elimination. Other optimizer coverage includes common subexpression elimination, loop-invariant motion, copy propagation, <code>--optimize alpha</code>, and <code>--optimize none</code>.</td></tr>
+              <tr><td><code>cargo run -p lullaby_cli -- run --backend bytecode --optimize dead-code path/to/file.lby</code></td><td>Run the bytecode backend with block-local dead-code elimination. Other optimizer coverage includes common subexpression elimination, loop-invariant motion, copy propagation, <code>--optimize full</code>, and <code>--optimize none</code>.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- docs</code><br><code>lullaby docs</code></td><td>Print the local offline documentation path.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- examples</code><br><code>lullaby examples</code></td><td>Print the packaged valid examples directory.</td></tr>
               <tr><td><code>cargo run -p lullaby_cli -- check --verbose path/to/file.lby</code></td><td>Print source excerpts, caret markers, root cause, and suggested fix text for diagnostics.</td></tr>
@@ -419,7 +419,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
               <li><code>VERSION.txt</code> or <code>MANIFEST.json</code>: package metadata including target tag, commit, binary path, docs path, and archive name.</li>
               <li><code>install.cmd</code>, <code>install.ps1</code>, <code>uninstall.cmd</code>, and <code>uninstall.ps1</code>: optional Windows user PATH helpers.</li>
               <li><code>install.sh</code> and <code>uninstall.sh</code>: optional Linux/macOS user PATH helpers generated by the cross-platform package driver.</li>
-              <li><code>lullaby-alpha1-windows-x64.zip.sha256</code> or <code>*.sha256</code>: SHA-256 checksum for the archive.</li>
+              <li><code>lullaby-windows-x64.zip.sha256</code> or <code>*.sha256</code>: SHA-256 checksum for the archive.</li>
             </ul>
             """,
         ),
@@ -442,7 +442,7 @@ def alpha_user_sections() -> list[tuple[str, str, str]]:
             "limitations",
             """
             <ul>
-              <li>Execution runs on AST, typed IR, and instruction-bytecode interpreters plus versioned <code>.lbc</code> bytecode artifacts; a scalar-subset WebAssembly backend (<code>lullaby wasm</code>) and an i64-scalar native x86-64 backend (<code>lullaby native</code>) exist and cover only a subset, with non-eligible functions still running on the interpreters. Full native lowering of the whole language is still in progress. The optimizer currently exposes opt-in constant folding, conservative common subexpression elimination, conservative loop-invariant motion, conservative block-local copy propagation, block-local dead-code elimination, and the combined <code>--optimize alpha</code> pipeline.</li>
+              <li>Execution runs on AST, typed IR, and instruction-bytecode interpreters plus versioned <code>.lbc</code> bytecode artifacts; a scalar-subset WebAssembly backend (<code>lullaby wasm</code>) and an i64-scalar native x86-64 backend (<code>lullaby native</code>) exist and cover only a subset, with non-eligible functions still running on the interpreters. Full native lowering of the whole language is still in progress. The optimizer currently exposes opt-in constant folding, conservative common subexpression elimination, conservative loop-invariant motion, conservative block-local copy propagation, block-local dead-code elimination, and the combined <code>--optimize full</code> pipeline.</li>
               <li>Version 5 <code>.lbc</code> artifacts preserve memory operation metadata and sequence numbers in <code>memory_operations</code>; the full region memory model, ARC/reference counting, compiler-inserted cleanup, and lifetime analysis remain planned.</li>
               <li>Modules and visibility (<code>import</code>/<code>pub</code>), structs, enums, pattern matching, traits with bounded generics, generic functions, structured error handling (<code>throw</code>/<code>try</code>/<code>catch</code>), multi-directory projects, and threads/channels/mutex concurrency are implemented. Still planned: capturing closures, trait objects and default methods, wider integer types (<code>i32</code>/<code>u32</code>), and byte arithmetic. Genuinely reserved keywords (<code>module</code>, <code>package</code>, <code>union</code>, <code>interface</code>, <code>class</code>, <code>switch</code>, standalone <code>catch</code>, <code>coroutine</code>) are rejected with <code>L0211</code> until implemented.</li>
               <li>Cross-platform portable package generation exists with platform PATH helpers, but release assets still need non-Windows host validation and active CI workflow runs.</li>

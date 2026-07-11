@@ -1,5 +1,5 @@
 {
-  "name": "alpha1-native-backend-contract",
+  "name": "native-backend-contract",
   "first_target": {
     "triple": "x86_64-pc-windows-msvc",
     "architecture": "X86_64",
@@ -38,7 +38,7 @@
     }
   ],
   "calling_convention": {
-    "name": "lullaby-alpha1-internal-abi",
+    "name": "lullaby-internal-abi",
     "entry_function": "main",
     "parameter_order": "SourceOrder",
     "return_strategy": "DirectForScalarAndHandleValues",
@@ -71,7 +71,7 @@
       "length: i64",
       "data: pointer-sized contiguous element storage handle"
     ],
-    "element_layout_source": "alpha1_value_layout(element TypeRef)",
+    "element_layout_source": "native_value_layout(element TypeRef)",
     "safety_requirements": [
       "index expressions are checked against descriptor length before element access",
       "descriptor handles are pointer-sized values owned by runtime cleanup metadata"

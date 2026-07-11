@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use lullaby_parser::{AssignOp, BinaryOp, TypeRef};
 
 use crate::native_contract::{
-    NativeArchitecture, NativeObjectFormat, NativeTarget, alpha1_native_backend_contract,
+    NativeArchitecture, NativeObjectFormat, NativeTarget, native_backend_contract,
     x86_64_windows_target,
 };
 use crate::object_model::{
@@ -241,10 +241,8 @@ impl fmt::Display for NativeObjectError {
 
 impl std::error::Error for NativeObjectError {}
 
-pub fn emit_alpha1_coff_object(
-    module: &BytecodeModule,
-) -> Result<NativeObjectFile, NativeObjectError> {
-    let contract = alpha1_native_backend_contract();
+pub fn emit_coff_object(module: &BytecodeModule) -> Result<NativeObjectFile, NativeObjectError> {
+    let contract = native_backend_contract();
     let entry_symbol = contract.calling_convention.entry_function;
     let target = contract.first_target;
     let function = module
@@ -728,7 +726,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 // Extended native program emitter (multi-function, linkable, i64-scalar subset)
 // ===========================================================================
 //
-// The prototype `emit_alpha1_coff_object` above lowers a single literal-return
+// The prototype `emit_coff_object` above lowers a single literal-return
 // `main`. The emitter below extends the same COFF machinery to the full
 // i64-scalar subset the WASM backend targets: every function whose parameters
 // and return type are all `i64` (up to four parameters, Win64 register args) is
@@ -1349,23 +1347,21 @@ pub struct DebugOptions {
 /// code `L0339`.
 ///
 /// This is the default (no debug info) entry point; see
-/// [`emit_alpha1_native_program_with_debug`] to additionally emit CodeView
+/// [`emit_native_program_with_debug`] to additionally emit CodeView
 /// source-line debug info.
-pub fn emit_alpha1_native_program(
-    module: &BytecodeModule,
-) -> Result<NativeProgram, NativeProgramError> {
-    emit_alpha1_native_program_with_debug(module, None)
+pub fn emit_native_program(module: &BytecodeModule) -> Result<NativeProgram, NativeProgramError> {
+    emit_native_program_with_debug(module, None)
 }
 
-/// Like [`emit_alpha1_native_program`], but when `debug` is `Some`, additionally
+/// Like [`emit_native_program`], but when `debug` is `Some`, additionally
 /// emits a CodeView `.debug$S` section with per-function source-line info (see
 /// [`DebugOptions`]). When `debug` is `None` the emitted object bytes are exactly
-/// those of [`emit_alpha1_native_program`].
-pub fn emit_alpha1_native_program_with_debug(
+/// those of [`emit_native_program`].
+pub fn emit_native_program_with_debug(
     module: &BytecodeModule,
     debug: Option<&DebugOptions>,
 ) -> Result<NativeProgram, NativeProgramError> {
-    emit_alpha1_native_program_for_target(module, &x86_64_windows_target(), debug)
+    emit_native_program_for_target(module, &x86_64_windows_target(), debug)
 }
 
 /// Emit a native program for an explicit `target`, selecting the object-file
@@ -1381,7 +1377,7 @@ pub fn emit_alpha1_native_program_with_debug(
 /// The ELF and Mach-O objects are relocatable objects verified structurally on
 /// this host; link-and-run verification is deferred to the Phase 9 cross-platform
 /// CI. See `documents/native_backend_contract.md`.
-pub fn emit_alpha1_native_program_for_target(
+pub fn emit_native_program_for_target(
     module: &BytecodeModule,
     target: &NativeTarget,
     debug: Option<&DebugOptions>,
@@ -3442,7 +3438,9 @@ impl PReg {
 /// comparison over `i64` operands, `i64` variables/literals, and all-`i64` calls.
 fn expr_reg_promotable(expr: &BytecodeExpr) -> bool {
     match &expr.kind {
-        BytecodeExprKind::Integer(_) | BytecodeExprKind::Bool(_) | BytecodeExprKind::Char(_) => true,
+        BytecodeExprKind::Integer(_) | BytecodeExprKind::Bool(_) | BytecodeExprKind::Char(_) => {
+            true
+        }
         BytecodeExprKind::Variable(_) => expr.ty.name == "i64",
         BytecodeExprKind::Unary { expr: inner, .. } => {
             inner.ty.name == "i64" && expr_reg_promotable(inner)
@@ -3454,7 +3452,10 @@ fn expr_reg_promotable(expr: &BytecodeExpr) -> bool {
                 && expr_reg_promotable(right)
         }
         BytecodeExprKind::Call { args, .. } => {
-            expr.ty.name == "i64" && args.iter().all(|a| a.ty.name == "i64" && expr_reg_promotable(a))
+            expr.ty.name == "i64"
+                && args
+                    .iter()
+                    .all(|a| a.ty.name == "i64" && expr_reg_promotable(a))
         }
         _ => false,
     }
@@ -3463,7 +3464,9 @@ fn expr_reg_promotable(expr: &BytecodeExpr) -> bool {
 /// Whether an instruction lowers entirely within the scalar register set.
 fn instr_reg_promotable(instr: &BytecodeInstruction) -> bool {
     match instr {
-        BytecodeInstruction::Let { ty, value, .. } => ty.name == "i64" && expr_reg_promotable(value),
+        BytecodeInstruction::Let { ty, value, .. } => {
+            ty.name == "i64" && expr_reg_promotable(value)
+        }
         // A path-less assignment to a scalar local (no field/index hop).
         BytecodeInstruction::Assign { path, value, .. } => {
             path.is_empty() && expr_reg_promotable(value)
@@ -6363,8 +6366,8 @@ fn lower_native_binary(
                 && let Ok(imm) = i32::try_from(*rhs)
             {
                 let opcode: Option<&[u8]> = match op {
-                    BinaryOp::Add => Some(&[0x48, 0x05]),        // add rax, imm32
-                    BinaryOp::Subtract => Some(&[0x48, 0x2D]),   // sub rax, imm32
+                    BinaryOp::Add => Some(&[0x48, 0x05]),      // add rax, imm32
+                    BinaryOp::Subtract => Some(&[0x48, 0x2D]), // sub rax, imm32
                     BinaryOp::Multiply => Some(&[0x48, 0x69, 0xC0]), // imul rax, rax, imm32
                     _ => None,
                 };
@@ -11379,7 +11382,7 @@ mod tests {
     #[test]
     fn emits_minimal_coff_object_for_i64_literal_main() {
         let module = literal_return_module("i64", BytecodeExprKind::Integer(42));
-        let object = emit_alpha1_coff_object(&module).expect("emit object");
+        let object = emit_coff_object(&module).expect("emit object");
 
         assert_eq!(object.target.triple, "x86_64-pc-windows-msvc");
         assert_eq!(object.format, NativeObjectFormat::Coff);
@@ -11409,7 +11412,7 @@ mod tests {
     #[test]
     fn rejects_non_literal_entry_body() {
         let module = literal_return_module("i64", BytecodeExprKind::Variable("value".to_string()));
-        let error = emit_alpha1_coff_object(&module).expect_err("reject variable return");
+        let error = emit_coff_object(&module).expect_err("reject variable return");
 
         assert!(matches!(error, NativeObjectError::UnsupportedBody { .. }));
     }
@@ -11464,7 +11467,7 @@ mod tests {
             }],
         };
 
-        let object = emit_alpha1_coff_object(&module).expect("emit object");
+        let object = emit_coff_object(&module).expect("emit object");
         let text =
             &object.bytes[object.sections[0].offset as usize..][..object.sections[0].size as usize];
 
@@ -11528,7 +11531,7 @@ mod tests {
             }],
         };
 
-        let object = emit_alpha1_coff_object(&module).expect("emit object");
+        let object = emit_coff_object(&module).expect("emit object");
         let text =
             &object.bytes[object.sections[0].offset as usize..][..object.sections[0].size as usize];
 
@@ -11650,7 +11653,7 @@ mod native_program_tests {
 
     #[test]
     fn emits_object_for_add_and_main() {
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(20, 22)\n",
         ))
         .expect("emit native program");
@@ -11686,7 +11689,7 @@ mod native_program_tests {
     fn emits_object_for_if_based_function() {
         // A recursive `if`-based `fib` plus a `main` calling it. Every function is
         // i64-scalar, so all compile.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn fib n i64 -> i64\n    if n < 2\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main -> i64\n    return fib(6)\n",
         ))
         .expect("emit native program");
@@ -11721,7 +11724,7 @@ mod native_program_tests {
 
     #[test]
     fn emits_object_for_while_loop() {
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn main -> i64\n    let n i64 = 0\n    let sum i64 = 0\n    while n < 5\n        n += 1\n        sum += n\n    return sum\n",
         ))
         .expect("emit native program");
@@ -11759,7 +11762,7 @@ mod native_program_tests {
         // helpers plus itself feeds `main`. Every function is i64-scalar, so all
         // compile — none is skipped — and the emitter must produce real `call`
         // relocations (inter-function calls) and backward `jmp`s (the loops).
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn for_sum n i64 -> i64\n",
             "    let total i64 = 0\n",
             "    for i from 1 to n\n",
@@ -11825,7 +11828,7 @@ mod native_program_tests {
         // payload enum crosses the boundary by pointer (copied into the callee's
         // frame), and the callee matches the local copy. `double`/`main` still
         // compile too.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn classify o option<i64> -> i64\n",
             "    match o\n",
             "        some(v) -> v\n",
@@ -11853,7 +11856,7 @@ mod native_program_tests {
         // `main` and `add` are i64 (compiled). (Plain string values are now in the
         // native subset, so the skipped example uses the still-deferred float
         // `to_string` rather than an identity string function.)
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn stringify -> string\n    to_string(1.5)\n\nfn add a i64 b i64 -> i64\n    a + b\n\nfn main -> i64\n    return add(1, 2)\n",
         ))
         .expect("emit native program");
@@ -11871,7 +11874,7 @@ mod native_program_tests {
         // integer types internally (u32 wrapping subtraction, an unsigned
         // comparison, and the `to_u32`/`to_i64` conversions) now compiles
         // natively instead of being skipped.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let a u32 = to_u32(0)\n",
             "    let b u32 = to_u32(1)\n",
@@ -11910,7 +11913,7 @@ mod native_program_tests {
     fn compiles_fixed_width_bitwise_and_shifts_natively() {
         // Bitwise and shift operators on fixed-width kinds compile natively: a u8
         // AND, a signed i32 arithmetic right shift, and one's-complement `~`.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let a u8 = to_u8(200)\n",
             "    let b u8 = to_u8(15)\n",
@@ -11950,7 +11953,7 @@ mod native_program_tests {
         //
         // `a / b` is plain i64; `to_isize(a) / to_isize(b)` is the fixed-width
         // signed (isize) path. Both go through `emit_signed_idiv_r8`.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let a i64 = 0 - 9223372036854775807 - 1\n",
             "    let b i64 = 0 - 1\n",
@@ -11987,7 +11990,7 @@ mod native_program_tests {
         // but the transcendental/math builtins (`sqrt`, `sin`, `floor`, …) remain
         // deferred. A `-> i64` function that calls one must skip gracefully and
         // report why, leaving nothing eligible.
-        let err = emit_alpha1_native_program(&module_for(concat!(
+        let err = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let r f64 = sqrt(16.0)\n",
             "    let flag i64 = 0\n",
@@ -12005,7 +12008,7 @@ mod native_program_tests {
         // The overflow-aware builtins are now emitted natively (not deferred):
         // `wrapping_*`/`saturating_*` produce a fixed-width scalar and `checked_*`
         // an `option<T>` matched in place. A `main` exercising all three compiles.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn chk m i8 n i8 -> i64\n",
             "    match checked_add(m, n)\n",
             "        some(v) -> to_i64(v)\n",
@@ -12028,7 +12031,7 @@ mod native_program_tests {
         // An `extern fn` C function is called from `main`. The call lowers to a
         // REL32 relocation against an undefined external symbol named after the C
         // function, and the C runtime import library is requested for linking.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "extern fn llabs x i64 -> i64\n\nfn main -> i64\n    llabs(-7)\n",
         ))
         .expect("emit native program");
@@ -12059,7 +12062,7 @@ mod native_program_tests {
         // external symbol, requests the C runtime import library, and — because
         // Win64 leaves the upper bits of a narrow integer return undefined — the
         // emitter normalizes the `i32` return with `movsxd rax, eax` (48 63 C0).
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "extern fn toupper c i32 -> i32\n\nfn main -> i64\n    to_i64(toupper(to_i32(97)))\n",
         ))
         .expect("emit native program for an i32 extern");
@@ -12089,7 +12092,7 @@ mod native_program_tests {
     fn emits_u8_extern_call_with_zero_extend_return_normalization() {
         // A `u8`/`byte`-class C return is zero-extended (`movzx rax, al` = 48 0F
         // B6 C0). This also exercises the `bool`/`byte` -> u8 marshalling class.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "extern fn tolower c u8 -> u8\n\nfn main -> i64\n    to_i64(tolower(to_u8(65)))\n",
         ))
         .expect("emit native program for a u8 extern");
@@ -12107,7 +12110,7 @@ mod native_program_tests {
         // register) — `movsd xmm0, [rsp+0]` = `F2 0F 10 44 24 00` — and the `f64`
         // return is consumed from `xmm0`. The caller compiles natively instead of
         // being demoted.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "extern fn cfloor x f64 -> f64\n\n",
             "fn main -> i64\n",
             "    let r f64 = cfloor(3.7)\n",
@@ -12133,7 +12136,7 @@ mod native_program_tests {
         // 0 goes to `xmm0` and the integer at position 1 goes to integer register 1
         // (`rdx`), never both sequences for one argument. `ldexp(double, int)`
         // exercises exactly this mixed signature.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "extern fn ldexp x f64 e i32 -> f64\n\n",
             "fn main -> i64\n",
             "    let r f64 = ldexp(1.5, to_i32(3))\n",
@@ -12167,7 +12170,7 @@ mod native_program_tests {
         // The mirror case: `f(int a, double b)` puts the integer at position 0 in
         // `rcx` and the float at position 1 in `xmm1` — each position consumes its
         // slot in exactly one register sequence.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "extern fn scalbn_like a i32 b f64 -> f64\n\n",
             "fn main -> i64\n",
             "    let r f64 = scalbn_like(to_i32(2), 4.0)\n",
@@ -12204,7 +12207,7 @@ mod native_program_tests {
         // `call`. The distinctive tail of that helper is the NUL-terminator write
         // `mov byte [rdi], 0` (`C6 07 00`); its presence proves the helper is
         // emitted into `.text`.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "extern fn strlen s cstr -> usize\n\nfn main -> i64\n    to_i64(strlen(\"hi\"))\n",
         ))
         .expect("cstr extern compiles natively");
@@ -12237,7 +12240,7 @@ mod native_program_tests {
         // returns a `ptr<byte>` bound to a native local, and `free` takes a
         // `ptr<byte>` parameter. Both compile natively (a pointer is an `i64`-class
         // word), so the caller is not demoted.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "extern fn malloc n usize -> ptr<byte>\n\n",
             "extern fn free p ptr<byte> -> void\n\n",
             "fn main -> i64\n",
@@ -12266,7 +12269,7 @@ mod native_program_tests {
         // shadow space, exactly like an internal call. During staging (six pushed
         // words), position 4's outgoing slot is `[rsp + 8*6 + 32 + 0] = [rsp+0x50]`;
         // the write is `mov [rsp+0x50], rax` (`48 89 84 24 50 00 00 00`).
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "extern fn take6 a i64 b i64 c i64 d i64 e i64 f i64 -> i64\n\n",
             "fn main -> i64\n",
             "    take6(1, 2, 3, 4, 5, 6)\n",
@@ -12293,7 +12296,7 @@ mod native_program_tests {
         // register and spills it into the parameter slot with `movsd [rbp-slot],
         // xmm0` (`F2 0F 11 85 <disp32>` for xmm0 at position 0). The exported
         // symbol compiles natively as a library object.
-        let program = emit_alpha1_native_program(&library_module_for(
+        let program = emit_native_program(&library_module_for(
             "export fn scale x f64 -> f64\n    x * x\n",
         ))
         .expect("float export compiles natively");
@@ -12315,9 +12318,8 @@ mod native_program_tests {
         // `main` uses `to_string(f64)` (dtoa, deferred), so nothing is eligible for
         // native. (Plain string values are now in the subset, so the not-eligible
         // example uses the still-deferred float `to_string`.)
-        let err =
-            emit_alpha1_native_program(&module_for("fn main -> i64\n    len(to_string(1.5))\n"))
-                .expect_err("no eligible");
+        let err = emit_native_program(&module_for("fn main -> i64\n    len(to_string(1.5))\n"))
+            .expect_err("no eligible");
         assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
         assert!(err.skipped.iter().any(|s| s.name == "main"));
     }
@@ -12326,7 +12328,7 @@ mod native_program_tests {
     fn string_table_holds_long_symbol_names() {
         // A function name longer than eight bytes must live in the COFF string
         // table; the emitter must still produce a valid object.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn accumulate_total n i64 -> i64\n    n + 1\n\nfn main -> i64\n    return accumulate_total(41)\n",
         ))
         .expect("emit native program");
@@ -12348,7 +12350,7 @@ mod native_program_tests {
     fn compiles_all_i64_struct_locals() {
         // A `main` that builds a struct positionally and by name, mutates a
         // field, and reads fields is eligible: it compiles with no skips.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "struct Point\n    x i64\n    y i64\n\nfn main -> i64\n    let p Point = Point(3, 4)\n    let q Point = Point(y: 10, x: 20)\n    p.x = p.x + 5\n    return p.x + q.y\n",
         ))
         .expect("emit native program");
@@ -12364,7 +12366,7 @@ mod native_program_tests {
     fn compiles_fixed_i64_array_with_const_and_dynamic_index() {
         // Fixed array: constant-index write, compound-index write, `len`, and a
         // dynamic-index read inside a `for` loop. All in the native subset.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn main -> i64\n    let xs array<i64> = [1, 2, 3, 4]\n    xs[0] = 10\n    xs[3] += 6\n    let total i64 = 0\n    for i from 0 to len(xs) - 1\n        total += xs[i]\n    return total\n",
         ))
         .expect("emit native program");
@@ -12381,7 +12383,7 @@ mod native_program_tests {
         // A struct with a `string` field is not an all-i64 native type; a `main`
         // that constructs it is demoted to skipped, and since nothing else is
         // eligible the emitter reports `L0339`.
-        let err = emit_alpha1_native_program(&module_for(
+        let err = emit_native_program(&module_for(
             "struct Tagged\n    id i64\n    name string\n\nfn main -> i64\n    let t Tagged = Tagged(1, \"x\")\n    return t.id\n",
         ))
         .expect_err("string-field struct is not native");
@@ -12393,7 +12395,7 @@ mod native_program_tests {
     fn emits_rdata_and_bss_for_string_len() {
         // A `main` deriving an i64 from `len` over string literals is eligible for
         // native codegen and gains `.rdata` (the constants) + `.bss` (the heap).
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn main -> i64\n    let a i64 = len(\"hello\")\n    let b i64 = len(\"native\")\n    return a + b\n",
         ))
         .expect("emit native program");
@@ -12449,7 +12451,7 @@ mod native_program_tests {
     fn dedups_repeated_string_literals() {
         // The same literal used twice interns to a single `.rdata` constant, so
         // only `__str0` exists.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn main -> i64\n    return len(\"hi\") + len(\"hi\")\n",
         ))
         .expect("emit native program");
@@ -12500,7 +12502,7 @@ mod native_program_tests {
         // table as an EXTERNAL (storage class 2) symbol DEFINED in `.text`
         // (section number 1) under its plain C name, so a C caller declaring
         // `extern long long add_seven(long long);` links against it.
-        let program = emit_alpha1_native_program(&library_module_for(
+        let program = emit_native_program(&library_module_for(
             "export fn add_seven x i64 -> i64\n    x + 7\n",
         ))
         .expect("emit native program");
@@ -12539,7 +12541,7 @@ mod native_program_tests {
         // When a program has both `main` and an `export fn`, the entry stub is
         // still emitted (a runnable program) and the export is additionally
         // external + defined in `.text`.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "export fn doubled x i64 -> i64\n    x * 2\n\nfn main -> i64\n    doubled(21)\n",
         ))
         .expect("emit native program");
@@ -12560,7 +12562,7 @@ mod native_program_tests {
     fn asm_bytes_are_emitted_verbatim_into_text() {
         // A `main` whose `unsafe` `asm` block emits the seven bytes of
         // `mov rax, 42`. The emitter must copy those bytes verbatim into `.text`.
-        let program = emit_alpha1_native_program(&module_for(
+        let program = emit_native_program(&module_for(
             "fn main -> i64\n    unsafe\n        asm 72, 199, 192, 42, 0, 0, 0\n",
         ))
         .expect("emit native program");
@@ -12594,7 +12596,7 @@ mod native_program_tests {
         // A `main` whose signature is `-> i64` but which computes with `f64`/`f32`
         // internals (arithmetic, comparison, and the `to_f32`/`to_f64`
         // conversions) now compiles natively instead of being skipped.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let a f64 = 1.5\n",
             "    let b f64 = 2.0\n",
@@ -12648,7 +12650,7 @@ mod native_program_tests {
         // An f32 add must use `addss` (single precision), not `addsd`. This is the
         // rounding guarantee that keeps native f32 bit-identical to the
         // interpreter's real `f32` storage.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let a f32 = to_f32(1.0)\n",
             "    let b f32 = to_f32(2.0)\n",
@@ -12686,7 +12688,7 @@ mod native_program_tests {
         // scalar routed through the SSE registers: it compiles natively (its float
         // parameter is spilled from `xmm0` and its float return is left in `xmm0`)
         // rather than being demoted to the interpreters.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn scale x f64 -> f64\n",
             "    x * 2.0\n\n",
             "fn main -> i64\n",
@@ -12714,7 +12716,7 @@ mod native_program_tests {
         // A six-parameter i64 function is no longer demoted: its 5th and 6th
         // arguments pass on the stack (Win64 stack-argument ABI). Both the callee
         // (`six`) and the caller (`main`) must compile natively.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn six a i64 b i64 c i64 d i64 e i64 f i64 -> i64\n",
             "    a + b + c + d + e + f\n\n",
             "fn main -> i64\n",
@@ -12766,7 +12768,7 @@ mod native_program_tests {
         // Eight i64 parameters: arguments 5..=8 spill to the stack. Verifies the
         // arity is not capped and the callee reads its four stack parameters from
         // ascending `[rbp + 16 + 8*k]` offsets.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn eight a i64 b i64 c i64 d i64 e i64 f i64 g i64 h i64 -> i64\n",
             "    a + b + c + d + e + f + g + h\n\n",
             "fn main -> i64\n",
@@ -12797,7 +12799,7 @@ mod native_program_tests {
         // registers are consumed positionally (`rcx`/`rdx`, `xmm2`, `r8`; then
         // stack), and the 5th/6th arguments spill onto the stack. It must compile,
         // proving float and integer stack arguments coexist.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn scale a i64 b i64 x f64 c i64 d i64 y f64 -> i64\n",
             "    let base i64 = a + b + c + d\n",
             "    if x < y\n",
@@ -12823,7 +12825,7 @@ mod native_program_tests {
         // f32 (single precision cannot represent the extra bit), so the equality
         // holds and the function compiles natively. This is the exact case that
         // would fail if the f32 add were done in double precision.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let big f32 = to_f32(16777216.0)\n",
             "    let bumped f32 = big + to_f32(1.0)\n",
@@ -12871,8 +12873,8 @@ mod native_program_tests {
         // non-debug entry point) the object bytes are exactly as before, so the
         // existing structural/snapshot tests are unaffected.
         let module = module_for("fn add x i64 -> i64\n    x + 1\n\nfn main -> i64\n    add(41)\n");
-        let default = emit_alpha1_native_program(&module).expect("default emit");
-        let no_debug = emit_alpha1_native_program_with_debug(&module, None).expect("no-debug emit");
+        let default = emit_native_program(&module).expect("default emit");
+        let no_debug = emit_native_program_with_debug(&module, None).expect("no-debug emit");
         assert_eq!(default.bytes, no_debug.bytes, "no-debug path is unchanged");
         // And the default object carries no `.debug$S` section.
         assert!(
@@ -12894,8 +12896,7 @@ mod native_program_tests {
         let debug = DebugOptions {
             source_file: "sample.lby".to_string(),
         };
-        let program =
-            emit_alpha1_native_program_with_debug(&module, Some(&debug)).expect("debug emit");
+        let program = emit_native_program_with_debug(&module, Some(&debug)).expect("debug emit");
 
         // The `.debug$S` section exists.
         let (start, len) = coff_section(&program.bytes, ".debug$S").expect("debug section present");
@@ -12996,7 +12997,7 @@ mod native_program_tests {
     fn compiles_option_match_natively() {
         // A function that builds an `option<i64>` local and matches both arms is
         // compiled to native code (tag dispatch + payload binding), not skipped.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn some_path -> i64\n",
             "    let hit option<i64> = some(40)\n",
             "    match hit\n",
@@ -13023,7 +13024,7 @@ mod native_program_tests {
     fn compiles_result_scalar_match_natively() {
         // A `result<i64, i64>` (both arms scalar) compiles natively: `ok`/`err`
         // are tags 0/1, and each arm binds its scalar payload.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn ok_path -> i64\n",
             "    let r result<i64, i64> = ok(30)\n",
             "    match r\n",
@@ -13047,7 +13048,7 @@ mod native_program_tests {
         // A user enum with scalar payloads and a wildcard arm compiles natively.
         // The match is inside an i64-only function so the whole function is
         // native-eligible.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "enum Signal\n",
             "    Steady\n",
             "    Pulse i64\n",
@@ -13087,7 +13088,7 @@ mod native_program_tests {
         // An exhaustive variant match with no wildcard (e.g. `option` some/none)
         // ends with a `ud2` (0F 0B) on the impossible fallthrough, since
         // exhaustiveness guarantees a variant arm matched.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn some_path -> i64\n",
             "    let hit option<i64> = some(40)\n",
             "    match hit\n",
@@ -13108,7 +13109,7 @@ mod native_program_tests {
     fn compiles_enum_returning_call_and_match_on_it() {
         // A function that returns an enum (by the hidden-pointer aggregate return
         // ABI) and a caller that matches that call result now both compile.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn lookup key i64 -> option<i64>\n",
             "    if key == 1\n",
             "        return some(11)\n",
@@ -13138,7 +13139,7 @@ mod native_program_tests {
         // string pointer stored in one payload word, matched and bound as a flat
         // word (shared, never deep-recursed). Both arms are exercised; the tag
         // dispatch is the same as any other native match.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn classify n i64 -> i64\n",
             "    let r result<i64, string> = ok(n)\n",
             "    match r\n",
@@ -13167,7 +13168,7 @@ mod native_program_tests {
         // `option<string>` (the shape `map_get` on a `map<K, string>` returns) and a
         // user enum with a `string` payload both compile: the `some`/`Named` payload
         // slot is the immutable string pointer, bound as a flat word.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "enum Tag\n",
             "    Named string\n",
             "    Anon\n\n",
@@ -13199,7 +13200,7 @@ mod native_program_tests {
         // A `result<i64, list<i64>>` carries a ONE-LEVEL mutable heap payload in
         // `err`; the payload is deep-copied on the enum's value-semantic copy, so it
         // is now IN the native subset (mirroring the WASM backend) and compiles.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn classify n i64 -> i64\n",
             "    let xs list<i64> = list_new()\n",
             "    let r result<i64, list<i64>> = err(push(xs, n))\n",
@@ -13222,7 +13223,7 @@ mod native_program_tests {
         // A `result<i64, list<list<list<i64>>>>` payload nests MUTABLE aggregates
         // past the one-level bound (`list<list<list<…>>>`), so it is still out of the
         // native subset and the function skips gracefully rather than miscompiling.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn classify n i64 -> i64\n",
             "    let r result<i64, list<list<list<i64>>>> = ok(n)\n",
             "    match r\n",
@@ -13253,7 +13254,7 @@ mod native_program_tests {
         // deep-copied per element on the list's value-semantic copy. `push`/`get`/
         // `set` cross the heap<->stack bridge (a struct field-block behind a pointer
         // for the element; a stack-flattened struct for the returned/consumed value).
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Point\n",
             "    x i64\n",
             "    y i64\n\n",
@@ -13290,7 +13291,7 @@ mod native_program_tests {
         // one word); the outer copy deep-copies each inner list via the list-copy
         // helper (one mutable level, inner elements scalar). `get` returns an
         // independent inner list.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build -> i64\n",
             "    let a list<i64> = list_new()\n",
             "    a = push(a, 5)\n",
@@ -13319,7 +13320,7 @@ mod native_program_tests {
         // A `map<i64, struct>` COMPILES: each entry value is a heap-struct pointer,
         // deep-copied per value on the map's value-semantic copy; `map_get` returns
         // `option<struct>` whose `some` payload is an independent heap struct.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Point\n",
             "    x i64\n",
             "    y i64\n\n",
@@ -13352,7 +13353,7 @@ mod native_program_tests {
         // The `__lullaby_struct_copy` helper is a real function in `.text` that calls
         // the bump allocator (a fresh, independent block) — the machine-code proof
         // that a heap-struct element deep copy is recursive, not a shared pointer.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Cell\n",
             "    v i64\n\n",
             "fn read c Cell -> i64\n",
@@ -13380,7 +13381,7 @@ mod native_program_tests {
         // A `list<map<i64, i64>>` element is a MUTABLE `map` — outside the accepted
         // one-level struct/nested-list element set — so the function skips gracefully
         // (still runs on the interpreters) rather than miscompiling.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build -> i64\n",
             "    let xs list<map<i64, i64>> = list_new()\n",
             "    len(xs)\n\n",
@@ -13410,7 +13411,7 @@ mod native_program_tests {
         // skip). The by-pointer argument (`lea rax/rcx, [rbp+disp]` staged into an
         // argument register) and the hidden-return-pointer copy (`mov [rax-disp],
         // rcx` writing result words) must appear in the emitted code.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Point\n    x i64\n    y i64\n\n",
             "fn taxicab p Point -> i64\n    p.x + p.y\n\n",
             "fn shift p Point d i64 -> Point\n    Point(p.x + d, p.y + d)\n\n",
@@ -13455,7 +13456,7 @@ mod native_program_tests {
     fn compiles_fixed_array_parameter_and_return() {
         // A function taking a fixed array and one returning a fixed array compile;
         // the array lengths are inferred from the call sites / returned literal.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn sum_array xs array<i64> -> i64\n",
             "    let total i64 = 0\n",
             "    for i from 0 to len(xs) - 1\n",
@@ -13489,7 +13490,7 @@ mod native_program_tests {
         // (`mov rcx, [rax - disp]` then `mov [rbp - slot], rcx`), so mutating the
         // parameter cannot affect the caller's copy. The prologue copy-in loads
         // from the argument pointer via `mov rcx, [rax + disp]` (48 8B 88 ..).
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Box\n    a i64\n    b i64\n\n",
             "fn clobber s Box -> i64\n",
             "    s.a = s.a + 1\n",
@@ -13519,7 +13520,7 @@ mod native_program_tests {
     fn compiles_enum_parameter_and_return_and_match_on_call() {
         // An `option<i64>` (a scalar-payload enum) as a parameter and a return
         // type compiles, including a `match` on an enum-returning call.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn classify n i64 -> option<i64>\n",
             "    if n > 0\n",
             "        return some(n)\n",
@@ -13551,7 +13552,7 @@ mod native_program_tests {
     fn defers_heap_containing_aggregate_parameter() {
         // A struct field of a heap type (`string`) is not a native scalar-field
         // aggregate, so a function taking it by value skips gracefully.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Named\n    id i64\n    label string\n\n",
             "fn id_of n Named -> i64\n    n.id\n\n",
             "fn main -> i64\n    7\n",
@@ -13572,7 +13573,7 @@ mod native_program_tests {
         // stack rather than demoting the function. The callee reads its last
         // parameter from `[rbp+16]` and `main`'s call passes the hidden result
         // pointer in `rcx` and the 5th effective argument on the stack.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "struct Quad\n    a i64\n    b i64\n\n",
             "fn build w i64 x i64 y i64 z i64 -> Quad\n    Quad(w + x, y + z)\n\n",
             "fn main -> i64\n    let q Quad = build(1, 2, 3, 4)\n    q.a + q.b\n",
@@ -13604,7 +13605,7 @@ mod native_program_tests {
         // A function that builds a scalar-element `list<i64>` via `list_new`/
         // `push`/`set`/`pop`/`get`/`len` — including a signature returning
         // `list<i64>` and one taking it — now compiles natively (not skipped).
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build -> list<i64>\n",
             "    let xs list<i64> = list_new()\n",
             "    xs = push(xs, 10)\n",
@@ -13636,7 +13637,7 @@ mod native_program_tests {
         // the object must contain the `__lullaby_list_new`/`_copy`/`_grow`
         // runtime-helper symbols and the bump allocator, proving grow/copy codegen
         // is present.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let xs list<i64> = list_new()\n",
             "    xs = push(xs, 1)\n",
@@ -13668,7 +13669,7 @@ mod native_program_tests {
         // A `push` call site deep-copies the source list (value semantics) and then
         // grows it, so `main`'s text carries relocations against BOTH the copy and
         // grow helpers.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let xs list<i64> = list_new()\n",
             "    xs = push(xs, 7)\n",
@@ -13699,7 +13700,7 @@ mod native_program_tests {
         // loaded back by `get`, and shared (not deep-recursed) on the flat word-copy
         // deep copy. The list header and grow/copy helpers are the same as a scalar
         // list.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn names n i64 -> list<string>\n",
             "    let xs list<string> = list_new()\n",
             "    xs = push(xs, \"a\")\n",
@@ -13733,7 +13734,7 @@ mod native_program_tests {
         // need a recursive per-element deep copy, so the enclosing function skips
         // with a clear reason and still runs on the interpreters — never
         // miscompiled.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn grid -> list<array<i64>>\n",
             "    list_new()\n\n",
             "fn main -> i64\n",
@@ -13755,7 +13756,7 @@ mod native_program_tests {
         // A `list<f64>` (float scalar element) compiles: elements are stored as
         // bit-preserving 8-byte words, and a float `get` moves the word back into
         // an XMM register.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let xs list<f64> = list_new()\n",
             "    xs = push(xs, 1.5)\n",
@@ -13780,7 +13781,7 @@ mod native_program_tests {
         // (including a signature returning `map<i64, i64>`, one taking it, and a
         // `match map_get(...)`), reads it via `map_get`/`map_has`/`map_len` — all
         // compile natively (nothing skipped).
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build -> map<i64, i64>\n",
             "    let m map<i64, i64> = map_new()\n",
             "    m = map_set(m, 1, 10)\n",
@@ -13816,7 +13817,7 @@ mod native_program_tests {
         // object must contain the `__lullaby_map_new`/`_copy`/`_grow`/`_find`
         // runtime-helper symbols and the bump allocator, proving map codegen is
         // present and defined in `.text`.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let m map<i64, i64> = map_new()\n",
             "    m = map_set(m, 1, 5)\n",
@@ -13847,7 +13848,7 @@ mod native_program_tests {
         // A `map_set` call site deep-copies the source map (value semantics) and
         // then scans it, so `main`'s object carries relocations against BOTH the
         // map-copy and the map-find helpers.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let m map<i64, i64> = map_new()\n",
             "    m = map_set(m, 3, 7)\n",
@@ -13870,7 +13871,7 @@ mod native_program_tests {
         // A `map<i64, f64>` (float value) compiles: values are stored/loaded as
         // bit-preserving 8-byte words, and a `some(v)` float payload round-trips
         // through the option layout.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn probe m map<i64, f64> k i64 -> i64\n",
             "    match map_get(m, k)\n",
             "        some(v) -> 1\n",
@@ -13898,7 +13899,7 @@ mod native_program_tests {
         // with a clear reason and still runs on the interpreters — never
         // miscompiled. String-key equality needs the string heap (content
         // comparison), matching the WASM map's first increment.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build -> map<string, i64>\n",
             "    map_set(map_new(), \"a\", 1)\n\n",
             "fn main -> i64\n",
@@ -13922,7 +13923,7 @@ mod native_program_tests {
         // copy. `map_set` inserts/updates the pointer, `map_get` returns
         // `option<string>` (the `some` payload slot is the string pointer), and
         // `map_has`/`map_len` work unchanged.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build n i64 -> map<i64, string>\n",
             "    let m map<i64, string> = map_new()\n",
             "    m = map_set(m, 1, \"a\")\n",
@@ -13962,7 +13963,7 @@ mod native_program_tests {
         // A `map<i64, array<i64>>` (MUTABLE heap value) is still DEFERRED: it would
         // need a recursive per-value deep copy, so the enclosing function skips with
         // a clear reason and still runs on the interpreters — never miscompiled.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn build -> map<i64, array<i64>>\n",
             "    map_new()\n\n",
             "fn main -> i64\n",
@@ -13985,7 +13986,7 @@ mod native_program_tests {
         // `+` concatenation, `to_string`, `len` on a string, and a string
         // parameter/return crossing a function boundary — compiles natively (not
         // skipped) across all its functions.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn greeting name string -> string\n",
             "    \"hi \" + name\n\n",
             "fn measure s string -> i64\n",
@@ -14012,7 +14013,7 @@ mod native_program_tests {
         // A string-using program emits the string runtime helpers + the bump
         // allocator as external-defined `.text` symbols, proving the literal /
         // concat / to_string codegen is present.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    let s string = \"a\" + to_string(1)\n",
             "    len(s)\n",
@@ -14050,7 +14051,7 @@ mod native_program_tests {
         // (The helper function is named `cat`, not `join`, to avoid the `join`
         // builtin, whose registered signature would type the arguments as
         // `array<string>`.)
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn cat a string b string -> string\n",
             "    a + b\n\n",
             "fn main -> i64\n",
@@ -14075,7 +14076,7 @@ mod native_program_tests {
         // function using them all references every helper symbol via a relocation
         // and compiles natively (never skips to the interpreters). The bool results
         // are folded to i64 through a tiny helper so `main` stays i64-returning.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn b2i x bool -> i64\n",
             "    if x\n",
             "        return 1\n",
@@ -14159,7 +14160,7 @@ mod native_program_tests {
         // on the interpreters) rather than miscompiling. With no other eligible
         // function, the emitter returns the `L0339` no-eligible error naming the
         // skip.
-        let program = emit_alpha1_native_program(&module_for(concat!(
+        let program = emit_native_program(&module_for(concat!(
             "fn main -> i64\n",
             "    len(to_string(1.5))\n",
         )));
@@ -14204,7 +14205,7 @@ mod native_program_tests {
 
     #[test]
     fn elf_target_emits_relocatable_elf64() {
-        let program = emit_alpha1_native_program_for_target(
+        let program = emit_native_program_for_target(
             &module_for(ADD_AND_MAIN),
             &crate::native_contract::x86_64_linux_target(),
             None,
@@ -14226,7 +14227,7 @@ mod native_program_tests {
 
     #[test]
     fn macho_target_emits_relocatable_macho64() {
-        let program = emit_alpha1_native_program_for_target(
+        let program = emit_native_program_for_target(
             &module_for(ADD_AND_MAIN),
             &crate::native_contract::x86_64_macos_target(),
             None,
@@ -14245,7 +14246,7 @@ mod native_program_tests {
     fn elf_entry_stub_exits_via_the_linux_syscall() {
         // The freestanding `_start` stub must end in `mov eax, 60` (SYS_exit) then
         // `syscall`, and must NOT reference `ExitProcess` (a Windows-only import).
-        let program = emit_alpha1_native_program_for_target(
+        let program = emit_native_program_for_target(
             &module_for(ADD_AND_MAIN),
             &crate::native_contract::x86_64_linux_target(),
             None,
@@ -14264,8 +14265,8 @@ mod native_program_tests {
         // The default emit path and the explicit Windows target produce identical
         // COFF bytes, proving the abstraction did not disturb the default.
         let module = module_for(ADD_AND_MAIN);
-        let default = emit_alpha1_native_program(&module).expect("default");
-        let windows = emit_alpha1_native_program_for_target(
+        let default = emit_native_program(&module).expect("default");
+        let windows = emit_native_program_for_target(
             &module,
             &crate::native_contract::x86_64_windows_target(),
             None,
@@ -14283,7 +14284,7 @@ mod native_program_tests {
     fn elf_string_program_carries_rodata_and_bss() {
         // A program that interns a string constant must produce the data sections
         // in the ELF object too (.rodata for the constant, .bss for the heap).
-        let program = emit_alpha1_native_program_for_target(
+        let program = emit_native_program_for_target(
             &module_for(
                 "fn main -> i64\n    let a i64 = len(\"hello\")\n    let b i64 = len(\"native\")\n    return a + b\n",
             ),

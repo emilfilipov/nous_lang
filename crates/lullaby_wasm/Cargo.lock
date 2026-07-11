@@ -51,21 +51,21 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "lullaby_diagnostics"
-version = "0.1.0-alpha.2"
+version = "1.0.0-preview"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "lullaby_lexer"
-version = "0.1.0-alpha.2"
+version = "1.0.0-preview"
 dependencies = [
  "lullaby_diagnostics",
 ]
 
 [[package]]
 name = "lullaby_parser"
-version = "0.1.0-alpha.2"
+version = "1.0.0-preview"
 dependencies = [
  "lullaby_lexer",
  "serde",
@@ -73,7 +73,7 @@ dependencies = [
 
 [[package]]
 name = "lullaby_runtime"
-version = "0.1.0-alpha.2"
+version = "1.0.0-preview"
 dependencies = [
  "getrandom",
  "lullaby_diagnostics",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "lullaby_semantics"
-version = "0.1.0-alpha.2"
+version = "1.0.0-preview"
 dependencies = [
  "lullaby_diagnostics",
  "lullaby_parser",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "lullaby_wasm"
-version = "0.1.0-alpha.2"
+version = "1.0.0-preview"
 dependencies = [
  "getrandom",
  "lullaby_lexer",

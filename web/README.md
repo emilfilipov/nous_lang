@@ -16,8 +16,8 @@ wires `bin` onto PATH by delegating to the package's own PATH helper.
 1. Detect OS + arch → target tag (`linux-x64`, `macos-arm64`, `macos-x64`,
    `windows-x64`).
 2. Resolve the release: newest **stable** release, falling back to the newest
-   prerelease (so the command works during the pre-1.0 alpha, where every
-   release is a prerelease). Pin an exact tag with `LULLABY_VERSION`.
+   prerelease (so the command works while every release is still a
+   prerelease). Pin an exact tag with `LULLABY_VERSION`.
 3. Download the matching portable archive **and its `.sha256`** over HTTPS.
 4. Recompute the SHA-256 and compare; **abort on mismatch**.
 5. Extract into a per-user prefix (`~/.lullaby`, or

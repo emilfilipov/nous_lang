@@ -2294,9 +2294,7 @@ impl<'a> Parser<'a> {
         let token = self.peek().clone();
         self.error(
             "L0211",
-            format!(
-                "`{feature}` syntax is planned beyond Alpha 1 and is not supported by this compiler"
-            ),
+            format!("`{feature}` syntax is planned and is not supported by this compiler"),
             token.span,
         );
         Some(token)
