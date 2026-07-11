@@ -1,0 +1,255 @@
+# Cross-language parsing suite (Lullaby). Real-world parsing over strings and i64
+# arrays: number parsing, field/line splitting, RPN evaluation, radix and roman
+# numerals. Strings are walked as list<char> via chars()/get()/char_code(); the
+# RPN evaluator uses an i64 array as a fixed stack. Invalid numeric input returns
+# -1 (or 0 for the signed parser, whose full range includes -1). See ../SPEC.md.
+
+fn parse_uint s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    if n == 0
+        return 0 - 1
+    let val i64 = 0
+    for i from 0 to n - 1
+        let code i64 = char_code(get(cs, i))
+        if code < 48 or code > 57
+            return 0 - 1
+        val = val * 10 + (code - 48)
+    val
+
+fn parse_int_signed s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    if n == 0
+        return 0
+    let neg i64 = 0
+    let start i64 = 0
+    if get(cs, 0) == '-'
+        neg = 1
+        start = 1
+    if start == n
+        return 0
+    let val i64 = 0
+    for i from start to n - 1
+        let code i64 = char_code(get(cs, i))
+        if code < 48 or code > 57
+            return 0
+        val = val * 10 + (code - 48)
+    if neg == 1
+        return 0 - val
+    val
+
+fn is_valid_int s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    if n == 0
+        return 0
+    let start i64 = 0
+    if get(cs, 0) == '-'
+        start = 1
+    if start == n
+        return 0
+    for i from start to n - 1
+        let code i64 = char_code(get(cs, i))
+        if code < 48 or code > 57
+            return 0
+    1
+
+fn count_fields s string sep string -> i64
+    let target char = get(chars(sep), 0)
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let count i64 = 1
+    for i from 0 to n - 1
+        if get(cs, i) == target
+            count += 1
+    count
+
+fn nth_field_len s string sep string nth i64 -> i64
+    let target char = get(chars(sep), 0)
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let field i64 = 0
+    let cur i64 = 0
+    let result i64 = 0 - 1
+    for i from 0 to n - 1
+        if get(cs, i) == target
+            if field == nth
+                result = cur
+            field += 1
+            cur = 0
+        else
+            cur += 1
+    if field == nth
+        result = cur
+    result
+
+fn count_lines s string -> i64
+    let nl char = char_from(10)
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    if n == 0
+        return 0
+    let count i64 = 1
+    for i from 0 to n - 1
+        if get(cs, i) == nl
+            count += 1
+    count
+
+fn strip_leading_zeros_len s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let i i64 = 0
+    while i < n
+        if get(cs, i) != '0'
+            break
+        i += 1
+    n - i
+
+fn eval_rpn tokens array<i64> n i64 -> i64
+    if n == 0
+        return 0
+    let stack array<i64> = tokens
+    let sp i64 = 0
+    for i from 0 to n - 1
+        let t i64 = tokens[i]
+        if t >= 0
+            stack[sp] = t
+            sp += 1
+        else
+            let a i64 = stack[sp - 2]
+            let b i64 = stack[sp - 1]
+            sp -= 2
+            let op i64 = 0 - t
+            let r i64 = 0
+            if op == 1
+                r = a + b
+            elif op == 2
+                r = a - b
+            elif op == 3
+                r = a * b
+            else
+                r = a / b
+            stack[sp] = r
+            sp += 1
+    stack[0]
+
+fn count_digits_in s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let count i64 = 0
+    for i from 0 to n - 1
+        let code i64 = char_code(get(cs, i))
+        if code >= 48 and code <= 57
+            count += 1
+    count
+
+fn count_words s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let count i64 = 0
+    let in_word i64 = 0
+    for i from 0 to n - 1
+        if is_whitespace(get(cs, i))
+            in_word = 0
+        elif in_word == 0
+            in_word = 1
+            count += 1
+    count
+
+fn hex_to_int s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    if n == 0
+        return 0 - 1
+    let val i64 = 0
+    for i from 0 to n - 1
+        let code i64 = char_code(get(cs, i))
+        let d i64 = 0 - 1
+        if code >= 48 and code <= 57
+            d = code - 48
+        elif code >= 97 and code <= 102
+            d = code - 97 + 10
+        elif code >= 65 and code <= 70
+            d = code - 65 + 10
+        if d < 0
+            return 0 - 1
+        val = val * 16 + d
+    val
+
+fn bin_to_int s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    if n == 0
+        return 0 - 1
+    let val i64 = 0
+    for i from 0 to n - 1
+        let c char = get(cs, i)
+        if c == '0'
+            val = val * 2
+        elif c == '1'
+            val = val * 2 + 1
+        else
+            return 0 - 1
+    val
+
+fn roman_value c char -> i64
+    if c == 'I'
+        return 1
+    if c == 'V'
+        return 5
+    if c == 'X'
+        return 10
+    if c == 'L'
+        return 50
+    if c == 'C'
+        return 100
+    if c == 'D'
+        return 500
+    if c == 'M'
+        return 1000
+    0
+
+fn roman_to_int s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let total i64 = 0
+    for i from 0 to n - 1
+        let v i64 = roman_value(get(cs, i))
+        let subtract i64 = 0
+        if i < n - 1
+            if v < roman_value(get(cs, i + 1))
+                subtract = 1
+        if subtract == 1
+            total -= v
+        else
+            total += v
+    total
+
+fn char_class_count s string -> i64
+    let cs list<char> = chars(s)
+    let n i64 = len(cs)
+    let count i64 = 0
+    for i from 0 to n - 1
+        let code i64 = char_code(get(cs, i))
+        if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
+            count += 1
+    count
+
+fn main -> void
+    let rpn array<i64> = [3, 4, 0 - 1, 5, 0 - 3]
+    let text string = "the quick brown fox"
+    println("parse_uint=" + to_string(parse_uint("01234")))
+    println("parse_int_signed=" + to_string(parse_int_signed("-42")))
+    println("is_valid_int=" + to_string(is_valid_int("-42")))
+    println("count_fields=" + to_string(count_fields("a,b,c,d", ",")))
+    println("nth_field_len=" + to_string(nth_field_len("a,bb,ccc", ",", 2)))
+    println("count_lines=" + to_string(count_lines("a" + to_string(char_from(10)) + "b")))
+    println("strip_leading_zeros_len=" + to_string(strip_leading_zeros_len("00042")))
+    println("eval_rpn=" + to_string(eval_rpn(rpn, 5)))
+    println("count_digits_in=" + to_string(count_digits_in("ab12cd34")))
+    println("count_words=" + to_string(count_words(text)))
+    println("hex_to_int=" + to_string(hex_to_int("1a2f")))
+    println("bin_to_int=" + to_string(bin_to_int("101101")))
+    println("roman_to_int=" + to_string(roman_to_int("MCMXCIV")))
+    println("char_class_count=" + to_string(char_class_count("abc123XYZ")))

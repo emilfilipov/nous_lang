@@ -17,11 +17,11 @@ fn dist_sq a Point b Point -> i64
 fn manhattan a Point b Point -> i64
     abs_val(a.x - b.x) + abs_val(a.y - b.y)
 
-fn cross ax i64 ay i64 bx i64 by i64 -> i64
-    ax * by - ay * bx
+fn cross ux i64 uy i64 vx i64 vy i64 -> i64
+    ux * vy - uy * vx
 
-fn dot ax i64 ay i64 bx i64 by i64 -> i64
-    ax * bx + ay * by
+fn dot ux i64 uy i64 vx i64 vy i64 -> i64
+    ux * vx + uy * vy
 
 fn triangle_area2 a Point b Point c Point -> i64
     cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)

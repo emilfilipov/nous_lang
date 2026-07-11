@@ -2123,6 +2123,1332 @@
    "present": 5
   },
   {
+   "name": "abs_val",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 26,
+     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return 0 - n\n    n"
+    },
+    "C": {
+     "tokens": 27,
+     "source": "Point;\nstatic int64_t abs_val(int64_t n) {\n    return n < 0 ? -n : n;\n}"
+    },
+    "C++": {
+     "tokens": 29,
+     "source": ";\nstd::int64_t abs_val(std::int64_t n) {\n    return n < 0 ? -n : n;\n}"
+    }
+   },
+   "present": 3
+  },
+  {
+   "name": "collinear",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 38,
+     "source": "fn collinear a Point b Point c Point -> i64\n    if triangle_area2(a, b, c) == 0\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 37,
+     "source": "int64_t collinear(Point a, Point b, Point c) {\n    return triangle_area2(a, b, c) == 0 ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 39,
+     "source": "std::int64_t collinear(Point a, Point b, Point c) {\n    return triangle_area2(a, b, c) == 0 ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 43,
+     "source": "fn collinear(a: Point, b: Point, c: Point) -> i64 {\n    if triangle_area2(a, b, c) == 0 { 1 } else { 0 }\n}"
+    },
+    "Python": {
+     "tokens": 38,
+     "source": "def collinear(a: Point, b: Point, c: Point) -> int:\n    return 1 if triangle_area2(a, b, c) == 0 else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "cross",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 26,
+     "source": "fn cross ux i64 uy i64 vx i64 vy i64 -> i64\n    ux * vy - uy * vx"
+    },
+    "C": {
+     "tokens": 36,
+     "source": "int64_t cross(int64_t ax, int64_t ay, int64_t bx, int64_t by) {\n    return ax * by - ay * bx;\n}"
+    },
+    "C++": {
+     "tokens": 46,
+     "source": "std::int64_t cross(std::int64_t ax, std::int64_t ay, std::int64_t bx, std::int64_t by) {\n    return ax * by - ay * bx;\n}"
+    },
+    "Rust": {
+     "tokens": 36,
+     "source": "fn cross(ax: i64, ay: i64, bx: i64, by: i64) -> i64 {\n    ax * by - ay * bx\n}"
+    },
+    "Python": {
+     "tokens": 30,
+     "source": "def cross(ax: int, ay: int, bx: int, by: int) -> int:\n    return ax * by - ay * bx"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "dist_sq",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 43,
+     "source": "fn dist_sq a Point b Point -> i64\n    let dx i64 = a.x - b.x\n    let dy i64 = a.y - b.y\n    dx * dx + dy * dy"
+    },
+    "C": {
+     "tokens": 47,
+     "source": "int64_t dist_sq(Point a, Point b) {\n    int64_t dx = a.x - b.x;\n    int64_t dy = a.y - b.y;\n    return dx * dx + dy * dy;\n}"
+    },
+    "C++": {
+     "tokens": 53,
+     "source": "std::int64_t dist_sq(Point a, Point b) {\n    std::int64_t dx = a.x - b.x;\n    std::int64_t dy = a.y - b.y;\n    return dx * dx + dy * dy;\n}"
+    },
+    "Rust": {
+     "tokens": 45,
+     "source": "fn dist_sq(a: Point, b: Point) -> i64 {\n    let dx = a.x - b.x;\n    let dy = a.y - b.y;\n    dx * dx + dy * dy\n}"
+    },
+    "Python": {
+     "tokens": 41,
+     "source": "def dist_sq(a: Point, b: Point) -> int:\n    dx = a.x - b.x\n    dy = a.y - b.y\n    return dx * dx + dy * dy"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "dot",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 26,
+     "source": "fn dot ux i64 uy i64 vx i64 vy i64 -> i64\n    ux * vx + uy * vy"
+    },
+    "C": {
+     "tokens": 36,
+     "source": "int64_t dot(int64_t ax, int64_t ay, int64_t bx, int64_t by) {\n    return ax * bx + ay * by;\n}"
+    },
+    "C++": {
+     "tokens": 46,
+     "source": "std::int64_t dot(std::int64_t ax, std::int64_t ay, std::int64_t bx, std::int64_t by) {\n    return ax * bx + ay * by;\n}"
+    },
+    "Rust": {
+     "tokens": 36,
+     "source": "fn dot(ax: i64, ay: i64, bx: i64, by: i64) -> i64 {\n    ax * bx + ay * by\n}"
+    },
+    "Python": {
+     "tokens": 30,
+     "source": "def dot(ax: int, ay: int, bx: int, by: int) -> int:\n    return ax * bx + ay * by"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "is_ccw",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 39,
+     "source": "fn is_ccw a Point b Point c Point -> i64\n    if triangle_area2(a, b, c) > 0\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 38,
+     "source": "int64_t is_ccw(Point a, Point b, Point c) {\n    return triangle_area2(a, b, c) > 0 ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 40,
+     "source": "std::int64_t is_ccw(Point a, Point b, Point c) {\n    return triangle_area2(a, b, c) > 0 ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 44,
+     "source": "fn is_ccw(a: Point, b: Point, c: Point) -> i64 {\n    if triangle_area2(a, b, c) > 0 { 1 } else { 0 }\n}"
+    },
+    "Python": {
+     "tokens": 39,
+     "source": "def is_ccw(a: Point, b: Point, c: Point) -> int:\n    return 1 if triangle_area2(a, b, c) > 0 else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "manhattan",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 29,
+     "source": "fn manhattan a Point b Point -> i64\n    abs_val(a.x - b.x) + abs_val(a.y - b.y)"
+    },
+    "C": {
+     "tokens": 32,
+     "source": "int64_t manhattan(Point a, Point b) {\n    return abs_val(a.x - b.x) + abs_val(a.y - b.y);\n}"
+    },
+    "C++": {
+     "tokens": 34,
+     "source": "std::int64_t manhattan(Point a, Point b) {\n    return abs_val(a.x - b.x) + abs_val(a.y - b.y);\n}"
+    },
+    "Rust": {
+     "tokens": 36,
+     "source": "fn manhattan(a: Point, b: Point) -> i64 {\n    (a.x - b.x).abs() + (a.y - b.y).abs()\n}"
+    },
+    "Python": {
+     "tokens": 31,
+     "source": "def manhattan(a: Point, b: Point) -> int:\n    return abs(a.x - b.x) + abs(a.y - b.y)"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "midpoint_x",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 22,
+     "source": "fn midpoint_x a Point b Point -> i64\n    (a.x + b.x) / 2"
+    },
+    "C": {
+     "tokens": 26,
+     "source": "int64_t midpoint_x(Point a, Point b) {\n    return (a.x + b.x) / 2;\n}"
+    },
+    "C++": {
+     "tokens": 28,
+     "source": "std::int64_t midpoint_x(Point a, Point b) {\n    return (a.x + b.x) / 2;\n}"
+    },
+    "Rust": {
+     "tokens": 28,
+     "source": "fn midpoint_x(a: Point, b: Point) -> i64 {\n    (a.x + b.x) / 2\n}"
+    },
+    "Python": {
+     "tokens": 26,
+     "source": "def midpoint_x(a: Point, b: Point) -> int:\n    return (a.x + b.x) // 2"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "midpoint_y",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 22,
+     "source": "fn midpoint_y a Point b Point -> i64\n    (a.y + b.y) / 2"
+    },
+    "C": {
+     "tokens": 26,
+     "source": "int64_t midpoint_y(Point a, Point b) {\n    return (a.y + b.y) / 2;\n}"
+    },
+    "C++": {
+     "tokens": 28,
+     "source": "std::int64_t midpoint_y(Point a, Point b) {\n    return (a.y + b.y) / 2;\n}"
+    },
+    "Rust": {
+     "tokens": 28,
+     "source": "fn midpoint_y(a: Point, b: Point) -> i64 {\n    (a.y + b.y) / 2\n}"
+    },
+    "Python": {
+     "tokens": 26,
+     "source": "def midpoint_y(a: Point, b: Point) -> int:\n    return (a.y + b.y) // 2"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "on_segment_x",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 71,
+     "source": "fn on_segment_x a Point b Point px i64 -> i64\n    let lo i64 = a.x\n    let hi i64 = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    if px >= lo and px <= hi\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 73,
+     "source": "int64_t on_segment_x(Point a, Point b, int64_t px) {\n    int64_t lo = a.x < b.x ? a.x : b.x;\n    int64_t hi = a.x > b.x ? a.x : b.x;\n    return (px >= lo && px <= hi) ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 81,
+     "source": "std::int64_t on_segment_x(Point a, Point b, std::int64_t px) {\n    std::int64_t lo = a.x < b.x ? a.x : b.x;\n    std::int64_t hi = a.x > b.x ? a.x : b.x;\n    return (px >= lo && px <= hi) ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 60,
+     "source": "fn on_segment_x(a: Point, b: Point, px: i64) -> i64 {\n    let lo = a.x.min(b.x);\n    let hi = a.x.max(b.x);\n    if px >= lo && px <= hi { 1 } else { 0 }\n}"
+    },
+    "Python": {
+     "tokens": 52,
+     "source": "def on_segment_x(a: Point, b: Point, px: int) -> int:\n    lo = min(a.x, b.x)\n    hi = max(a.x, b.x)\n    return 1 if lo <= px <= hi else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "perimeter_rect",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 22,
+     "source": "fn perimeter_rect w i64 h i64 -> i64\n    2 * (w + h)"
+    },
+    "C": {
+     "tokens": 27,
+     "source": "int64_t perimeter_rect(int64_t w, int64_t h) {\n    return 2 * (w + h);\n}"
+    },
+    "C++": {
+     "tokens": 33,
+     "source": "std::int64_t perimeter_rect(std::int64_t w, std::int64_t h) {\n    return 2 * (w + h);\n}"
+    },
+    "Rust": {
+     "tokens": 27,
+     "source": "fn perimeter_rect(w: i64, h: i64) -> i64 {\n    2 * (w + h)\n}"
+    },
+    "Python": {
+     "tokens": 24,
+     "source": "def perimeter_rect(w: int, h: int) -> int:\n    return 2 * (w + h)"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "point_in_rect",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 50,
+     "source": "fn point_in_rect px i64 py i64 w i64 h i64 -> i64\n    if px >= 0 and py >= 0 and px <= w and py <= h\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 56,
+     "source": "int64_t point_in_rect(int64_t px, int64_t py, int64_t w, int64_t h) {\n    return (px >= 0 && py >= 0 && px <= w && py <= h) ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 66,
+     "source": "std::int64_t point_in_rect(std::int64_t px, std::int64_t py, std::int64_t w, std::int64_t h) {\n    return (px >= 0 && py >= 0 && px <= w && py <= h) ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 57,
+     "source": "fn point_in_rect(px: i64, py: i64, w: i64, h: i64) -> i64 {\n    if px >= 0 && py >= 0 && px <= w && py <= h { 1 } else { 0 }\n}"
+    },
+    "Python": {
+     "tokens": 44,
+     "source": "def point_in_rect(px: int, py: int, w: int, h: int) -> int:\n    return 1 if 0 <= px <= w and 0 <= py <= h else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "quadrant",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 83,
+     "source": "fn quadrant px i64 py i64 -> i64\n    if px == 0 or py == 0\n        return 0\n    if px > 0 and py > 0\n        return 1\n    if px < 0 and py > 0\n        return 2\n    if px < 0 and py < 0\n        return 3\n    4"
+    },
+    "C": {
+     "tokens": 89,
+     "source": "int64_t quadrant(int64_t px, int64_t py) {\n    if (px == 0 || py == 0) return 0;\n    if (px > 0 && py > 0) return 1;\n    if (px < 0 && py > 0) return 2;\n    if (px < 0 && py < 0) return 3;\n    return 4;\n}"
+    },
+    "C++": {
+     "tokens": 95,
+     "source": "std::int64_t quadrant(std::int64_t px, std::int64_t py) {\n    if (px == 0 || py == 0) return 0;\n    if (px > 0 && py > 0) return 1;\n    if (px < 0 && py > 0) return 2;\n    if (px < 0 && py < 0) return 3;\n    return 4;\n}"
+    },
+    "Rust": {
+     "tokens": 89,
+     "source": "fn quadrant(px: i64, py: i64) -> i64 {\n    if px == 0 || py == 0 { return 0; }\n    if px > 0 && py > 0 { return 1; }\n    if px < 0 && py > 0 { return 2; }\n    if px < 0 && py < 0 { return 3; }\n    4\n}"
+    },
+    "Python": {
+     "tokens": 85,
+     "source": "def quadrant(px: int, py: int) -> int:\n    if px == 0 or py == 0:\n        return 0\n    if px > 0 and py > 0:\n        return 1\n    if px < 0 and py > 0:\n        return 2\n    if px < 0 and py < 0:\n        return 3\n    return 4"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "rect_area",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 17,
+     "source": "fn rect_area w i64 h i64 -> i64\n    w * h"
+    },
+    "C": {
+     "tokens": 23,
+     "source": "int64_t rect_area(int64_t w, int64_t h) {\n    return w * h;\n}"
+    },
+    "C++": {
+     "tokens": 29,
+     "source": "std::int64_t rect_area(std::int64_t w, std::int64_t h) {\n    return w * h;\n}"
+    },
+    "Rust": {
+     "tokens": 23,
+     "source": "fn rect_area(w: i64, h: i64) -> i64 {\n    w * h\n}"
+    },
+    "Python": {
+     "tokens": 19,
+     "source": "def rect_area(w: int, h: int) -> int:\n    return w * h"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "taxicab_circle_points",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 32,
+     "source": "fn taxicab_circle_points r i64 -> i64\n    if r > 0\n        4 * r\n    else\n        1"
+    },
+    "C": {
+     "tokens": 30,
+     "source": "int64_t taxicab_circle_points(int64_t r) {\n    return r > 0 ? 4 * r : 1;\n}"
+    },
+    "C++": {
+     "tokens": 34,
+     "source": "std::int64_t taxicab_circle_points(std::int64_t r) {\n    return r > 0 ? 4 * r : 1;\n}"
+    },
+    "Rust": {
+     "tokens": 33,
+     "source": "fn taxicab_circle_points(r: i64) -> i64 {\n    if r > 0 { 4 * r } else { 1 }\n}"
+    },
+    "Python": {
+     "tokens": 27,
+     "source": "def taxicab_circle_points(r: int) -> int:\n    return 4 * r if r > 0 else 1"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "triangle_area2",
+   "category": "geometry",
+   "langs": {
+    "Lullaby": {
+     "tokens": 40,
+     "source": "fn triangle_area2 a Point b Point c Point -> i64\n    cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)"
+    },
+    "C": {
+     "tokens": 44,
+     "source": "int64_t triangle_area2(Point a, Point b, Point c) {\n    return cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y);\n}"
+    },
+    "C++": {
+     "tokens": 46,
+     "source": "std::int64_t triangle_area2(Point a, Point b, Point c) {\n    return cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y);\n}"
+    },
+    "Rust": {
+     "tokens": 47,
+     "source": "fn triangle_area2(a: Point, b: Point, c: Point) -> i64 {\n    cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)\n}"
+    },
+    "Python": {
+     "tokens": 46,
+     "source": "def triangle_area2(a: Point, b: Point, c: Point) -> int:\n    return cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "count_coprime_below",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 54,
+     "source": "fn count_coprime_below n i64 -> i64\n    let count i64 = 0\n    for k from 1 to n - 1\n        if gcd(k, n) == 1\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 67,
+     "source": "int64_t count_coprime_below(int64_t n) {\n    int64_t count = 0;\n    for (int64_t k = 1; k <= n - 1; k++) {\n        if (gcd(k, n) == 1) count++;\n    }\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 67,
+     "source": "int64_t count_coprime_below(int64_t n) {\n    int64_t count = 0;\n    for (int64_t k = 1; k <= n - 1; k++) {\n        if (gcd(k, n) == 1) count++;\n    }\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 62,
+     "source": "fn count_coprime_below(n: i64) -> i64 {\n    let mut count = 0;\n    for k in 1..=n - 1 {\n        if gcd(k, n) == 1 {\n            count += 1;\n        }\n    }\n    count\n}"
+    },
+    "Python": {
+     "tokens": 45,
+     "source": "def count_coprime_below(n):\n    count = 0\n    for k in range(1, n):\n        if gcd(k, n) == 1:\n            count += 1\n    return count"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "count_trailing_zeros_factorial",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 56,
+     "source": "fn count_trailing_zeros_factorial n i64 -> i64\n    let count i64 = 0\n    let power i64 = 5\n    while power <= n\n        count += n / power\n        power = power * 5\n    count"
+    },
+    "C": {
+     "tokens": 62,
+     "source": "int64_t count_trailing_zeros_factorial(int64_t n) {\n    int64_t count = 0;\n    for (int64_t power = 5; power <= n; power = power * 5) {\n        count += n / power;\n    }\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 62,
+     "source": "int64_t count_trailing_zeros_factorial(int64_t n) {\n    int64_t count = 0;\n    for (int64_t power = 5; power <= n; power = power * 5) {\n        count += n / power;\n    }\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 58,
+     "source": "fn count_trailing_zeros_factorial(n: i64) -> i64 {\n    let mut count = 0;\n    let mut power = 5;\n    while power <= n {\n        count += n / power;\n        power *= 5;\n    }\n    count\n}"
+    },
+    "Python": {
+     "tokens": 44,
+     "source": "def count_trailing_zeros_factorial(n):\n    count = 0\n    power = 5\n    while power <= n:\n        count += n // power\n        power *= 5\n    return count"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "digital_root",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 57,
+     "source": "fn digital_root n i64 -> i64\n    while n >= 10\n        let s i64 = 0\n        while n > 0\n            s += rem(n, 10)\n            n = n / 10\n        n = s\n    n"
+    },
+    "C": {
+     "tokens": 68,
+     "source": "int64_t digital_root(int64_t n) {\n    while (n >= 10) {\n        int64_t s = 0;\n        while (n > 0) {\n            s += n % 10;\n            n = n / 10;\n        }\n        n = s;\n    }\n    return n;\n}"
+    },
+    "C++": {
+     "tokens": 68,
+     "source": "int64_t digital_root(int64_t n) {\n    while (n >= 10) {\n        int64_t s = 0;\n        while (n > 0) {\n            s += n % 10;\n            n = n / 10;\n        }\n        n = s;\n    }\n    return n;\n}"
+    },
+    "Rust": {
+     "tokens": 62,
+     "source": "fn digital_root(mut n: i64) -> i64 {\n    while n >= 10 {\n        let mut s = 0;\n        while n > 0 {\n            s += n % 10;\n            n /= 10;\n        }\n        n = s;\n    }\n    n\n}"
+    },
+    "Python": {
+     "tokens": 48,
+     "source": "def digital_root(n):\n    while n >= 10:\n        s = 0\n        while n > 0:\n            s += n % 10\n            n //= 10\n        n = s\n    return n"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "divisor_count",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 75,
+     "source": "fn divisor_count n i64 -> i64\n    let count i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if rem(n, d) == 0\n            count += 1\n            if d != n / d\n                count += 1\n        d += 1\n    count"
+    },
+    "C": {
+     "tokens": 74,
+     "source": "int64_t divisor_count(int64_t n) {\n    int64_t count = 0;\n    for (int64_t d = 1; d * d <= n; d++) {\n        if (n % d == 0) {\n            count++;\n            if (d != n / d) count++;\n        }\n    }\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 74,
+     "source": "int64_t divisor_count(int64_t n) {\n    int64_t count = 0;\n    for (int64_t d = 1; d * d <= n; d++) {\n        if (n % d == 0) {\n            count++;\n            if (d != n / d) count++;\n        }\n    }\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 81,
+     "source": "fn divisor_count(n: i64) -> i64 {\n    let mut count = 0;\n    let mut d = 1;\n    while d * d <= n {\n        if n % d == 0 {\n            count += 1;\n            if d != n / d {\n                count += 1;\n            }\n        }\n        d += 1;\n    }\n    count\n}"
+    },
+    "Python": {
+     "tokens": 63,
+     "source": "def divisor_count(n):\n    count = 0\n    d = 1\n    while d * d <= n:\n        if n % d == 0:\n            count += 1\n            if d != n // d:\n                count += 1\n        d += 1\n    return count"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "divisor_sum",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 81,
+     "source": "fn divisor_sum n i64 -> i64\n    let sum i64 = 0\n    let d i64 = 1\n    while d * d <= n\n        if rem(n, d) == 0\n            sum += d\n            let other i64 = n / d\n            if other != d\n                sum += other\n        d += 1\n    sum"
+    },
+    "C": {
+     "tokens": 86,
+     "source": "int64_t divisor_sum(int64_t n) {\n    int64_t sum = 0;\n    for (int64_t d = 1; d * d <= n; d++) {\n        if (n % d == 0) {\n            sum += d;\n            int64_t other = n / d;\n            if (other != d) sum += other;\n        }\n    }\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 86,
+     "source": "int64_t divisor_sum(int64_t n) {\n    int64_t sum = 0;\n    for (int64_t d = 1; d * d <= n; d++) {\n        if (n % d == 0) {\n            sum += d;\n            int64_t other = n / d;\n            if (other != d) sum += other;\n        }\n    }\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 85,
+     "source": "fn divisor_sum(n: i64) -> i64 {\n    let mut sum = 0;\n    let mut d = 1;\n    while d * d <= n {\n        if n % d == 0 {\n            sum += d;\n            let other = n / d;\n            if other != d {\n                sum += other;\n            }\n        }\n        d += 1;\n    }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 66,
+     "source": "def divisor_sum(n):\n    total = 0\n    d = 1\n    while d * d <= n:\n        if n % d == 0:\n            total += d\n            other = n // d\n            if other != d:\n                total += other\n        d += 1\n    return total"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "euler_totient",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 99,
+     "source": "fn euler_totient n i64 -> i64\n    let result i64 = n\n    let p i64 = 2\n    while p * p <= n\n        if rem(n, p) == 0\n            while rem(n, p) == 0\n                n = n / p\n            result = result - result / p\n        p += 1\n    if n > 1\n        result = result - result / n\n    result"
+    },
+    "C": {
+     "tokens": 102,
+     "source": "int64_t euler_totient(int64_t n) {\n    int64_t result = n;\n    for (int64_t p = 2; p * p <= n; p++) {\n        if (n % p == 0) {\n            while (n % p == 0) n = n / p;\n            result = result - result / p;\n        }\n    }\n    if (n > 1) result = result - result / n;\n    return result;\n}"
+    },
+    "C++": {
+     "tokens": 102,
+     "source": "int64_t euler_totient(int64_t n) {\n    int64_t result = n;\n    for (int64_t p = 2; p * p <= n; p++) {\n        if (n % p == 0) {\n            while (n % p == 0) n = n / p;\n            result = result - result / p;\n        }\n    }\n    if (n > 1) result = result - result / n;\n    return result;\n}"
+    },
+    "Rust": {
+     "tokens": 100,
+     "source": "fn euler_totient(mut n: i64) -> i64 {\n    let mut result = n;\n    let mut p = 2;\n    while p * p <= n {\n        if n % p == 0 {\n            while n % p == 0 {\n                n /= p;\n            }\n            result -= result / p;\n        }\n        p += 1;\n    }\n    if n > 1 {\n        result -= result / n;\n    }\n    result\n}"
+    },
+    "Python": {
+     "tokens": 80,
+     "source": "def euler_totient(n):\n    result = n\n    p = 2\n    while p * p <= n:\n        if n % p == 0:\n            while n % p == 0:\n                n //= p\n            result -= result // p\n        p += 1\n    if n > 1:\n        result -= result // n\n    return result"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "gcd",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 42,
+     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t i64 = rem(a, b)\n        a = b\n        b = t\n    a"
+    },
+    "C": {
+     "tokens": 51,
+     "source": "int64_t gcd(int64_t a, int64_t b) {\n    while (b != 0) {\n        int64_t t = a % b;\n        a = b;\n        b = t;\n    }\n    return a;\n}"
+    },
+    "C++": {
+     "tokens": 51,
+     "source": "int64_t gcd(int64_t a, int64_t b) {\n    while (b != 0) {\n        int64_t t = a % b;\n        a = b;\n        b = t;\n    }\n    return a;\n}"
+    },
+    "Rust": {
+     "tokens": 49,
+     "source": "fn gcd(mut a: i64, mut b: i64) -> i64 {\n    while b != 0 {\n        let t = a % b;\n        a = b;\n        b = t;\n    }\n    a\n}"
+    },
+    "Python": {
+     "tokens": 27,
+     "source": "def gcd(a, b):\n    while b != 0:\n        a, b = b, a % b\n    return a"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "gcd_of_range",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 40,
+     "source": "fn gcd_of_range lo i64 hi i64 -> i64\n    let g i64 = lo\n    for k from lo to hi\n        g = gcd(g, k)\n    g"
+    },
+    "C": {
+     "tokens": 57,
+     "source": "int64_t gcd_of_range(int64_t lo, int64_t hi) {\n    int64_t g = lo;\n    for (int64_t k = lo; k <= hi; k++) {\n        g = gcd(g, k);\n    }\n    return g;\n}"
+    },
+    "C++": {
+     "tokens": 57,
+     "source": "int64_t gcd_of_range(int64_t lo, int64_t hi) {\n    int64_t g = lo;\n    for (int64_t k = lo; k <= hi; k++) {\n        g = gcd(g, k);\n    }\n    return g;\n}"
+    },
+    "Rust": {
+     "tokens": 48,
+     "source": "fn gcd_of_range(lo: i64, hi: i64) -> i64 {\n    let mut g = lo;\n    for k in lo..=hi {\n        g = gcd(g, k);\n    }\n    g\n}"
+    },
+    "Python": {
+     "tokens": 36,
+     "source": "def gcd_of_range(lo, hi):\n    g = lo\n    for k in range(lo, hi + 1):\n        g = gcd(g, k)\n    return g"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "int_pow",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 40,
+     "source": "fn int_pow base i64 exp i64 -> i64\n    let r i64 = 1\n    for i from 1 to exp\n        r = r * base\n    r"
+    },
+    "C": {
+     "tokens": 57,
+     "source": "int64_t int_pow(int64_t base, int64_t exp) {\n    int64_t r = 1;\n    for (int64_t i = 1; i <= exp; i++) {\n        r = r * base;\n    }\n    return r;\n}"
+    },
+    "C++": {
+     "tokens": 57,
+     "source": "int64_t int_pow(int64_t base, int64_t exp) {\n    int64_t r = 1;\n    for (int64_t i = 1; i <= exp; i++) {\n        r = r * base;\n    }\n    return r;\n}"
+    },
+    "Rust": {
+     "tokens": 54,
+     "source": "fn int_pow(base: i64, exp: i64) -> i64 {\n    let mut r: i64 = 1;\n    for _ in 1..=exp {\n        r = r.wrapping_mul(base);\n    }\n    r\n}"
+    },
+    "Python": {
+     "tokens": 30,
+     "source": "def int_pow(base, exp):\n    r = 1\n    for _ in range(exp):\n        r = r * base\n    return r"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "is_armstrong",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 82,
+     "source": "fn is_armstrong n i64 -> i64\n    let d i64 = num_digits(n)\n    let sum i64 = 0\n    let m i64 = n\n    while m > 0\n        sum += int_pow(rem(m, 10), d)\n        m = m / 10\n    if sum == n\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 83,
+     "source": "int64_t is_armstrong(int64_t n) {\n    int64_t d = num_digits(n);\n    int64_t sum = 0;\n    int64_t m = n;\n    while (m > 0) {\n        sum += int_pow(m % 10, d);\n        m = m / 10;\n    }\n    return sum == n ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 83,
+     "source": "int64_t is_armstrong(int64_t n) {\n    int64_t d = num_digits(n);\n    int64_t sum = 0;\n    int64_t m = n;\n    while (m > 0) {\n        sum += int_pow(m % 10, d);\n        m = m / 10;\n    }\n    return sum == n ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 84,
+     "source": "fn is_armstrong(n: i64) -> i64 {\n    let d = num_digits(n);\n    let mut sum = 0;\n    let mut m = n;\n    while m > 0 {\n        sum += int_pow(m % 10, d);\n        m /= 10;\n    }\n    if sum == n {\n        1\n    } else {\n        0\n    }\n}"
+    },
+    "Python": {
+     "tokens": 61,
+     "source": "def is_armstrong(n):\n    d = num_digits(n)\n    total = 0\n    m = n\n    while m > 0:\n        total += int_pow(m % 10, d)\n        m //= 10\n    return 1 if total == n else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "is_happy",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 66,
+     "source": "fn is_happy n i64 -> i64\n    let steps i64 = 0\n    while n != 1 and steps < 1000\n        n = sum_of_squares_digits(n)\n        steps += 1\n    if n == 1\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 65,
+     "source": "int64_t is_happy(int64_t n) {\n    int64_t steps = 0;\n    while (n != 1 && steps < 1000) {\n        n = sum_of_squares_digits(n);\n        steps++;\n    }\n    return n == 1 ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 65,
+     "source": "int64_t is_happy(int64_t n) {\n    int64_t steps = 0;\n    while (n != 1 && steps < 1000) {\n        n = sum_of_squares_digits(n);\n        steps++;\n    }\n    return n == 1 ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 75,
+     "source": "fn is_happy(mut n: i64) -> i64 {\n    let mut steps = 0;\n    while n != 1 && steps < 1000 {\n        n = sum_of_squares_digits(n);\n        steps += 1;\n    }\n    if n == 1 {\n        1\n    } else {\n        0\n    }\n}"
+    },
+    "Python": {
+     "tokens": 53,
+     "source": "def is_happy(n):\n    steps = 0\n    while n != 1 and steps < 1000:\n        n = sum_of_squares_digits(n)\n        steps += 1\n    return 1 if n == 1 else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "is_palindrome_number",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 31,
+     "source": "fn is_palindrome_number n i64 -> i64\n    if reverse_digits(n) == n\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 29,
+     "source": "int64_t is_palindrome_number(int64_t n) {\n    return reverse_digits(n) == n ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 29,
+     "source": "int64_t is_palindrome_number(int64_t n) {\n    return reverse_digits(n) == n ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 38,
+     "source": "fn is_palindrome_number(n: i64) -> i64 {\n    if reverse_digits(n) == n {\n        1\n    } else {\n        0\n    }\n}"
+    },
+    "Python": {
+     "tokens": 21,
+     "source": "def is_palindrome_number(n):\n    return 1 if reverse_digits(n) == n else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "is_perfect",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 32,
+     "source": "fn is_perfect n i64 -> i64\n    if divisor_sum(n) - n == n\n        1\n    else\n        0"
+    },
+    "C": {
+     "tokens": 30,
+     "source": "int64_t is_perfect(int64_t n) {\n    return divisor_sum(n) - n == n ? 1 : 0;\n}"
+    },
+    "C++": {
+     "tokens": 30,
+     "source": "int64_t is_perfect(int64_t n) {\n    return divisor_sum(n) - n == n ? 1 : 0;\n}"
+    },
+    "Rust": {
+     "tokens": 39,
+     "source": "fn is_perfect(n: i64) -> i64 {\n    if divisor_sum(n) - n == n {\n        1\n    } else {\n        0\n    }\n}"
+    },
+    "Python": {
+     "tokens": 22,
+     "source": "def is_perfect(n):\n    return 1 if divisor_sum(n) - n == n else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "lcm",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 23,
+     "source": "fn lcm a i64 b i64 -> i64\n    a / gcd(a, b) * b"
+    },
+    "C": {
+     "tokens": 29,
+     "source": "int64_t lcm(int64_t a, int64_t b) {\n    return a / gcd(a, b) * b;\n}"
+    },
+    "C++": {
+     "tokens": 29,
+     "source": "int64_t lcm(int64_t a, int64_t b) {\n    return a / gcd(a, b) * b;\n}"
+    },
+    "Rust": {
+     "tokens": 29,
+     "source": "fn lcm(a: i64, b: i64) -> i64 {\n    a / gcd(a, b) * b\n}"
+    },
+    "Python": {
+     "tokens": 18,
+     "source": "def lcm(a, b):\n    return a // gcd(a, b) * b"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "num_digits",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 54,
+     "source": "fn num_digits n i64 -> i64\n    if n == 0\n        return 1\n    let c i64 = 0\n    while n > 0\n        c += 1\n        n = n / 10\n    c"
+    },
+    "C": {
+     "tokens": 59,
+     "source": "int64_t num_digits(int64_t n) {\n    if (n == 0) return 1;\n    int64_t c = 0;\n    while (n > 0) {\n        c++;\n        n = n / 10;\n    }\n    return c;\n}"
+    },
+    "C++": {
+     "tokens": 59,
+     "source": "int64_t num_digits(int64_t n) {\n    if (n == 0) return 1;\n    int64_t c = 0;\n    while (n > 0) {\n        c++;\n        n = n / 10;\n    }\n    return c;\n}"
+    },
+    "Rust": {
+     "tokens": 60,
+     "source": "fn num_digits(mut n: i64) -> i64 {\n    if n == 0 {\n        return 1;\n    }\n    let mut c = 0;\n    while n > 0 {\n        c += 1;\n        n /= 10;\n    }\n    c\n}"
+    },
+    "Python": {
+     "tokens": 46,
+     "source": "def num_digits(n):\n    if n == 0:\n        return 1\n    c = 0\n    while n > 0:\n        c += 1\n        n //= 10\n    return c"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "rem",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 22,
+     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "reverse_digits",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 50,
+     "source": "fn reverse_digits n i64 -> i64\n    let r i64 = 0\n    while n > 0\n        r = r * 10 + rem(n, 10)\n        n = n / 10\n    r"
+    },
+    "C": {
+     "tokens": 57,
+     "source": "int64_t reverse_digits(int64_t n) {\n    int64_t r = 0;\n    while (n > 0) {\n        r = r * 10 + n % 10;\n        n = n / 10;\n    }\n    return r;\n}"
+    },
+    "C++": {
+     "tokens": 57,
+     "source": "int64_t reverse_digits(int64_t n) {\n    int64_t r = 0;\n    while (n > 0) {\n        r = r * 10 + n % 10;\n        n = n / 10;\n    }\n    return r;\n}"
+    },
+    "Rust": {
+     "tokens": 53,
+     "source": "fn reverse_digits(mut n: i64) -> i64 {\n    let mut r = 0;\n    while n > 0 {\n        r = r * 10 + n % 10;\n        n /= 10;\n    }\n    r\n}"
+    },
+    "Python": {
+     "tokens": 41,
+     "source": "def reverse_digits(n):\n    r = 0\n    while n > 0:\n        r = r * 10 + n % 10\n        n //= 10\n    return r"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "sum_of_squares_digits",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 58,
+     "source": "fn sum_of_squares_digits n i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        let d i64 = rem(n, 10)\n        sum += d * d\n        n = n / 10\n    sum"
+    },
+    "C": {
+     "tokens": 65,
+     "source": "int64_t sum_of_squares_digits(int64_t n) {\n    int64_t sum = 0;\n    while (n > 0) {\n        int64_t d = n % 10;\n        sum += d * d;\n        n = n / 10;\n    }\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 65,
+     "source": "int64_t sum_of_squares_digits(int64_t n) {\n    int64_t sum = 0;\n    while (n > 0) {\n        int64_t d = n % 10;\n        sum += d * d;\n        n = n / 10;\n    }\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 59,
+     "source": "fn sum_of_squares_digits(mut n: i64) -> i64 {\n    let mut sum = 0;\n    while n > 0 {\n        let d = n % 10;\n        sum += d * d;\n        n /= 10;\n    }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 46,
+     "source": "def sum_of_squares_digits(n):\n    total = 0\n    while n > 0:\n        d = n % 10\n        total += d * d\n        n //= 10\n    return total"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "to_base_digit_sum",
+   "category": "number_theory",
+   "langs": {
+    "Lullaby": {
+     "tokens": 48,
+     "source": "fn to_base_digit_sum n i64 b i64 -> i64\n    let sum i64 = 0\n    while n > 0\n        sum += rem(n, b)\n        n = n / b\n    sum"
+    },
+    "C": {
+     "tokens": 57,
+     "source": "int64_t to_base_digit_sum(int64_t n, int64_t b) {\n    int64_t sum = 0;\n    while (n > 0) {\n        sum += n % b;\n        n = n / b;\n    }\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 57,
+     "source": "int64_t to_base_digit_sum(int64_t n, int64_t b) {\n    int64_t sum = 0;\n    while (n > 0) {\n        sum += n % b;\n        n = n / b;\n    }\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 53,
+     "source": "fn to_base_digit_sum(mut n: i64, b: i64) -> i64 {\n    let mut sum = 0;\n    while n > 0 {\n        sum += n % b;\n        n /= b;\n    }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 38,
+     "source": "def to_base_digit_sum(n, b):\n    total = 0\n    while n > 0:\n        total += n % b\n        n //= b\n    return total"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "bin_to_int",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 121,
+     "source": "fn bin_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0 - 1\n    let val i64 = 0\n    for i from 0 to n - 1\n        let c char = get(cs, i)\n        if c == '0'\n            val = val * 2\n        elif c == '1'\n            val = val * 2 + 1\n        else\n            return 0 - 1\n    val"
+    },
+    "C": {
+     "tokens": 110,
+     "source": "i64 bin_to_int(const char *s) {\n    size_t n = strlen(s);\n    if (n == 0) return -1;\n    i64 val = 0;\n    for (size_t i = 0; i < n; i++) {\n        char c = s[i];\n        if (c == '0') val = val * 2;\n        else if (c == '1') val = val * 2 + 1;\n        else return -1;\n    }\n    return val;\n}"
+    },
+    "C++": {
+     "tokens": 87,
+     "source": "i64 bin_to_int(const std::string &s) {\n    if (s.empty()) return -1;\n    i64 val = 0;\n    for (char c : s) {\n        if (c == '0') val = val * 2;\n        else if (c == '1') val = val * 2 + 1;\n        else return -1;\n    }\n    return val;\n}"
+    },
+    "Rust": {
+     "tokens": 99,
+     "source": "fn bin_to_int(s: &str) -> i64 {\n    let b = s.as_bytes();\n    if b.is_empty() {\n        return -1;\n    }\n    let mut val: i64 = 0;\n    for &c in b {\n        match c {\n            b'0' => val *= 2,\n            b'1' => val = val * 2 + 1,\n            _ => return -1,\n        }\n    }\n    val\n}"
+    },
+    "Python": {
+     "tokens": 72,
+     "source": "def bin_to_int(s):\n    if not s:\n        return -1\n    val = 0\n    for c in s:\n        if c == \"0\":\n            val = val * 2\n        elif c == \"1\":\n            val = val * 2 + 1\n        else:\n            return -1\n    return val"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "char_class_count",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 96,
+     "source": "fn char_class_count s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 70,
+     "source": "i64 char_class_count(const char *s) {\n    i64 count = 0;\n    for (const char *p = s; *p; p++)\n        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) count++;\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 63,
+     "source": "i64 char_class_count(const std::string &s) {\n    i64 count = 0;\n    for (char c : s)\n        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) count++;\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 38,
+     "source": "fn char_class_count(s: &str) -> i64 {\n    s.as_bytes().iter().filter(|c| c.is_ascii_alphabetic()).count() as i64\n}"
+    },
+    "Python": {
+     "tokens": 48,
+     "source": "def char_class_count(s):\n    count = 0\n    for c in s:\n        if (\"A\" <= c <= \"Z\") or (\"a\" <= c <= \"z\"):\n            count += 1\n    return count"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "count_digits_in",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 83,
+     "source": "fn count_digits_in s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code >= 48 and code <= 57\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 56,
+     "source": "i64 count_digits_in(const char *s) {\n    i64 count = 0;\n    for (const char *p = s; *p; p++)\n        if (*p >= '0' && *p <= '9') count++;\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 50,
+     "source": "i64 count_digits_in(const std::string &s) {\n    i64 count = 0;\n    for (char c : s)\n        if (c >= '0' && c <= '9') count++;\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 36,
+     "source": "fn count_digits_in(s: &str) -> i64 {\n    s.as_bytes().iter().filter(|c| c.is_ascii_digit()).count() as i64\n}"
+    },
+    "Python": {
+     "tokens": 38,
+     "source": "def count_digits_in(s):\n    count = 0\n    for c in s:\n        if \"0\" <= c <= \"9\":\n            count += 1\n    return count"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "count_fields",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 82,
+     "source": "fn count_fields s string sep string -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 60,
+     "source": "i64 count_fields(const char *s, const char *sep) {\n    char target = sep[0];\n    i64 count = 1;\n    for (const char *p = s; *p; p++)\n        if (*p == target) count++;\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 57,
+     "source": "i64 count_fields(const std::string &s, const std::string &sep) {\n    char target = sep[0];\n    i64 count = 1;\n    for (char c : s)\n        if (c == target) count++;\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 53,
+     "source": "fn count_fields(s: &str, sep: &str) -> i64 {\n    let target = sep.as_bytes()[0];\n    s.as_bytes().iter().filter(|&&c| c == target).count() as i64 + 1\n}"
+    },
+    "Python": {
+     "tokens": 19,
+     "source": "def count_fields(s, sep):\n    return s.count(sep[0]) + 1"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "count_lines",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 89,
+     "source": "fn count_lines s string -> i64\n    let nl char = char_from(10)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    let count i64 = 1\n    for i from 0 to n - 1\n        if get(cs, i) == nl\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 71,
+     "source": "i64 count_lines(const char *s) {\n    size_t n = strlen(s);\n    if (n == 0) return 0;\n    i64 count = 1;\n    for (size_t i = 0; i < n; i++)\n        if (s[i] == '\\n') count++;\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 53,
+     "source": "i64 count_lines(const std::string &s) {\n    if (s.empty()) return 0;\n    i64 count = 1;\n    for (char c : s)\n        if (c == '\\n') count++;\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 54,
+     "source": "fn count_lines(s: &str) -> i64 {\n    if s.is_empty() {\n        return 0;\n    }\n    s.as_bytes().iter().filter(|&&c| c == b'\\n').count() as i64 + 1\n}"
+    },
+    "Python": {
+     "tokens": 25,
+     "source": "def count_lines(s):\n    if not s:\n        return 0\n    return s.count(\"\\n\") + 1"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "count_words",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 99,
+     "source": "fn count_words s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let count i64 = 0\n    let in_word i64 = 0\n    for i from 0 to n - 1\n        if is_whitespace(get(cs, i))\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 99,
+     "source": "i64 count_words(const char *s) {\n    i64 count = 0;\n    int in_word = 0;\n    for (const char *p = s; *p; p++) {\n        if (*p == ' ' || *p == '\\t' || *p == '\\n') {\n            in_word = 0;\n        } else if (!in_word) {\n            in_word = 1;\n            count++;\n        }\n    }\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 89,
+     "source": "i64 count_words(const std::string &s) {\n    i64 count = 0;\n    bool in_word = false;\n    for (char c : s) {\n        if (c == ' ' || c == '\\t' || c == '\\n') {\n            in_word = false;\n        } else if (!in_word) {\n            in_word = true;\n            count++;\n        }\n    }\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 97,
+     "source": "fn count_words(s: &str) -> i64 {\n    let mut count: i64 = 0;\n    let mut in_word = false;\n    for &c in s.as_bytes() {\n        if c == b' ' || c == b'\\t' || c == b'\\n' {\n            in_word = false;\n        } else if !in_word {\n            in_word = true;\n            count += 1;\n        }\n    }\n    count\n}"
+    },
+    "Python": {
+     "tokens": 11,
+     "source": "def count_words(s):\n    return len(s.split())"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "eval_rpn",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 215,
+     "source": "fn eval_rpn tokens array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let stack array<i64> = tokens\n    let sp i64 = 0\n    for i from 0 to n - 1\n        let t i64 = tokens[i]\n        if t >= 0\n            stack[sp] = t\n            sp += 1\n        else\n            let a i64 = stack[sp - 2]\n            let b i64 = stack[sp - 1]\n            sp -= 2\n            let op i64 = 0 - t\n            let r i64 = 0\n            if op == 1\n                r = a + b\n            elif op == 2\n                r = a - b\n            elif op == 3\n                r = a * b\n            else\n                r = a / b\n            stack[sp] = r\n            sp += 1\n    stack[0]"
+    },
+    "C": {
+     "tokens": 200,
+     "source": "i64 eval_rpn(const i64 *tokens, i64 n) {\n    if (n == 0) return 0;\n    i64 stack[256];\n    i64 sp = 0;\n    for (i64 i = 0; i < n; i++) {\n        i64 t = tokens[i];\n        if (t >= 0) {\n            stack[sp++] = t;\n        } else {\n            i64 a = stack[sp - 2], b = stack[sp - 1];\n            sp -= 2;\n            i64 op = -t, r = 0;\n            if (op == 1) r = a + b;\n            else if (op == 2) r = a - b;\n            else if (op == 3) r = a * b;\n            else r = a / b;\n            stack[sp++] = r;\n        }\n    }\n    return stack[0];\n}"
+    },
+    "C++": {
+     "tokens": 197,
+     "source": "i64 eval_rpn(const i64 *tokens, i64 n) {\n    if (n == 0) return 0;\n    std::vector<i64> stack;\n    stack.reserve(static_cast<size_t>(n));\n    for (i64 i = 0; i < n; i++) {\n        i64 t = tokens[i];\n        if (t >= 0) {\n            stack.push_back(t);\n        } else {\n            i64 b = stack.back(); stack.pop_back();\n            i64 a = stack.back(); stack.pop_back();\n            i64 op = -t, r = 0;\n            if (op == 1) r = a + b;\n            else if (op == 2) r = a - b;\n            else if (op == 3) r = a * b;\n            else r = a / b;\n            stack.push_back(r);\n        }\n    }\n    return stack[0];\n}"
+    },
+    "Rust": {
+     "tokens": 154,
+     "source": "fn eval_rpn(tokens: &[i64], n: i64) -> i64 {\n    if n == 0 {\n        return 0;\n    }\n    let mut stack: Vec<i64> = Vec::with_capacity(n as usize);\n    for &t in &tokens[..n as usize] {\n        if t >= 0 {\n            stack.push(t);\n        } else {\n            let b = stack.pop().unwrap();\n            let a = stack.pop().unwrap();\n            let r = match -t {\n                1 => a + b,\n                2 => a - b,\n                3 => a * b,\n                _ => a / b,\n            };\n            stack.push(r);\n        }\n    }\n    stack[0]\n}"
+    },
+    "Python": {
+     "tokens": 129,
+     "source": "def eval_rpn(tokens, n):\n    if n == 0:\n        return 0\n    stack = []\n    for t in tokens[:n]:\n        if t >= 0:\n            stack.append(t)\n        else:\n            b = stack.pop()\n            a = stack.pop()\n            op = -t\n            if op == 1:\n                r = a + b\n            elif op == 2:\n                r = a - b\n            elif op == 3:\n                r = a * b\n            else:\n                r = int(a / b)\n            stack.append(r)\n    return stack[0]"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "hex_to_int",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 183,
+     "source": "fn hex_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0 - 1\n    let val i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        let d i64 = 0 - 1\n        if code >= 48 and code <= 57\n            d = code - 48\n        elif code >= 97 and code <= 102\n            d = code - 97 + 10\n        elif code >= 65 and code <= 70\n            d = code - 65 + 10\n        if d < 0\n            return 0 - 1\n        val = val * 16 + d\n    val"
+    },
+    "C": {
+     "tokens": 173,
+     "source": "i64 hex_to_int(const char *s) {\n    size_t n = strlen(s);\n    if (n == 0) return -1;\n    i64 val = 0;\n    for (size_t i = 0; i < n; i++) {\n        char c = s[i];\n        i64 d = -1;\n        if (c >= '0' && c <= '9') d = c - '0';\n        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;\n        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;\n        if (d < 0) return -1;\n        val = val * 16 + d;\n    }\n    return val;\n}"
+    },
+    "C++": {
+     "tokens": 150,
+     "source": "i64 hex_to_int(const std::string &s) {\n    if (s.empty()) return -1;\n    i64 val = 0;\n    for (char c : s) {\n        i64 d = -1;\n        if (c >= '0' && c <= '9') d = c - '0';\n        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;\n        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;\n        if (d < 0) return -1;\n        val = val * 16 + d;\n    }\n    return val;\n}"
+    },
+    "Rust": {
+     "tokens": 158,
+     "source": "fn hex_to_int(s: &str) -> i64 {\n    let b = s.as_bytes();\n    if b.is_empty() {\n        return -1;\n    }\n    let mut val: i64 = 0;\n    for &c in b {\n        let d: i64 = match c {\n            b'0'..=b'9' => (c - b'0') as i64,\n            b'a'..=b'f' => (c - b'a') as i64 + 10,\n            b'A'..=b'F' => (c - b'A') as i64 + 10,\n            _ => return -1,\n        };\n        val = val * 16 + d;\n    }\n    val\n}"
+    },
+    "Python": {
+     "tokens": 115,
+     "source": "def hex_to_int(s):\n    if not s:\n        return -1\n    val = 0\n    for c in s:\n        o = ord(c)\n        if 48 <= o <= 57:\n            d = o - 48\n        elif 97 <= o <= 102:\n            d = o - 97 + 10\n        elif 65 <= o <= 70:\n            d = o - 65 + 10\n        else:\n            return -1\n        val = val * 16 + d\n    return val"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "is_valid_int",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 122,
+     "source": "fn is_valid_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    let start i64 = 0\n    if get(cs, 0) == '-'\n        start = 1\n    if start == n\n        return 0\n    for i from start to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n    1"
+    },
+    "C": {
+     "tokens": 104,
+     "source": "i64 is_valid_int(const char *s) {\n    size_t n = strlen(s);\n    if (n == 0) return 0;\n    size_t start = (s[0] == '-') ? 1 : 0;\n    if (start == n) return 0;\n    for (size_t i = start; i < n; i++)\n        if (s[i] < '0' || s[i] > '9') return 0;\n    return 1;\n}"
+    },
+    "C++": {
+     "tokens": 98,
+     "source": "i64 is_valid_int(const std::string &s) {\n    if (s.empty()) return 0;\n    size_t start = (s[0] == '-') ? 1 : 0;\n    if (start == s.size()) return 0;\n    for (size_t i = start; i < s.size(); i++)\n        if (s[i] < '0' || s[i] > '9') return 0;\n    return 1;\n}"
+    },
+    "Rust": {
+     "tokens": 105,
+     "source": "fn is_valid_int(s: &str) -> i64 {\n    let b = s.as_bytes();\n    if b.is_empty() {\n        return 0;\n    }\n    let start = if b[0] == b'-' { 1 } else { 0 };\n    if start == b.len() {\n        return 0;\n    }\n    if b[start..].iter().all(|c| c.is_ascii_digit()) {\n        1\n    } else {\n        0\n    }\n}"
+    },
+    "Python": {
+     "tokens": 57,
+     "source": "def is_valid_int(s):\n    if not s:\n        return 0\n    start = 1 if s[0] == \"-\" else 0\n    if start == len(s):\n        return 0\n    return 1 if s[start:].isdigit() else 0"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "nth_field_len",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 144,
+     "source": "fn nth_field_len s string sep string nth i64 -> i64\n    let target char = get(chars(sep), 0)\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let field i64 = 0\n    let cur i64 = 0\n    let result i64 = 0 - 1\n    for i from 0 to n - 1\n        if get(cs, i) == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
+    },
+    "C": {
+     "tokens": 117,
+     "source": "i64 nth_field_len(const char *s, const char *sep, i64 nth) {\n    char target = sep[0];\n    i64 field = 0, cur = 0, result = -1;\n    for (const char *p = s; *p; p++) {\n        if (*p == target) {\n            if (field == nth) result = cur;\n            field++;\n            cur = 0;\n        } else {\n            cur++;\n        }\n    }\n    if (field == nth) result = cur;\n    return result;\n}"
+    },
+    "C++": {
+     "tokens": 114,
+     "source": "i64 nth_field_len(const std::string &s, const std::string &sep, i64 nth) {\n    char target = sep[0];\n    i64 field = 0, cur = 0, result = -1;\n    for (char c : s) {\n        if (c == target) {\n            if (field == nth) result = cur;\n            field++;\n            cur = 0;\n        } else {\n            cur++;\n        }\n    }\n    if (field == nth) result = cur;\n    return result;\n}"
+    },
+    "Rust": {
+     "tokens": 138,
+     "source": "fn nth_field_len(s: &str, sep: &str, nth: i64) -> i64 {\n    let target = sep.as_bytes()[0];\n    let mut field: i64 = 0;\n    let mut cur: i64 = 0;\n    let mut result: i64 = -1;\n    for &c in s.as_bytes() {\n        if c == target {\n            if field == nth {\n                result = cur;\n            }\n            field += 1;\n            cur = 0;\n        } else {\n            cur += 1;\n        }\n    }\n    if field == nth {\n        result = cur;\n    }\n    result\n}"
+    },
+    "Python": {
+     "tokens": 93,
+     "source": "def nth_field_len(s, sep, nth):\n    target = sep[0]\n    field = 0\n    cur = 0\n    result = -1\n    for c in s:\n        if c == target:\n            if field == nth:\n                result = cur\n            field += 1\n            cur = 0\n        else:\n            cur += 1\n    if field == nth:\n        result = cur\n    return result"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "parse_int_signed",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 173,
+     "source": "fn parse_int_signed s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0\n    let neg i64 = 0\n    let start i64 = 0\n    if get(cs, 0) == '-'\n        neg = 1\n        start = 1\n    if start == n\n        return 0\n    let val i64 = 0\n    for i from start to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0\n        val = val * 10 + (code - 48)\n    if neg == 1\n        return 0 - val\n    val"
+    },
+    "C": {
+     "tokens": 153,
+     "source": "i64 parse_int_signed(const char *s) {\n    size_t n = strlen(s);\n    if (n == 0) return 0;\n    int neg = 0;\n    size_t start = 0;\n    if (s[0] == '-') { neg = 1; start = 1; }\n    if (start == n) return 0;\n    i64 val = 0;\n    for (size_t i = start; i < n; i++) {\n        char c = s[i];\n        if (c < '0' || c > '9') return 0;\n        val = val * 10 + (c - '0');\n    }\n    return neg ? -val : val;\n}"
+    },
+    "C++": {
+     "tokens": 145,
+     "source": "i64 parse_int_signed(const std::string &s) {\n    if (s.empty()) return 0;\n    bool neg = false;\n    size_t start = 0;\n    if (s[0] == '-') { neg = true; start = 1; }\n    if (start == s.size()) return 0;\n    i64 val = 0;\n    for (size_t i = start; i < s.size(); i++) {\n        char c = s[i];\n        if (c < '0' || c > '9') return 0;\n        val = val * 10 + (c - '0');\n    }\n    return neg ? -val : val;\n}"
+    },
+    "Rust": {
+     "tokens": 161,
+     "source": "fn parse_int_signed(s: &str) -> i64 {\n    let b = s.as_bytes();\n    if b.is_empty() {\n        return 0;\n    }\n    let (neg, start) = if b[0] == b'-' { (true, 1) } else { (false, 0) };\n    if start == b.len() {\n        return 0;\n    }\n    let mut val: i64 = 0;\n    for &c in &b[start..] {\n        if !c.is_ascii_digit() {\n            return 0;\n        }\n        val = val * 10 + (c - b'0') as i64;\n    }\n    if neg {\n        -val\n    } else {\n        val\n    }\n}"
+    },
+    "Python": {
+     "tokens": 103,
+     "source": "def parse_int_signed(s):\n    if not s:\n        return 0\n    neg = s[0] == \"-\"\n    start = 1 if neg else 0\n    if start == len(s):\n        return 0\n    val = 0\n    for c in s[start:]:\n        if not (\"0\" <= c <= \"9\"):\n            return 0\n        val = val * 10 + (ord(c) - 48)\n    return -val if neg else val"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "parse_uint",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 113,
+     "source": "fn parse_uint s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    if n == 0\n        return 0 - 1\n    let val i64 = 0\n    for i from 0 to n - 1\n        let code i64 = char_code(get(cs, i))\n        if code < 48 or code > 57\n            return 0 - 1\n        val = val * 10 + (code - 48)\n    val"
+    },
+    "C": {
+     "tokens": 107,
+     "source": "typedef long long i64;\ni64 parse_uint(const char *s) {\n    size_t n = strlen(s);\n    if (n == 0) return -1;\n    i64 val = 0;\n    for (size_t i = 0; i < n; i++) {\n        char c = s[i];\n        if (c < '0' || c > '9') return -1;\n        val = val * 10 + (c - '0');\n    }\n    return val;\n}"
+    },
+    "C++": {
+     "tokens": 84,
+     "source": "typedef long long i64;\ni64 parse_uint(const std::string &s) {\n    if (s.empty()) return -1;\n    i64 val = 0;\n    for (char c : s) {\n        if (c < '0' || c > '9') return -1;\n        val = val * 10 + (c - '0');\n    }\n    return val;\n}"
+    },
+    "Rust": {
+     "tokens": 93,
+     "source": "fn parse_uint(s: &str) -> i64 {\n    let b = s.as_bytes();\n    if b.is_empty() {\n        return -1;\n    }\n    let mut val: i64 = 0;\n    for &c in b {\n        if !c.is_ascii_digit() {\n            return -1;\n        }\n        val = val * 10 + (c - b'0') as i64;\n    }\n    val\n}"
+    },
+    "Python": {
+     "tokens": 63,
+     "source": "def parse_uint(s):\n    if not s:\n        return -1\n    val = 0\n    for c in s:\n        if not (\"0\" <= c <= \"9\"):\n            return -1\n        val = val * 10 + (ord(c) - 48)\n    return val"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "roman_to_int",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 123,
+     "source": "fn roman_to_int s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let total i64 = 0\n    for i from 0 to n - 1\n        let v i64 = roman_value(get(cs, i))\n        let subtract i64 = 0\n        if i < n - 1\n            if v < roman_value(get(cs, i + 1))\n                subtract = 1\n        if subtract == 1\n            total -= v\n        else\n            total += v\n    total"
+    },
+    "C": {
+     "tokens": 91,
+     "source": "i64 roman_to_int(const char *s) {\n    size_t n = strlen(s);\n    i64 total = 0;\n    for (size_t i = 0; i < n; i++) {\n        i64 v = roman_value(s[i]);\n        if (i + 1 < n && v < roman_value(s[i + 1])) total -= v;\n        else total += v;\n    }\n    return total;\n}"
+    },
+    "C++": {
+     "tokens": 93,
+     "source": "i64 roman_to_int(const std::string &s) {\n    i64 total = 0;\n    size_t n = s.size();\n    for (size_t i = 0; i < n; i++) {\n        i64 v = roman_value(s[i]);\n        if (i + 1 < n && v < roman_value(s[i + 1])) total -= v;\n        else total += v;\n    }\n    return total;\n}"
+    },
+    "Rust": {
+     "tokens": 99,
+     "source": "fn roman_to_int(s: &str) -> i64 {\n    let b = s.as_bytes();\n    let n = b.len();\n    let mut total: i64 = 0;\n    for i in 0..n {\n        let v = roman_value(b[i]);\n        if i + 1 < n && v < roman_value(b[i + 1]) {\n            total -= v;\n        } else {\n            total += v;\n        }\n    }\n    total\n}"
+    },
+    "Python": {
+     "tokens": 68,
+     "source": "def roman_to_int(s):\n    total = 0\n    n = len(s)\n    for i in range(n):\n        v = roman_value(s[i])\n        if i + 1 < n and v < roman_value(s[i + 1]):\n            total -= v\n        else:\n            total += v\n    return total"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "roman_value",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 97,
+     "source": "fn roman_value c char -> i64\n    if c == 'I'\n        return 1\n    if c == 'V'\n        return 5\n    if c == 'X'\n        return 10\n    if c == 'L'\n        return 50\n    if c == 'C'\n        return 100\n    if c == 'D'\n        return 500\n    if c == 'M'\n        return 1000\n    0"
+    },
+    "C": {
+     "tokens": 88,
+     "source": "i64 roman_value(char c) {\n    switch (c) {\n        case 'I': return 1;\n        case 'V': return 5;\n        case 'X': return 10;\n        case 'L': return 50;\n        case 'C': return 100;\n        case 'D': return 500;\n        case 'M': return 1000;\n        default: return 0;\n    }\n}"
+    },
+    "C++": {
+     "tokens": 88,
+     "source": "i64 roman_value(char c) {\n    switch (c) {\n        case 'I': return 1;\n        case 'V': return 5;\n        case 'X': return 10;\n        case 'L': return 50;\n        case 'C': return 100;\n        case 'D': return 500;\n        case 'M': return 1000;\n        default: return 0;\n    }\n}"
+    },
+    "Rust": {
+     "tokens": 84,
+     "source": "fn roman_value(c: u8) -> i64 {\n    match c {\n        b'I' => 1,\n        b'V' => 5,\n        b'X' => 10,\n        b'L' => 50,\n        b'C' => 100,\n        b'D' => 500,\n        b'M' => 1000,\n        _ => 0,\n    }\n}"
+    },
+    "Python": {
+     "tokens": 66,
+     "source": "def roman_value(c):\n    return {\n        \"I\": 1,\n        \"V\": 5,\n        \"X\": 10,\n        \"L\": 50,\n        \"C\": 100,\n        \"D\": 500,\n        \"M\": 1000,\n    }.get(c, 0)"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "strip_leading_zeros_len",
+   "category": "parsing",
+   "langs": {
+    "Lullaby": {
+     "tokens": 71,
+     "source": "fn strip_leading_zeros_len s string -> i64\n    let cs list<char> = chars(s)\n    let n i64 = len(cs)\n    let i i64 = 0\n    while i < n\n        if get(cs, i) != '0'\n            break\n        i += 1\n    n - i"
+    },
+    "C": {
+     "tokens": 54,
+     "source": "i64 strip_leading_zeros_len(const char *s) {\n    size_t n = strlen(s), i = 0;\n    while (i < n && s[i] == '0') i++;\n    return (i64)(n - i);\n}"
+    },
+    "C++": {
+     "tokens": 56,
+     "source": "i64 strip_leading_zeros_len(const std::string &s) {\n    size_t i = 0;\n    while (i < s.size() && s[i] == '0') i++;\n    return static_cast<i64>(s.size() - i);\n}"
+    },
+    "Rust": {
+     "tokens": 70,
+     "source": "fn strip_leading_zeros_len(s: &str) -> i64 {\n    let b = s.as_bytes();\n    let mut i = 0;\n    while i < b.len() && b[i] == b'0' {\n        i += 1;\n    }\n    (b.len() - i) as i64\n}"
+    },
+    "Python": {
+     "tokens": 43,
+     "source": "def strip_leading_zeros_len(s):\n    i = 0\n    while i < len(s) and s[i] == \"0\":\n        i += 1\n    return len(s) - i"
+    }
+   },
+   "present": 5
+  },
+  {
    "name": "dir_clockwise_index",
    "category": "state_machines",
    "langs": {
@@ -2550,6 +3876,433 @@
     "Python": {
      "tokens": 56,
      "source": "def turn_right(d):\n    match d:\n        case Direction.North:\n            return Direction.East\n        case Direction.East:\n            return Direction.South\n        case Direction.South:\n            return Direction.West\n        case Direction.West:\n            return Direction.North"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "abs_val",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 26,
+     "source": "fn abs_val x i64 -> i64\n    if x < 0\n        return 0 - x\n    x"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "count_above_mean",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 66,
+     "source": "fn count_above_mean a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] > mean\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 69,
+     "source": "int64_t count_above_mean(const int64_t *a, int64_t n) {\n    int64_t mean = mean_floor(a, n), count = 0;\n    for (int64_t i = 0; i < n; i++) if (a[i] > mean) count++;\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 79,
+     "source": "std::int64_t count_above_mean(const std::int64_t *a, std::int64_t n) {\n    std::int64_t mean = mean_floor(a, n), count = 0;\n    for (std::int64_t i = 0; i < n; i++) if (a[i] > mean) count++;\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 67,
+     "source": "fn count_above_mean(a: &[i64], n: i64) -> i64 {\n    let mean = mean_floor(a, n);\n    let mut count = 0;\n    for i in 0..n as usize { if a[i] > mean { count += 1; } }\n    count\n}"
+    },
+    "Python": {
+     "tokens": 55,
+     "source": "def count_above_mean(a: list, n: int) -> int:\n    mean = mean_floor(a, n)\n    count = 0\n    for i in range(n):\n        if a[i] > mean:\n            count += 1\n    return count"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "cumulative_max_last",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 54,
+     "source": "fn cumulative_max_last a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+    },
+    "C": {
+     "tokens": 64,
+     "source": "int64_t cumulative_max_last(const int64_t *a, int64_t n) {\n    int64_t m = a[0];\n    for (int64_t i = 1; i < n; i++) if (a[i] > m) m = a[i];\n    return m;\n}"
+    },
+    "C++": {
+     "tokens": 74,
+     "source": "std::int64_t cumulative_max_last(const std::int64_t *a, std::int64_t n) {\n    std::int64_t m = a[0];\n    for (std::int64_t i = 1; i < n; i++) if (a[i] > m) m = a[i];\n    return m;\n}"
+    },
+    "Rust": {
+     "tokens": 57,
+     "source": "fn cumulative_max_last(a: &[i64], n: i64) -> i64 {\n    let mut m = a[0];\n    for i in 1..n as usize { if a[i] > m { m = a[i]; } }\n    m\n}"
+    },
+    "Python": {
+     "tokens": 49,
+     "source": "def cumulative_max_last(a: list, n: int) -> int:\n    m = a[0]\n    for i in range(1, n):\n        if a[i] > m:\n            m = a[i]\n    return m"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "max_val",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 53,
+     "source": "fn max_val a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] > m\n            m = a[i]\n    m"
+    },
+    "C": {
+     "tokens": 63,
+     "source": "int64_t max_val(const int64_t *a, int64_t n) {\n    int64_t m = a[0];\n    for (int64_t i = 1; i < n; i++) if (a[i] > m) m = a[i];\n    return m;\n}"
+    },
+    "C++": {
+     "tokens": 73,
+     "source": "std::int64_t max_val(const std::int64_t *a, std::int64_t n) {\n    std::int64_t m = a[0];\n    for (std::int64_t i = 1; i < n; i++) if (a[i] > m) m = a[i];\n    return m;\n}"
+    },
+    "Rust": {
+     "tokens": 56,
+     "source": "fn max_val(a: &[i64], n: i64) -> i64 {\n    let mut m = a[0];\n    for i in 1..n as usize { if a[i] > m { m = a[i]; } }\n    m\n}"
+    },
+    "Python": {
+     "tokens": 48,
+     "source": "def max_val(a: list, n: int) -> int:\n    m = a[0]\n    for i in range(1, n):\n        if a[i] > m:\n            m = a[i]\n    return m"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "mean_floor",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 23,
+     "source": "fn mean_floor a array<i64> n i64 -> i64\n    total(a, n) / n"
+    },
+    "C": {
+     "tokens": 29,
+     "source": "int64_t mean_floor(const int64_t *a, int64_t n) {\n    return total(a, n) / n;\n}"
+    },
+    "C++": {
+     "tokens": 35,
+     "source": "std::int64_t mean_floor(const std::int64_t *a, std::int64_t n) {\n    return total(a, n) / n;\n}"
+    },
+    "Rust": {
+     "tokens": 28,
+     "source": "fn mean_floor(a: &[i64], n: i64) -> i64 {\n    total(a, n) / n\n}"
+    },
+    "Python": {
+     "tokens": 23,
+     "source": "def mean_floor(a: list, n: int) -> int:\n    return total(a, n) // n"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "median_sorted",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 27,
+     "source": "fn median_sorted a array<i64> n i64 -> i64\n    a[(n - 1) / 2]"
+    },
+    "C": {
+     "tokens": 32,
+     "source": "int64_t median_sorted(const int64_t *a, int64_t n) {\n    return a[(n - 1) / 2];\n}"
+    },
+    "C++": {
+     "tokens": 38,
+     "source": "std::int64_t median_sorted(const std::int64_t *a, std::int64_t n) {\n    return a[(n - 1) / 2];\n}"
+    },
+    "Rust": {
+     "tokens": 34,
+     "source": "fn median_sorted(a: &[i64], n: i64) -> i64 {\n    a[((n - 1) / 2) as usize]\n}"
+    },
+    "Python": {
+     "tokens": 27,
+     "source": "def median_sorted(a: list, n: int) -> int:\n    return a[(n - 1) // 2]"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "min_val",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 53,
+     "source": "fn min_val a array<i64> n i64 -> i64\n    let m i64 = a[0]\n    for i from 1 to n - 1\n        if a[i] < m\n            m = a[i]\n    m"
+    },
+    "C": {
+     "tokens": 63,
+     "source": "int64_t min_val(const int64_t *a, int64_t n) {\n    int64_t m = a[0];\n    for (int64_t i = 1; i < n; i++) if (a[i] < m) m = a[i];\n    return m;\n}"
+    },
+    "C++": {
+     "tokens": 73,
+     "source": "std::int64_t min_val(const std::int64_t *a, std::int64_t n) {\n    std::int64_t m = a[0];\n    for (std::int64_t i = 1; i < n; i++) if (a[i] < m) m = a[i];\n    return m;\n}"
+    },
+    "Rust": {
+     "tokens": 56,
+     "source": "fn min_val(a: &[i64], n: i64) -> i64 {\n    let mut m = a[0];\n    for i in 1..n as usize { if a[i] < m { m = a[i]; } }\n    m\n}"
+    },
+    "Python": {
+     "tokens": 48,
+     "source": "def min_val(a: list, n: int) -> int:\n    m = a[0]\n    for i in range(1, n):\n        if a[i] < m:\n            m = a[i]\n    return m"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "mode_count_max",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 98,
+     "source": "fn mode_count_max a array<i64> n i64 -> i64\n    if n == 0\n        return 0\n    let best i64 = 1\n    let run i64 = 1\n    for i from 1 to n - 1\n        if a[i] == a[i - 1]\n            run += 1\n        else\n            run = 1\n        if run > best\n            best = run\n    best"
+    },
+    "C": {
+     "tokens": 104,
+     "source": "int64_t mode_count_max(const int64_t *a, int64_t n) {\n    if (n == 0) return 0;\n    int64_t best = 1, run = 1;\n    for (int64_t i = 1; i < n; i++) {\n        run = (a[i] == a[i - 1]) ? run + 1 : 1;\n        if (run > best) best = run;\n    }\n    return best;\n}"
+    },
+    "C++": {
+     "tokens": 114,
+     "source": "std::int64_t mode_count_max(const std::int64_t *a, std::int64_t n) {\n    if (n == 0) return 0;\n    std::int64_t best = 1, run = 1;\n    for (std::int64_t i = 1; i < n; i++) {\n        run = (a[i] == a[i - 1]) ? run + 1 : 1;\n        if (run > best) best = run;\n    }\n    return best;\n}"
+    },
+    "Rust": {
+     "tokens": 100,
+     "source": "fn mode_count_max(a: &[i64], n: i64) -> i64 {\n    if n == 0 { return 0; }\n    let mut best = 1;\n    let mut run = 1;\n    for i in 1..n as usize {\n        run = if a[i] == a[i - 1] { run + 1 } else { 1 };\n        if run > best { best = run; }\n    }\n    best\n}"
+    },
+    "Python": {
+     "tokens": 85,
+     "source": "def mode_count_max(a: list, n: int) -> int:\n    if n == 0:\n        return 0\n    best = 1\n    run = 1\n    for i in range(1, n):\n        run = run + 1 if a[i] == a[i - 1] else 1\n        if run > best:\n            best = run\n    return best"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "product_mod",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 52,
+     "source": "fn product_mod a array<i64> n i64 m i64 -> i64\n    let prod i64 = 1\n    for i from 0 to n - 1\n        prod = rem(prod * a[i], m)\n    prod"
+    },
+    "C": {
+     "tokens": 65,
+     "source": "int64_t product_mod(const int64_t *a, int64_t n, int64_t m) {\n    int64_t prod = 1;\n    for (int64_t i = 0; i < n; i++) prod = (prod * a[i]) % m;\n    return prod;\n}"
+    },
+    "C++": {
+     "tokens": 77,
+     "source": "std::int64_t product_mod(const std::int64_t *a, std::int64_t n, std::int64_t m) {\n    std::int64_t prod = 1;\n    for (std::int64_t i = 0; i < n; i++) prod = (prod * a[i]) % m;\n    return prod;\n}"
+    },
+    "Rust": {
+     "tokens": 58,
+     "source": "fn product_mod(a: &[i64], n: i64, m: i64) -> i64 {\n    let mut prod = 1;\n    for i in 0..n as usize { prod = (prod * a[i]) % m; }\n    prod\n}"
+    },
+    "Python": {
+     "tokens": 46,
+     "source": "def product_mod(a: list, n: int, m: int) -> int:\n    prod = 1\n    for i in range(n):\n        prod = (prod * a[i]) % m\n    return prod"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "range_span",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 29,
+     "source": "fn range_span a array<i64> n i64 -> i64\n    max_val(a, n) - min_val(a, n)"
+    },
+    "C": {
+     "tokens": 34,
+     "source": "int64_t range_span(const int64_t *a, int64_t n) {\n    return max_val(a, n) - min_val(a, n);\n}"
+    },
+    "C++": {
+     "tokens": 40,
+     "source": "std::int64_t range_span(const std::int64_t *a, std::int64_t n) {\n    return max_val(a, n) - min_val(a, n);\n}"
+    },
+    "Rust": {
+     "tokens": 33,
+     "source": "fn range_span(a: &[i64], n: i64) -> i64 {\n    max_val(a, n) - min_val(a, n)\n}"
+    },
+    "Python": {
+     "tokens": 29,
+     "source": "def range_span(a: list, n: int) -> int:\n    return max_val(a, n) - min_val(a, n)"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "rem",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 22,
+     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
+    }
+   },
+   "present": 1
+  },
+  {
+   "name": "running_max_sum",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 89,
+     "source": "fn running_max_sum a array<i64> n i64 -> i64\n    let best i64 = a[0]\n    let cur i64 = a[0]\n    for i from 1 to n - 1\n        if cur + a[i] > a[i]\n            cur = cur + a[i]\n        else\n            cur = a[i]\n        if cur > best\n            best = cur\n    best"
+    },
+    "C": {
+     "tokens": 94,
+     "source": "int64_t running_max_sum(const int64_t *a, int64_t n) {\n    int64_t best = a[0], cur = a[0];\n    for (int64_t i = 1; i < n; i++) {\n        cur = (cur + a[i] > a[i]) ? cur + a[i] : a[i];\n        if (cur > best) best = cur;\n    }\n    return best;\n}"
+    },
+    "C++": {
+     "tokens": 104,
+     "source": "std::int64_t running_max_sum(const std::int64_t *a, std::int64_t n) {\n    std::int64_t best = a[0], cur = a[0];\n    for (std::int64_t i = 1; i < n; i++) {\n        cur = (cur + a[i] > a[i]) ? cur + a[i] : a[i];\n        if (cur > best) best = cur;\n    }\n    return best;\n}"
+    },
+    "Rust": {
+     "tokens": 91,
+     "source": "fn running_max_sum(a: &[i64], n: i64) -> i64 {\n    let mut best = a[0];\n    let mut cur = a[0];\n    for i in 1..n as usize {\n        cur = if cur + a[i] > a[i] { cur + a[i] } else { a[i] };\n        if cur > best { best = cur; }\n    }\n    best\n}"
+    },
+    "Python": {
+     "tokens": 75,
+     "source": "def running_max_sum(a: list, n: int) -> int:\n    best = a[0]\n    cur = a[0]\n    for i in range(1, n):\n        cur = cur + a[i] if cur + a[i] > a[i] else a[i]\n        if cur > best:\n            best = cur\n    return best"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "sum_abs_dev",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 62,
+     "source": "fn sum_abs_dev a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += abs_val(a[i] - mean)\n    sum"
+    },
+    "C": {
+     "tokens": 86,
+     "source": "int64_t sum_abs_dev(const int64_t *a, int64_t n) {\n    int64_t mean = mean_floor(a, n), sum = 0;\n    for (int64_t i = 0; i < n; i++) {\n        int64_t d = a[i] - mean;\n        sum += d < 0 ? -d : d;\n    }\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 80,
+     "source": "std::int64_t sum_abs_dev(const std::int64_t *a, std::int64_t n) {\n    std::int64_t mean = mean_floor(a, n), sum = 0;\n    for (std::int64_t i = 0; i < n; i++) sum += std::llabs(a[i] - mean);\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 64,
+     "source": "fn sum_abs_dev(a: &[i64], n: i64) -> i64 {\n    let mean = mean_floor(a, n);\n    let mut sum = 0;\n    for i in 0..n as usize { sum += (a[i] - mean).abs(); }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 50,
+     "source": "def sum_abs_dev(a: list, n: int) -> int:\n    mean = mean_floor(a, n)\n    s = 0\n    for i in range(n):\n        s += abs(a[i] - mean)\n    return s"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "total",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 43,
+     "source": "fn total a array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i]\n    sum"
+    },
+    "C": {
+     "tokens": 53,
+     "source": "int64_t total(const int64_t *a, int64_t n) {\n    int64_t sum = 0;\n    for (int64_t i = 0; i < n; i++) sum += a[i];\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 63,
+     "source": "std::int64_t total(const std::int64_t *a, std::int64_t n) {\n    std::int64_t sum = 0;\n    for (std::int64_t i = 0; i < n; i++) sum += a[i];\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 46,
+     "source": "fn total(a: &[i64], n: i64) -> i64 {\n    let mut sum = 0;\n    for i in 0..n as usize { sum += a[i]; }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 35,
+     "source": "def total(a: list, n: int) -> int:\n    s = 0\n    for i in range(n):\n        s += a[i]\n    return s"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "variance_scaled",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 69,
+     "source": "fn variance_scaled a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let sum i64 = 0\n    for i from 0 to n - 1\n        let d i64 = a[i] - mean\n        sum += d * d\n    sum"
+    },
+    "C": {
+     "tokens": 79,
+     "source": "int64_t variance_scaled(const int64_t *a, int64_t n) {\n    int64_t mean = mean_floor(a, n), sum = 0;\n    for (int64_t i = 0; i < n; i++) {\n        int64_t d = a[i] - mean;\n        sum += d * d;\n    }\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 91,
+     "source": "std::int64_t variance_scaled(const std::int64_t *a, std::int64_t n) {\n    std::int64_t mean = mean_floor(a, n), sum = 0;\n    for (std::int64_t i = 0; i < n; i++) {\n        std::int64_t d = a[i] - mean;\n        sum += d * d;\n    }\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 70,
+     "source": "fn variance_scaled(a: &[i64], n: i64) -> i64 {\n    let mean = mean_floor(a, n);\n    let mut sum = 0;\n    for i in 0..n as usize {\n        let d = a[i] - mean;\n        sum += d * d;\n    }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 55,
+     "source": "def variance_scaled(a: list, n: int) -> int:\n    mean = mean_floor(a, n)\n    s = 0\n    for i in range(n):\n        d = a[i] - mean\n        s += d * d\n    return s"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "weighted_sum",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 53,
+     "source": "fn weighted_sum a array<i64> w array<i64> n i64 -> i64\n    let sum i64 = 0\n    for i from 0 to n - 1\n        sum += a[i] * w[i]\n    sum"
+    },
+    "C": {
+     "tokens": 65,
+     "source": "int64_t weighted_sum(const int64_t *a, const int64_t *w, int64_t n) {\n    int64_t sum = 0;\n    for (int64_t i = 0; i < n; i++) sum += a[i] * w[i];\n    return sum;\n}"
+    },
+    "C++": {
+     "tokens": 77,
+     "source": "std::int64_t weighted_sum(const std::int64_t *a, const std::int64_t *w, std::int64_t n) {\n    std::int64_t sum = 0;\n    for (std::int64_t i = 0; i < n; i++) sum += a[i] * w[i];\n    return sum;\n}"
+    },
+    "Rust": {
+     "tokens": 57,
+     "source": "fn weighted_sum(a: &[i64], w: &[i64], n: i64) -> i64 {\n    let mut sum = 0;\n    for i in 0..n as usize { sum += a[i] * w[i]; }\n    sum\n}"
+    },
+    "Python": {
+     "tokens": 44,
+     "source": "def weighted_sum(a: list, w: list, n: int) -> int:\n    s = 0\n    for i in range(n):\n        s += a[i] * w[i]\n    return s"
+    }
+   },
+   "present": 5
+  },
+  {
+   "name": "zscore_sign_count",
+   "category": "statistics",
+   "langs": {
+    "Lullaby": {
+     "tokens": 66,
+     "source": "fn zscore_sign_count a array<i64> n i64 -> i64\n    let mean i64 = mean_floor(a, n)\n    let count i64 = 0\n    for i from 0 to n - 1\n        if a[i] > mean\n            count += 1\n    count"
+    },
+    "C": {
+     "tokens": 69,
+     "source": "int64_t zscore_sign_count(const int64_t *a, int64_t n) {\n    int64_t mean = mean_floor(a, n), count = 0;\n    for (int64_t i = 0; i < n; i++) if (a[i] > mean) count++;\n    return count;\n}"
+    },
+    "C++": {
+     "tokens": 79,
+     "source": "std::int64_t zscore_sign_count(const std::int64_t *a, std::int64_t n) {\n    std::int64_t mean = mean_floor(a, n), count = 0;\n    for (std::int64_t i = 0; i < n; i++) if (a[i] > mean) count++;\n    return count;\n}"
+    },
+    "Rust": {
+     "tokens": 67,
+     "source": "fn zscore_sign_count(a: &[i64], n: i64) -> i64 {\n    let mean = mean_floor(a, n);\n    let mut count = 0;\n    for i in 0..n as usize { if a[i] > mean { count += 1; } }\n    count\n}"
+    },
+    "Python": {
+     "tokens": 55,
+     "source": "def zscore_sign_count(a: list, n: int) -> int:\n    mean = mean_floor(a, n)\n    count = 0\n    for i in range(n):\n        if a[i] > mean:\n            count += 1\n    return count"
     }
    },
    "present": 5
@@ -3847,11 +5600,11 @@
   }
  ],
  "totals": {
-  "Lullaby": 7450,
-  "C": 7894,
-  "C++": 7991,
-  "Rust": 7543,
-  "Python": 5749
+  "Lullaby": 11672,
+  "C": 12161,
+  "C++": 12337,
+  "Rust": 11587,
+  "Python": 8766
  },
  "categories": {
   "arrays": {
@@ -3889,12 +5642,40 @@
    "Rust": 519,
    "Python": 336
   },
+  "geometry": {
+   "Lullaby": 586,
+   "C": 647,
+   "C++": 727,
+   "Rust": 632,
+   "Python": 558
+  },
+  "number_theory": {
+   "Lullaby": 988,
+   "C": 1098,
+   "C++": 1098,
+   "Rust": 1089,
+   "Python": 785
+  },
+  "parsing": {
+   "Lullaby": 1811,
+   "C": 1553,
+   "C++": 1424,
+   "Rust": 1439,
+   "Python": 950
+  },
   "state_machines": {
    "Lullaby": 655,
    "C": 701,
    "C++": 890,
    "Rust": 761,
    "Python": 697
+  },
+  "statistics": {
+   "Lullaby": 837,
+   "C": 969,
+   "C++": 1097,
+   "Rust": 884,
+   "Python": 724
   },
   "text_processing": {
    "Lullaby": 989,
@@ -3918,5 +5699,5 @@
    "Python": 621
   }
  },
- "n_functions": 140
+ "n_functions": 204
 }

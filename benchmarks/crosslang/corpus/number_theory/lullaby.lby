@@ -1,0 +1,169 @@
+# Cross-language number theory suite (Lullaby). Classic integer number theory.
+# Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
+
+fn rem a i64 b i64 -> i64
+    a - (a / b) * b
+
+fn gcd a i64 b i64 -> i64
+    while b != 0
+        let t i64 = rem(a, b)
+        a = b
+        b = t
+    a
+
+fn int_pow base i64 exp i64 -> i64
+    let r i64 = 1
+    for i from 1 to exp
+        r = r * base
+    r
+
+fn num_digits n i64 -> i64
+    if n == 0
+        return 1
+    let c i64 = 0
+    while n > 0
+        c += 1
+        n = n / 10
+    c
+
+fn lcm a i64 b i64 -> i64
+    a / gcd(a, b) * b
+
+fn divisor_count n i64 -> i64
+    let count i64 = 0
+    let d i64 = 1
+    while d * d <= n
+        if rem(n, d) == 0
+            count += 1
+            if d != n / d
+                count += 1
+        d += 1
+    count
+
+fn divisor_sum n i64 -> i64
+    let sum i64 = 0
+    let d i64 = 1
+    while d * d <= n
+        if rem(n, d) == 0
+            sum += d
+            let other i64 = n / d
+            if other != d
+                sum += other
+        d += 1
+    sum
+
+fn is_perfect n i64 -> i64
+    if divisor_sum(n) - n == n
+        1
+    else
+        0
+
+fn euler_totient n i64 -> i64
+    let result i64 = n
+    let p i64 = 2
+    while p * p <= n
+        if rem(n, p) == 0
+            while rem(n, p) == 0
+                n = n / p
+            result = result - result / p
+        p += 1
+    if n > 1
+        result = result - result / n
+    result
+
+fn count_coprime_below n i64 -> i64
+    let count i64 = 0
+    for k from 1 to n - 1
+        if gcd(k, n) == 1
+            count += 1
+    count
+
+fn digital_root n i64 -> i64
+    while n >= 10
+        let s i64 = 0
+        while n > 0
+            s += rem(n, 10)
+            n = n / 10
+        n = s
+    n
+
+fn is_armstrong n i64 -> i64
+    let d i64 = num_digits(n)
+    let sum i64 = 0
+    let m i64 = n
+    while m > 0
+        sum += int_pow(rem(m, 10), d)
+        m = m / 10
+    if sum == n
+        1
+    else
+        0
+
+fn reverse_digits n i64 -> i64
+    let r i64 = 0
+    while n > 0
+        r = r * 10 + rem(n, 10)
+        n = n / 10
+    r
+
+fn is_palindrome_number n i64 -> i64
+    if reverse_digits(n) == n
+        1
+    else
+        0
+
+fn sum_of_squares_digits n i64 -> i64
+    let sum i64 = 0
+    while n > 0
+        let d i64 = rem(n, 10)
+        sum += d * d
+        n = n / 10
+    sum
+
+fn is_happy n i64 -> i64
+    let steps i64 = 0
+    while n != 1 and steps < 1000
+        n = sum_of_squares_digits(n)
+        steps += 1
+    if n == 1
+        1
+    else
+        0
+
+fn to_base_digit_sum n i64 b i64 -> i64
+    let sum i64 = 0
+    while n > 0
+        sum += rem(n, b)
+        n = n / b
+    sum
+
+fn count_trailing_zeros_factorial n i64 -> i64
+    let count i64 = 0
+    let power i64 = 5
+    while power <= n
+        count += n / power
+        power = power * 5
+    count
+
+fn gcd_of_range lo i64 hi i64 -> i64
+    let g i64 = lo
+    for k from lo to hi
+        g = gcd(g, k)
+    g
+
+fn main -> void
+    println("lcm(12,18)=" + to_string(lcm(12, 18)))
+    println("divisor_count(36)=" + to_string(divisor_count(36)))
+    println("divisor_sum(36)=" + to_string(divisor_sum(36)))
+    println("is_perfect(28)=" + to_string(is_perfect(28)))
+    println("euler_totient(36)=" + to_string(euler_totient(36)))
+    println("count_coprime_below(36)=" + to_string(count_coprime_below(36)))
+    println("digital_root(9875)=" + to_string(digital_root(9875)))
+    println("is_armstrong(153)=" + to_string(is_armstrong(153)))
+    println("reverse_digits(1234)=" + to_string(reverse_digits(1234)))
+    println("is_palindrome_number(1221)=" + to_string(is_palindrome_number(1221)))
+    println("sum_of_squares_digits(123)=" + to_string(sum_of_squares_digits(123)))
+    println("is_happy(19)=" + to_string(is_happy(19)))
+    println("to_base_digit_sum(255,16)=" + to_string(to_base_digit_sum(255, 16)))
+    println("count_trailing_zeros_factorial(100)=" + to_string(count_trailing_zeros_factorial(100)))
+    println("gcd_of_range(12,24)=" + to_string(gcd_of_range(12, 24)))

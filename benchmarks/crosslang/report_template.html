@@ -1,0 +1,369 @@
+<title>Lullaby cross-language benchmark</title>
+<style>
+/* ===== Lullaby cross-language benchmark  -  branded dashboard ===== */
+@font-face{font-family:'Nunito';font-style:normal;font-weight:400 800;font-display:swap;src:url(/*FONT_DATA*/) format('woff2');}
+:root{
+  --ground:#fdf9f3; --panel:#fffdf9; --panel-2:#f6f0ff; --ink:#372a54; --muted:#7c6fa6;
+  --line:#ece3f7; --lav:#8b6ff0; --lav-soft:#c4b5fd; --lav-050:#f4f0ff;
+  --sky:#bae6fd; --peach:#fecaca; --moon:#ffdca6;
+  --good:#0a7d5a; --good-bg:#d9f5ea; --warn:#9a5a12; --warn-bg:#ffe9cf;
+  --code-bg:#211a34; --code-fg:#f3eefe;
+  --cLullaby:#8b6ff0; --cC:#64748b; --cCpp:#4f46e5; --cRust:#e06a3b; --cPython:#3f7ca8;
+  --maxw:1180px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --ground:#161020; --panel:#1e1730; --panel-2:#241c3c; --ink:#f1ecff; --muted:#b6a8db;
+  --line:#2e2440; --lav:#c9bafd; --lav-050:#241c3c; --code-bg:#100b1c; --code-fg:#f1ecff;
+  --good:#6ee7b7; --good-bg:#0f2f24; --warn:#fbbf77; --warn-bg:#3a2410;
+}}
+:root[data-theme="dark"]{
+  --ground:#161020; --panel:#1e1730; --panel-2:#241c3c; --ink:#f1ecff; --muted:#b6a8db;
+  --line:#2e2440; --lav:#c9bafd; --lav-050:#241c3c; --code-bg:#100b1c; --code-fg:#f1ecff;
+  --good:#6ee7b7; --good-bg:#0f2f24; --warn:#fbbf77; --warn-bg:#3a2410;
+}
+:root[data-theme="light"]{
+  --ground:#fdf9f3; --panel:#fffdf9; --panel-2:#f6f0ff; --ink:#372a54; --muted:#7c6fa6;
+  --line:#ece3f7; --lav:#8b6ff0; --lav-050:#f4f0ff; --code-bg:#211a34; --code-fg:#f3eefe;
+  --good:#0a7d5a; --good-bg:#d9f5ea; --warn:#9a5a12; --warn-bg:#ffe9cf;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font-family:'Nunito',ui-rounded,"Segoe UI",system-ui,-apple-system,sans-serif;line-height:1.55;
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+.mono{font-family:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace}
+h1,h2,h3{margin:0;letter-spacing:-.02em;text-wrap:balance}
+a{color:var(--lav)}
+.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;font-weight:800;color:var(--muted)}
+
+/* header */
+header{border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel-2),transparent)}
+.head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:26px 0 22px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:12px}
+.wordmark{font-weight:800;font-size:1.5rem;color:var(--lav);letter-spacing:-.03em}
+.brand .sub{color:var(--muted);font-weight:700;font-size:.95rem}
+h1.title{font-size:clamp(1.5rem,3.4vw,2.1rem);font-weight:800;margin-top:2px}
+.lead{color:var(--muted);font-weight:600;max-width:60ch;margin-top:6px}
+.toggle{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;
+  padding:8px 14px;font:inherit;font-weight:700;font-size:.85rem;cursor:pointer}
+.toggle:hover{border-color:var(--lav)}
+
+/* tabs */
+.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-top:20px}
+.tab{appearance:none;border:0;background:none;font:inherit;font-weight:800;color:var(--muted);
+  padding:12px 16px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;border-radius:8px 8px 0 0}
+.tab:hover{color:var(--ink);background:var(--lav-050)}
+.tab[aria-selected="true"]{color:var(--lav);border-bottom-color:var(--lav)}
+.panel{padding:30px 0 60px}
+.panel[hidden]{display:none}
+section+section{margin-top:34px}
+.h2row{display:flex;align-items:baseline;gap:12px;margin-bottom:14px}
+h2{font-size:1.35rem;font-weight:800}
+.note{color:var(--muted);font-size:.9rem}
+
+/* cards + grid */
+.grid{display:grid;gap:16px}
+.g4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
+.stat .k{font-size:.8rem;color:var(--muted);font-weight:700}
+.stat .v{font-size:2rem;font-weight:800;letter-spacing:-.02em;line-height:1.1;margin-top:4px}
+.stat .d{font-size:.85rem;color:var(--muted);margin-top:4px}
+.pill{display:inline-block;font-size:.72rem;font-weight:800;border-radius:999px;padding:2px 9px}
+.pill.good{color:var(--good);background:var(--good-bg)}
+.pill.warn{color:var(--warn);background:var(--warn-bg)}
+.pill.flat{color:var(--muted);background:var(--lav-050)}
+
+/* bars */
+.bars{display:flex;flex-direction:column;gap:10px}
+.bar{display:grid;grid-template-columns:120px 1fr auto;align-items:center;gap:12px}
+.bar .lab{font-weight:700;font-size:.9rem;white-space:nowrap}
+.bar .track{background:var(--lav-050);border-radius:8px;height:22px;overflow:hidden}
+.bar .fill{height:100%;border-radius:8px;transition:width .5s ease}
+.bar .val{font-weight:800;font-size:.9rem;min-width:66px;text-align:right}
+
+/* table */
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{padding:9px 13px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{background:var(--panel-2);font-weight:800;color:var(--muted);position:sticky;top:0}
+tbody tr{border-top:1px solid var(--line)}
+td.win{color:var(--good);font-weight:800}
+td.lose{color:var(--warn)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:.82rem;font-weight:700;color:var(--muted);margin:4px 0 12px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+/* prose */
+.prose{max-width:74ch}
+.prose p{margin:0 0 14px}
+.prose ul{margin:0 0 16px;padding-left:20px}
+.prose li{margin:6px 0}
+.prose strong{color:var(--ink)}
+.callout{border-left:3px solid var(--lav);background:var(--lav-050);border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0}
+
+/* gaps */
+.gap{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:var(--panel)}
+.gap h3{font-size:1.05rem;font-weight:800;margin-bottom:4px;display:flex;align-items:center;gap:10px}
+.gap .impact{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.gap p{margin:6px 0 0;color:var(--muted);font-size:.9rem}
+
+/* implementations */
+.impl-top{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+select,input[type=search]{font:inherit;font-weight:700;background:var(--panel);color:var(--ink);
+  border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+input[type=search]{min-width:220px}
+.codegrid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+.codecard{border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+.codehead{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;font-weight:800;font-size:.86rem;border-bottom:1px solid var(--line)}
+.codehead .tk{font-weight:800;font-size:.75rem;color:var(--muted)}
+pre{margin:0;background:var(--code-bg);color:var(--code-fg);padding:14px;overflow-x:auto;font-size:.8rem;line-height:1.5;flex:1}
+pre code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
+footer{border-top:1px solid var(--line);color:var(--muted);font-size:.85rem;padding:22px 0 40px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<script id="corpus-data" type="application/json">/*CORPUS_DATA*/</script>
+<script id="perf-data" type="application/json">/*PERF_DATA*/</script>
+
+<header><div class="wrap">
+  <div class="head">
+    <div>
+      <div class="brand"><span class="wordmark">lullaby</span><span class="sub">cross-language benchmark</span></div>
+      <h1 class="title">Tokens &amp; performance vs C, C++, Rust, Python</h1>
+      <p class="lead">Every function implemented identically in five languages. How many tokens an LLM spends to write the same logic, and how fast the compiled result runs.</p>
+    </div>
+    <button class="toggle" id="themeBtn" aria-label="Toggle theme"> theme</button>
+  </div>
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button class="tab" role="tab" data-tab="tokens" aria-selected="false">Tokens</button>
+    <button class="tab" role="tab" data-tab="perf" aria-selected="false">Performance</button>
+    <button class="tab" role="tab" data-tab="findings" aria-selected="false">Findings</button>
+    <button class="tab" role="tab" data-tab="gaps" aria-selected="false">Language gaps</button>
+    <button class="tab" role="tab" data-tab="impl" aria-selected="false">Implementations</button>
+  </div>
+</div></header>
+
+<main class="wrap">
+  <!-- OVERVIEW -->
+  <div class="panel" id="p-overview" role="tabpanel">
+    <div class="grid g4" id="ov-cards"></div>
+    <section>
+      <div class="h2row"><h2>Total tokens</h2><span class="note" id="ov-corpus-note"></span></div>
+      <div class="note" style="margin-bottom:12px">Sum of <code>o200k_base</code> tokens across every function (definitions only  -  comments, imports and drivers stripped). Lower is terser.</div>
+      <div class="card"><div class="bars" id="ov-tokbars"></div></div>
+    </section>
+    <section>
+      <div class="h2row"><h2>Performance headline</h2><span class="note">count_primes_below(300000), whole-program wall time</span></div>
+      <div class="card"><div class="bars" id="ov-perfbars"></div></div>
+    </section>
+  </div>
+
+  <!-- TOKENS -->
+  <div class="panel" id="p-tokens" role="tabpanel" hidden>
+    <div class="h2row"><h2>Tokens by category</h2><span class="note">winner (fewest) highlighted per row</span></div>
+    <div class="legend" id="tok-legend"></div>
+    <div class="tablewrap"><table id="tok-table"></table></div>
+    <section>
+      <div class="h2row"><h2>Where Lullaby wins &amp; loses</h2></div>
+      <div class="card"><div class="bars" id="tok-ratiobars"></div></div>
+      <p class="note" style="margin-top:10px">Bar = Lullaby tokens / the best other language in that category. Under 1.0 (green) = Lullaby is terser than every other language; over 1.0 (amber) = at least one language beats it.</p>
+    </section>
+  </div>
+
+  <!-- PERFORMANCE -->
+  <div class="panel" id="p-perf" role="tabpanel" hidden>
+    <div id="perf-workloads"></div>
+    <section>
+      <div class="h2row"><h2>Native optimization campaign</h2><span class="note">how Lullaby's native backend closed on C this campaign</span></div>
+      <div class="grid g2" id="perf-history"></div>
+    </section>
+  </div>
+
+  <!-- FINDINGS -->
+  <div class="panel" id="p-findings" role="tabpanel" hidden>
+    <div class="prose">
+      <div class="h2row"><h2>What the numbers say</h2></div>
+      <div class="callout"><strong>Headline.</strong> Across 204 real-world functions, Lullaby is <strong>terser than C and C++</strong> (4-6% fewer tokens) and <strong>on par with Rust</strong>, while its native code runs within <strong>~1.2-1.6x of C</strong> and <strong>17-27x faster than CPython</strong>. It is <em>not</em> "half the tokens of C"  -  that isn't borne out. The real, defensible claim is <em>as terse as the tersest systems language (Rust), ahead of C/C++, at near-C speed</em>.</p></div>
+      <h3>Tokens</h3>
+      <p><strong>Python is the tersest overall</strong> (dynamic typing, no annotations)  -  25% fewer tokens  -  and Lullaby cannot match it on scripting-shaped code. Among the languages Lullaby actually competes with on performance  -  C, C++, Rust  -  it is <strong>the joint-tersest</strong>: level with Rust, and 4-6% ahead of C/C++.</p>
+      <p>The advantage is <strong>uneven and instructive</strong>. Lullaby is at its best on <strong>structured, branch-heavy logic</strong>: enum + <code>match</code> state machines, record/struct math, numeric business logic. It is at its <strong>worst on text processing and validation</strong>, where three concrete language gaps inflate its token count (see Language gaps): no <code>%</code> operator, no string <code>+=</code>, and no direct character indexing.</p>
+      <h3>Performance</h3>
+      <p>Lullaby's native backend clusters with C/C++/Rust (all ~1x) and leaves CPython far behind. The remaining gap to C is <strong>optimizer maturity, not language design</strong>  -  the same campaign already moved native fib from 1.72x to 1.2x C and loops from 5.6x to 2.1x C with register allocation. Interpreted tiers (ast/ir/bytecode) are ~200-1200x C and are dev-time tools, not the performance story.</p>
+      <h3>Honest caveats</h3>
+      <ul>
+        <li>The corpus is deterministic integer/string logic  -  it deliberately excludes GC-pressure, heavy generics, and async, where the picture would differ.</li>
+        <li>Every implementation is written idiomatic-but-minimal in each language (not code-golfed), and every Lullaby file passes <code>lullaby check</code>. Tokens count definitions only.</li>
+        <li>Python's `%`/floor-division coincide with the others only because inputs are non-negative.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- GAPS -->
+  <div class="panel" id="p-gaps" role="tabpanel" hidden>
+    <div class="h2row"><h2>Language gaps -> token &amp; speed wins</h2><span class="note">ranked by combined impact</span></div>
+    <p class="note" style="max-width:74ch;margin-bottom:18px">Each gap was hit while writing this corpus. Fixing them improves the token count (less boilerplate to generate) and/or native performance (fewer instructions). Tags: <span class="pill good">tokens</span> <span class="pill warn">performance</span> <span class="pill flat">effort</span>.</p>
+    <div class="grid g2" id="gap-list"></div>
+  </div>
+
+  <!-- IMPLEMENTATIONS -->
+  <div class="panel" id="p-impl" role="tabpanel" hidden>
+    <div class="h2row"><h2>Side-by-side implementations</h2><span class="note" id="impl-count"></span></div>
+    <div class="impl-top">
+      <label>Category <select id="impl-cat"></select></label>
+      <label>Function <select id="impl-fn"></select></label>
+      <input type="search" id="impl-search" placeholder="search functions..." aria-label="search functions">
+    </div>
+    <div class="codegrid" id="impl-code"></div>
+  </div>
+</main>
+
+<footer><div class="wrap">
+  Generated from <span class="mono">benchmarks/crosslang/</span>  -  <span id="foot-n"></span> functions, tokenised with <span class="mono">o200k_base</span>. Lullaby files verified with <span class="mono">lullaby check</span>. Serious systems code. Sweet dreams.
+</div></footer>
+
+<script>
+const LANGCOLOR={Lullaby:'var(--cLullaby)',C:'var(--cC)','C++':'var(--cCpp)',Rust:'var(--cRust)',Python:'var(--cPython)'};
+const RAWC={Lullaby:'#8b6ff0',C:'#64748b','C++':'#4f46e5',Rust:'#e06a3b',Python:'#3f7ca8'};
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const D=JSON.parse(document.getElementById('corpus-data').textContent);
+const P=JSON.parse(document.getElementById('perf-data').textContent);
+const LANGS=D.langs;
+
+/* ---------- tabs ---------- */
+document.getElementById('tabs').addEventListener('click',e=>{
+  const b=e.target.closest('.tab'); if(!b)return;
+  document.querySelectorAll('.tab').forEach(t=>t.setAttribute('aria-selected',t===b));
+  document.querySelectorAll('.panel').forEach(p=>p.hidden=true);
+  document.getElementById('p-'+b.dataset.tab).hidden=false;
+});
+/* ---------- theme ---------- */
+document.getElementById('themeBtn').addEventListener('click',()=>{
+  const r=document.documentElement;
+  const cur=r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+  r.setAttribute('data-theme',cur==='dark'?'light':'dark');
+});
+
+/* ---------- helpers ---------- */
+function bar(label,val,max,color,valtext){
+  const pct=Math.max(2,Math.round(val/max*100));
+  return `<div class="bar"><span class="lab">${label}</span><div class="track"><div class="fill" style="width:${pct}%;background:${color}"></div></div><span class="val">${valtext}</span></div>`;
+}
+
+/* ---------- overview ---------- */
+(function(){
+  const t=D.totals, base=t.Lullaby;
+  const ranked=[...LANGS].sort((a,b)=>t[a]-t[b]);
+  const cards=[
+    {k:'Functions compared',v:D.n_functions,d:`${Object.keys(D.categories).length} real-world categories`},
+    {k:'Lullaby vs C',v:(t.C/base>=1?'-':'+')+Math.abs(Math.round((1-t.C/base)*100))+'%',d:`Lullaby ${t.Lullaby}  |  C ${t.C} tokens`,pill:t.Lullaby<t.C?'good':'warn'},
+    {k:'Lullaby vs C++',v:(t['C++']/base>=1?'-':'+')+Math.abs(Math.round((1-t['C++']/base)*100))+'%',d:`fewer tokens than C++`,pill:t.Lullaby<t['C++']?'good':'warn'},
+    {k:'Native vs C',v:'1.2-1.6x',d:'compute workloads; 17-27x faster than CPython',pill:'flat'},
+  ];
+  document.getElementById('ov-cards').innerHTML=cards.map(c=>
+    `<div class="card stat"><div class="k">${c.k}</div><div class="v">${c.v}</div><div class="d">${c.pill?`<span class="pill ${c.pill}">${c.pill==='good'?'terser':c.pill==='warn'?'more':'near-C'}</span> `:''}${c.d}</div></div>`).join('');
+  const max=Math.max(...LANGS.map(l=>t[l]));
+  document.getElementById('ov-tokbars').innerHTML=ranked.map(l=>
+    bar(l,t[l],max,RAWC[l],`${t[l]}  (${(t[l]/base).toFixed(2)}x)`)).join('');
+  document.getElementById('ov-corpus-note').textContent=`${D.n_functions} functions`;
+  document.getElementById('foot-n').textContent=D.n_functions;
+  // perf headline: first workload
+  const w=P.workloads[0];
+  const pmax=Math.max(...w.results.map(r=>r.value));
+  document.getElementById('ov-perfbars').innerHTML=w.results.map(r=>{
+    const lang=r.lang.split(' ')[0].replace('C++','C++');
+    const col=RAWC[r.lang.startsWith('C++')?'C++':r.lang.startsWith('Lullaby')?'Lullaby':r.lang.startsWith('C ')?'C':r.lang.startsWith('Rust')?'Rust':'Python'];
+    return bar(r.lang,r.value,pmax,col,`${r.value} ms  |  ${r.vsC}x C`);
+  }).join('');
+})();
+
+/* ---------- tokens ---------- */
+(function(){
+  const cats=Object.keys(D.categories).sort();
+  document.getElementById('tok-legend').innerHTML=LANGS.map(l=>`<span><span class="dot" style="background:${RAWC[l]}"></span>${l}</span>`).join('');
+  let html=`<thead><tr><th>category</th>${LANGS.map(l=>`<th>${l}</th>`).join('')}<th>Lullaby rank</th></tr></thead><tbody>`;
+  for(const c of cats){
+    const row=D.categories[c]; const vals=LANGS.map(l=>row[l]);
+    const min=Math.min(...vals.filter(v=>v>0));
+    const sorted=[...LANGS].filter(l=>row[l]>0).sort((a,b)=>row[a]-row[b]);
+    const rank=sorted.indexOf('Lullaby')+1;
+    html+=`<tr><td>${c}</td>${LANGS.map(l=>{
+      const v=row[l]; const cls=v===min?'win':(l==='Lullaby'&&v!==min?'lose':'');
+      return `<td class="${cls}">${v||'-'}</td>`;}).join('')}<td>${rank}/${sorted.length}</td></tr>`;
+  }
+  html+=`</tbody>`;
+  document.getElementById('tok-table').innerHTML=html;
+  // ratio bars: Lullaby / best-other per category
+  const rb=cats.map(c=>{
+    const row=D.categories[c];
+    const others=LANGS.filter(l=>l!=='Lullaby'&&row[l]>0).map(l=>row[l]);
+    const bestOther=Math.min(...others);
+    return {c,ratio:row.Lullaby/bestOther};
+  }).sort((a,b)=>a.ratio-b.ratio);
+  const rmax=Math.max(...rb.map(r=>r.ratio),1.05);
+  document.getElementById('tok-ratiobars').innerHTML=rb.map(r=>
+    bar(r.c,r.ratio,rmax,r.ratio<=1?'var(--good)':'var(--warn)',`${r.ratio.toFixed(2)}x`)).join('');
+})();
+
+/* ---------- performance ---------- */
+(function(){
+  const host=document.getElementById('perf-workloads');
+  host.innerHTML=P.workloads.map(w=>{
+    const max=Math.max(...w.results.map(r=>r.value));
+    const bars=w.results.map(r=>{
+      const col=RAWC[r.lang.startsWith('C++')?'C++':r.lang.startsWith('Lullaby')?'Lullaby':r.lang.startsWith('C ')||r.lang==='C'?'C':r.lang.startsWith('Rust')?'Rust':'Python'];
+      return bar(r.lang,r.value,max,col,`${r.value}  |  ${r.vsC}x C`);
+    }).join('');
+    return `<section><div class="h2row"><h2>${w.name}</h2><span class="note">${w.kind}  |  ${w.unit}</span></div><div class="card"><div class="bars">${bars}</div></div></section>`;
+  }).join('');
+  const h=P.optimization_history;
+  const mk=(title,arr,unit)=>`<div class="card"><div class="k" style="font-weight:800;margin-bottom:8px">${title}</div>${arr.map((s,i)=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-top:${i?'1px solid var(--line)':'0'}"><span class="note">${s.stage}</span><strong>${s.vsC?s.vsC+'x C':s.value+' '+unit}</strong></div>`).join('')}</div>`;
+  document.getElementById('perf-history').innerHTML=
+    mk('Native fib vs C',h.native_fib_vs_c)+mk('Native loop vs C',h.native_loop_vs_c)+mk('Interpreter fib',h.interpreter_fib_ns,'ns/call');
+})();
+
+/* ---------- gaps ---------- */
+const GAPS=[
+  {t:'No <code>%</code> (modulo) operator',tok:1,perf:1,eff:'feature',d:'Every modulo is a <code>rem(a,b)=a-(a/b)*b</code> helper plus a call  -  extra tokens across validation, encoding, datetime, number-theory, and a div+mul+sub at runtime where C emits one <code>idiv</code>. A native <code>%</code> fixes both at once.'},
+  {t:'String ergonomics',tok:1,perf:0,eff:'medium',d:'No string <code>+=</code> (L0315), no character indexing (walk via <code>chars()/get()</code>), no string ordering compare (L0327). Text-processing code is Lullaby\'s worst category  -  up to ~70% more tokens than Rust. Indexable string chars + <code>+=</code> would close most of it.'},
+  {t:'Register allocation for <code>for</code>-loops',tok:0,perf:1,eff:'medium',d:'Scalar register promotion already lands for <code>if</code>/<code>while</code> functions; extending it to <code>for</code> induction variables removes per-iteration memory traffic in the many counting loops here (a chunk of the 1.57x prime-count gap).'},
+  {t:'Dynamic arrays / indexable lists',tok:1,perf:1,eff:'feature',d:'No runtime-sized array and <code>list&lt;T&gt;</code> is not indexable, so sieve/matrix/DP algorithms can\'t be written naturally. Blocks whole classes of real-world code and forces awkward workarounds.'},
+  {t:'Function inlining (native)',tok:0,perf:1,eff:'medium',d:'Small helpers (like <code>rem</code>, <code>is_prime</code>) are real calls. Inlining non-recursive callees moves call-bound microbenchmarks toward ~1.0-1.1x C and compounds with register promotion.'},
+  {t:'Boolean-returning predicates',tok:1,perf:0,eff:'small',d:'The corpus returns <code>1/0</code> i64 from predicates for cross-language uniformity, but idiomatic Lullaby <code>bool</code> + implicit truthiness in <code>if</code> would shave tokens on the many <code>is_*</code>/validators.'},
+  {t:'Auto-vectorization (SIMD)',tok:0,perf:1,eff:'large',d:'Reduction/map loops (sum, dot product) are where LLVM crushes a scalar backend. The last, largest optimizer lever  -  numeric loops from ~2x toward ~1x C or better.'},
+  {t:'Unary minus &amp; small sugar',tok:1,perf:0,eff:'small',d:'Negatives are written <code>0 - n</code>; a few reserved words (<code>by</code>) and ascending-only <code>for</code> add friction. Minor individually, but they accumulate across a large corpus.'},
+];
+(function(){
+  document.getElementById('gap-list').innerHTML=GAPS.map(g=>{
+    const tags=[g.tok?'<span class="pill good">tokens</span>':'',g.perf?'<span class="pill warn">performance</span>':'',`<span class="pill flat">${g.eff}</span>`].join(' ');
+    return `<div class="gap"><h3>${g.t}</h3><div class="impact">${tags}</div><p>${g.d}</p></div>`;
+  }).join('');
+})();
+
+/* ---------- implementations ---------- */
+(function(){
+  const withL=D.functions.filter(f=>f.langs.Lullaby&&f.present>=2);
+  document.getElementById('impl-count').textContent=`${withL.length} functions  |  pick one to compare`;
+  const cats=[...new Set(withL.map(f=>f.category))].sort();
+  const catSel=document.getElementById('impl-cat'), fnSel=document.getElementById('impl-fn'), search=document.getElementById('impl-search');
+  catSel.innerHTML='<option value="*">all categories</option>'+cats.map(c=>`<option value="${c}">${c}</option>`).join('');
+  function fillFns(){
+    const c=catSel.value, q=search.value.toLowerCase();
+    const list=withL.filter(f=>(c==='*'||f.category===c)&&f.name.toLowerCase().includes(q));
+    fnSel.innerHTML=list.map(f=>`<option value="${f.category}//${f.name}">${f.name}   |   ${f.category}</option>`).join('');
+    if(list.length)render(list[0]);else document.getElementById('impl-code').innerHTML='<p class="note">no match</p>';
+  }
+  function render(f){
+    document.getElementById('impl-code').innerHTML=LANGS.map(l=>{
+      const e=f.langs[l];
+      if(!e)return `<div class="codecard"><div class="codehead" style="color:${RAWC[l]}">${l}<span class="tk"> - </span></div><pre><code class="note">(not implemented)</code></pre></div>`;
+      return `<div class="codecard"><div class="codehead" style="color:${RAWC[l]}">${l}<span class="tk">${e.tokens} tok</span></div><pre><code>${esc(e.source)}</code></pre></div>`;
+    }).join('');
+  }
+  catSel.onchange=fillFns; search.oninput=fillFns;
+  fnSel.onchange=()=>{const[c,n]=fnSel.value.split('//');const f=withL.find(x=>x.category===c&&x.name===n);if(f)render(f);};
+  fillFns();
+})();
+</script>
