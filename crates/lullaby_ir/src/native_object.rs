@@ -3484,8 +3484,66 @@ fn instr_reg_promotable(instr: &BytecodeInstruction) -> bool {
         BytecodeInstruction::While {
             condition, body, ..
         } => expr_reg_promotable(condition) && body.iter().all(instr_reg_promotable),
-        // For / Loop / Match / Asm / Throw / Try are conservatively excluded.
+        // A range `for` is promotable when its bounds/step and body are scalar.
+        // The counter and its hidden `__end`/`__step` slots stay on the stack
+        // (see `for_counter_slots`), because `lower_native_for` accesses them
+        // directly; the body's other scalar locals (accumulators) get registers.
+        BytecodeInstruction::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            expr_reg_promotable(start)
+                && expr_reg_promotable(end)
+                && step.as_ref().is_none_or(expr_reg_promotable)
+                && body.iter().all(instr_reg_promotable)
+        }
+        // Loop / Match / Asm / Throw / Try are conservatively excluded.
         _ => false,
+    }
+}
+
+/// Collect the stack slots that a range `for` needs to keep off registers: each
+/// loop's hidden `{name}__end` / `{name}__step` bound/step slots, which
+/// `lower_native_for` reads as stack memory operands. The counter itself may be
+/// promoted — `lower_native_for` honors `promoted_reg` for it.
+fn for_counter_slots(
+    instrs: &[BytecodeInstruction],
+    locals: &HashMap<String, NativeLocal>,
+    out: &mut std::collections::HashSet<i32>,
+) {
+    for instr in instrs {
+        match instr {
+            BytecodeInstruction::For { name, body, .. } => {
+                for key in [format!("{name}__end"), format!("{name}__step")] {
+                    if let Some(local) = locals.get(&key) {
+                        out.insert(local.slot);
+                    }
+                }
+                for_counter_slots(body, locals, out);
+            }
+            BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
+                for_counter_slots(body, locals, out)
+            }
+            BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    for_counter_slots(&branch.body, locals, out);
+                }
+                for_counter_slots(else_body, locals, out);
+            }
+            BytecodeInstruction::Match { arms, .. } => {
+                for arm in arms {
+                    for_counter_slots(&arm.body, locals, out);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -3507,12 +3565,18 @@ fn plan_register_promotion(
     if !function.instructions.iter().all(instr_reg_promotable) {
         return none;
     }
-    // Every local is now a single-word `i64`. Keep the first couple (lowest slots
-    // — parameters precede body locals) in registers; the rest stay on the stack.
+    // A range `for`'s counter and its hidden bound/step slots must stay on the
+    // stack (`lower_native_for` addresses them as memory), so exclude them.
+    let mut excluded = std::collections::HashSet::new();
+    for_counter_slots(&function.instructions, locals, &mut excluded);
+    // Every remaining local is a single-word `i64`. Keep the first couple (lowest
+    // slots — parameters precede body locals) in registers; the rest stay on the
+    // stack.
     let mut slots: Vec<i32> = locals
         .values()
         .filter(|l| matches!(l.ty, NativeType::I64))
         .map(|l| l.slot)
+        .filter(|slot| !excluded.contains(slot))
         .collect();
     slots.sort_unstable();
     let regs = [PReg::Rbx, PReg::Rsi];
@@ -5036,10 +5100,21 @@ fn lower_native_for(
     let i_slot = ctx.local_slot(name)?;
     let end_slot = ctx.local_slot(&format!("{name}__end"))?;
     let step_slot = ctx.local_slot(&format!("{name}__step"))?;
+    // The counter may be register-promoted (the bound/step stay on the stack as
+    // loop-invariant memory operands). `i_reg` drives register vs stack access.
+    let i_reg = ctx.promoted_reg(i_slot);
+    let store_counter = |code: &mut Vec<u8>| match i_reg {
+        Some(reg) => reg.from_rax(code), // reg = rax
+        None => store_local(code, i_slot),
+    };
+    let load_counter = |code: &mut Vec<u8>| match i_reg {
+        Some(reg) => reg.to_rax(code), // rax = reg
+        None => load_local(code, i_slot),
+    };
 
     // i = start
     lower_native_expr(ctx, start, code)?;
-    store_local(code, i_slot);
+    store_counter(code);
     // end_local = end
     lower_native_expr(ctx, end, code)?;
     store_local(code, end_slot);
@@ -5061,14 +5136,16 @@ fn lower_native_for(
     code.extend_from_slice(&[0, 0, 0, 0]);
 
     // Ascending: cond = (i <= end)  ->  setle al
-    emit_for_compare(code, i_slot, end_slot, 0x9E);
+    load_counter(code);
+    emit_for_compare(code, end_slot, 0x9E);
     code.push(0xE9); // jmp check
     let asc_done = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
 
     // Descending: cond = (i >= end)  ->  setge al
     patch_rel32(code, js_site);
-    emit_for_compare(code, i_slot, end_slot, 0x9D);
+    load_counter(code);
+    emit_for_compare(code, end_slot, 0x9D);
 
     // check: test al, al; jz end
     patch_rel32(code, asc_done);
@@ -5091,11 +5168,11 @@ fn lower_native_for(
     for site in loop_ctx.continue_sites {
         patch_rel32_to(code, site, step_label);
     }
-    load_local(code, i_slot); // mov rax, [i]
+    load_counter(code); // mov rax, i (register or stack)
     code.push(0x50); // push rax
     load_local(code, step_slot); // mov rax, [step]
     emit_i64_binop_from_stack(code, BinaryOp::Add)?;
-    store_local(code, i_slot);
+    store_counter(code); // i = rax
 
     emit_jmp_to(code, top);
 
@@ -5107,10 +5184,10 @@ fn lower_native_for(
     Ok(())
 }
 
-/// Emit `mov rax, [i]; cmp rax, [end]; set<cc> al` where `set_opcode` is the
-/// second byte of the `0F` `setcc` form (e.g. `0x9E` = setle, `0x9D` = setge).
-fn emit_for_compare(code: &mut Vec<u8>, i_slot: i32, end_slot: i32, set_opcode: u8) {
-    load_local(code, i_slot); // mov rax, [rbp - i_slot]
+/// Emit `cmp rax, [end]; set<cc> al` where the counter `i` is already in `rax`
+/// and `set_opcode` is the second byte of the `0F` `setcc` form (e.g. `0x9E` =
+/// setle, `0x9D` = setge). The bound stays a stack memory operand.
+fn emit_for_compare(code: &mut Vec<u8>, end_slot: i32, set_opcode: u8) {
     // cmp rax, [rbp - end_slot]  ->  48 3B 85 disp32
     code.extend_from_slice(&[0x48, 0x3B, 0x85]);
     code.extend_from_slice(&(-end_slot).to_le_bytes());

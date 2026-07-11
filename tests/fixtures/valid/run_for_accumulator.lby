@@ -1,0 +1,26 @@
+# A `for`-loop function with an accumulator: on the native backend this now gets
+# scalar register promotion (the loop counter and its accumulators live in
+# callee-saved registers) instead of being excluded from promotion entirely.
+fn sum_of_squares n i64 -> i64
+    let s i64 = 0
+    for i from 1 to n
+        s += i * i
+    s
+
+fn triangle_pairs n i64 -> i64
+    let t i64 = 0
+    for i from 1 to n
+        for j from 1 to i
+            t += 1
+    t
+
+fn countdown_sum n i64 -> i64
+    let c i64 = 0
+    for i from n to 1 by 0 - 1
+        c += i
+    c
+
+fn main -> void
+    wasm_log(sum_of_squares(5))
+    wasm_log(triangle_pairs(4))
+    wasm_log(countdown_sum(5))
