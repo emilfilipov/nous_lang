@@ -220,6 +220,31 @@ fn runs_modulo_across_backends() {
 }
 
 #[test]
+fn runs_negation_across_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_negate.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+
+        assert!(output.status.success(), "{backend}: {output:?}");
+        // `-7`, `-(-4)=4`, `-10+3=-7`, and `-2.5 < 0` -> logs `1`. Unary `-` works
+        // on floats (a sign-bit flip), which the old `0 - x` desugar could not do.
+        assert_eq!(
+            stdout(&output).replace("\r\n", "\n").trim(),
+            "-7\n4\n-7\n1",
+            "{backend} stdout mismatch"
+        );
+    }
+}
+
+#[test]
 fn rejects_modulo_on_float() {
     let fixture = workspace_root().join("tests/fixtures/invalid/modulo_on_float.lby");
     let output = lullaby()

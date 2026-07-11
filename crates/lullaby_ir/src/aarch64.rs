@@ -799,6 +799,11 @@ fn lower_expr(fg: &mut FnGen, expr: &BytecodeExpr) -> Result<(), String> {
                 UnaryOp::BitNot => {
                     fg.emit(mvn_reg(0, 0));
                 }
+                UnaryOp::Negate => {
+                    // Integer negation: `neg x0, x0` == `sub x0, xzr, x0` (wrapping,
+                    // so `-i64::MIN == i64::MIN`). Floats are deferred on AArch64.
+                    fg.emit(sub_reg(0, XZR, 0));
+                }
             }
             Ok(())
         }

@@ -3901,6 +3901,14 @@ impl<'a> Runtime<'a> {
                         Value::Int { value, ty } => Ok(Value::int(!value, ty)),
                         other => Ok(Value::I64(!other.as_i64()?)),
                     },
+                    // Arithmetic negation, preserving the operand's numeric type.
+                    // Integer negation wraps; float negation flips the sign bit.
+                    UnaryOp::Negate => match value {
+                        Value::Int { value, ty } => Ok(Value::int(value.wrapping_neg(), ty)),
+                        Value::F64(f) => Ok(Value::F64(-f)),
+                        Value::F32(f) => Ok(Value::F32(-f)),
+                        other => Ok(Value::I64(other.as_i64()?.wrapping_neg())),
+                    },
                 }
             }
             ExprKind::Binary { left, op, right } => {

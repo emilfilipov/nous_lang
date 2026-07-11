@@ -51,18 +51,9 @@
             },
             "step": {
               "kind": {
-                "Binary": {
-                  "left": {
-                    "kind": {
-                      "Integer": 0
-                    },
-                    "span": {
-                      "line": 3,
-                      "column": 26
-                    }
-                  },
-                  "op": "Subtract",
-                  "right": {
+                "Unary": {
+                  "op": "Negate",
+                  "expr": {
                     "kind": {
                       "Integer": 2
                     },

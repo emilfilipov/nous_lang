@@ -439,6 +439,8 @@ fn render_expr(expr: &Expr) -> String {
             UnaryOp::Not => format!("not {}", render_unary_operand(expr)),
             // Bitwise NOT prints with no space, like the source spelling `~a`.
             UnaryOp::BitNot => format!("~{}", render_unary_operand(expr)),
+            // Arithmetic negation prints with no space, like `-a`.
+            UnaryOp::Negate => format!("-{}", render_unary_operand(expr)),
         },
         ExprKind::Binary { left, op, right } => {
             let prec = binary_precedence(op);

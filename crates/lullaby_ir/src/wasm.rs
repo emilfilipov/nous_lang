@@ -1908,6 +1908,37 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
                 }
                 Ok(())
             }
+            // Arithmetic negation (`-x`). A float operand uses `f64.neg`/`f32.neg`
+            // (IEEE sign-bit flip, matching the interpreters); an integer operand
+            // has no WASM `neg`, so it is `0 - x`, re-normalized on a fixed-width
+            // kind. Detected structurally because float arithmetic nodes are
+            // IR-annotated `i64`.
+            UnaryOp::Negate => {
+                if let Some(fty) = float_val_type_of(ctx, inner) {
+                    lower_expr(ctx, inner, out)?;
+                    out.push(match fty {
+                        WasmValType::F64 => 0x9a, // f64.neg
+                        WasmValType::F32 => 0x8c, // f32.neg
+                        _ => return Err("negate float detector returned non-float".to_string()),
+                    });
+                    return Ok(());
+                }
+                let kind = fixed_int_kind(inner.ty.name.as_str());
+                if kind.is_none() && inner.ty.name != "i64" {
+                    return Err(format!(
+                        "unary `-` on unsupported type `{}` (wasm backend)",
+                        inner.ty.name
+                    ));
+                }
+                out.push(0x42); // i64.const 0
+                write_sleb(out, 0);
+                lower_expr(ctx, inner, out)?;
+                out.push(0x7d); // i64.sub -> 0 - x
+                if let Some(kind) = kind {
+                    emit_normalize_i64(kind, out);
+                }
+                Ok(())
+            }
         },
         IrExprKind::Binary { left, op, right } => lower_binary(ctx, left, *op, right, out),
         IrExprKind::String(text) => {

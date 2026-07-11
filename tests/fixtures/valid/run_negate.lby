@@ -1,0 +1,16 @@
+fn negi x i64 -> i64
+    -x
+
+fn main -> void
+    # integer negation, including of an already-negative value
+    wasm_log(negi(7))
+    wasm_log(negi(0 - 4))
+    # negation folds into a literal and composes with arithmetic
+    wasm_log(-10 + 3)
+    # float negation flips the sign bit (no i64/f64 type clash like `0 - x`)
+    let f f64 = 2.5
+    let g f64 = -f
+    if g < 0.0
+        wasm_log(1)
+    if g > 0.0
+        wasm_log(2)

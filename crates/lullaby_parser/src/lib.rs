@@ -675,6 +675,11 @@ pub enum UnaryOp {
     Not,
     /// Bitwise NOT (`~`, one's complement) on an `i64`.
     BitNot,
+    /// Arithmetic negation (unary `-`) on any numeric type (`i64`, `f64`, `f32`,
+    /// or a fixed-width integer), preserving the operand's type. Integer
+    /// negation wraps (`-i64::MIN == i64::MIN`); float negation flips the sign
+    /// bit (so `-0.0` and negated NaN behave like IEEE-754).
+    Negate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2472,13 +2477,9 @@ impl<'a> ExprParser<'a> {
                 self.cursor += 1;
                 let value = self.parse_unary()?;
                 Ok(Expr {
-                    kind: ExprKind::Binary {
-                        left: Box::new(Expr {
-                            kind: ExprKind::Integer(0),
-                            span: token.span,
-                        }),
-                        op: BinaryOp::Subtract,
-                        right: Box::new(value),
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::Negate,
+                        expr: Box::new(value),
                     },
                     span: token.span,
                 })

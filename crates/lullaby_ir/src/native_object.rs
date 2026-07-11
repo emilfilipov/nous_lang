@@ -5171,6 +5171,16 @@ fn lower_native_expr(
                 }
                 Ok(())
             }
+            // Integer arithmetic negation (`-x`). Wrapping `neg`, re-normalized on
+            // a fixed-width kind. (Float `-x` is handled on the float path.)
+            lullaby_parser::UnaryOp::Negate => {
+                lower_native_expr(ctx, inner, code)?;
+                code.extend_from_slice(&[0x48, 0xF7, 0xD8]); // neg rax
+                if let Some(kind) = fixed_int_kind(inner.ty.name.as_str()) {
+                    emit_normalize_rax(code, kind);
+                }
+                Ok(())
+            }
         },
         BytecodeExprKind::Binary { left, op, right } => {
             lower_native_binary(ctx, left, *op, right, code)
@@ -6210,6 +6220,31 @@ fn lower_native_float_expr(
                 ),
             }
         }
+        // Float arithmetic negation (`-x`): IEEE-754 sign-bit flip, matching the
+        // interpreters' `-f`. Move the value through a GPR, XOR the sign bit, move
+        // it back to xmm0. (`0 - x` would mishandle `-0.0`/NaN signs.)
+        BytecodeExprKind::Unary {
+            op: lullaby_parser::UnaryOp::Negate,
+            expr: inner,
+        } => {
+            let width = lower_native_float_expr(ctx, inner, code)?;
+            emit_movq_rax_from_xmm0(code, width); // rax = bits
+            match width {
+                FloatWidth::F64 => {
+                    // mov rcx, 0x8000000000000000 ; xor rax, rcx
+                    code.extend_from_slice(&[0x48, 0xB9]);
+                    code.extend_from_slice(&0x8000_0000_0000_0000u64.to_le_bytes());
+                    code.extend_from_slice(&[0x48, 0x31, 0xC8]);
+                }
+                FloatWidth::F32 => {
+                    // xor eax, 0x80000000
+                    code.push(0x35);
+                    code.extend_from_slice(&0x8000_0000u32.to_le_bytes());
+                }
+            }
+            emit_movq_xmm0_from_rax(code, width); // xmm0 = negated bits
+            Ok(width)
+        }
         _ => Err("expression is not in the native float subset".to_string()),
     }
 }
@@ -6344,6 +6379,12 @@ fn float_width_of_expr(ctx: &NativeCtx, expr: &BytecodeExpr) -> Option<FloatWidt
             op: BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide,
             right,
         } => float_width_of_expr(ctx, left).or_else(|| float_width_of_expr(ctx, right)),
+        // Unary negation of a float operand is a float of the same width, so it
+        // must route to the float path (a sign-bit flip), not the integer `neg`.
+        BytecodeExprKind::Unary {
+            op: lullaby_parser::UnaryOp::Negate,
+            expr: inner,
+        } => float_width_of_expr(ctx, inner),
         _ => None,
     }
 }

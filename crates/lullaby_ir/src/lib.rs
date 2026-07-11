@@ -2231,6 +2231,13 @@ impl ConstantFolder {
                     (UnaryOp::BitNot, IrExprKind::Integer(value)) => {
                         self.literal(expr, IrExprKind::Integer(!value))
                     }
+                    // Fold unary `-` over a numeric literal (wrapping for ints).
+                    (UnaryOp::Negate, IrExprKind::Integer(value)) => {
+                        self.literal(expr, IrExprKind::Integer(value.wrapping_neg()))
+                    }
+                    (UnaryOp::Negate, IrExprKind::Float(value)) => {
+                        self.literal(expr, IrExprKind::Float(-value))
+                    }
                     _ => IrExpr {
                         kind: IrExprKind::Unary {
                             op: *op,
@@ -4766,6 +4773,13 @@ impl<'a> IrRuntime<'a> {
                     UnaryOp::BitNot => match value {
                         Value::Int { value, ty } => Ok(Value::int(!value, ty)),
                         other => Ok(Value::I64(!other.as_i64()?)),
+                    },
+                    // Arithmetic negation, preserving the operand's numeric type.
+                    UnaryOp::Negate => match value {
+                        Value::Int { value, ty } => Ok(Value::int(value.wrapping_neg(), ty)),
+                        Value::F64(f) => Ok(Value::F64(-f)),
+                        Value::F32(f) => Ok(Value::F32(-f)),
+                        other => Ok(Value::I64(other.as_i64()?.wrapping_neg())),
                     },
                 }
             }
@@ -8458,7 +8472,7 @@ impl<'a> Lowerer<'a> {
                 // fixed-width kind); logical NOT is `bool`.
                 let ty = match op {
                     UnaryOp::Not => TypeRef::new("bool"),
-                    UnaryOp::BitNot => inner.ty.clone(),
+                    UnaryOp::BitNot | UnaryOp::Negate => inner.ty.clone(),
                 };
                 (
                     IrExprKind::Unary {

@@ -2032,6 +2032,29 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
+                    UnaryOp::Negate => {
+                        // Arithmetic negation applies to any numeric type (`i64`,
+                        // `f64`, `f32`, or a fixed-width integer) and preserves it.
+                        match &expr_type {
+                            Some(ty)
+                                if ty.name == "i64"
+                                    || ty.name == "f64"
+                                    || ty.name == "f32"
+                                    || is_fixed_width_int_name(&ty.name) =>
+                            {
+                                Some(ty.clone())
+                            }
+                            _ => {
+                                self.diagnostics.push(SemanticDiagnostic::at(
+                                    "L0307",
+                                    "operand of unary `-` must be numeric",
+                                    Some(function.name.clone()),
+                                    expr.span,
+                                ));
+                                None
+                            }
+                        }
+                    }
                 }
             }
             ExprKind::Binary { left, op, right } => {
