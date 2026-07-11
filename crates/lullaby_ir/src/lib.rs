@@ -3787,6 +3787,11 @@ struct IrRuntime<'a> {
     /// `module.closures`. A `Value::Closure` carries only its id, so an invocation
     /// looks its body up here. Bodies borrow the module with lifetime `'a`.
     closures: HashMap<usize, &'a IrClosureDef>,
+    /// A free-list of reusable per-call environments. Each call needs a fresh
+    /// `Env`; borrowing a reset one from here and returning it on the normal exit
+    /// path lets deep/repeated calls reuse the scope buffers instead of
+    /// reallocating. Only returned on success; error paths drop theirs.
+    env_pool: Vec<Env>,
 }
 
 impl<'a> IrRuntime<'a> {
@@ -3877,6 +3882,7 @@ impl<'a> IrRuntime<'a> {
             async_functions,
             extern_functions,
             closures,
+            env_pool: Vec::new(),
         })
     }
 
@@ -4348,7 +4354,15 @@ impl<'a> IrRuntime<'a> {
             ));
         }
 
-        let mut env = Env::default();
+        // Borrow a reset environment from the pool (or make a fresh one) instead
+        // of allocating per call; returned to the pool on the normal exit below.
+        let mut env = match self.env_pool.pop() {
+            Some(mut env) => {
+                env.reset();
+                env
+            }
+            None => Env::default(),
+        };
         for (param, value) in function.params.iter().zip(args) {
             env.define(param.name.clone(), value);
         }
@@ -4380,6 +4394,8 @@ impl<'a> IrRuntime<'a> {
                 control
             }
         };
+        // Normal exit: return the environment to the pool; error paths drop theirs.
+        self.env_pool.push(env);
 
         match control {
             Control::Return(value) | Control::Value(value) => Ok(value),
@@ -7630,6 +7646,17 @@ impl Default for Env {
 }
 
 impl Env {
+    /// Reset to a single empty scope so a pooled environment can be reused for the
+    /// next call, keeping each scope's `Vec` capacity. Clearing every entry means
+    /// no stale binding can leak into the reused environment.
+    fn reset(&mut self) {
+        self.scopes.truncate(1);
+        match self.scopes.first_mut() {
+            Some(first) => first.clear(),
+            None => self.scopes.push(Vec::new()),
+        }
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(Vec::new());
     }
