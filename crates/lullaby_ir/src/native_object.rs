@@ -5304,6 +5304,20 @@ fn emit_native_call_args(
         Some(sig) => sig.params.iter().map(|t| Some(t.clone())).collect(),
         None => args.iter().map(|_| None).collect(),
     };
+    // Fast path: a single scalar integer/pointer argument with no hidden
+    // aggregate-return pointer. Staging exists only to keep an already-placed
+    // register from being clobbered while a *later* argument is evaluated — with
+    // one argument there is nothing to clobber, so evaluate it straight into the
+    // first argument register (`rcx`) instead of the stack round-trip.
+    let single_agg_or_float = matches!(
+        param_tys.first(),
+        Some(Some(t)) if t.is_aggregate() || matches!(t, NativeType::F64 | NativeType::F32)
+    );
+    if sret.is_none() && args.len() == 1 && !single_agg_or_float {
+        lower_native_expr(ctx, &args[0], code)?; // arg → rax
+        code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+        return Ok(());
+    }
     // Stage every argument onto the machine stack as one 8-byte word, left to
     // right, so evaluating a later argument cannot clobber an already-placed
     // register. Reset the scratch cursor so each call reuses the shared region.
