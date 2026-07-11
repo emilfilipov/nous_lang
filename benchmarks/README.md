@@ -35,5 +35,24 @@ After adding `[profile.release]` (fat LTO + `codegen-units=1` + `panic=abort`):
 bytecode 381 (-13%), ir 365 (-15%), ast 403 (-8%); native and C unchanged
 (native is emitted machine code, not Rust).
 
+After fusing i64 comparisons into their branch + folding constant operands into
+immediates (native codegen): **native fib 2.17 → 1.71 ns/call (1.72× → 1.35× C)**.
+
+## Compute-bound loop (`run_loop.ps1`, sum 0..N)
+
+`loopsum.lby` / `loopsum.c` — a tight `while` loop (no calls). C + native at
+N=1e9, interpreters at N=1e7; ns per iteration.
+
+| Tier | ns/iter | vs C |
+|---|---|---|
+| C (`cl /O2`) | 0.13 | 1.0× |
+| lullaby native | 0.78 | 6.0× |
+| bytecode / ir / ast | ~160 | ~1230× |
+
+The native loop is 6× C because loop locals (`acc`, `i`) are spilled to the
+stack and reloaded each iteration — **register allocation is the largest
+remaining native lever**. Interpreters run ~160 ns/iter here vs ~380 ns/call on
+fib, so per-call setup (env/frame/args) is a major interpreter cost.
+
 The optimization backlog lives in ClickUp: Lullaby → **18 Performance
 Optimization**.

@@ -1,0 +1,8 @@
+# Tight arithmetic loop — compute-bound (fused while-condition + i+1 immediate).
+fn main -> i64
+    let acc i64 = 0
+    let i i64 = 0
+    while i < 1000000000
+        acc = acc + i
+        i = i + 1
+    acc
