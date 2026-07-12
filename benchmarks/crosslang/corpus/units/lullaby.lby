@@ -1,61 +1,61 @@
 # Cross-language units suite (Lullaby). Unit/quantity conversions in integers.
 # Scaled integers are used where a conversion factor is fractional.
 
-fn minutes_to_seconds m i64 -> i64
+fn minutes_to_seconds m i64
     m * 60
 
-fn hours_to_minutes h i64 -> i64
+fn hours_to_minutes h i64
     h * 60
 
-fn days_to_hours d i64 -> i64
+fn days_to_hours d i64
     d * 24
 
-fn weeks_to_days w i64 -> i64
+fn weeks_to_days w i64
     w * 7
 
-fn bytes_to_kib b i64 -> i64
+fn bytes_to_kib b i64
     b / 1024
 
-fn kib_to_bytes k i64 -> i64
+fn kib_to_bytes k i64
     k * 1024
 
-fn mib_to_bytes m i64 -> i64
+fn mib_to_bytes m i64
     m * 1024 * 1024
 
-fn meters_to_cm m i64 -> i64
+fn meters_to_cm m i64
     m * 100
 
-fn cm_to_mm c i64 -> i64
+fn cm_to_mm c i64
     c * 10
 
-fn km_to_meters k i64 -> i64
+fn km_to_meters k i64
     k * 1000
 
-fn feet_to_inches f i64 -> i64
+fn feet_to_inches f i64
     f * 12
 
-fn inches_to_cm_x10 i i64 -> i64
+fn inches_to_cm_x10 i i64
     i * 254 / 10
 
-fn pounds_to_ounces p i64 -> i64
+fn pounds_to_ounces p i64
     p * 16
 
-fn gallons_to_pints g i64 -> i64
+fn gallons_to_pints g i64
     g * 8
 
-fn liters_to_ml l i64 -> i64
+fn liters_to_ml l i64
     l * 1000
 
-fn degrees_to_gradians d i64 -> i64
+fn degrees_to_gradians d i64
     d * 10 / 9
 
-fn radians_milli_to_degrees mr i64 -> i64
+fn radians_milli_to_degrees mr i64
     mr * 180 / 3142
 
-fn seconds_to_hms_hours s i64 -> i64
+fn seconds_to_hms_hours s i64
     s / 3600
 
-fn main -> void
+fn main
     println("minutes_to_seconds=" + to_string(minutes_to_seconds(5)))
     println("hours_to_minutes=" + to_string(hours_to_minutes(3)))
     println("days_to_hours=" + to_string(days_to_hours(2)))

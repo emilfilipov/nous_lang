@@ -4,32 +4,32 @@
 #
 # Lullaby has no `%` operator, so integer remainder goes through `rem`.
 
-fn min2 a i64 b i64 -> i64
+fn min2 a i64 b i64
     if a < b
         return a
     return b
 
 # HTTP status family: 2..5 for 2xx..5xx, 0 for anything outside 200..599.
-fn http_status_class code i64 -> i64
+fn http_status_class code i64
     let cls = code / 100
     if cls >= 2 and cls <= 5
         return cls
     return 0
 
 # A response is an error once it reaches the 4xx range.
-fn status_is_error code i64 -> i64
+fn status_is_error code i64
     if code >= 400
         return 1
     return 0
 
 # Method codes: 0=GET, 1=HEAD, 2=POST, 3=PUT, 4=DELETE. GET/HEAD are safe.
-fn method_is_safe_code m i64 -> i64
+fn method_is_safe_code m i64
     if m == 0 or m == 1
         return 1
     return 0
 
 # Exponential backoff base * 2^attempt, capped at 60000 ms.
-fn retry_backoff_ms attempt i64 base i64 -> i64
+fn retry_backoff_ms attempt i64 base i64
     let d = base
     let i = 0
     while i < attempt
@@ -42,43 +42,43 @@ fn retry_backoff_ms attempt i64 base i64 -> i64
     return d
 
 # Token bucket: a request is allowed when the bucket holds at least its cost.
-fn rate_limit_allow tokens i64 cost i64 -> i64
+fn rate_limit_allow tokens i64 cost i64
     if tokens >= cost
         return 1
     return 0
 
 # Bucket level after spending `cost` and refilling, clamped to `cap`.
-fn tokens_after tokens i64 cost i64 refill i64 cap i64 -> i64
+fn tokens_after tokens i64 cost i64 refill i64 cap i64
     return min2(cap, tokens - cost + refill)
 
 # Number of pages needed to hold `total` items at `per` per page (ceil).
-fn pagination_total_pages total i64 per i64 -> i64
+fn pagination_total_pages total i64 per i64
     if per <= 0
         return 0
     return (total + per - 1) / per
 
 # Zero-based item offset of a 1-based page.
-fn pagination_offset page i64 per i64 -> i64
+fn pagination_offset page i64 per i64
     return (page - 1) * per
 
 # Whether a 1-based page is followed by at least one more item.
-fn pagination_has_next page i64 per i64 total i64 -> i64
+fn pagination_has_next page i64 per i64 total i64
     if page * per < total
         return 1
     return 0
 
 # New LRU recency position after a hit (hits + 1), bounded to the table size.
-fn lru_new_position hits i64 -> i64
+fn lru_new_position hits i64
     return min2(hits + 1, 1024)
 
 # A cache entry is fresh while it is younger than its TTL.
-fn cache_ttl_valid now i64 created i64 ttl i64 -> i64
+fn cache_ttl_valid now i64 created i64 ttl i64
     if now - created < ttl
         return 1
     return 0
 
 # Scheduling priority 0..3 from a status code (5xx highest, 2xx lowest).
-fn priority_from_code code i64 -> i64
+fn priority_from_code code i64
     let cls = http_status_class(code)
     if cls == 5
         return 0
@@ -89,23 +89,23 @@ fn priority_from_code code i64 -> i64
     return 3
 
 # Ring-buffer advance: (head + 1) mod cap.
-fn queue_next_index head i64 cap i64 -> i64
+fn queue_next_index head i64 cap i64
     return (head + 1) % cap
 
 # A session stays valid until it is idle longer than its timeout.
-fn session_valid now i64 last i64 timeout i64 -> i64
+fn session_valid now i64 last i64 timeout i64
     if now - last < timeout
         return 1
     return 0
 
 # Throttle spacing: spread `requests` evenly across `window_ms`, given a fixed
 # ceiling of 100 requests per window.
-fn throttle_delay_ms requests i64 window_ms i64 -> i64
+fn throttle_delay_ms requests i64 window_ms i64
     return requests * window_ms / 100
 
 # Content-type family from an extension code: 0=html, 1=json, 2=text-like
 # (text/css/js), 3=binary.
-fn content_type_class ext_code i64 -> i64
+fn content_type_class ext_code i64
     if ext_code == 0
         return 0
     if ext_code == 1
@@ -119,16 +119,16 @@ fn content_type_class ext_code i64 -> i64
     return 3
 
 # Stop retrying once the attempt count reaches the maximum.
-fn retry_should_give_up attempt i64 max i64 -> i64
+fn retry_should_give_up attempt i64 max i64
     if attempt >= max
         return 1
     return 0
 
 # Deterministic jittered backoff: exponential backoff plus a seed-derived offset.
-fn jitter_backoff attempt i64 base i64 seed i64 -> i64
+fn jitter_backoff attempt i64 base i64 seed i64
     return retry_backoff_ms(attempt, base) + seed % base
 
-fn main -> void
+fn main
     println("http_status_class(404)=" + to_string(http_status_class(404)))
     println("status_is_error(503)=" + to_string(status_is_error(503)))
     println("method_is_safe_code(0)=" + to_string(method_is_safe_code(0)))

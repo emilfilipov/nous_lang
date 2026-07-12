@@ -2,63 +2,63 @@
 # All math is scaled-integer (no floats): temperatures are tenths (x10),
 # distances/speeds use fixed scale factors, energy uses g = 10 m/s^2.
 
-fn distance_uniform v i64 t i64 -> i64
+fn distance_uniform v i64 t i64
     v * t
 
-fn distance_accel v i64 t i64 a i64 -> i64
+fn distance_accel v i64 t i64 a i64
     v * t + a * t * t / 2
 
-fn final_velocity v i64 a i64 t i64 -> i64
+fn final_velocity v i64 a i64 t i64
     v + a * t
 
-fn kinetic_energy_x2 m i64 v i64 -> i64
+fn kinetic_energy_x2 m i64 v i64
     m * v * v
 
-fn momentum m i64 v i64 -> i64
+fn momentum m i64 v i64
     m * v
 
-fn force m i64 a i64 -> i64
+fn force m i64 a i64
     m * a
 
-fn work f i64 d i64 -> i64
+fn work f i64 d i64
     f * d
 
-fn power_watts work i64 t i64 -> i64
+fn power_watts work i64 t i64
     work / t
 
-fn pressure f i64 area i64 -> i64
+fn pressure f i64 area i64
     if area == 0
         return 0
     f / area
 
-fn density mass i64 vol i64 -> i64
+fn density mass i64 vol i64
     mass / vol
 
-fn celsius_to_fahrenheit_x10 c i64 -> i64
+fn celsius_to_fahrenheit_x10 c i64
     c * 18 + 320
 
-fn fahrenheit_to_celsius_x10 f i64 -> i64
+fn fahrenheit_to_celsius_x10 f i64
     (f - 32) * 100 / 18
 
-fn celsius_to_kelvin_x10 c i64 -> i64
+fn celsius_to_kelvin_x10 c i64
     c * 10 + 2732
 
-fn km_to_miles_scaled km i64 -> i64
+fn km_to_miles_scaled km i64
     km * 621 / 1000
 
-fn miles_to_km_scaled mi i64 -> i64
+fn miles_to_km_scaled mi i64
     mi * 1609 / 1000
 
-fn mps_to_kmh mps i64 -> i64
+fn mps_to_kmh mps i64
     mps * 36 / 10
 
-fn gravity_fall_dist t i64 -> i64
+fn gravity_fall_dist t i64
     5 * t * t
 
-fn potential_energy m i64 h i64 -> i64
+fn potential_energy m i64 h i64
     m * 10 * h
 
-fn main -> void
+fn main
     println("distance_uniform=" + to_string(distance_uniform(60, 2)))
     println("distance_accel=" + to_string(distance_accel(10, 4, 3)))
     println("final_velocity=" + to_string(final_velocity(5, 3, 4)))

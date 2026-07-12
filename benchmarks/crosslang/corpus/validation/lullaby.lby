@@ -5,7 +5,7 @@
 # `A if C else B`. `is_digit` is ASCII; hex/case checks keep explicit code
 # ranges to stay ASCII-strict. See ../../SPEC.md.
 
-fn luhn_check digits array<i64> -> i64
+fn luhn_check digits array<i64>
     let n = len(digits)
     let sum = 0
     for i from 0 to n - 1
@@ -18,7 +18,7 @@ fn luhn_check digits array<i64> -> i64
         sum += d
     1 if sum % 10 == 0 else 0
 
-fn is_valid_isbn10 digits array<i64> -> i64
+fn is_valid_isbn10 digits array<i64>
     if len(digits) != 10
         return 0
     let sum = 0
@@ -26,16 +26,16 @@ fn is_valid_isbn10 digits array<i64> -> i64
         sum += (10 - i) * digits[i]
     1 if sum % 11 == 0 else 0
 
-fn in_range x i64 lo i64 hi i64 -> i64
+fn in_range x i64 lo i64 hi i64
     1 if x >= lo and x <= hi else 0
 
-fn is_leap_year y i64 -> i64
+fn is_leap_year y i64
     1 if y % 400 == 0 else 0 if y % 100 == 0 else 1 if y % 4 == 0 else 0
 
-fn is_valid_month m i64 -> i64
+fn is_valid_month m i64
     1 if m >= 1 and m <= 12 else 0
 
-fn days_in_month y i64 m i64 -> i64
+fn days_in_month y i64 m i64
     if m == 2
         return 29 if is_leap_year(y) == 1 else 28
     if m == 4 or m == 6 or m == 9 or m == 11
@@ -44,21 +44,21 @@ fn days_in_month y i64 m i64 -> i64
         return 31
     0
 
-fn is_valid_day y i64 m i64 d i64 -> i64
+fn is_valid_day y i64 m i64 d i64
     if is_valid_month(m) == 0
         return 0
     if d < 1 or d > days_in_month(y, m)
         return 0
     1
 
-fn is_ascii_digit c string -> i64
+fn is_ascii_digit c string
     1 if is_digit(c[0]) else 0
 
-fn is_ascii_alpha c string -> i64
+fn is_ascii_alpha c string
     let code = char_code(c[0])
     1 if (code >= 65 and code <= 90) or (code >= 97 and code <= 122) else 0
 
-fn all_digits s string -> i64
+fn all_digits s string
     if len(s) == 0
         return 0
     for c in s
@@ -66,7 +66,7 @@ fn all_digits s string -> i64
             return 0
     1
 
-fn password_score s string -> i64
+fn password_score s string
     let score = 0
     if len(s) >= 8
         score += 1
@@ -83,7 +83,7 @@ fn password_score s string -> i64
             has_upper = 1
     score + has_digit + has_lower + has_upper
 
-fn is_hex_string s string -> i64
+fn is_hex_string s string
     if len(s) == 0
         return 0
     for c in s
@@ -92,25 +92,25 @@ fn is_hex_string s string -> i64
             return 0
     1
 
-fn checksum_mod10 digits array<i64> -> i64
+fn checksum_mod10 digits array<i64>
     let sum = 0
     for d in digits
         sum += d
     sum % 10
 
-fn valid_percentage x i64 -> i64
+fn valid_percentage x i64
     1 if x >= 0 and x <= 100 else 0
 
-fn is_valid_rgb r i64 g i64 b i64 -> i64
+fn is_valid_rgb r i64 g i64 b i64
     1 if r >= 0 and r <= 255 and g >= 0 and g <= 255 and b >= 0 and b <= 255 else 0
 
-fn even_parity bits array<i64> -> i64
+fn even_parity bits array<i64>
     let ones = 0
     for b in bits
         ones += 1 if b == 1 else 0
     1 if ones % 2 == 0 else 0
 
-fn main -> void
+fn main
     let card array<i64> = [7, 9, 9, 2, 7, 3, 9, 8, 7, 1, 3]
     let isbn array<i64> = [0, 3, 0, 6, 4, 0, 6, 1, 5, 2]
     let bits array<i64> = [1, 0, 1, 1, 0, 0]

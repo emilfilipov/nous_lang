@@ -3,25 +3,25 @@
 # Lullaby has no sized-array allocation, so `partition_count` seeds a fixed-size
 # `array<i64>` literal (indices 0..40) as its DP table — see the note there.
 
-fn factorial n i64 -> i64
+fn factorial n i64
     let result = 1
     for i from 2 to n
         result = result * i
     result
 
-fn permutations_count n i64 r i64 -> i64
+fn permutations_count n i64 r i64
     let result = 1
     for i from 0 to r - 1
         result = result * (n - i)
     result
 
-fn combinations_count n i64 r i64 -> i64
+fn combinations_count n i64 r i64
     let result = 1
     for i from 1 to r
         result = result * (n - r + i) / i
     result
 
-fn catalan n i64 -> i64
+fn catalan n i64
     let result = 1
     for i from 0 to n - 1
         result = result * 2 * (2 * i + 1) / (i + 2)
@@ -32,7 +32,7 @@ fn pascal_value row i64 col i64 -> i64
         return 1
     pascal_value(row - 1, col - 1) + pascal_value(row - 1, col)
 
-fn tribonacci n i64 -> i64
+fn tribonacci n i64
     if n == 0
         return 0
     if n <= 2
@@ -47,7 +47,7 @@ fn tribonacci n i64 -> i64
         c = d
     c
 
-fn lucas n i64 -> i64
+fn lucas n i64
     if n == 0
         return 2
     if n == 1
@@ -60,7 +60,7 @@ fn lucas n i64 -> i64
         b = c
     b
 
-fn derangement_count n i64 -> i64
+fn derangement_count n i64
     if n == 0
         return 1
     if n == 1
@@ -80,13 +80,13 @@ fn stirling_second n i64 k i64 -> i64
         return 0
     k * stirling_second(n - 1, k) + stirling_second(n - 1, k - 1)
 
-fn bell_number n i64 -> i64
+fn bell_number n i64
     let sum = 0
     for k from 0 to n
         sum += stirling_second(n, k)
     sum
 
-fn partition_count n i64 -> i64
+fn partition_count n i64
     # DP over parts. `array_fill(n, value)` seeds a fixed 41-element zero row
     # (covering indices 0..40, so n <= 40).
     let dp array<i64> = array_fill(41, 0)
@@ -96,7 +96,7 @@ fn partition_count n i64 -> i64
             dp[j] = dp[j] + dp[j - p]
     dp[n]
 
-fn subfactorial n i64 -> i64
+fn subfactorial n i64
     let d = 1
     let sign = 1
     for i from 1 to n
@@ -109,7 +109,7 @@ fn binomial_mod n i64 r i64 m i64 -> i64
         return 1 % m
     (binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m)) % m
 
-fn fibonacci_iter n i64 -> i64
+fn fibonacci_iter n i64
     if n == 0
         return 0
     let a = 0
@@ -120,7 +120,7 @@ fn fibonacci_iter n i64 -> i64
         b = c
     b
 
-fn padovan n i64 -> i64
+fn padovan n i64
     if n <= 2
         return 1
     let a = 1
@@ -133,7 +133,7 @@ fn padovan n i64 -> i64
         c = d
     c
 
-fn jacobsthal n i64 -> i64
+fn jacobsthal n i64
     if n == 0
         return 0
     if n == 1
@@ -146,10 +146,10 @@ fn jacobsthal n i64 -> i64
         b = c
     b
 
-fn pentagonal n i64 -> i64
+fn pentagonal n i64
     n * (3 * n - 1) / 2
 
-fn main -> void
+fn main
     println("factorial(10)=" + to_string(factorial(10)))
     println("permutations_count(10,3)=" + to_string(permutations_count(10, 3)))
     println("combinations_count(10,3)=" + to_string(combinations_count(10, 3)))

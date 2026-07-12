@@ -4,16 +4,16 @@
 # value, so a function receives a private copy it may sort in place without
 # disturbing the caller.
 
-fn is_even x i64 -> bool
+fn is_even x i64
     x - (x / 2) * 2 == 0
 
-fn checksum a array<i64> n i64 -> i64
+fn checksum a array<i64> n i64
     let sum = 0
     for i from 0 to n - 1
         sum += i * a[i]
     sum
 
-fn insertion_sorted a array<i64> n i64 -> array<i64>
+fn insertion_sorted a array<i64> n i64
     for i from 1 to n - 1
         let key = a[i]
         let j = i - 1
@@ -23,7 +23,7 @@ fn insertion_sorted a array<i64> n i64 -> array<i64>
         a[j + 1] = key
     a
 
-fn insertion_sort_checksum a array<i64> n i64 -> i64
+fn insertion_sort_checksum a array<i64> n i64
     for i from 1 to n - 1
         let key = a[i]
         let j = i - 1
@@ -33,7 +33,7 @@ fn insertion_sort_checksum a array<i64> n i64 -> i64
         a[j + 1] = key
     checksum(a, n)
 
-fn selection_sort_checksum a array<i64> n i64 -> i64
+fn selection_sort_checksum a array<i64> n i64
     for i from 0 to n - 2
         let mi = i
         for j from i + 1 to n - 1
@@ -44,7 +44,7 @@ fn selection_sort_checksum a array<i64> n i64 -> i64
         a[mi] = t
     checksum(a, n)
 
-fn bubble_sort_swaps a array<i64> n i64 -> i64
+fn bubble_sort_swaps a array<i64> n i64
     let swaps = 0
     for i from 0 to n - 1
         for j from 0 to n - 2 - i
@@ -55,7 +55,7 @@ fn bubble_sort_swaps a array<i64> n i64 -> i64
                 swaps += 1
     swaps
 
-fn gnome_sort_checksum a array<i64> n i64 -> i64
+fn gnome_sort_checksum a array<i64> n i64
     let i = 0
     while i < n
         if i == 0 or a[i] >= a[i - 1]
@@ -67,7 +67,7 @@ fn gnome_sort_checksum a array<i64> n i64 -> i64
             i -= 1
     checksum(a, n)
 
-fn cocktail_sort_checksum a array<i64> n i64 -> i64
+fn cocktail_sort_checksum a array<i64> n i64
     let lo = 0
     let hi = n - 1
     let swapped bool = true
@@ -94,7 +94,7 @@ fn cocktail_sort_checksum a array<i64> n i64 -> i64
         lo += 1
     checksum(a, n)
 
-fn comb_sort_checksum a array<i64> n i64 -> i64
+fn comb_sort_checksum a array<i64> n i64
     let gap = n
     let swapped bool = true
     while gap > 1 or swapped
@@ -110,7 +110,7 @@ fn comb_sort_checksum a array<i64> n i64 -> i64
                 swapped = true
     checksum(a, n)
 
-fn count_inversions a array<i64> n i64 -> i64
+fn count_inversions a array<i64> n i64
     let count = 0
     for i from 0 to n - 1
         for j from i + 1 to n - 1
@@ -118,13 +118,13 @@ fn count_inversions a array<i64> n i64 -> i64
                 count += 1
     count
 
-fn is_sorted_desc a array<i64> n i64 -> i64
+fn is_sorted_desc a array<i64> n i64
     for i from 1 to n - 1
         if a[i] > a[i - 1]
             return 0
     1
 
-fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64 -> i64
+fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64
     let i = 0
     let j = 0
     let k = 0
@@ -147,7 +147,7 @@ fn merge_two_sorted_checksum a array<i64> la i64 b array<i64> lb i64 -> i64
         k += 1
     sum
 
-fn partition_lomuto_index a array<i64> n i64 -> i64
+fn partition_lomuto_index a array<i64> n i64
     let pivot = a[n - 1]
     let i = 0
     for j from 0 to n - 2
@@ -161,7 +161,7 @@ fn partition_lomuto_index a array<i64> n i64 -> i64
     a[n - 1] = u
     i
 
-fn kth_smallest a array<i64> n i64 k i64 -> i64
+fn kth_smallest a array<i64> n i64 k i64
     for i from 0 to k - 1
         let mi = i
         for j from i + 1 to n - 1
@@ -172,7 +172,7 @@ fn kth_smallest a array<i64> n i64 k i64 -> i64
         a[mi] = t
     a[k - 1]
 
-fn count_sorted_runs a array<i64> n i64 -> i64
+fn count_sorted_runs a array<i64> n i64
     if n == 0
         return 0
     let runs = 1
@@ -181,7 +181,7 @@ fn count_sorted_runs a array<i64> n i64 -> i64
             runs += 1
     runs
 
-fn min_swaps_selection a array<i64> n i64 -> i64
+fn min_swaps_selection a array<i64> n i64
     let swaps = 0
     for i from 0 to n - 2
         let mi = i
@@ -195,11 +195,11 @@ fn min_swaps_selection a array<i64> n i64 -> i64
             swaps += 1
     swaps
 
-fn sorted_median a array<i64> n i64 -> i64
+fn sorted_median a array<i64> n i64
     let s array<i64> = insertion_sorted(a, n)
     s[n / 2]
 
-fn sort_evens_first_checksum a array<i64> n i64 -> i64
+fn sort_evens_first_checksum a array<i64> n i64
     let s array<i64> = insertion_sorted(a, n)
     let sum = 0
     let k = 0
@@ -213,13 +213,13 @@ fn sort_evens_first_checksum a array<i64> n i64 -> i64
             k += 1
     sum
 
-fn reverse_checksum a array<i64> n i64 -> i64
+fn reverse_checksum a array<i64> n i64
     let sum = 0
     for i from 0 to n - 1
         sum += i * a[n - 1 - i]
     sum
 
-fn max_gap_sorted a array<i64> n i64 -> i64
+fn max_gap_sorted a array<i64> n i64
     let s array<i64> = insertion_sorted(a, n)
     let g = 0
     for i from 1 to n - 1
@@ -228,7 +228,7 @@ fn max_gap_sorted a array<i64> n i64 -> i64
             g = d
     g
 
-fn second_smallest a array<i64> n i64 -> i64
+fn second_smallest a array<i64> n i64
     let first = a[0]
     let second = a[1]
     if second < first
@@ -243,7 +243,7 @@ fn second_smallest a array<i64> n i64 -> i64
             second = a[i]
     second
 
-fn main -> void
+fn main
     let t array<i64> = [5, 3, 8, 1, 9, 2]
     let p array<i64> = [1, 4, 6, 8]
     let q array<i64> = [2, 3, 5, 7, 9]

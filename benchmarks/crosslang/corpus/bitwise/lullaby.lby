@@ -4,32 +4,32 @@
 # Every language in this category matches that arithmetic-only model. See
 # ../../SPEC.md. Lullaby has no `%` operator; `rem` is truncating remainder.
 
-fn pow2 n i64 -> i64
+fn pow2 n i64
     let p = 1
     for i from 1 to n
         p = p * 2
     p
 
-fn count_set_bits x i64 -> i64
+fn count_set_bits x i64
     let count = 0
     while x > 0
         count += x % 2
         x = x / 2
     count
 
-fn is_power_of_two x i64 -> i64
+fn is_power_of_two x i64
     if x <= 0
         return 0
     1 if count_set_bits(x) == 1 else 0
 
-fn highest_bit_pos x i64 -> i64
+fn highest_bit_pos x i64
     let pos = -1
     while x > 0
         pos += 1
         x = x / 2
     pos
 
-fn lowest_bit_pos x i64 -> i64
+fn lowest_bit_pos x i64
     if x == 0
         return -1
     let pos = 0
@@ -38,41 +38,41 @@ fn lowest_bit_pos x i64 -> i64
         x = x / 2
     pos
 
-fn bit_at x i64 i i64 -> i64
+fn bit_at x i64 i i64
     x / pow2(i) % 2
 
-fn extract_bits x i64 start i64 count i64 -> i64
+fn extract_bits x i64 start i64 count i64
     x / pow2(start) % pow2(count)
 
-fn set_bit x i64 i i64 -> i64
+fn set_bit x i64 i i64
     if bit_at(x, i) == 1
         return x
     x + pow2(i)
 
-fn clear_bit x i64 i i64 -> i64
+fn clear_bit x i64 i i64
     if bit_at(x, i) == 0
         return x
     x - pow2(i)
 
-fn toggle_bit x i64 i i64 -> i64
+fn toggle_bit x i64 i i64
     if bit_at(x, i) == 1
         return x - pow2(i)
     x + pow2(i)
 
-fn popcount_range lo i64 hi i64 -> i64
+fn popcount_range lo i64 hi i64
     let total = 0
     for v from lo to hi
         total += count_set_bits(v)
     total
 
-fn reverse_bits_n x i64 n i64 -> i64
+fn reverse_bits_n x i64 n i64
     let result = 0
     for i from 0 to n - 1
         result = result * 2 + x % 2
         x = x / 2
     result
 
-fn hamming_distance_bits a i64 b i64 -> i64
+fn hamming_distance_bits a i64 b i64
     let dist = 0
     while a > 0 or b > 0
         if a % 2 != b % 2
@@ -81,13 +81,13 @@ fn hamming_distance_bits a i64 b i64 -> i64
         b = b / 2
     dist
 
-fn next_power_of_two x i64 -> i64
+fn next_power_of_two x i64
     let p = 1
     while p < x
         p = p * 2
     p
 
-fn count_leading_zeros_64 x i64 -> i64
+fn count_leading_zeros_64 x i64
     if x == 0
         return 64
     let count = 64
@@ -96,13 +96,13 @@ fn count_leading_zeros_64 x i64 -> i64
         x = x / 2
     count
 
-fn parity_bit x i64 -> i64
+fn parity_bit x i64
     count_set_bits(x) % 2
 
-fn is_bit_palindrome x i64 n i64 -> i64
+fn is_bit_palindrome x i64 n i64
     1 if reverse_bits_n(x, n) == extract_bits(x, 0, n) else 0
 
-fn rotate_left_n x i64 n i64 bits i64 -> i64
+fn rotate_left_n x i64 n i64 bits i64
     let width = pow2(bits)
     x = x % width
     n = n % bits
@@ -110,11 +110,11 @@ fn rotate_left_n x i64 n i64 bits i64 -> i64
     let lo = x / pow2(bits - n)
     hi + lo
 
-fn merge_bits a i64 b i64 mask_count i64 -> i64
+fn merge_bits a i64 b i64 mask_count i64
     let m = pow2(mask_count)
     a - a % m + b % m
 
-fn main -> void
+fn main
     println("count_set_bits=" + to_string(count_set_bits(181)))
     println("is_power_of_two=" + to_string(is_power_of_two(64)))
     println("highest_bit_pos=" + to_string(highest_bit_pos(181)))

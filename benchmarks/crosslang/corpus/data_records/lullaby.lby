@@ -21,47 +21,47 @@ struct Vec3
     y i64
     z i64
 
-fn abs_val n i64 -> i64
+fn abs_val n i64
     if n < 0
         return -n
     n
 
-fn manhattan a Point b Point -> i64
+fn manhattan a Point b Point
     abs_val(a.x - b.x) + abs_val(a.y - b.y)
 
-fn chebyshev a Point b Point -> i64
+fn chebyshev a Point b Point
     let dx = abs_val(a.x - b.x)
     let dy = abs_val(a.y - b.y)
     dx if dx > dy else dy
 
-fn rect_area r Rect -> i64
+fn rect_area r Rect
     r.w * r.h
 
-fn rect_perimeter r Rect -> i64
+fn rect_perimeter r Rect
     2 * (r.w + r.h)
 
-fn rect_contains r Rect px i64 py i64 -> i64
+fn rect_contains r Rect px i64 py i64
     1 if px >= 0 and py >= 0 and px <= r.w and py <= r.h else 0
 
-fn money_add a Money b Money -> Money
+fn money_add a Money b Money
     Money(a.cents + b.cents)
 
-fn money_dollars m Money -> i64
+fn money_dollars m Money
     m.cents / 100
 
-fn money_cents_part m Money -> i64
+fn money_cents_part m Money
     m.cents % 100
 
-fn interval_overlaps a Interval b Interval -> i64
+fn interval_overlaps a Interval b Interval
     1 if a.lo < b.hi and b.lo < a.hi else 0
 
-fn interval_length a Interval -> i64
+fn interval_length a Interval
     let n = a.hi - a.lo
     if n < 0
         return 0
     n
 
-fn interval_intersect_len a Interval b Interval -> i64
+fn interval_intersect_len a Interval b Interval
     let lo = a.lo
     if b.lo > lo
         lo = b.lo
@@ -73,19 +73,19 @@ fn interval_intersect_len a Interval b Interval -> i64
         return 0
     n
 
-fn vec3_dot a Vec3 b Vec3 -> i64
+fn vec3_dot a Vec3 b Vec3
     a.x * b.x + a.y * b.y + a.z * b.z
 
-fn vec3_add a Vec3 b Vec3 -> Vec3
+fn vec3_add a Vec3 b Vec3
     Vec3(a.x + b.x, a.y + b.y, a.z + b.z)
 
-fn vec3_manhattan_norm v Vec3 -> i64
+fn vec3_manhattan_norm v Vec3
     abs_val(v.x) + abs_val(v.y) + abs_val(v.z)
 
-fn midpoint_x a Point b Point -> i64
+fn midpoint_x a Point b Point
     (a.x + b.x) / 2
 
-fn main -> void
+fn main
     let p Point = Point(1, 2)
     let q Point = Point(4, 6)
     println("manhattan=" + to_string(manhattan(p, q)))

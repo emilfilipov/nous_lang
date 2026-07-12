@@ -7,10 +7,10 @@
 #   days_from_civil counts days since 1970-01-01 (Howard Hinnant's algorithm).
 #   add_days_year returns the YEAR of the date n days after y-m-d.
 
-fn is_leap_year y i64 -> i64
+fn is_leap_year y i64
     1 if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0) else 0
 
-fn days_in_month y i64 m i64 -> i64
+fn days_in_month y i64 m i64
     if m == 2
         if is_leap_year(y) == 1
             return 29
@@ -19,16 +19,16 @@ fn days_in_month y i64 m i64 -> i64
         return 30
     31
 
-fn day_of_year y i64 m i64 d i64 -> i64
+fn day_of_year y i64 m i64 d i64
     let total = d
     for mm from 1 to m - 1
         total += days_in_month(y, mm)
     total
 
-fn is_weekend dow i64 -> i64
+fn is_weekend dow i64
     1 if dow == 0 or dow == 6 else 0
 
-fn zeller_dow y i64 m i64 d i64 -> i64
+fn zeller_dow y i64 m i64 d i64
     if m < 3
         m = m + 12
         y = y - 1
@@ -37,7 +37,7 @@ fn zeller_dow y i64 m i64 d i64 -> i64
     let h = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7
     (h + 6) % 7
 
-fn days_from_civil y i64 m i64 d i64 -> i64
+fn days_from_civil y i64 m i64 d i64
     if m <= 2
         y = y - 1
     let era = 0
@@ -49,7 +49,7 @@ fn days_from_civil y i64 m i64 d i64 -> i64
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
     era * 146097 + doe - 719468
 
-fn year_from_days z i64 -> i64
+fn year_from_days z i64
     z = z + 719468
     let era = 0
     era = z / 146097 if z >= 0 else (z - 146096) / 146097
@@ -64,38 +64,38 @@ fn year_from_days z i64 -> i64
         y = y + 1
     y
 
-fn days_between y1 i64 m1 i64 d1 i64 y2 i64 m2 i64 d2 i64 -> i64
+fn days_between y1 i64 m1 i64 d1 i64 y2 i64 m2 i64 d2 i64
     days_from_civil(y2, m2, d2) - days_from_civil(y1, m1, d1)
 
-fn add_days_year y i64 m i64 d i64 n i64 -> i64
+fn add_days_year y i64 m i64 d i64 n i64
     year_from_days(days_from_civil(y, m, d) + n)
 
-fn hours_to_minutes h i64 -> i64
+fn hours_to_minutes h i64
     h * 60
 
-fn minutes_to_seconds m i64 -> i64
+fn minutes_to_seconds m i64
     m * 60
 
-fn seconds_in_days d i64 -> i64
+fn seconds_in_days d i64
     d * 86400
 
-fn quarter_of_month m i64 -> i64
+fn quarter_of_month m i64
     (m - 1) / 3 + 1
 
-fn is_valid_time h i64 mi i64 s i64 -> i64
+fn is_valid_time h i64 mi i64 s i64
     1 if h >= 0 and h <= 23 and mi >= 0 and mi <= 59 and s >= 0 and s <= 59 else 0
 
-fn clock_add_minutes h i64 mi i64 add i64 -> i64
+fn clock_add_minutes h i64 mi i64 add i64
     let total = (h * 60 + mi + add) % 1440
     total / 60
 
-fn age_years yb i64 mb i64 db i64 yn i64 mn i64 dn i64 -> i64
+fn age_years yb i64 mb i64 db i64 yn i64 mn i64 dn i64
     let years = yn - yb
     if mn < mb or (mn == mb and dn < db)
         years -= 1
     years
 
-fn main -> void
+fn main
     println("is_leap_year(2000)=" + to_string(is_leap_year(2000)))
     println("days_in_month(2024,2)=" + to_string(days_in_month(2024, 2)))
     println("day_of_year(2024,3,1)=" + to_string(day_of_year(2024, 3, 1)))

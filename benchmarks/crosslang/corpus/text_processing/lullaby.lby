@@ -4,7 +4,7 @@
 # conditional `A if C else B`; membership uses `c in "..."`; substrings use the
 # slice `s[i:j]`. ASCII case folding keeps explicit code ranges. See ../SPEC.md.
 
-fn word_count s string -> i64
+fn word_count s string
     let count = 0
     let in_word = 0
     for c in s
@@ -15,46 +15,46 @@ fn word_count s string -> i64
             in_word = 1
     count
 
-fn char_count s string -> i64
+fn char_count s string
     len(s)
 
-fn count_char s string c string -> i64
+fn count_char s string c string
     let target = c[0]
     let count = 0
     for ch in s
         count += 1 if ch == target else 0
     count
 
-fn is_blank s string -> i64
+fn is_blank s string
     for c in s
         if not is_whitespace(c)
             return 0
     1
 
-fn starts_with_prefix s string p string -> i64
+fn starts_with_prefix s string p string
     1 if starts_with(s, p) else 0
 
-fn ends_with_suffix s string p string -> i64
+fn ends_with_suffix s string p string
     1 if ends_with(s, p) else 0
 
-fn contains_sub s string sub string -> i64
+fn contains_sub s string sub string
     1 if sub in s else 0
 
-fn to_upper_ascii s string -> string
+fn to_upper_ascii s string
     let out string = ""
     for c in s
         let code = char_code(c)
         out += char_from(code - 32) if code >= 97 and code <= 122 else c
     out
 
-fn to_lower_ascii s string -> string
+fn to_lower_ascii s string
     let out string = ""
     for c in s
         let code = char_code(c)
         out += char_from(code + 32) if code >= 65 and code <= 90 else c
     out
 
-fn reverse_str s string -> string
+fn reverse_str s string
     let out string = ""
     let i = len(s) - 1
     while i >= 0
@@ -62,23 +62,23 @@ fn reverse_str s string -> string
         i -= 1
     out
 
-fn repeat_str s string n i64 -> string
+fn repeat_str s string n i64
     repeat(s, n) if n > 0 else ""
 
-fn left_pad s string width i64 c string -> string
+fn left_pad s string width i64 c string
     let pad = width - len(s)
     repeat(c, pad) + s if pad > 0 else s
 
-fn truncate_ellipsis s string max i64 -> string
+fn truncate_ellipsis s string max i64
     s if len(s) <= max else s[0:max - 3] + "..."
 
-fn count_vowels s string -> i64
+fn count_vowels s string
     let count = 0
     for c in s
         count += 1 if c in "aeiou" else 0
     count
 
-fn initials name string -> string
+fn initials name string
     let out string = ""
     let in_word = 0
     for c in name
@@ -90,7 +90,7 @@ fn initials name string -> string
             out += char_from(code - 32) if code >= 97 and code <= 122 else c
     out
 
-fn main -> void
+fn main
     println("word_count=" + to_string(word_count("the quick brown fox")))
     println("to_upper_ascii=" + to_upper_ascii("Hello, World"))
     println("reverse_str=" + reverse_str("lullaby"))

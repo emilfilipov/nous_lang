@@ -4,7 +4,7 @@
 # `is_whitespace` / `is_alpha` char predicates. Invalid numeric input returns -1
 # (or 0 for the signed parser, whose full range includes -1). See ../SPEC.md.
 
-fn parse_uint s string -> i64
+fn parse_uint s string
     if len(s) == 0
         return -1
     let val = 0
@@ -14,7 +14,7 @@ fn parse_uint s string -> i64
         val = val * 10 + char_code(c) - 48
     val
 
-fn parse_int_signed s string -> i64
+fn parse_int_signed s string
     let n = len(s)
     if n == 0
         return 0
@@ -34,7 +34,7 @@ fn parse_int_signed s string -> i64
         return -val
     val
 
-fn is_valid_int s string -> i64
+fn is_valid_int s string
     let n = len(s)
     if n == 0
         return 0
@@ -48,7 +48,7 @@ fn is_valid_int s string -> i64
             return 0
     1
 
-fn count_fields s string sep string -> i64
+fn count_fields s string sep string
     let target = sep[0]
     let count = 1
     for c in s
@@ -56,7 +56,7 @@ fn count_fields s string sep string -> i64
             count += 1
     count
 
-fn nth_field_len s string sep string nth i64 -> i64
+fn nth_field_len s string sep string nth i64
     let target = sep[0]
     let field = 0
     let cur = 0
@@ -73,7 +73,7 @@ fn nth_field_len s string sep string nth i64 -> i64
         result = cur
     result
 
-fn count_lines s string -> i64
+fn count_lines s string
     if len(s) == 0
         return 0
     let nl = char_from(10)
@@ -83,7 +83,7 @@ fn count_lines s string -> i64
             count += 1
     count
 
-fn strip_leading_zeros_len s string -> i64
+fn strip_leading_zeros_len s string
     let n = len(s)
     let i = 0
     while i < n
@@ -92,7 +92,7 @@ fn strip_leading_zeros_len s string -> i64
         i += 1
     n - i
 
-fn eval_rpn tokens array<i64> -> i64
+fn eval_rpn tokens array<i64>
     if len(tokens) == 0
         return 0
     let stack array<i64> = tokens
@@ -119,14 +119,14 @@ fn eval_rpn tokens array<i64> -> i64
             sp += 1
     stack[0]
 
-fn count_digits_in s string -> i64
+fn count_digits_in s string
     let count = 0
     for c in s
         if is_digit(c)
             count += 1
     count
 
-fn count_words s string -> i64
+fn count_words s string
     let count = 0
     let in_word = 0
     for c in s
@@ -137,7 +137,7 @@ fn count_words s string -> i64
             count += 1
     count
 
-fn hex_to_int s string -> i64
+fn hex_to_int s string
     if len(s) == 0
         return -1
     let val = 0
@@ -155,7 +155,7 @@ fn hex_to_int s string -> i64
         val = val * 16 + d
     val
 
-fn bin_to_int s string -> i64
+fn bin_to_int s string
     if len(s) == 0
         return -1
     let val = 0
@@ -168,7 +168,7 @@ fn bin_to_int s string -> i64
             return -1
     val
 
-fn roman_value c char -> i64
+fn roman_value c char
     if c == 'I'
         return 1
     if c == 'V'
@@ -185,7 +185,7 @@ fn roman_value c char -> i64
         return 1000
     0
 
-fn roman_to_int s string -> i64
+fn roman_to_int s string
     let n = len(s)
     let total = 0
     for i from 0 to n - 1
@@ -196,14 +196,14 @@ fn roman_to_int s string -> i64
             total += v
     total
 
-fn char_class_count s string -> i64
+fn char_class_count s string
     let count = 0
     for c in s
         if is_alpha(c)
             count += 1
     count
 
-fn main -> void
+fn main
     let rpn array<i64> = [3, 4, -1, 5, -3]
     let text string = "the quick brown fox"
     println("parse_uint=" + to_string(parse_uint("01234")))

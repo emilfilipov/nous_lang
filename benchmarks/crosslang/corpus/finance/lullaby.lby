@@ -1,56 +1,56 @@
 # Cross-language finance suite (Lullaby). Money/business math in integer cents.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn add_tax cents i64 rate_bp i64 -> i64
+fn add_tax cents i64 rate_bp i64
     cents + cents * rate_bp / 10000
 
-fn apply_discount cents i64 pct i64 -> i64
+fn apply_discount cents i64 pct i64
     cents - cents * pct / 100
 
-fn tip_amount cents i64 pct i64 -> i64
+fn tip_amount cents i64 pct i64
     cents * pct / 100
 
-fn split_bill cents i64 people i64 -> i64
+fn split_bill cents i64 people i64
     cents / people
 
-fn split_remainder cents i64 people i64 -> i64
+fn split_remainder cents i64 people i64
     cents % people
 
-fn simple_interest principal i64 rate_bp i64 years i64 -> i64
+fn simple_interest principal i64 rate_bp i64 years i64
     principal * rate_bp * years / 10000
 
-fn compound_interest principal i64 rate_bp i64 years i64 -> i64
+fn compound_interest principal i64 rate_bp i64 years i64
     let amount = principal
     for y from 1 to years
         amount = amount + amount * rate_bp / 10000
     amount
 
-fn monthly_payment_flat principal i64 months i64 -> i64
+fn monthly_payment_flat principal i64 months i64
     principal / months
 
-fn cents_to_dollars cents i64 -> i64
+fn cents_to_dollars cents i64
     cents / 100
 
-fn cents_part cents i64 -> i64
+fn cents_part cents i64
     cents % 100
 
-fn percent_of part i64 whole i64 -> i64
+fn percent_of part i64 whole i64
     if whole == 0
         return 0
     part * 100 / whole
 
-fn markup cost i64 pct i64 -> i64
+fn markup cost i64 pct i64
     cost + cost * pct / 100
 
-fn margin_pct cost i64 price i64 -> i64
+fn margin_pct cost i64 price i64
     if price == 0
         return 0
     (price - cost) * 100 / price
 
-fn round_to_nearest cents i64 step i64 -> i64
+fn round_to_nearest cents i64 step i64
     (cents + step / 2) / step * step
 
-fn future_value_years principal i64 rate_bp i64 years i64 -> i64
+fn future_value_years principal i64 rate_bp i64 years i64
     let amount = principal
     let y = 0
     while y < years
@@ -58,7 +58,7 @@ fn future_value_years principal i64 rate_bp i64 years i64 -> i64
         y += 1
     amount
 
-fn main -> void
+fn main
     println("add_tax=" + to_string(add_tax(1000, 825)))
     println("apply_discount=" + to_string(apply_discount(1000, 15)))
     println("tip_amount=" + to_string(tip_amount(4200, 18)))

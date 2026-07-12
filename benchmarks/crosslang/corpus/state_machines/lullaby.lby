@@ -29,67 +29,67 @@ enum Token
     RParen
     End
 
-fn light_next t TrafficLight -> TrafficLight
+fn light_next t TrafficLight
     match t
         Red -> Green
         Green -> Yellow
         Yellow -> Red
 
-fn light_go t TrafficLight -> i64
+fn light_go t TrafficLight
     match t
         Green -> 1
         Red -> 0
         Yellow -> 0
 
-fn light_duration t TrafficLight -> i64
+fn light_duration t TrafficLight
     match t
         Red -> 30
         Green -> 25
         Yellow -> 5
 
-fn turn_right d Direction -> Direction
+fn turn_right d Direction
     match d
         North -> East
         East -> South
         South -> West
         West -> North
 
-fn turn_left d Direction -> Direction
+fn turn_left d Direction
     match d
         North -> West
         West -> South
         South -> East
         East -> North
 
-fn opposite d Direction -> Direction
+fn opposite d Direction
     match d
         North -> South
         South -> North
         East -> West
         West -> East
 
-fn dir_dx d Direction -> i64
+fn dir_dx d Direction
     match d
         East -> 1
         West -> -1
         North -> 0
         South -> 0
 
-fn dir_dy d Direction -> i64
+fn dir_dy d Direction
     match d
         North -> 1
         South -> -1
         East -> 0
         West -> 0
 
-fn dir_clockwise_index d Direction -> i64
+fn dir_clockwise_index d Direction
     match d
         North -> 0
         East -> 1
         South -> 2
         West -> 3
 
-fn order_can_cancel s OrderStatus -> i64
+fn order_can_cancel s OrderStatus
     match s
         Pending -> 1
         Paid -> 1
@@ -97,7 +97,7 @@ fn order_can_cancel s OrderStatus -> i64
         Delivered -> 0
         Cancelled -> 0
 
-fn order_next s OrderStatus -> OrderStatus
+fn order_next s OrderStatus
     match s
         Pending -> Paid
         Paid -> Shipped
@@ -105,7 +105,7 @@ fn order_next s OrderStatus -> OrderStatus
         Delivered -> Delivered
         Cancelled -> Cancelled
 
-fn order_is_final s OrderStatus -> i64
+fn order_is_final s OrderStatus
     match s
         Delivered -> 1
         Cancelled -> 1
@@ -113,7 +113,7 @@ fn order_is_final s OrderStatus -> i64
         Paid -> 0
         Shipped -> 0
 
-fn token_precedence t Token -> i64
+fn token_precedence t Token
     match t
         Plus -> 1
         Minus -> 1
@@ -124,7 +124,7 @@ fn token_precedence t Token -> i64
         RParen -> 0
         End -> 0
 
-fn token_is_operator t Token -> i64
+fn token_is_operator t Token
     match t
         Plus -> 1
         Minus -> 1
@@ -135,7 +135,7 @@ fn token_is_operator t Token -> i64
         RParen -> 0
         End -> 0
 
-fn token_is_paren t Token -> i64
+fn token_is_paren t Token
     match t
         LParen -> 1
         RParen -> 1
@@ -146,13 +146,13 @@ fn token_is_paren t Token -> i64
         Slash -> 0
         End -> 0
 
-fn light_name t TrafficLight -> string
+fn light_name t TrafficLight
     match t
         Red -> "RED"
         Green -> "GREEN"
         Yellow -> "YELLOW"
 
-fn main -> void
+fn main
     let t TrafficLight = Red
     println("light_next=" + light_name(light_next(t)))
     println("light_go=" + to_string(light_go(Green)))

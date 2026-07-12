@@ -3,19 +3,19 @@
 # every language matches Lullaby's arithmetic-only model. See ../../SPEC.md.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn sum_bytes a array<i64> n i64 -> i64
+fn sum_bytes a array<i64> n i64
     let total = 0
     for i from 0 to n - 1
         total += a[i]
     total
 
-fn add_checksum_mod256 a array<i64> n i64 -> i64
+fn add_checksum_mod256 a array<i64> n i64
     let total = 0
     for i from 0 to n - 1
         total += a[i]
     total % 256
 
-fn fletcher16 a array<i64> n i64 -> i64
+fn fletcher16 a array<i64> n i64
     let sum1 = 0
     let sum2 = 0
     for i from 0 to n - 1
@@ -23,7 +23,7 @@ fn fletcher16 a array<i64> n i64 -> i64
         sum2 = (sum2 + sum1) % 255
     sum2 * 256 + sum1
 
-fn adler32_small a array<i64> n i64 -> i64
+fn adler32_small a array<i64> n i64
     let s1 = 1
     let s2 = 0
     for i from 0 to n - 1
@@ -31,31 +31,31 @@ fn adler32_small a array<i64> n i64 -> i64
         s2 = (s2 + s1) % 65521
     s2 * 65536 + s1
 
-fn caesar_encrypt_val c i64 k i64 -> i64
+fn caesar_encrypt_val c i64 k i64
     if c >= 97 and c <= 122
         return 97 + (c - 97 + k % 26) % 26
     c
 
-fn caesar_decrypt_val c i64 k i64 -> i64
+fn caesar_decrypt_val c i64 k i64
     if c >= 97 and c <= 122
         return 97 + (c - 97 + 26 - k % 26) % 26
     c
 
-fn rot13_val c i64 -> i64
+fn rot13_val c i64
     if c >= 97 and c <= 122
         return 97 + (c - 97 + 13) % 26
     if c >= 65 and c <= 90
         return 65 + (c - 65 + 13) % 26
     c
 
-fn count_set_bits x i64 -> i64
+fn count_set_bits x i64
     let count = 0
     while x > 0
         count += x % 2
         x = x / 2
     count
 
-fn to_binary_length x i64 -> i64
+fn to_binary_length x i64
     if x == 0
         return 1
     let len = 0
@@ -64,19 +64,19 @@ fn to_binary_length x i64 -> i64
         x = x / 2
     len
 
-fn hex_digit_value c i64 -> i64
+fn hex_digit_value c i64
     if c >= 48 and c <= 57
         return c - 48
     if c >= 97 and c <= 102
         return c - 97 + 10
     -1
 
-fn nibble_to_hex_code v i64 -> i64
+fn nibble_to_hex_code v i64
     if v < 10
         return 48 + v
     97 + v - 10
 
-fn luhn_from_array a array<i64> n i64 -> i64
+fn luhn_from_array a array<i64> n i64
     let sum = 0
     for i from 0 to n - 1
         let d = a[n - 1 - i]
@@ -87,20 +87,20 @@ fn luhn_from_array a array<i64> n i64 -> i64
         sum += d
     1 if sum % 10 == 0 else 0
 
-fn parity_bit a array<i64> n i64 -> i64
+fn parity_bit a array<i64> n i64
     let ones = 0
     for i from 0 to n - 1
         ones += a[i]
     ones % 2
 
-fn crc8_simple a array<i64> n i64 -> i64
+fn crc8_simple a array<i64> n i64
     let crc = 0
     for i from 0 to n - 1
         crc = (crc + a[i]) % 256
         crc = crc * 2 % 256 + crc / 128
     crc
 
-fn digit_product x i64 -> i64
+fn digit_product x i64
     if x < 0
         x = -x
     if x == 0
@@ -111,7 +111,7 @@ fn digit_product x i64 -> i64
         x = x / 10
     p
 
-fn main -> void
+fn main
     let data array<i64> = [72, 101, 108, 108, 111]
     println("sum_bytes=" + to_string(sum_bytes(data, 5)))
     println("add_checksum_mod256=" + to_string(add_checksum_mod256(data, 5)))
