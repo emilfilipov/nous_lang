@@ -266,6 +266,27 @@ fn runs_words_count_across_backends() {
 }
 
 #[test]
+fn runs_grouped_params_across_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_grouped_params.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(output.status.success(), "{backend}: {output:?}");
+        // weighted(1,2,3,10) = 60; tag_len("ab","cde",4) = 2+3+4 = 9; total 69.
+        // Grouped `a, b, c, scale i64` and `label, suffix string` are exactly the
+        // ungrouped forms, so every backend agrees.
+        assert_eq!(stdout(&output).trim(), "69", "{backend} stdout mismatch");
+    }
+}
+
+#[test]
 fn runs_sum_reduction_across_backends() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_sum_reduction.lby");
     for backend in ["ast", "ir", "bytecode"] {

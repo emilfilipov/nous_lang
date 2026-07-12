@@ -5,7 +5,7 @@
 # value, so a function receives a private copy it may reorder freely.
 
 # Lullaby has no `%` operator, so remainder is a small helper (a real gap).
-fn count_frequency_of a array<i64> n i64 x i64
+fn count_frequency_of a array<i64> n, x i64
     let count = 0
     for i from 0 to n - 1
         if a[i] == x
@@ -35,7 +35,7 @@ fn first_duplicate_value a array<i64> n i64
     -1
 
 # a is sorted; two-pointer scan for a pair summing to target.
-fn has_pair_sum a array<i64> n i64 target i64
+fn has_pair_sum a array<i64> n, target i64
     let lo = 0
     let hi = n - 1
     while lo < hi
@@ -93,7 +93,7 @@ fn partition_point a array<i64> n i64
             return i
     n
 
-fn count_in_range a array<i64> n i64 lo i64 hi i64
+fn count_in_range a array<i64> n, lo, hi i64
     let count = 0
     for i from 0 to n - 1
         if a[i] >= lo and a[i] <= hi
@@ -106,7 +106,7 @@ fn running_total_last a array<i64> n i64
         total += a[i]
     total
 
-fn zip_sum a array<i64> b array<i64> n i64
+fn zip_sum a, b array<i64> n i64
     let sum = 0
     for i from 0 to n - 1
         sum += a[i] + b[i]
@@ -169,7 +169,7 @@ fn is_subset_sorted a array<i64> la i64 b array<i64> lb i64
     1
 
 # Rotate left by k, then checksum sum(i * value). Uses no extra storage.
-fn rotate_left_checksum a array<i64> n i64 k i64
+fn rotate_left_checksum a array<i64> n, k i64
     let shift = k % n
     let sum = 0
     for i from 0 to n - 1
@@ -194,7 +194,7 @@ fn dedup_sorted_checksum a array<i64> n i64
     sum
 
 # Maximum sum of any k consecutive elements (sliding window).
-fn chunk_sum_max a array<i64> n i64 k i64
+fn chunk_sum_max a array<i64> n, k i64
     let window = 0
     for i from 0 to k - 1
         window += a[i]

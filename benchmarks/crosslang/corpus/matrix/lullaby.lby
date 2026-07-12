@@ -17,13 +17,13 @@ fn diagonal_sum_anti m array<i64> n i64
         sum += m[i * n + (n - 1 - i)]
     sum
 
-fn row_sum m array<i64> n i64 r i64
+fn row_sum m array<i64> n, r i64
     let sum = 0
     for c from 0 to n - 1
         sum += m[r * n + c]
     sum
 
-fn col_sum m array<i64> n i64 c i64
+fn col_sum m array<i64> n, c i64
     let sum = 0
     for r from 0 to n - 1
         sum += m[r * n + c]
@@ -60,13 +60,13 @@ fn transpose_checksum m array<i64> n i64
             sum += i * m[c * n + r]
     sum
 
-fn matrix_add_checksum a array<i64> b array<i64> n i64
+fn matrix_add_checksum a, b array<i64> n i64
     let sum = 0
     for i from 0 to n * n - 1
         sum += i * (a[i] + b[i])
     sum
 
-fn scalar_mul_checksum m array<i64> n i64 k i64
+fn scalar_mul_checksum m array<i64> n, k i64
     let sum = 0
     for i from 0 to n * n - 1
         sum += i * (m[i] * k)
@@ -83,7 +83,7 @@ fn is_identity m array<i64> n i64
                     return 0
     1
 
-fn matrix_mul_trace a array<i64> b array<i64> n i64
+fn matrix_mul_trace a, b array<i64> n i64
     let sum = 0
     for i from 0 to n - 1
         for k from 0 to n - 1

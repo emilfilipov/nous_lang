@@ -168,8 +168,8 @@
    "category": "arrays",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn dot_product a array<i64> b array<i64>\n    let sum = 0\n    for i from 0 to len(a) - 1\n        sum += a[i] * b[i]\n    sum"
+     "tokens": 43,
+     "source": "fn dot_product a, b array<i64>\n    let sum = 0\n    for i from 0 to len(a) - 1\n        sum += a[i] * b[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -478,8 +478,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 20,
-     "source": "fn bit_at x i64 i i64\n    x / pow2(i) % 2"
+     "tokens": 19,
+     "source": "fn bit_at x, i i64\n    x / pow2(i) % 2"
     },
     "C": {
      "tokens": 30,
@@ -509,8 +509,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn clear_bit x i64 i i64\n    if bit_at(x, i) == 0\n        return x\n    x - pow2(i)"
+     "tokens": 32,
+     "source": "fn clear_bit x, i i64\n    if bit_at(x, i) == 0\n        return x\n    x - pow2(i)"
     },
     "C": {
      "tokens": 41,
@@ -602,8 +602,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 25,
-     "source": "fn extract_bits x i64 start i64 count i64\n    x / pow2(start) % pow2(count)"
+     "tokens": 23,
+     "source": "fn extract_bits x, start, count i64\n    x / pow2(start) % pow2(count)"
     },
     "C": {
      "tokens": 36,
@@ -633,8 +633,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 67,
-     "source": "fn hamming_distance_bits a i64 b i64\n    let dist = 0\n    while a > 0 or b > 0\n        if a % 2 != b % 2\n            dist += 1\n        a = a / 2\n        b = b / 2\n    dist"
+     "tokens": 66,
+     "source": "fn hamming_distance_bits a, b i64\n    let dist = 0\n    while a > 0 or b > 0\n        if a % 2 != b % 2\n            dist += 1\n        a = a / 2\n        b = b / 2\n    dist"
     },
     "C": {
      "tokens": 78,
@@ -695,8 +695,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 36,
-     "source": "fn is_bit_palindrome x i64 n i64\n    1 if reverse_bits_n(x, n) == extract_bits(x, 0, n) else 0"
+     "tokens": 35,
+     "source": "fn is_bit_palindrome x, n i64\n    1 if reverse_bits_n(x, n) == extract_bits(x, 0, n) else 0"
     },
     "C": {
      "tokens": 45,
@@ -788,8 +788,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn merge_bits a i64 b i64 mask_count i64\n    let m = pow2(mask_count)\n    a - a % m + b % m"
+     "tokens": 31,
+     "source": "fn merge_bits a, b, mask_count i64\n    let m = pow2(mask_count)\n    a - a % m + b % m"
     },
     "C": {
      "tokens": 46,
@@ -881,8 +881,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 36,
-     "source": "fn popcount_range lo i64 hi i64\n    let total = 0\n    for v from lo to hi\n        total += count_set_bits(v)\n    total"
+     "tokens": 35,
+     "source": "fn popcount_range lo, hi i64\n    let total = 0\n    for v from lo to hi\n        total += count_set_bits(v)\n    total"
     },
     "C": {
      "tokens": 54,
@@ -943,8 +943,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn reverse_bits_n x i64 n i64\n    let result = 0\n    for i from 0 to n - 1\n        result = result * 2 + x % 2\n        x = x / 2\n    result"
+     "tokens": 52,
+     "source": "fn reverse_bits_n x, n i64\n    let result = 0\n    for i from 0 to n - 1\n        result = result * 2 + x % 2\n        x = x / 2\n    result"
     },
     "C": {
      "tokens": 70,
@@ -974,8 +974,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 65,
-     "source": "fn rotate_left_n x i64 n i64 bits i64\n    let width = pow2(bits)\n    x = x % width\n    n = n % bits\n    let hi = x * pow2(n) % width\n    let lo = x / pow2(bits - n)\n    hi + lo"
+     "tokens": 63,
+     "source": "fn rotate_left_n x, n, bits i64\n    let width = pow2(bits)\n    x = x % width\n    n = n % bits\n    let hi = x * pow2(n) % width\n    let lo = x / pow2(bits - n)\n    hi + lo"
     },
     "C": {
      "tokens": 83,
@@ -1005,8 +1005,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn set_bit x i64 i i64\n    if bit_at(x, i) == 1\n        return x\n    x + pow2(i)"
+     "tokens": 32,
+     "source": "fn set_bit x, i i64\n    if bit_at(x, i) == 1\n        return x\n    x + pow2(i)"
     },
     "C": {
      "tokens": 41,
@@ -1036,8 +1036,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 37,
-     "source": "fn toggle_bit x i64 i i64\n    if bit_at(x, i) == 1\n        return x - pow2(i)\n    x + pow2(i)"
+     "tokens": 36,
+     "source": "fn toggle_bit x, i i64\n    if bit_at(x, i) == 1\n        return x - pow2(i)\n    x + pow2(i)"
     },
     "C": {
      "tokens": 45,
@@ -1067,8 +1067,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn break_even_units fixed i64 price i64 var i64\n    if price <= var\n        return 0\n    fixed / (price - var)"
+     "tokens": 31,
+     "source": "fn break_even_units fixed, price, var i64\n    if price <= var\n        return 0\n    fixed / (price - var)"
     },
     "C": {
      "tokens": 43,
@@ -1098,8 +1098,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 43,
-     "source": "fn bulk_price qty i64 unit_cents i64\n    let base = qty * unit_cents\n    if qty >= 100\n        return base - base * 10 / 100\n    base"
+     "tokens": 42,
+     "source": "fn bulk_price qty, unit_cents i64\n    let base = qty * unit_cents\n    if qty >= 100\n        return base - base * 10 / 100\n    base"
     },
     "C": {
      "tokens": 54,
@@ -1160,8 +1160,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 34,
-     "source": "fn gross_margin_pct cost i64 price i64\n    if price == 0\n        return 0\n    (price - cost) * 100 / price"
+     "tokens": 33,
+     "source": "fn gross_margin_pct cost, price i64\n    if price == 0\n        return 0\n    (price - cost) * 100 / price"
     },
     "C": {
      "tokens": 43,
@@ -1191,8 +1191,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 27,
-     "source": "fn invoice_total subtotal i64 tax_bp i64 ship i64\n    subtotal + subtotal * tax_bp / 10000 + ship"
+     "tokens": 25,
+     "source": "fn invoice_total subtotal, tax_bp, ship i64\n    subtotal + subtotal * tax_bp / 10000 + ship"
     },
     "C": {
      "tokens": 38,
@@ -1222,8 +1222,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 37,
-     "source": "fn late_fee days i64 amount i64\n    if days <= 0\n        return 0\n    amount * 5 / 100 + amount * days / 100"
+     "tokens": 36,
+     "source": "fn late_fee days, amount i64\n    if days <= 0\n        return 0\n    amount * 5 / 100 + amount * days / 100"
     },
     "C": {
      "tokens": 46,
@@ -1284,8 +1284,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 19,
-     "source": "fn markup_price cost i64 pct i64\n    cost + cost * pct / 100"
+     "tokens": 18,
+     "source": "fn markup_price cost, pct i64\n    cost + cost * pct / 100"
     },
     "C": {
      "tokens": 28,
@@ -1315,8 +1315,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 24,
-     "source": "fn net_after_fees gross i64 fee_bp i64\n    gross - gross * fee_bp / 10000"
+     "tokens": 23,
+     "source": "fn net_after_fees gross, fee_bp i64\n    gross - gross * fee_bp / 10000"
     },
     "C": {
      "tokens": 33,
@@ -1346,8 +1346,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 13,
-     "source": "fn profit revenue i64 cost i64\n    revenue - cost"
+     "tokens": 12,
+     "source": "fn profit revenue, cost i64\n    revenue - cost"
     },
     "C": {
      "tokens": 22,
@@ -1377,8 +1377,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 24,
-     "source": "fn reorder_needed stock i64 threshold i64\n    if stock <= threshold\n        return 1\n    0"
+     "tokens": 23,
+     "source": "fn reorder_needed stock, threshold i64\n    if stock <= threshold\n        return 1\n    0"
     },
     "C": {
      "tokens": 29,
@@ -1408,8 +1408,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 29,
-     "source": "fn restock_quantity current i64 max i64 min i64\n    if current <= min\n        return max - current\n    0"
+     "tokens": 27,
+     "source": "fn restock_quantity current, max, min i64\n    if current <= min\n        return max - current\n    0"
     },
     "C": {
      "tokens": 40,
@@ -1439,8 +1439,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 29,
-     "source": "fn roi_pct gain i64 cost i64\n    if cost == 0\n        return 0\n    gain * 100 / cost"
+     "tokens": 28,
+     "source": "fn roi_pct gain, cost i64\n    if cost == 0\n        return 0\n    gain * 100 / cost"
     },
     "C": {
      "tokens": 38,
@@ -1470,8 +1470,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 21,
-     "source": "fn sales_commission sales i64 rate_bp i64\n    sales * rate_bp / 10000"
+     "tokens": 20,
+     "source": "fn sales_commission sales, rate_bp i64\n    sales * rate_bp / 10000"
     },
     "C": {
      "tokens": 30,
@@ -1532,8 +1532,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 19,
-     "source": "fn stock_after stock i64 sold i64 received i64\n    stock - sold + received"
+     "tokens": 17,
+     "source": "fn stock_after stock, sold, received i64\n    stock - sold + received"
     },
     "C": {
      "tokens": 30,
@@ -1594,8 +1594,8 @@
    "category": "business",
    "langs": {
     "Lullaby": {
-     "tokens": 30,
-     "source": "fn unit_price total_cents i64 qty i64\n    if qty == 0\n        return 0\n    total_cents / qty"
+     "tokens": 29,
+     "source": "fn unit_price total_cents, qty i64\n    if qty == 0\n        return 0\n    total_cents / qty"
     },
     "C": {
      "tokens": 39,
@@ -1625,8 +1625,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn chunk_sum_max a array<i64> n i64 k i64\n    let window = 0\n    for i from 0 to k - 1\n        window += a[i]\n    let best = window\n    for i from k to n - 1\n        window += a[i] - a[i - k]\n        if window > best\n            best = window\n    best"
+     "tokens": 82,
+     "source": "fn chunk_sum_max a array<i64> n, k i64\n    let window = 0\n    for i from 0 to k - 1\n        window += a[i]\n    let best = window\n    for i from k to n - 1\n        window += a[i] - a[i - k]\n        if window > best\n            best = window\n    best"
     },
     "C": {
      "tokens": 110,
@@ -1718,8 +1718,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn count_frequency_of a array<i64> n i64 x i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
+     "tokens": 50,
+     "source": "fn count_frequency_of a array<i64> n, x i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == x\n            count += 1\n    count"
     },
     "C": {
      "tokens": 65,
@@ -1749,8 +1749,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 60,
-     "source": "fn count_in_range a array<i64> n i64 lo i64 hi i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] >= lo and a[i] <= hi\n            count += 1\n    count"
+     "tokens": 58,
+     "source": "fn count_in_range a array<i64> n, lo, hi i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] >= lo and a[i] <= hi\n            count += 1\n    count"
     },
     "C": {
      "tokens": 76,
@@ -1873,8 +1873,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 90,
-     "source": "fn has_pair_sum a array<i64> n i64 target i64\n    let lo = 0\n    let hi = n - 1\n    while lo < hi\n        let s = a[lo] + a[hi]\n        if s == target\n            return 1\n        elif s < target\n            lo = lo + 1\n        else\n            hi = hi - 1\n    0"
+     "tokens": 89,
+     "source": "fn has_pair_sum a array<i64> n, target i64\n    let lo = 0\n    let hi = n - 1\n    while lo < hi\n        let s = a[lo] + a[hi]\n        if s == target\n            return 1\n        elif s < target\n            lo = lo + 1\n        else\n            hi = hi - 1\n    0"
     },
     "C": {
      "tokens": 96,
@@ -2059,8 +2059,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 74,
-     "source": "fn rotate_left_checksum a array<i64> n i64 k i64\n    let shift = k % n\n    let sum = 0\n    for i from 0 to n - 1\n        let idx = i + shift\n        if idx >= n\n            idx = idx - n\n        sum += i * a[idx]\n    sum"
+     "tokens": 73,
+     "source": "fn rotate_left_checksum a array<i64> n, k i64\n    let shift = k % n\n    let sum = 0\n    for i from 0 to n - 1\n        let idx = i + shift\n        if idx >= n\n            idx = idx - n\n        sum += i * a[idx]\n    sum"
     },
     "C": {
      "tokens": 93,
@@ -2152,8 +2152,8 @@
    "category": "collections",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn zip_sum a array<i64> b array<i64> n i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i] + b[i]\n    sum"
+     "tokens": 45,
+     "source": "fn zip_sum a, b array<i64> n i64\n    let sum = 0\n    for i from 0 to n - 1\n        sum += a[i] + b[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -2214,8 +2214,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 67,
-     "source": "fn binomial_mod n i64 r i64 m i64 -> i64\n    if r == 0 or r == n\n        return 1 % m\n    (binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m)) % m"
+     "tokens": 65,
+     "source": "fn binomial_mod n, r, m i64 -> i64\n    if r == 0 or r == n\n        return 1 % m\n    (binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m)) % m"
     },
     "C": {
      "tokens": 75,
@@ -2276,8 +2276,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 43,
-     "source": "fn combinations_count n i64 r i64\n    let result = 1\n    for i from 1 to r\n        result = result * (n - r + i) / i\n    result"
+     "tokens": 42,
+     "source": "fn combinations_count n, r i64\n    let result = 1\n    for i from 1 to r\n        result = result * (n - r + i) / i\n    result"
     },
     "C": {
      "tokens": 65,
@@ -2524,8 +2524,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn pascal_value row i64 col i64 -> i64\n    if col == 0 or col == row\n        return 1\n    pascal_value(row - 1, col - 1) + pascal_value(row - 1, col)"
+     "tokens": 54,
+     "source": "fn pascal_value row, col i64 -> i64\n    if col == 0 or col == row\n        return 1\n    pascal_value(row - 1, col - 1) + pascal_value(row - 1, col)"
     },
     "C": {
      "tokens": 60,
@@ -2586,8 +2586,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 41,
-     "source": "fn permutations_count n i64 r i64\n    let result = 1\n    for i from 0 to r - 1\n        result = result * (n - i)\n    result"
+     "tokens": 40,
+     "source": "fn permutations_count n, r i64\n    let result = 1\n    for i from 0 to r - 1\n        result = result * (n - i)\n    result"
     },
     "C": {
      "tokens": 60,
@@ -2617,8 +2617,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 75,
-     "source": "fn stirling_second n i64 k i64 -> i64\n    if k == 0 and n == 0\n        return 1\n    if k == 0 or n == 0\n        return 0\n    k * stirling_second(n - 1, k) + stirling_second(n - 1, k - 1)"
+     "tokens": 74,
+     "source": "fn stirling_second n, k i64 -> i64\n    if k == 0 and n == 0\n        return 1\n    if k == 0 or n == 0\n        return 0\n    k * stirling_second(n - 1, k) + stirling_second(n - 1, k - 1)"
     },
     "C": {
      "tokens": 80,
@@ -2730,7 +2730,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 41,
-     "source": "fn chebyshev a Point b Point\n    let dx = abs_val(a.x - b.x)\n    let dy = abs_val(a.y - b.y)\n    dx if dx > dy else dy"
+     "source": "fn chebyshev a, b Point\n    let dx = abs_val(a.x - b.x)\n    let dy = abs_val(a.y - b.y)\n    dx if dx > dy else dy"
     },
     "C": {
      "tokens": 52,
@@ -2761,7 +2761,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 75,
-     "source": "fn interval_intersect_len a Interval b Interval\n    let lo = a.lo\n    if b.lo > lo\n        lo = b.lo\n    let hi = a.hi\n    if b.hi < hi\n        hi = b.hi\n    let n = hi - lo\n    if n < 0\n        return 0\n    n"
+     "source": "fn interval_intersect_len a, b Interval\n    let lo = a.lo\n    if b.lo > lo\n        lo = b.lo\n    let hi = a.hi\n    if b.hi < hi\n        hi = b.hi\n    let n = hi - lo\n    if n < 0\n        return 0\n    n"
     },
     "C": {
      "tokens": 78,
@@ -2823,7 +2823,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 29,
-     "source": "fn interval_overlaps a Interval b Interval\n    1 if a.lo < b.hi and b.lo < a.hi else 0"
+     "source": "fn interval_overlaps a, b Interval\n    1 if a.lo < b.hi and b.lo < a.hi else 0"
     },
     "C": {
      "tokens": 39,
@@ -2854,7 +2854,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 26,
-     "source": "fn manhattan a Point b Point\n    abs_val(a.x - b.x) + abs_val(a.y - b.y)"
+     "source": "fn manhattan a, b Point\n    abs_val(a.x - b.x) + abs_val(a.y - b.y)"
     },
     "C": {
      "tokens": 32,
@@ -2885,7 +2885,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 19,
-     "source": "fn midpoint_x a Point b Point\n    (a.x + b.x) / 2"
+     "source": "fn midpoint_x a, b Point\n    (a.x + b.x) / 2"
     },
     "C": {
      "tokens": 26,
@@ -2916,7 +2916,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 18,
-     "source": "fn money_add a Money b Money\n    Money(a.cents + b.cents)"
+     "source": "fn money_add a, b Money\n    Money(a.cents + b.cents)"
     },
     "C": {
      "tokens": 29,
@@ -3039,8 +3039,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 38,
-     "source": "fn rect_contains r Rect px i64 py i64\n    1 if px >= 0 and py >= 0 and px <= r.w and py <= r.h else 0"
+     "tokens": 37,
+     "source": "fn rect_contains r Rect px, py i64\n    1 if px >= 0 and py >= 0 and px <= r.w and py <= r.h else 0"
     },
     "C": {
      "tokens": 50,
@@ -3101,8 +3101,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn vec3_add a Vec3 b Vec3\n    Vec3(a.x + b.x, a.y + b.y, a.z + b.z)"
+     "tokens": 31,
+     "source": "fn vec3_add a, b Vec3\n    Vec3(a.x + b.x, a.y + b.y, a.z + b.z)"
     },
     "C": {
      "tokens": 43,
@@ -3132,8 +3132,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 29,
-     "source": "fn vec3_dot a Vec3 b Vec3\n    a.x * b.x + a.y * b.y + a.z * b.z"
+     "tokens": 28,
+     "source": "fn vec3_dot a, b Vec3\n    a.x * b.x + a.y * b.y + a.z * b.z"
     },
     "C": {
      "tokens": 36,
@@ -3194,8 +3194,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 34,
-     "source": "fn add_days_year y i64 m i64 d i64 n i64\n    year_from_days(days_from_civil(y, m, d) + n)"
+     "tokens": 31,
+     "source": "fn add_days_year y, m, d, n i64\n    year_from_days(days_from_civil(y, m, d) + n)"
     },
     "C": {
      "tokens": 46,
@@ -3225,8 +3225,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn age_years yb i64 mb i64 db i64 yn i64 mn i64 dn i64\n    let years = yn - yb\n    if mn < mb or (mn == mb and dn < db)\n        years -= 1\n    years"
+     "tokens": 51,
+     "source": "fn age_years yb, mb, db, yn, mn, dn i64\n    let years = yn - yb\n    if mn < mb or (mn == mb and dn < db)\n        years -= 1\n    years"
     },
     "C": {
      "tokens": 76,
@@ -3256,8 +3256,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 38,
-     "source": "fn clock_add_minutes h i64 mi i64 add i64\n    let total = (h * 60 + mi + add) % 1440\n    total / 60"
+     "tokens": 36,
+     "source": "fn clock_add_minutes h, mi, add i64\n    let total = (h * 60 + mi + add) % 1440\n    total / 60"
     },
     "C": {
      "tokens": 44,
@@ -3287,8 +3287,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 44,
-     "source": "fn day_of_year y i64 m i64 d i64\n    let total = d\n    for mm from 1 to m - 1\n        total += days_in_month(y, mm)\n    total"
+     "tokens": 42,
+     "source": "fn day_of_year y, m, d i64\n    let total = d\n    for mm from 1 to m - 1\n        total += days_in_month(y, mm)\n    total"
     },
     "C": {
      "tokens": 61,
@@ -3318,8 +3318,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 56,
-     "source": "fn days_between y1 i64 m1 i64 d1 i64 y2 i64 m2 i64 d2 i64\n    days_from_civil(y2, m2, d2) - days_from_civil(y1, m1, d1)"
+     "tokens": 51,
+     "source": "fn days_between y1, m1, d1, y2, m2, d2 i64\n    days_from_civil(y2, m2, d2) - days_from_civil(y1, m1, d1)"
     },
     "C": {
      "tokens": 73,
@@ -3349,8 +3349,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 154,
-     "source": "fn days_from_civil y i64 m i64 d i64\n    if m <= 2\n        y = y - 1\n    let era = 0\n    era = y / 400 if y >= 0 else (y - 399) / 400\n    let yoe = y - era * 400\n    let mp = 0\n    mp = m - 3 if m > 2 else m + 9\n    let doy = (153 * mp + 2) / 5 + d - 1\n    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy\n    era * 146097 + doe - 719468"
+     "tokens": 152,
+     "source": "fn days_from_civil y, m, d i64\n    if m <= 2\n        y = y - 1\n    let era = 0\n    era = y / 400 if y >= 0 else (y - 399) / 400\n    let yoe = y - era * 400\n    let mp = 0\n    mp = m - 3 if m > 2 else m + 9\n    let doy = (153 * mp + 2) / 5 + d - 1\n    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy\n    era * 146097 + doe - 719468"
     },
     "C": {
      "tokens": 147,
@@ -3380,8 +3380,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 70,
-     "source": "fn days_in_month y i64 m i64\n    if m == 2\n        if is_leap_year(y) == 1\n            return 29\n        return 28\n    if m == 4 or m == 6 or m == 9 or m == 11\n        return 30\n    31"
+     "tokens": 69,
+     "source": "fn days_in_month y, m i64\n    if m == 2\n        if is_leap_year(y) == 1\n            return 29\n        return 28\n    if m == 4 or m == 6 or m == 9 or m == 11\n        return 30\n    31"
     },
     "C": {
      "tokens": 72,
@@ -3473,8 +3473,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn is_valid_time h i64 mi i64 s i64\n    1 if h >= 0 and h <= 23 and mi >= 0 and mi <= 59 and s >= 0 and s <= 59 else 0"
+     "tokens": 48,
+     "source": "fn is_valid_time h, mi, s i64\n    1 if h >= 0 and h <= 23 and mi >= 0 and mi <= 59 and s >= 0 and s <= 59 else 0"
     },
     "C": {
      "tokens": 63,
@@ -3659,8 +3659,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 107,
-     "source": "fn zeller_dow y i64 m i64 d i64\n    if m < 3\n        m = m + 12\n        y = y - 1\n    let k = y % 100\n    let j = y / 100\n    let h = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7\n    (h + 6) % 7"
+     "tokens": 105,
+     "source": "fn zeller_dow y, m, d i64\n    if m < 3\n        m = m + 12\n        y = y - 1\n    let k = y % 100\n    let j = y / 100\n    let h = (d + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7\n    (h + 6) % 7"
     },
     "C": {
      "tokens": 121,
@@ -3752,8 +3752,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn caesar_decrypt_val c i64 k i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + 26 - k % 26) % 26\n    c"
+     "tokens": 49,
+     "source": "fn caesar_decrypt_val c, k i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + 26 - k % 26) % 26\n    c"
     },
     "C": {
      "tokens": 59,
@@ -3783,8 +3783,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn caesar_encrypt_val c i64 k i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + k % 26) % 26\n    c"
+     "tokens": 45,
+     "source": "fn caesar_encrypt_val c, k i64\n    if c >= 97 and c <= 122\n        return 97 + (c - 97 + k % 26) % 26\n    c"
     },
     "C": {
      "tokens": 55,
@@ -4155,8 +4155,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 22,
-     "source": "fn add_tax cents i64 rate_bp i64\n    cents + cents * rate_bp / 10000"
+     "tokens": 21,
+     "source": "fn add_tax cents, rate_bp i64\n    cents + cents * rate_bp / 10000"
     },
     "C": {
      "tokens": 31,
@@ -4186,8 +4186,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 19,
-     "source": "fn apply_discount cents i64 pct i64\n    cents - cents * pct / 100"
+     "tokens": 18,
+     "source": "fn apply_discount cents, pct i64\n    cents - cents * pct / 100"
     },
     "C": {
      "tokens": 28,
@@ -4279,8 +4279,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn compound_interest principal i64 rate_bp i64 years i64\n    let amount = principal\n    for y from 1 to years\n        amount = amount + amount * rate_bp / 10000\n    amount"
+     "tokens": 43,
+     "source": "fn compound_interest principal, rate_bp, years i64\n    let amount = principal\n    for y from 1 to years\n        amount = amount + amount * rate_bp / 10000\n    amount"
     },
     "C": {
      "tokens": 69,
@@ -4310,8 +4310,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn future_value_years principal i64 rate_bp i64 years i64\n    let amount = principal\n    let y = 0\n    while y < years\n        amount += amount * rate_bp / 10000\n        y += 1\n    amount"
+     "tokens": 53,
+     "source": "fn future_value_years principal, rate_bp, years i64\n    let amount = principal\n    let y = 0\n    while y < years\n        amount += amount * rate_bp / 10000\n        y += 1\n    amount"
     },
     "C": {
      "tokens": 71,
@@ -4341,8 +4341,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn margin_pct cost i64 price i64\n    if price == 0\n        return 0\n    (price - cost) * 100 / price"
+     "tokens": 32,
+     "source": "fn margin_pct cost, price i64\n    if price == 0\n        return 0\n    (price - cost) * 100 / price"
     },
     "C": {
      "tokens": 42,
@@ -4372,8 +4372,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 18,
-     "source": "fn markup cost i64 pct i64\n    cost + cost * pct / 100"
+     "tokens": 17,
+     "source": "fn markup cost, pct i64\n    cost + cost * pct / 100"
     },
     "C": {
      "tokens": 27,
@@ -4403,8 +4403,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 15,
-     "source": "fn monthly_payment_flat principal i64 months i64\n    principal / months"
+     "tokens": 14,
+     "source": "fn monthly_payment_flat principal, months i64\n    principal / months"
     },
     "C": {
      "tokens": 24,
@@ -4434,8 +4434,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 29,
-     "source": "fn percent_of part i64 whole i64\n    if whole == 0\n        return 0\n    part * 100 / whole"
+     "tokens": 28,
+     "source": "fn percent_of part, whole i64\n    if whole == 0\n        return 0\n    part * 100 / whole"
     },
     "C": {
      "tokens": 38,
@@ -4465,8 +4465,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn round_to_nearest cents i64 step i64\n    (cents + step / 2) / step * step"
+     "tokens": 25,
+     "source": "fn round_to_nearest cents, step i64\n    (cents + step / 2) / step * step"
     },
     "C": {
      "tokens": 35,
@@ -4496,8 +4496,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 25,
-     "source": "fn simple_interest principal i64 rate_bp i64 years i64\n    principal * rate_bp * years / 10000"
+     "tokens": 23,
+     "source": "fn simple_interest principal, rate_bp, years i64\n    principal * rate_bp * years / 10000"
     },
     "C": {
      "tokens": 36,
@@ -4527,8 +4527,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 14,
-     "source": "fn split_bill cents i64 people i64\n    cents / people"
+     "tokens": 13,
+     "source": "fn split_bill cents, people i64\n    cents / people"
     },
     "C": {
      "tokens": 23,
@@ -4558,8 +4558,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 15,
-     "source": "fn split_remainder cents i64 people i64\n    cents % people"
+     "tokens": 14,
+     "source": "fn split_remainder cents, people i64\n    cents % people"
     },
     "C": {
      "tokens": 24,
@@ -4589,8 +4589,8 @@
    "category": "finance",
    "langs": {
     "Lullaby": {
-     "tokens": 17,
-     "source": "fn tip_amount cents i64 pct i64\n    cents * pct / 100"
+     "tokens": 16,
+     "source": "fn tip_amount cents, pct i64\n    cents * pct / 100"
     },
     "C": {
      "tokens": 26,
@@ -4682,8 +4682,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 15,
-     "source": "fn bowling_frame_score a i64 b i64\n    a + b"
+     "tokens": 14,
+     "source": "fn bowling_frame_score a, b i64\n    a + b"
     },
     "C": {
      "tokens": 24,
@@ -4744,8 +4744,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn count_value a array<i64> n i64 v i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == v\n            count += 1\n    count"
+     "tokens": 49,
+     "source": "fn count_value a array<i64> n, v i64\n    let count = 0\n    for i from 0 to n - 1\n        if a[i] == v\n            count += 1\n    count"
     },
     "C": {
      "tokens": 64,
@@ -4775,8 +4775,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn damage_calc atk i64 def i64\n    let d = atk - def\n    if d < 1\n        return 1\n    d"
+     "tokens": 31,
+     "source": "fn damage_calc atk, def i64\n    let d = atk - def\n    if d < 1\n        return 1\n    d"
     },
     "C": {
      "tokens": 39,
@@ -4868,8 +4868,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 67,
-     "source": "fn grid_move_valid x i64 y i64 dx i64 dy i64 w i64 h i64\n    let nx = x + dx\n    let ny = y + dy\n    if nx >= 0 and nx < w and ny >= 0 and ny < h\n        return 1\n    0"
+     "tokens": 62,
+     "source": "fn grid_move_valid x, y, dx, dy, w, h i64\n    let nx = x + dx\n    let ny = y + dy\n    if nx >= 0 and nx < w and ny >= 0 and ny < h\n        return 1\n    0"
     },
     "C": {
      "tokens": 82,
@@ -5023,8 +5023,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn line_winner b array<i64> i i64 j i64 k i64\n    if b[i] != 0 and b[i] == b[j] and b[i] == b[k]\n        return b[i]\n    0"
+     "tokens": 49,
+     "source": "fn line_winner b array<i64> i, j, k i64\n    if b[i] != 0 and b[i] == b[j] and b[i] == b[k]\n        return b[i]\n    0"
     },
     "C": {
      "tokens": 64,
@@ -5085,8 +5085,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 15,
-     "source": "fn score_with_bonus base i64 mult i64\n    base * mult"
+     "tokens": 14,
+     "source": "fn score_with_bonus base, mult i64\n    base * mult"
     },
     "C": {
      "tokens": 24,
@@ -5116,8 +5116,8 @@
    "category": "games",
    "langs": {
     "Lullaby": {
-     "tokens": 15,
-     "source": "fn snake_grow len i64 food i64\n    len + food"
+     "tokens": 14,
+     "source": "fn snake_grow len, food i64\n    len + food"
     },
     "C": {
      "tokens": 24,
@@ -5229,7 +5229,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 29,
-     "source": "fn collinear a Point b Point c Point\n    1 if triangle_area2(a, b, c) == 0 else 0"
+     "source": "fn collinear a, b, c Point\n    1 if triangle_area2(a, b, c) == 0 else 0"
     },
     "C": {
      "tokens": 37,
@@ -5259,8 +5259,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 23,
-     "source": "fn cross ux i64 uy i64 vx i64 vy i64\n    ux * vy - uy * vx"
+     "tokens": 20,
+     "source": "fn cross ux, uy, vx, vy i64\n    ux * vy - uy * vx"
     },
     "C": {
      "tokens": 36,
@@ -5291,7 +5291,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 36,
-     "source": "fn dist_sq a Point b Point\n    let dx = a.x - b.x\n    let dy = a.y - b.y\n    dx * dx + dy * dy"
+     "source": "fn dist_sq a, b Point\n    let dx = a.x - b.x\n    let dy = a.y - b.y\n    dx * dx + dy * dy"
     },
     "C": {
      "tokens": 47,
@@ -5321,8 +5321,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 23,
-     "source": "fn dot ux i64 uy i64 vx i64 vy i64\n    ux * vx + uy * vy"
+     "tokens": 20,
+     "source": "fn dot ux, uy, vx, vy i64\n    ux * vx + uy * vy"
     },
     "C": {
      "tokens": 36,
@@ -5353,7 +5353,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 30,
-     "source": "fn is_ccw a Point b Point c Point\n    1 if triangle_area2(a, b, c) > 0 else 0"
+     "source": "fn is_ccw a, b, c Point\n    1 if triangle_area2(a, b, c) > 0 else 0"
     },
     "C": {
      "tokens": 38,
@@ -5395,7 +5395,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 26,
-     "source": "fn manhattan a Point b Point\n    abs_val(a.x - b.x) + abs_val(a.y - b.y)"
+     "source": "fn manhattan a, b Point\n    abs_val(a.x - b.x) + abs_val(a.y - b.y)"
     },
     "C": {
      "tokens": 32,
@@ -5426,7 +5426,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 19,
-     "source": "fn midpoint_x a Point b Point\n    (a.x + b.x) / 2"
+     "source": "fn midpoint_x a, b Point\n    (a.x + b.x) / 2"
     },
     "C": {
      "tokens": 26,
@@ -5457,7 +5457,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 19,
-     "source": "fn midpoint_y a Point b Point\n    (a.y + b.y) / 2"
+     "source": "fn midpoint_y a, b Point\n    (a.y + b.y) / 2"
     },
     "C": {
      "tokens": 26,
@@ -5488,7 +5488,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 58,
-     "source": "fn on_segment_x a Point b Point px i64\n    let lo = a.x\n    let hi = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    1 if px >= lo and px <= hi else 0"
+     "source": "fn on_segment_x a, b Point px i64\n    let lo = a.x\n    let hi = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    1 if px >= lo and px <= hi else 0"
     },
     "C": {
      "tokens": 73,
@@ -5518,8 +5518,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 19,
-     "source": "fn perimeter_rect w i64 h i64\n    2 * (w + h)"
+     "tokens": 18,
+     "source": "fn perimeter_rect w, h i64\n    2 * (w + h)"
     },
     "C": {
      "tokens": 27,
@@ -5549,8 +5549,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 41,
-     "source": "fn point_in_rect px i64 py i64 w i64 h i64\n    1 if px >= 0 and py >= 0 and px <= w and py <= h else 0"
+     "tokens": 38,
+     "source": "fn point_in_rect px, py, w, h i64\n    1 if px >= 0 and py >= 0 and px <= w and py <= h else 0"
     },
     "C": {
      "tokens": 56,
@@ -5580,8 +5580,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 80,
-     "source": "fn quadrant px i64 py i64\n    if px == 0 or py == 0\n        return 0\n    if px > 0 and py > 0\n        return 1\n    if px < 0 and py > 0\n        return 2\n    if px < 0 and py < 0\n        return 3\n    4"
+     "tokens": 79,
+     "source": "fn quadrant px, py i64\n    if px == 0 or py == 0\n        return 0\n    if px > 0 and py > 0\n        return 1\n    if px < 0 and py > 0\n        return 2\n    if px < 0 and py < 0\n        return 3\n    4"
     },
     "C": {
      "tokens": 89,
@@ -5611,8 +5611,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 14,
-     "source": "fn rect_area w i64 h i64\n    w * h"
+     "tokens": 13,
+     "source": "fn rect_area w, h i64\n    w * h"
     },
     "C": {
      "tokens": 23,
@@ -5674,7 +5674,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 37,
-     "source": "fn triangle_area2 a Point b Point c Point\n    cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)"
+     "source": "fn triangle_area2 a, b, c Point\n    cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)"
     },
     "C": {
      "tokens": 44,
@@ -5704,8 +5704,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 72,
-     "source": "fn common_neighbors_count g array<i64> n i64 a i64 b i64\n    let count = 0\n    for k from 0 to n - 1\n        if g[a * n + k] == 1\n            if g[b * n + k] == 1\n                count += 1\n    count"
+     "tokens": 70,
+     "source": "fn common_neighbors_count g array<i64> n, a, b i64\n    let count = 0\n    for k from 0 to n - 1\n        if g[a * n + k] == 1\n            if g[b * n + k] == 1\n                count += 1\n    count"
     },
     "C": {
      "tokens": 84,
@@ -5952,8 +5952,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn has_edge g array<i64> n i64 r i64 c i64\n    g[r * n + c]"
+     "tokens": 24,
+     "source": "fn has_edge g array<i64> n, r, c i64\n    g[r * n + c]"
     },
     "C": {
      "tokens": 34,
@@ -5983,8 +5983,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn in_degree g array<i64> n i64 v i64\n    let sum = 0\n    for r from 0 to n - 1\n        sum += g[r * n + v]\n    sum"
+     "tokens": 45,
+     "source": "fn in_degree g array<i64> n, v i64\n    let sum = 0\n    for r from 0 to n - 1\n        sum += g[r * n + v]\n    sum"
     },
     "C": {
      "tokens": 58,
@@ -6138,8 +6138,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn out_degree g array<i64> n i64 v i64\n    let sum = 0\n    for c from 0 to n - 1\n        sum += g[v * n + c]\n    sum"
+     "tokens": 45,
+     "source": "fn out_degree g array<i64> n, v i64\n    let sum = 0\n    for c from 0 to n - 1\n        sum += g[v * n + c]\n    sum"
     },
     "C": {
      "tokens": 58,
@@ -6169,8 +6169,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 66,
-     "source": "fn path_exists_len2 g array<i64> n i64 s i64 t i64\n    for k from 0 to n - 1\n        if g[s * n + k] == 1\n            if g[k * n + t] == 1\n                return 1\n    0"
+     "tokens": 64,
+     "source": "fn path_exists_len2 g array<i64> n, s, t i64\n    for k from 0 to n - 1\n        if g[s * n + k] == 1\n            if g[k * n + t] == 1\n                return 1\n    0"
     },
     "C": {
      "tokens": 77,
@@ -6200,8 +6200,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 176,
-     "source": "fn reachable_count_bfs g array<i64> n i64 start i64\n    let visited array<i64> = array_fill(64, 0)\n    let queue array<i64> = array_fill(64, 0)\n    let head = 0\n    let tail = 0\n    visited[start] = 1\n    queue[tail] = start\n    tail += 1\n    let count = 0\n    while head < tail\n        let v = queue[head]\n        head += 1\n        count += 1\n        for c from 0 to n - 1\n            if g[v * n + c] == 1\n                if visited[c] == 0\n                    visited[c] = 1\n                    queue[tail] = c\n                    tail += 1\n    count"
+     "tokens": 175,
+     "source": "fn reachable_count_bfs g array<i64> n, start i64\n    let visited array<i64> = array_fill(64, 0)\n    let queue array<i64> = array_fill(64, 0)\n    let head = 0\n    let tail = 0\n    visited[start] = 1\n    queue[tail] = start\n    tail += 1\n    let count = 0\n    while head < tail\n        let v = queue[head]\n        head += 1\n        count += 1\n        for c from 0 to n - 1\n            if g[v * n + c] == 1\n                if visited[c] == 0\n                    visited[c] = 1\n                    queue[tail] = c\n                    tail += 1\n    count"
     },
     "C": {
      "tokens": 161,
@@ -6231,8 +6231,8 @@
    "category": "graph_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn total_degree g array<i64> n i64 v i64\n    out_degree(g, n, v) + in_degree(g, n, v)"
+     "tokens": 32,
+     "source": "fn total_degree g array<i64> n, v i64\n    out_degree(g, n, v) + in_degree(g, n, v)"
     },
     "C": {
      "tokens": 40,
@@ -6448,8 +6448,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn mod_sum_hash a array<i64> n i64 m i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h + a[i]) % m\n    h"
+     "tokens": 48,
+     "source": "fn mod_sum_hash a array<i64> n, m i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h + a[i]) % m\n    h"
     },
     "C": {
      "tokens": 66,
@@ -6479,8 +6479,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn pair_hash a i64 b i64\n    let s = a + b\n    s * (s + 1) / 2 + b"
+     "tokens": 31,
+     "source": "fn pair_hash a, b i64\n    let s = a + b\n    s * (s + 1) / 2 + b"
     },
     "C": {
      "tokens": 43,
@@ -6541,8 +6541,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 53,
-     "source": "fn poly_hash a array<i64> n i64 base i64 modulus i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h * base + a[i]) % modulus\n    h"
+     "tokens": 51,
+     "source": "fn poly_hash a array<i64> n, base, modulus i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h * base + a[i]) % modulus\n    h"
     },
     "C": {
      "tokens": 72,
@@ -6572,8 +6572,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 52,
-     "source": "fn product_hash a array<i64> n i64 m i64\n    let h = 1\n    for i from 0 to n - 1\n        h = h * (a[i] + 1) % m\n    h"
+     "tokens": 51,
+     "source": "fn product_hash a array<i64> n, m i64\n    let h = 1\n    for i from 0 to n - 1\n        h = h * (a[i] + 1) % m\n    h"
     },
     "C": {
      "tokens": 70,
@@ -6603,8 +6603,8 @@
    "category": "hashing",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn rolling_hash a array<i64> n i64 modulus i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h * 256 + a[i]) % modulus\n    h"
+     "tokens": 50,
+     "source": "fn rolling_hash a array<i64> n, modulus i64\n    let h = 0\n    for i from 0 to n - 1\n        h = (h * 256 + a[i]) % modulus\n    h"
     },
     "C": {
      "tokens": 68,
@@ -6789,8 +6789,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn col_sum m array<i64> n i64 c i64\n    let sum = 0\n    for r from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
+     "tokens": 45,
+     "source": "fn col_sum m array<i64> n, c i64\n    let sum = 0\n    for r from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
     },
     "C": {
      "tokens": 63,
@@ -7032,8 +7032,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn matrix_add_checksum a array<i64> b array<i64> n i64\n    let sum = 0\n    for i from 0 to n * n - 1\n        sum += i * (a[i] + b[i])\n    sum"
+     "tokens": 51,
+     "source": "fn matrix_add_checksum a, b array<i64> n i64\n    let sum = 0\n    for i from 0 to n * n - 1\n        sum += i * (a[i] + b[i])\n    sum"
     },
     "C": {
      "tokens": 71,
@@ -7063,8 +7063,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 69,
-     "source": "fn matrix_mul_trace a array<i64> b array<i64> n i64\n    let sum = 0\n    for i from 0 to n - 1\n        for k from 0 to n - 1\n            sum += a[i * n + k] * b[k * n + i]\n    sum"
+     "tokens": 66,
+     "source": "fn matrix_mul_trace a, b array<i64> n i64\n    let sum = 0\n    for i from 0 to n - 1\n        for k from 0 to n - 1\n            sum += a[i * n + k] * b[k * n + i]\n    sum"
     },
     "C": {
      "tokens": 92,
@@ -7132,8 +7132,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn row_sum m array<i64> n i64 r i64\n    let sum = 0\n    for c from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
+     "tokens": 45,
+     "source": "fn row_sum m array<i64> n, r i64\n    let sum = 0\n    for c from 0 to n - 1\n        sum += m[r * n + c]\n    sum"
     },
     "C": {
      "tokens": 63,
@@ -7194,8 +7194,8 @@
    "category": "matrix",
    "langs": {
     "Lullaby": {
-     "tokens": 51,
-     "source": "fn scalar_mul_checksum m array<i64> n i64 k i64\n    let sum = 0\n    for i from 0 to n * n - 1\n        sum += i * (m[i] * k)\n    sum"
+     "tokens": 50,
+     "source": "fn scalar_mul_checksum m array<i64> n, k i64\n    let sum = 0\n    for i from 0 to n * n - 1\n        sum += i * (m[i] * k)\n    sum"
     },
     "C": {
      "tokens": 68,
@@ -7473,8 +7473,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 36,
-     "source": "fn gcd a i64 b i64\n    while b != 0\n        let t = a % b\n        a = b\n        b = t\n    a"
+     "tokens": 35,
+     "source": "fn gcd a, b i64\n    while b != 0\n        let t = a % b\n        a = b\n        b = t\n    a"
     },
     "C": {
      "tokens": 51,
@@ -7504,8 +7504,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 35,
-     "source": "fn gcd_of_range lo i64 hi i64\n    let g = lo\n    for k from lo to hi\n        g = gcd(g, k)\n    g"
+     "tokens": 34,
+     "source": "fn gcd_of_range lo, hi i64\n    let g = lo\n    for k from lo to hi\n        g = gcd(g, k)\n    g"
     },
     "C": {
      "tokens": 57,
@@ -7535,8 +7535,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 35,
-     "source": "fn int_pow base i64 exp i64\n    let r = 1\n    for i from 1 to exp\n        r = r * base\n    r"
+     "tokens": 34,
+     "source": "fn int_pow base, exp i64\n    let r = 1\n    for i from 1 to exp\n        r = r * base\n    r"
     },
     "C": {
      "tokens": 57,
@@ -7690,8 +7690,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 20,
-     "source": "fn lcm a i64 b i64\n    a / gcd(a, b) * b"
+     "tokens": 19,
+     "source": "fn lcm a, b i64\n    a / gcd(a, b) * b"
     },
     "C": {
      "tokens": 29,
@@ -7814,8 +7814,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 42,
-     "source": "fn to_base_digit_sum n i64 b i64\n    let sum = 0\n    while n > 0\n        sum += n % b\n        n = n / b\n    sum"
+     "tokens": 41,
+     "source": "fn to_base_digit_sum n, b i64\n    let sum = 0\n    while n > 0\n        sum += n % b\n        n = n / b\n    sum"
     },
     "C": {
      "tokens": 57,
@@ -7939,7 +7939,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 17,
-     "source": "fn count_fields s string sep string\n    count(s, sep) + 1"
+     "source": "fn count_fields s, sep string\n    count(s, sep) + 1"
     },
     "C": {
      "tokens": 60,
@@ -8125,7 +8125,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 98,
-     "source": "fn nth_field_len s string sep string nth i64\n    let target = sep[0]\n    let field = 0\n    let cur = 0\n    let result = -1\n    for c in s\n        if c == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
+     "source": "fn nth_field_len s, sep string nth i64\n    let target = sep[0]\n    let field = 0\n    let cur = 0\n    let result = -1\n    for c in s\n        if c == target\n            if field == nth\n                result = cur\n            field += 1\n            cur = 0\n        else\n            cur += 1\n    if field == nth\n        result = cur\n    result"
     },
     "C": {
      "tokens": 117,
@@ -8372,8 +8372,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 13,
-     "source": "fn density mass i64 vol i64\n    mass / vol"
+     "tokens": 12,
+     "source": "fn density mass, vol i64\n    mass / vol"
     },
     "C": {
      "tokens": 22,
@@ -8403,8 +8403,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 27,
-     "source": "fn distance_accel v i64 t i64 a i64\n    v * t + a * t * t / 2"
+     "tokens": 25,
+     "source": "fn distance_accel v, t, a i64\n    v * t + a * t * t / 2"
     },
     "C": {
      "tokens": 38,
@@ -8434,8 +8434,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 14,
-     "source": "fn distance_uniform v i64 t i64\n    v * t"
+     "tokens": 13,
+     "source": "fn distance_uniform v, t i64\n    v * t"
     },
     "C": {
      "tokens": 23,
@@ -8496,8 +8496,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 19,
-     "source": "fn final_velocity v i64 a i64 t i64\n    v + a * t"
+     "tokens": 17,
+     "source": "fn final_velocity v, a, t i64\n    v + a * t"
     },
     "C": {
      "tokens": 30,
@@ -8527,8 +8527,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 13,
-     "source": "fn force m i64 a i64\n    m * a"
+     "tokens": 12,
+     "source": "fn force m, a i64\n    m * a"
     },
     "C": {
      "tokens": 22,
@@ -8589,8 +8589,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 18,
-     "source": "fn kinetic_energy_x2 m i64 v i64\n    m * v * v"
+     "tokens": 17,
+     "source": "fn kinetic_energy_x2 m, v i64\n    m * v * v"
     },
     "C": {
      "tokens": 27,
@@ -8682,8 +8682,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 13,
-     "source": "fn momentum m i64 v i64\n    m * v"
+     "tokens": 12,
+     "source": "fn momentum m, v i64\n    m * v"
     },
     "C": {
      "tokens": 22,
@@ -8744,8 +8744,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 17,
-     "source": "fn potential_energy m i64 h i64\n    m * 10 * h"
+     "tokens": 16,
+     "source": "fn potential_energy m, h i64\n    m * 10 * h"
     },
     "C": {
      "tokens": 26,
@@ -8775,8 +8775,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 15,
-     "source": "fn power_watts work i64 t i64\n    work / t"
+     "tokens": 14,
+     "source": "fn power_watts work, t i64\n    work / t"
     },
     "C": {
      "tokens": 24,
@@ -8806,8 +8806,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 25,
-     "source": "fn pressure f i64 area i64\n    if area == 0\n        return 0\n    f / area"
+     "tokens": 24,
+     "source": "fn pressure f, area i64\n    if area == 0\n        return 0\n    f / area"
     },
     "C": {
      "tokens": 34,
@@ -8837,8 +8837,8 @@
    "category": "physics",
    "langs": {
     "Lullaby": {
-     "tokens": 13,
-     "source": "fn work f i64 d i64\n    f * d"
+     "tokens": 12,
+     "source": "fn work f, d i64\n    f * d"
     },
     "C": {
      "tokens": 22,
@@ -8868,8 +8868,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 27,
-     "source": "fn cache_ttl_valid now i64 created i64 ttl i64\n    1 if now - created < ttl else 0"
+     "tokens": 25,
+     "source": "fn cache_ttl_valid now, created, ttl i64\n    1 if now - created < ttl else 0"
     },
     "C": {
      "tokens": 40,
@@ -8961,8 +8961,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 28,
-     "source": "fn jitter_backoff attempt i64 base i64 seed i64\n    retry_backoff_ms(attempt, base) + seed % base"
+     "tokens": 26,
+     "source": "fn jitter_backoff attempt, base, seed i64\n    retry_backoff_ms(attempt, base) + seed % base"
     },
     "C": {
      "tokens": 39,
@@ -9065,8 +9065,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn pagination_has_next page i64 per i64 total i64\n    1 if page * per < total else 0"
+     "tokens": 24,
+     "source": "fn pagination_has_next page, per, total i64\n    1 if page * per < total else 0"
     },
     "C": {
      "tokens": 39,
@@ -9096,8 +9096,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 19,
-     "source": "fn pagination_offset page i64 per i64\n    (page - 1) * per"
+     "tokens": 18,
+     "source": "fn pagination_offset page, per i64\n    (page - 1) * per"
     },
     "C": {
      "tokens": 28,
@@ -9127,8 +9127,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 30,
-     "source": "fn pagination_total_pages total i64 per i64\n    0 if per <= 0 else (total + per - 1) / per"
+     "tokens": 29,
+     "source": "fn pagination_total_pages total, per i64\n    0 if per <= 0 else (total + per - 1) / per"
     },
     "C": {
      "tokens": 43,
@@ -9189,8 +9189,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 20,
-     "source": "fn queue_next_index head i64 cap i64\n    (head + 1) % cap"
+     "tokens": 19,
+     "source": "fn queue_next_index head, cap i64\n    (head + 1) % cap"
     },
     "C": {
      "tokens": 29,
@@ -9220,8 +9220,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 21,
-     "source": "fn rate_limit_allow tokens i64 cost i64\n    1 if tokens >= cost else 0"
+     "tokens": 20,
+     "source": "fn rate_limit_allow tokens, cost i64\n    1 if tokens >= cost else 0"
     },
     "C": {
      "tokens": 30,
@@ -9251,8 +9251,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 73,
-     "source": "fn retry_backoff_ms attempt i64 base i64\n    let d = base\n    let i = 0\n    while i < attempt\n        d = d * 2\n        if d >= 60000\n            return 60000\n        i = i + 1\n    60000 if d > 60000 else d"
+     "tokens": 72,
+     "source": "fn retry_backoff_ms attempt, base i64\n    let d = base\n    let i = 0\n    while i < attempt\n        d = d * 2\n        if d >= 60000\n            return 60000\n        i = i + 1\n    60000 if d > 60000 else d"
     },
     "C": {
      "tokens": 81,
@@ -9282,8 +9282,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 23,
-     "source": "fn retry_should_give_up attempt i64 max i64\n    1 if attempt >= max else 0"
+     "tokens": 22,
+     "source": "fn retry_should_give_up attempt, max i64\n    1 if attempt >= max else 0"
     },
     "C": {
      "tokens": 32,
@@ -9313,8 +9313,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 25,
-     "source": "fn session_valid now i64 last i64 timeout i64\n    1 if now - last < timeout else 0"
+     "tokens": 23,
+     "source": "fn session_valid now, last, timeout i64\n    1 if now - last < timeout else 0"
     },
     "C": {
      "tokens": 38,
@@ -9375,8 +9375,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 20,
-     "source": "fn throttle_delay_ms requests i64 window_ms i64\n    requests * window_ms / 100"
+     "tokens": 19,
+     "source": "fn throttle_delay_ms requests, window_ms i64\n    requests * window_ms / 100"
     },
     "C": {
      "tokens": 29,
@@ -9406,8 +9406,8 @@
    "category": "services",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn tokens_after tokens i64 cost i64 refill i64 cap i64\n    min(cap, tokens - cost + refill)"
+     "tokens": 23,
+     "source": "fn tokens_after tokens, cost, refill, cap i64\n    min(cap, tokens - cost + refill)"
     },
     "C": {
      "tokens": 39,
@@ -9738,8 +9738,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 94,
-     "source": "fn kth_smallest a array<i64> n i64 k i64\n    for i from 0 to k - 1\n        let mi = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        let t = a[i]\n        a[i] = a[mi]\n        a[mi] = t\n    a[k - 1]"
+     "tokens": 93,
+     "source": "fn kth_smallest a array<i64> n, k i64\n    for i from 0 to k - 1\n        let mi = i\n        for j from i + 1 to n - 1\n            if a[j] < a[mi]\n                mi = j\n        let t = a[i]\n        a[i] = a[mi]\n        a[mi] = t\n    a[k - 1]"
     },
     "C": {
      "tokens": 150,
@@ -10980,8 +10980,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn weighted_sum a array<i64> w array<i64>\n    let sum = 0\n    for i from 0 to len(a) - 1\n        sum += a[i] * w[i]\n    sum"
+     "tokens": 43,
+     "source": "fn weighted_sum a, w array<i64>\n    let sum = 0\n    for i from 0 to len(a) - 1\n        sum += a[i] * w[i]\n    sum"
     },
     "C": {
      "tokens": 65,
@@ -11228,8 +11228,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn hamming_distance a array<i64> b array<i64> n i64\n    let d = 0\n    for i from 0 to n - 1\n        if a[i] != b[i]\n            d += 1\n    d"
+     "tokens": 51,
+     "source": "fn hamming_distance a, b array<i64> n i64\n    let d = 0\n    for i from 0 to n - 1\n        if a[i] != b[i]\n            d += 1\n    d"
     },
     "C": {
      "tokens": 68,
@@ -11259,8 +11259,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn is_anagram_sorted a array<i64> b array<i64> n i64\n    for i from 0 to n - 1\n        if a[i] != b[i]\n            return 0\n    1"
+     "tokens": 45,
+     "source": "fn is_anagram_sorted a, b array<i64> n i64\n    for i from 0 to n - 1\n        if a[i] != b[i]\n            return 0\n    1"
     },
     "C": {
      "tokens": 63,
@@ -11290,8 +11290,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 133,
-     "source": "fn is_rotation a array<i64> b array<i64> n i64\n    if n == 0\n        return 1\n    let k = 0\n    while k < n\n        let ok = 1\n        let i = 0\n        while i < n\n            let idx = i + k\n            if idx >= n\n                idx = idx - n\n            if a[idx] != b[i]\n                ok = 0\n                i = n\n            else\n                i += 1\n        if ok == 1\n            return 1\n        k += 1\n    0"
+     "tokens": 130,
+     "source": "fn is_rotation a, b array<i64> n i64\n    if n == 0\n        return 1\n    let k = 0\n    while k < n\n        let ok = 1\n        let i = 0\n        while i < n\n            let idx = i + k\n            if idx >= n\n                idx = idx - n\n            if a[idx] != b[i]\n                ok = 0\n                i = n\n            else\n                i += 1\n        if ok == 1\n            return 1\n        k += 1\n    0"
     },
     "C": {
      "tokens": 141,
@@ -11632,7 +11632,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 18,
-     "source": "fn contains_sub s string sub string\n    1 if sub in s else 0"
+     "source": "fn contains_sub s, sub string\n    1 if sub in s else 0"
     },
     "C": {
      "tokens": 32,
@@ -11663,7 +11663,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 14,
-     "source": "fn count_char s string c string\n    count(s, c)"
+     "source": "fn count_char s, c string\n    count(s, c)"
     },
     "C": {
      "tokens": 54,
@@ -11725,7 +11725,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 22,
-     "source": "fn ends_with_suffix s string p string\n    1 if ends_with(s, p) else 0"
+     "source": "fn ends_with_suffix s, p string\n    1 if ends_with(s, p) else 0"
     },
     "C": {
      "tokens": 63,
@@ -11922,7 +11922,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 22,
-     "source": "fn starts_with_prefix s string p string\n    1 if starts_with(s, p) else 0"
+     "source": "fn starts_with_prefix s, p string\n    1 if starts_with(s, p) else 0"
     },
     "C": {
      "tokens": 38,
@@ -12692,8 +12692,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 83,
-     "source": "fn days_in_month y i64 m i64\n    if m == 2\n        return 29 if is_leap_year(y) == 1 else 28\n    if m == 4 or m == 6 or m == 9 or m == 11\n        return 30\n    if m >= 1 and m <= 12\n        return 31\n    0"
+     "tokens": 82,
+     "source": "fn days_in_month y, m i64\n    if m == 2\n        return 29 if is_leap_year(y) == 1 else 28\n    if m == 4 or m == 6 or m == 9 or m == 11\n        return 30\n    if m >= 1 and m <= 12\n        return 31\n    0"
     },
     "C": {
      "tokens": 86,
@@ -12754,8 +12754,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 27,
-     "source": "fn in_range x i64 lo i64 hi i64\n    1 if x >= lo and x <= hi else 0"
+     "tokens": 25,
+     "source": "fn in_range x, lo, hi i64\n    1 if x >= lo and x <= hi else 0"
     },
     "C": {
      "tokens": 34,
@@ -12909,8 +12909,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 54,
-     "source": "fn is_valid_day y i64 m i64 d i64\n    if is_valid_month(m) == 0\n        return 0\n    if d < 1 or d > days_in_month(y, m)\n        return 0\n    1"
+     "tokens": 52,
+     "source": "fn is_valid_day y, m, d i64\n    if is_valid_month(m) == 0\n        return 0\n    if d < 1 or d > days_in_month(y, m)\n        return 0\n    1"
     },
     "C": {
      "tokens": 57,
@@ -13002,8 +13002,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn is_valid_rgb r i64 g i64 b i64\n    1 if r >= 0 and r <= 255 and g >= 0 and g <= 255 and b >= 0 and b <= 255 else 0"
+     "tokens": 48,
+     "source": "fn is_valid_rgb r, g, b i64\n    1 if r >= 0 and r <= 255 and g >= 0 and g <= 255 and b >= 0 and b <= 255 else 0"
     },
     "C": {
      "tokens": 57,
@@ -13637,7 +13637,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 21258,
+  "Lullaby": 21058,
   "C": 27472,
   "C++": 28423,
   "Rust": 26329,
@@ -13646,7 +13646,7 @@
  },
  "categories": {
   "arrays": {
-   "Lullaby": 731,
+   "Lullaby": 728,
    "C": 1080,
    "C++": 1186,
    "Rust": 968,
@@ -13654,7 +13654,7 @@
    "JavaScript": 953
   },
   "bitwise": {
-   "Lullaby": 740,
+   "Lullaby": 726,
    "C": 954,
    "C++": 954,
    "Rust": 933,
@@ -13662,7 +13662,7 @@
    "JavaScript": 863
   },
   "business": {
-   "Lullaby": 614,
+   "Lullaby": 596,
    "C": 787,
    "C++": 787,
    "Rust": 823,
@@ -13670,7 +13670,7 @@
    "JavaScript": 705
   },
   "collections": {
-   "Lullaby": 1363,
+   "Lullaby": 1354,
    "C": 1536,
    "C++": 1738,
    "Rust": 1552,
@@ -13678,7 +13678,7 @@
    "JavaScript": 1241
   },
   "combinatorics": {
-   "Lullaby": 994,
+   "Lullaby": 988,
    "C": 1275,
    "C++": 1275,
    "Rust": 1200,
@@ -13686,7 +13686,7 @@
    "JavaScript": 1111
   },
   "data_records": {
-   "Lullaby": 447,
+   "Lullaby": 444,
    "C": 567,
    "C++": 600,
    "Rust": 500,
@@ -13694,7 +13694,7 @@
    "JavaScript": 416
   },
   "datetime": {
-   "Lullaby": 922,
+   "Lullaby": 898,
    "C": 1051,
    "C++": 1052,
    "Rust": 1056,
@@ -13702,7 +13702,7 @@
    "JavaScript": 968
   },
   "encoding": {
-   "Lullaby": 856,
+   "Lullaby": 854,
    "C": 1050,
    "C++": 1050,
    "Rust": 1025,
@@ -13710,7 +13710,7 @@
    "JavaScript": 982
   },
   "finance": {
-   "Lullaby": 359,
+   "Lullaby": 343,
    "C": 514,
    "C++": 514,
    "Rust": 519,
@@ -13718,7 +13718,7 @@
    "JavaScript": 456
   },
   "games": {
-   "Lullaby": 1056,
+   "Lullaby": 1044,
    "C": 1228,
    "C++": 1386,
    "Rust": 1238,
@@ -13726,7 +13726,7 @@
    "JavaScript": 1090
   },
   "geometry": {
-   "Lullaby": 498,
+   "Lullaby": 486,
    "C": 647,
    "C++": 727,
    "Rust": 632,
@@ -13734,7 +13734,7 @@
    "JavaScript": 513
   },
   "graph_algos": {
-   "Lullaby": 1298,
+   "Lullaby": 1288,
    "C": 1470,
    "C++": 1529,
    "Rust": 1462,
@@ -13742,7 +13742,7 @@
    "JavaScript": 1286
   },
   "hashing": {
-   "Lullaby": 976,
+   "Lullaby": 970,
    "C": 1218,
    "C++": 1218,
    "Rust": 1170,
@@ -13750,7 +13750,7 @@
    "JavaScript": 1004
   },
   "matrix": {
-   "Lullaby": 719,
+   "Lullaby": 710,
    "C": 959,
    "C++": 1105,
    "Rust": 862,
@@ -13758,7 +13758,7 @@
    "JavaScript": 813
   },
   "number_theory": {
-   "Lullaby": 850,
+   "Lullaby": 845,
    "C": 1098,
    "C++": 1098,
    "Rust": 1089,
@@ -13774,7 +13774,7 @@
    "JavaScript": 1492
   },
   "physics": {
-   "Lullaby": 328,
+   "Lullaby": 315,
    "C": 480,
    "C++": 480,
    "Rust": 484,
@@ -13782,7 +13782,7 @@
    "JavaScript": 383
   },
   "services": {
-   "Lullaby": 524,
+   "Lullaby": 506,
    "C": 747,
    "C++": 870,
    "Rust": 736,
@@ -13790,7 +13790,7 @@
    "JavaScript": 602
   },
   "sorting": {
-   "Lullaby": 1740,
+   "Lullaby": 1739,
    "C": 2429,
    "C++": 2288,
    "Rust": 2053,
@@ -13806,7 +13806,7 @@
    "JavaScript": 791
   },
   "statistics": {
-   "Lullaby": 613,
+   "Lullaby": 610,
    "C": 969,
    "C++": 1097,
    "Rust": 884,
@@ -13814,7 +13814,7 @@
    "JavaScript": 765
   },
   "string_algos": {
-   "Lullaby": 1574,
+   "Lullaby": 1565,
    "C": 1836,
    "C++": 2064,
    "Rust": 1836,
@@ -13838,7 +13838,7 @@
    "JavaScript": 319
   },
   "validation": {
-   "Lullaby": 886,
+   "Lullaby": 879,
    "C": 1131,
    "C++": 1067,
    "Rust": 1186,

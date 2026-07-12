@@ -1,14 +1,14 @@
 # Cross-language business suite (Lullaby). Inventory/pricing/operations in integer cents/units.
 
-fn reorder_needed stock i64 threshold i64
+fn reorder_needed stock, threshold i64
     if stock <= threshold
         return 1
     0
 
-fn stock_after stock i64 sold i64 received i64
+fn stock_after stock, sold, received i64
     stock - sold + received
 
-fn bulk_price qty i64 unit_cents i64
+fn bulk_price qty, unit_cents i64
     let base = qty * unit_cents
     if qty >= 100
         return base - base * 10 / 100
@@ -35,7 +35,7 @@ fn tax_bracket income i64
         tax += (income - 1000000) * 10 / 100
     tax
 
-fn sales_commission sales i64 rate_bp i64
+fn sales_commission sales, rate_bp i64
     sales * rate_bp / 10000
 
 fn loyalty_points spend_cents i64
@@ -50,46 +50,46 @@ fn discount_tier qty i64
         return 5
     0
 
-fn unit_price total_cents i64 qty i64
+fn unit_price total_cents, qty i64
     if qty == 0
         return 0
     total_cents / qty
 
-fn break_even_units fixed i64 price i64 var i64
+fn break_even_units fixed, price, var i64
     if price <= var
         return 0
     fixed / (price - var)
 
-fn gross_margin_pct cost i64 price i64
+fn gross_margin_pct cost, price i64
     if price == 0
         return 0
     (price - cost) * 100 / price
 
-fn net_after_fees gross i64 fee_bp i64
+fn net_after_fees gross, fee_bp i64
     gross - gross * fee_bp / 10000
 
-fn invoice_total subtotal i64 tax_bp i64 ship i64
+fn invoice_total subtotal, tax_bp, ship i64
     subtotal + subtotal * tax_bp / 10000 + ship
 
-fn late_fee days i64 amount i64
+fn late_fee days, amount i64
     if days <= 0
         return 0
     amount * 5 / 100 + amount * days / 100
 
-fn restock_quantity current i64 max i64 min i64
+fn restock_quantity current, max, min i64
     if current <= min
         return max - current
     0
 
-fn profit revenue i64 cost i64
+fn profit revenue, cost i64
     revenue - cost
 
-fn roi_pct gain i64 cost i64
+fn roi_pct gain, cost i64
     if cost == 0
         return 0
     gain * 100 / cost
 
-fn markup_price cost i64 pct i64
+fn markup_price cost, pct i64
     cost + cost * pct / 100
 
 fn main

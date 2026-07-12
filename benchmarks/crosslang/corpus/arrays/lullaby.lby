@@ -68,7 +68,7 @@ fn is_sorted_asc a array<i64>
 fn range_span a array<i64>
     max_array(a) - min_array(a)
 
-fn dot_product a array<i64> b array<i64>
+fn dot_product a, b array<i64>
     let sum = 0
     for i from 0 to len(a) - 1
         sum += a[i] * b[i]

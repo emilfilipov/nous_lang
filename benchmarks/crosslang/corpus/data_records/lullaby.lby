@@ -26,10 +26,10 @@ fn abs_val n i64
         return -n
     n
 
-fn manhattan a Point b Point
+fn manhattan a, b Point
     abs_val(a.x - b.x) + abs_val(a.y - b.y)
 
-fn chebyshev a Point b Point
+fn chebyshev a, b Point
     let dx = abs_val(a.x - b.x)
     let dy = abs_val(a.y - b.y)
     dx if dx > dy else dy
@@ -40,10 +40,10 @@ fn rect_area r Rect
 fn rect_perimeter r Rect
     2 * (r.w + r.h)
 
-fn rect_contains r Rect px i64 py i64
+fn rect_contains r Rect px, py i64
     1 if px >= 0 and py >= 0 and px <= r.w and py <= r.h else 0
 
-fn money_add a Money b Money
+fn money_add a, b Money
     Money(a.cents + b.cents)
 
 fn money_dollars m Money
@@ -52,7 +52,7 @@ fn money_dollars m Money
 fn money_cents_part m Money
     m.cents % 100
 
-fn interval_overlaps a Interval b Interval
+fn interval_overlaps a, b Interval
     1 if a.lo < b.hi and b.lo < a.hi else 0
 
 fn interval_length a Interval
@@ -61,7 +61,7 @@ fn interval_length a Interval
         return 0
     n
 
-fn interval_intersect_len a Interval b Interval
+fn interval_intersect_len a, b Interval
     let lo = a.lo
     if b.lo > lo
         lo = b.lo
@@ -73,16 +73,16 @@ fn interval_intersect_len a Interval b Interval
         return 0
     n
 
-fn vec3_dot a Vec3 b Vec3
+fn vec3_dot a, b Vec3
     a.x * b.x + a.y * b.y + a.z * b.z
 
-fn vec3_add a Vec3 b Vec3
+fn vec3_add a, b Vec3
     Vec3(a.x + b.x, a.y + b.y, a.z + b.z)
 
 fn vec3_manhattan_norm v Vec3
     abs_val(v.x) + abs_val(v.y) + abs_val(v.z)
 
-fn midpoint_x a Point b Point
+fn midpoint_x a, b Point
     (a.x + b.x) / 2
 
 fn main

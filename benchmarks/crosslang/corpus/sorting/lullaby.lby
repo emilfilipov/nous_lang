@@ -161,7 +161,7 @@ fn partition_lomuto_index a array<i64> n i64
     a[n - 1] = u
     i
 
-fn kth_smallest a array<i64> n i64 k i64
+fn kth_smallest a array<i64> n, k i64
     for i from 0 to k - 1
         let mi = i
         for j from i + 1 to n - 1

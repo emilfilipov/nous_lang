@@ -48,10 +48,10 @@ fn is_valid_int s string
             return 0
     1
 
-fn count_fields s string sep string
+fn count_fields s, sep string
     count(s, sep) + 1
 
-fn nth_field_len s string sep string nth i64
+fn nth_field_len s, sep string nth i64
     let target = sep[0]
     let field = 0
     let cur = 0

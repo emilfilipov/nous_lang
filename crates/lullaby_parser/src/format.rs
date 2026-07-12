@@ -8,8 +8,8 @@
 
 use crate::{
     AliasDecl, AssignOp, BinaryOp, EnumDecl, Expr, ExprKind, Function, IfBranch, ImplDecl,
-    MatchArm, MatchPattern, MethodSig, Place, Program, RegionDecl, Stmt, StructDecl, TraitDecl,
-    TypeParam, UnaryOp,
+    MatchArm, MatchPattern, MethodSig, Param, Place, Program, RegionDecl, Stmt, StructDecl,
+    TraitDecl, TypeParam, UnaryOp,
 };
 
 const INDENT: &str = "    ";
@@ -112,9 +112,7 @@ fn render_trait(decl: &TraitDecl) -> String {
 
 fn render_method_sig(method: &MethodSig) -> String {
     let mut header = format!("fn {} self", method.name);
-    for param in &method.params {
-        header.push_str(&format!(" {} {}", param.name, param.ty.name));
-    }
+    header.push_str(&render_params(&method.params));
     header.push_str(&format!(" -> {}", method.return_type.name));
     header
 }
@@ -136,14 +134,34 @@ fn render_impl(decl: &ImplDecl) -> String {
     out
 }
 
+/// Render a space-separated parameter list, grouping consecutive parameters that
+/// share a type into the terse comma form: `a i64 b i64 c i64` renders as
+/// `a, b, c i64`. This is the canonical output, so `lullaby fmt` produces (and
+/// round-trips) the token-efficient grouped spelling while keeping every type
+/// explicit. Returns a leading-space-prefixed string, or empty for no params.
+fn render_params(params: &[Param]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < params.len() {
+        let ty = &params[i].ty.name;
+        let mut names = vec![params[i].name.as_str()];
+        let mut j = i + 1;
+        while j < params.len() && &params[j].ty.name == ty {
+            names.push(params[j].name.as_str());
+            j += 1;
+        }
+        out.push_str(&format!(" {} {}", names.join(", "), ty));
+        i = j;
+    }
+    out
+}
+
 /// Render an impl method as `fn name self [param Type ...] -> Ret` + body. The
 /// first parameter is the injected `self` receiver, which is rendered untyped to
 /// round-trip with the parser.
 fn render_impl_method(function: &Function) -> String {
     let mut header = format!("fn {} self", function.name);
-    for param in function.params.iter().skip(1) {
-        header.push_str(&format!(" {} {}", param.name, param.ty.name));
-    }
+    header.push_str(&render_params(function.params.get(1..).unwrap_or(&[])));
     header.push_str(&format!(" -> {}", function.return_type.name));
     let mut out = header;
     render_block(&function.body, 1, &mut out);
@@ -166,9 +184,7 @@ fn render_function(function: &Function) -> String {
     }
     header.push_str(&format!("fn {}", function.name));
     header.push_str(&render_type_params(&function.type_params));
-    for param in &function.params {
-        header.push_str(&format!(" {} {}", param.name, param.ty.name));
-    }
+    header.push_str(&render_params(&function.params));
     // An omitted (inferred) return type renders without a `->` clause, so
     // `fn f x i64` round-trips; an explicit type keeps its `-> T`.
     if function.return_type.name != crate::INFERRED_RETURN {
@@ -710,8 +726,26 @@ mod tests {
 
     #[test]
     fn formats_function_with_canonical_spacing() {
-        let source = "fn add a i64 b i64 -> i64\n    a + b\n";
-        assert_eq!(fmt(source), source);
+        // Consecutive same-type parameters group into the comma form, and the
+        // grouped spelling round-trips.
+        assert_eq!(
+            fmt("fn add a i64 b i64 -> i64\n    a + b\n"),
+            "fn add a, b i64 -> i64\n    a + b\n"
+        );
+        let grouped = "fn add a, b i64 -> i64\n    a + b\n";
+        assert_eq!(fmt(grouped), grouped);
+    }
+
+    #[test]
+    fn groups_and_ungroups_same_type_parameters() {
+        // A run of same-type params groups; a differently-typed param breaks the
+        // run, and the following same-type run starts a new group.
+        assert_eq!(
+            fmt("fn f x f64 y f64 z f64 label string a i64 b i64\n    x\n"),
+            "fn f x, y, z f64 label string a, b i64\n    x\n"
+        );
+        // A single parameter is left ungrouped (no trailing comma).
+        assert_eq!(fmt("fn g n i64\n    n\n"), "fn g n i64\n    n\n");
     }
 
     #[test]
@@ -728,9 +762,9 @@ mod tests {
     fn formats_inferred_return_without_arrow() {
         // A function with no `-> T` clause round-trips without one (the return
         // type is inferred); an explicit return type keeps its clause.
-        let inferred = "fn add a i64 b i64\n    a + b\n";
+        let inferred = "fn add a, b i64\n    a + b\n";
         assert_eq!(fmt(inferred), inferred);
-        let explicit = "fn add a i64 b i64 -> i64\n    a + b\n";
+        let explicit = "fn add a, b i64 -> i64\n    a + b\n";
         assert_eq!(fmt(explicit), explicit);
     }
 
@@ -745,19 +779,19 @@ mod tests {
     fn formats_inline_conditional() {
         // A ternary in tail position renders as `THEN if COND else ELSE`.
         assert_eq!(
-            fmt("fn f a i64 b i64 c bool -> i64\n    a if c else b\n"),
-            "fn f a i64 b i64 c bool -> i64\n    a if c else b\n"
+            fmt("fn f a, b i64 c bool -> i64\n    a if c else b\n"),
+            "fn f a, b i64 c bool -> i64\n    a if c else b\n"
         );
         // A ternary binds looser than every binary operator, so it is
         // parenthesized as a binary operand.
         assert_eq!(
-            fmt("fn f a i64 b i64 c bool -> i64\n    (a if c else b) + 1\n"),
-            "fn f a i64 b i64 c bool -> i64\n    (a if c else b) + 1\n"
+            fmt("fn f a, b i64 c bool -> i64\n    (a if c else b) + 1\n"),
+            "fn f a, b i64 c bool -> i64\n    (a if c else b) + 1\n"
         );
         // The right-associative `else` chain keeps no redundant parentheses.
         assert_eq!(
-            fmt("fn f a i64 b i64 c bool -> i64\n    1 if c else (2 if a > b else 3)\n"),
-            "fn f a i64 b i64 c bool -> i64\n    1 if c else 2 if a > b else 3\n"
+            fmt("fn f a, b i64 c bool -> i64\n    1 if c else (2 if a > b else 3)\n"),
+            "fn f a, b i64 c bool -> i64\n    1 if c else 2 if a > b else 3\n"
         );
     }
 

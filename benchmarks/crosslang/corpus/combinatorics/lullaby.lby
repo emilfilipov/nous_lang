@@ -9,13 +9,13 @@ fn factorial n i64
         result = result * i
     result
 
-fn permutations_count n i64 r i64
+fn permutations_count n, r i64
     let result = 1
     for i from 0 to r - 1
         result = result * (n - i)
     result
 
-fn combinations_count n i64 r i64
+fn combinations_count n, r i64
     let result = 1
     for i from 1 to r
         result = result * (n - r + i) / i
@@ -27,7 +27,7 @@ fn catalan n i64
         result = result * 2 * (2 * i + 1) / (i + 2)
     result
 
-fn pascal_value row i64 col i64 -> i64
+fn pascal_value row, col i64 -> i64
     if col == 0 or col == row
         return 1
     pascal_value(row - 1, col - 1) + pascal_value(row - 1, col)
@@ -73,7 +73,7 @@ fn derangement_count n i64
         b = c
     b
 
-fn stirling_second n i64 k i64 -> i64
+fn stirling_second n, k i64 -> i64
     if k == 0 and n == 0
         return 1
     if k == 0 or n == 0
@@ -104,7 +104,7 @@ fn subfactorial n i64
         d = i * d + sign
     d
 
-fn binomial_mod n i64 r i64 m i64 -> i64
+fn binomial_mod n, r, m i64 -> i64
     if r == 0 or r == n
         return 1 % m
     (binomial_mod(n - 1, r - 1, m) + binomial_mod(n - 1, r, m)) % m

@@ -15,7 +15,7 @@ This document records the earliest installable language surface, preserved for r
 ## Declarations
 
 - Functions use `fn name param Type -> ReturnType`.
-- Function parameters require explicit types.
+- Function parameters require explicit types. Consecutive parameters that share a type may be **grouped** by comma-separating their names before the single type: `fn dist x, y, z f64` is exactly `fn dist x f64 y f64 z f64`. The type is still explicit — written once, applied to every name in the group — and the ungrouped `name Type name Type` form is unchanged. `lullaby fmt` canonicalizes to the grouped spelling (merging any run of same-typed parameters).
 - Non-void functions return the last reachable expression unless `return expression` exits earlier.
 - Void functions use `-> void` and may use bare `return`.
 - Executable source passed to `lullaby compile` or source `lullaby run` must define `fn main -> Type` with zero parameters. `lullaby check` can still validate helper/library-style functions that do not define `main`.

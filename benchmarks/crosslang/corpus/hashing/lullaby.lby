@@ -25,13 +25,13 @@ fn sum_hash a array<i64> n i64
         total += a[i]
     total
 
-fn poly_hash a array<i64> n i64 base i64 modulus i64
+fn poly_hash a array<i64> n, base, modulus i64
     let h = 0
     for i from 0 to n - 1
         h = (h * base + a[i]) % modulus
     h
 
-fn rolling_hash a array<i64> n i64 modulus i64
+fn rolling_hash a array<i64> n, modulus i64
     let h = 0
     for i from 0 to n - 1
         h = (h * 256 + a[i]) % modulus
@@ -44,7 +44,7 @@ fn sdbm_hash a array<i64> n i64
         h = (a[i] + h * 65599) % m
     h
 
-fn mod_sum_hash a array<i64> n i64 m i64
+fn mod_sum_hash a array<i64> n, m i64
     let h = 0
     for i from 0 to n - 1
         h = (h + a[i]) % m
@@ -63,7 +63,7 @@ fn xor_free_checksum a array<i64> n i64
         total += a[i]
     total % 256
 
-fn product_hash a array<i64> n i64 m i64
+fn product_hash a array<i64> n, m i64
     let h = 1
     for i from 0 to n - 1
         h = h * (a[i] + 1) % m
@@ -114,7 +114,7 @@ fn digit_hash x i64
         x = x / 10
     h
 
-fn pair_hash a i64 b i64
+fn pair_hash a, b i64
     let s = a + b
     s * (s + 1) / 2 + b
 

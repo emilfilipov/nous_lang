@@ -48,7 +48,7 @@ fn lcs_length a array<i64> la i64 b array<i64> lb i64
             prev = tmp
     dp[lb]
 
-fn hamming_distance a array<i64> b array<i64> n i64
+fn hamming_distance a, b array<i64> n i64
     let d = 0
     for i from 0 to n - 1
         if a[i] != b[i]
@@ -86,7 +86,7 @@ fn count_occurrences text array<i64> tn i64 pat array<i64> pn i64
         i += 1
     count
 
-fn is_rotation a array<i64> b array<i64> n i64
+fn is_rotation a, b array<i64> n i64
     # b is a rotation of a when some offset k makes b[i] == a[(i+k) mod n].
     # No `%` operator, so the wrap is a single subtraction (i+k < 2n).
     if n == 0
@@ -109,7 +109,7 @@ fn is_rotation a array<i64> b array<i64> n i64
         k += 1
     0
 
-fn is_anagram_sorted a array<i64> b array<i64> n i64
+fn is_anagram_sorted a, b array<i64> n i64
     # Both inputs are already sorted, so equality is an elementwise compare.
     for i from 0 to n - 1
         if a[i] != b[i]

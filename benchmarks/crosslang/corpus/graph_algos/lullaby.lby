@@ -7,22 +7,22 @@
 # Note: the BFS visited/queue buffers are fixed 64-capacity `array_fill(64, 0)`
 # arrays, indexed up to n. The test graphs keep n <= 6, well under the capacity.
 
-fn has_edge g array<i64> n i64 r i64 c i64
+fn has_edge g array<i64> n, r, c i64
     g[r * n + c]
 
-fn out_degree g array<i64> n i64 v i64
+fn out_degree g array<i64> n, v i64
     let sum = 0
     for c from 0 to n - 1
         sum += g[v * n + c]
     sum
 
-fn in_degree g array<i64> n i64 v i64
+fn in_degree g array<i64> n, v i64
     let sum = 0
     for r from 0 to n - 1
         sum += g[r * n + v]
     sum
 
-fn total_degree g array<i64> n i64 v i64
+fn total_degree g array<i64> n, v i64
     out_degree(g, n, v) + in_degree(g, n, v)
 
 fn count_self_loops g array<i64> n i64
@@ -95,14 +95,14 @@ fn count_leaves g array<i64> n i64
             count += 1
     count
 
-fn path_exists_len2 g array<i64> n i64 s i64 t i64
+fn path_exists_len2 g array<i64> n, s, t i64
     for k from 0 to n - 1
         if g[s * n + k] == 1
             if g[k * n + t] == 1
                 return 1
     0
 
-fn common_neighbors_count g array<i64> n i64 a i64 b i64
+fn common_neighbors_count g array<i64> n, a, b i64
     let count = 0
     for k from 0 to n - 1
         if g[a * n + k] == 1
@@ -117,7 +117,7 @@ fn is_regular g array<i64> n i64
             return 0
     1
 
-fn reachable_count_bfs g array<i64> n i64 start i64
+fn reachable_count_bfs g array<i64> n, start i64
     let visited array<i64> = array_fill(64, 0)
     let queue array<i64> = array_fill(64, 0)
     let head = 0

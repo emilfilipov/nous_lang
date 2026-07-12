@@ -97,7 +97,7 @@ fn zscore_sign_count a array<i64>
             count += 1
     count
 
-fn weighted_sum a array<i64> w array<i64>
+fn weighted_sum a, w array<i64>
     let sum = 0
     for i from 0 to len(a) - 1
         sum += a[i] * w[i]

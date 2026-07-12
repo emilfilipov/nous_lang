@@ -31,12 +31,12 @@ fn adler32_small a array<i64> n i64
         s2 = (s2 + s1) % 65521
     s2 * 65536 + s1
 
-fn caesar_encrypt_val c i64 k i64
+fn caesar_encrypt_val c, k i64
     if c >= 97 and c <= 122
         return 97 + (c - 97 + k % 26) % 26
     c
 
-fn caesar_decrypt_val c i64 k i64
+fn caesar_decrypt_val c, k i64
     if c >= 97 and c <= 122
         return 97 + (c - 97 + 26 - k % 26) % 26
     c

@@ -89,8 +89,11 @@ Only functions are valid top-level declarations in this grammar.
 function_decl =
     "fn" IDENT { parameter } [ "->" type ] NEWLINE block ;
 
+(* A parameter group is one or more comma-separated names sharing a single type,
+   so `x, y, z f64` expands to three `f64` parameters. A single `IDENT type` is
+   the common case. *)
 parameter =
-    IDENT type ;
+    IDENT { "," IDENT } type ;
 ```
 
 Examples:

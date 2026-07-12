@@ -1439,6 +1439,35 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse a space-separated function parameter list up to `->`/newline/EOF.
+    ///
+    /// Each parameter is `name Type`. Consecutive parameters that share a type may
+    /// be **grouped** by comma-separating their names before the single type:
+    /// `x, y, z f64` is exactly `x f64 y f64 z f64`. The type is written once but
+    /// still explicit and applied to every name in the group; the ungrouped
+    /// `name Type name Type` form is unchanged. Grouping is expanded here, so the
+    /// rest of the compiler only ever sees individual `Param`s.
+    fn parse_param_list(&mut self) -> Option<Vec<Param>> {
+        let mut params = Vec::new();
+        while !self.at(TokenKindRef::Arrow)
+            && !self.at(TokenKindRef::Newline)
+            && !self.at(TokenKindRef::Eof)
+        {
+            let mut names = vec![self.expect_identifier("expected parameter name")?];
+            while self.eat_symbol(",") {
+                names.push(self.expect_identifier("expected parameter name after `,`")?);
+            }
+            let ty = self.expect_type("expected parameter type")?;
+            for name in names {
+                params.push(Param {
+                    name,
+                    ty: ty.clone(),
+                });
+            }
+        }
+        Some(params)
+    }
+
     fn parse_function(
         &mut self,
         is_public: bool,
@@ -1448,19 +1477,7 @@ impl<'a> Parser<'a> {
         let fn_span = self.previous().span;
         let name = self.expect_identifier("expected function name after `fn`")?;
         let type_params = self.parse_type_params(fn_span)?;
-        let mut params = Vec::new();
-
-        while !self.at(TokenKindRef::Arrow)
-            && !self.at(TokenKindRef::Newline)
-            && !self.at(TokenKindRef::Eof)
-        {
-            let param_name = self.expect_identifier("expected parameter name")?;
-            let ty = self.expect_type("expected parameter type")?;
-            params.push(Param {
-                name: param_name,
-                ty,
-            });
-        }
+        let params = self.parse_param_list()?;
 
         // The `-> T` return-type clause is optional: when it is omitted the
         // return type is inferred from the function body during semantic
@@ -1497,18 +1514,7 @@ impl<'a> Parser<'a> {
     fn parse_extern_function(&mut self, is_public: bool) -> Option<Function> {
         let fn_span = self.previous().span;
         let name = self.expect_identifier("expected function name after `extern fn`")?;
-        let mut params = Vec::new();
-        while !self.at(TokenKindRef::Arrow)
-            && !self.at(TokenKindRef::Newline)
-            && !self.at(TokenKindRef::Eof)
-        {
-            let param_name = self.expect_identifier("expected parameter name")?;
-            let ty = self.expect_type("expected parameter type")?;
-            params.push(Param {
-                name: param_name,
-                ty,
-            });
-        }
+        let params = self.parse_param_list()?;
         if !self.eat(TokenKindRef::Arrow) {
             self.error(
                 "L0202",

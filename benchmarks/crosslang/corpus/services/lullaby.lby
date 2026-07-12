@@ -17,7 +17,7 @@ fn method_is_safe_code m i64
     1 if m == 0 or m == 1 else 0
 
 # Exponential backoff base * 2^attempt, capped at 60000 ms.
-fn retry_backoff_ms attempt i64 base i64
+fn retry_backoff_ms attempt, base i64
     let d = base
     let i = 0
     while i < attempt
@@ -28,23 +28,23 @@ fn retry_backoff_ms attempt i64 base i64
     60000 if d > 60000 else d
 
 # Token bucket: a request is allowed when the bucket holds at least its cost.
-fn rate_limit_allow tokens i64 cost i64
+fn rate_limit_allow tokens, cost i64
     1 if tokens >= cost else 0
 
 # Bucket level after spending `cost` and refilling, clamped to `cap`.
-fn tokens_after tokens i64 cost i64 refill i64 cap i64
+fn tokens_after tokens, cost, refill, cap i64
     min(cap, tokens - cost + refill)
 
 # Number of pages needed to hold `total` items at `per` per page (ceil).
-fn pagination_total_pages total i64 per i64
+fn pagination_total_pages total, per i64
     0 if per <= 0 else (total + per - 1) / per
 
 # Zero-based item offset of a 1-based page.
-fn pagination_offset page i64 per i64
+fn pagination_offset page, per i64
     (page - 1) * per
 
 # Whether a 1-based page is followed by at least one more item.
-fn pagination_has_next page i64 per i64 total i64
+fn pagination_has_next page, per, total i64
     1 if page * per < total else 0
 
 # New LRU recency position after a hit (hits + 1), bounded to the table size.
@@ -52,7 +52,7 @@ fn lru_new_position hits i64
     min(hits + 1, 1024)
 
 # A cache entry is fresh while it is younger than its TTL.
-fn cache_ttl_valid now i64 created i64 ttl i64
+fn cache_ttl_valid now, created, ttl i64
     1 if now - created < ttl else 0
 
 # Scheduling priority 0..3 from a status code (5xx highest, 2xx lowest).
@@ -61,16 +61,16 @@ fn priority_from_code code i64
     0 if cls == 5 else 1 if cls == 4 else 2 if cls == 3 else 3
 
 # Ring-buffer advance: (head + 1) mod cap.
-fn queue_next_index head i64 cap i64
+fn queue_next_index head, cap i64
     (head + 1) % cap
 
 # A session stays valid until it is idle longer than its timeout.
-fn session_valid now i64 last i64 timeout i64
+fn session_valid now, last, timeout i64
     1 if now - last < timeout else 0
 
 # Throttle spacing: spread `requests` evenly across `window_ms`, given a fixed
 # ceiling of 100 requests per window.
-fn throttle_delay_ms requests i64 window_ms i64
+fn throttle_delay_ms requests, window_ms i64
     requests * window_ms / 100
 
 # Content-type family from an extension code: 0=html, 1=json, 2=text-like
@@ -79,11 +79,11 @@ fn content_type_class ext_code i64
     0 if ext_code == 0 else 1 if ext_code == 1 else 2 if ext_code >= 2 and ext_code <= 4 else 3
 
 # Stop retrying once the attempt count reaches the maximum.
-fn retry_should_give_up attempt i64 max i64
+fn retry_should_give_up attempt, max i64
     1 if attempt >= max else 0
 
 # Deterministic jittered backoff: exponential backoff plus a seed-derived offset.
-fn jitter_backoff attempt i64 base i64 seed i64
+fn jitter_backoff attempt, base, seed i64
     retry_backoff_ms(attempt, base) + seed % base
 
 fn main

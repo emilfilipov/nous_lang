@@ -10,19 +10,19 @@ fn word_count s string
 fn char_count s string
     len(s)
 
-fn count_char s string c string
+fn count_char s, c string
     count(s, c)
 
 fn is_blank s string
     1 if trim(s) == "" else 0
 
-fn starts_with_prefix s string p string
+fn starts_with_prefix s, p string
     1 if starts_with(s, p) else 0
 
-fn ends_with_suffix s string p string
+fn ends_with_suffix s, p string
     1 if ends_with(s, p) else 0
 
-fn contains_sub s string sub string
+fn contains_sub s, sub string
     1 if sub in s else 0
 
 fn to_upper_ascii s string

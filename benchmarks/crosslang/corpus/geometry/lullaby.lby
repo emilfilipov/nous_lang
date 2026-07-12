@@ -9,30 +9,30 @@ fn abs_val n i64
         return -n
     n
 
-fn dist_sq a Point b Point
+fn dist_sq a, b Point
     let dx = a.x - b.x
     let dy = a.y - b.y
     dx * dx + dy * dy
 
-fn manhattan a Point b Point
+fn manhattan a, b Point
     abs_val(a.x - b.x) + abs_val(a.y - b.y)
 
-fn cross ux i64 uy i64 vx i64 vy i64
+fn cross ux, uy, vx, vy i64
     ux * vy - uy * vx
 
-fn dot ux i64 uy i64 vx i64 vy i64
+fn dot ux, uy, vx, vy i64
     ux * vx + uy * vy
 
-fn triangle_area2 a Point b Point c Point
+fn triangle_area2 a, b, c Point
     cross(b.x - a.x, b.y - a.y, c.x - a.x, c.y - a.y)
 
-fn is_ccw a Point b Point c Point
+fn is_ccw a, b, c Point
     1 if triangle_area2(a, b, c) > 0 else 0
 
-fn collinear a Point b Point c Point
+fn collinear a, b, c Point
     1 if triangle_area2(a, b, c) == 0 else 0
 
-fn on_segment_x a Point b Point px i64
+fn on_segment_x a, b Point px i64
     let lo = a.x
     let hi = b.x
     if hi < lo
@@ -40,25 +40,25 @@ fn on_segment_x a Point b Point px i64
         hi = a.x
     1 if px >= lo and px <= hi else 0
 
-fn rect_area w i64 h i64
+fn rect_area w, h i64
     w * h
 
-fn perimeter_rect w i64 h i64
+fn perimeter_rect w, h i64
     2 * (w + h)
 
-fn point_in_rect px i64 py i64 w i64 h i64
+fn point_in_rect px, py, w, h i64
     1 if px >= 0 and py >= 0 and px <= w and py <= h else 0
 
-fn midpoint_x a Point b Point
+fn midpoint_x a, b Point
     (a.x + b.x) / 2
 
-fn midpoint_y a Point b Point
+fn midpoint_y a, b Point
     (a.y + b.y) / 2
 
 fn taxicab_circle_points r i64
     4 * r if r > 0 else 1
 
-fn quadrant px i64 py i64
+fn quadrant px, py i64
     if px == 0 or py == 0
         return 0
     if px > 0 and py > 0

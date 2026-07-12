@@ -1,0 +1,8 @@
+fn weighted a, b, c, scale i64 -> i64
+    (a + b + c) * scale
+
+fn tag_len label, suffix string n i64 -> i64
+    len(label) + len(suffix) + n
+
+fn main -> i64
+    weighted(1, 2, 3, 10) + tag_len("ab", "cde", 4)

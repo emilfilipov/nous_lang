@@ -14,7 +14,7 @@ fn all_same a array<i64> n i64
             return 0
     1
 
-fn count_value a array<i64> n i64 v i64
+fn count_value a array<i64> n, v i64
     let count = 0
     for i from 0 to n - 1
         if a[i] == v
@@ -45,7 +45,7 @@ fn pair_count a array<i64> n i64
         i = j
     count
 
-fn line_winner b array<i64> i i64 j i64 k i64
+fn line_winner b array<i64> i, j, k i64
     if b[i] != 0 and b[i] == b[j] and b[i] == b[k]
         return b[i]
     0
@@ -78,7 +78,7 @@ fn tic_tac_toe_winner board array<i64>
         return w
     0
 
-fn damage_calc atk i64 def i64
+fn damage_calc atk, def i64
     let d = atk - def
     if d < 1
         return 1
@@ -119,7 +119,7 @@ fn is_flush suits array<i64> n i64
             return 0
     1
 
-fn grid_move_valid x i64 y i64 dx i64 dy i64 w i64 h i64
+fn grid_move_valid x, y, dx, dy, w, h i64
     let nx = x + dx
     let ny = y + dy
     if nx >= 0 and nx < w and ny >= 0 and ny < h
@@ -133,10 +133,10 @@ fn dice_score_multiplier roll i64
         return 2
     1
 
-fn bowling_frame_score a i64 b i64
+fn bowling_frame_score a, b i64
     a + b
 
-fn snake_grow len i64 food i64
+fn snake_grow len, food i64
     len + food
 
 fn combo_multiplier streak i64
@@ -148,7 +148,7 @@ fn combo_multiplier streak i64
         return 2
     1
 
-fn score_with_bonus base i64 mult i64
+fn score_with_bonus base, mult i64
     base * mult
 
 fn main

@@ -2,7 +2,7 @@ struct Vec2
     x i64
     y i64
 
-fn dot a Vec2 b Vec2 -> i64
+fn dot a, b Vec2 -> i64
     a.x * b.x + a.y * b.y
 
 enum Shape
@@ -16,7 +16,7 @@ fn area s Shape -> i64
         Line(n) -> n
         Box(w, h) -> w * h
 
-fn safe_div n i64 d i64 -> result<i64, string>
+fn safe_div n, d i64 -> result<i64, string>
     if d == 0
         return err("div by zero")
     ok(n / d)
@@ -26,7 +26,7 @@ fn value r result<i64, string> -> i64
         ok(v) -> v
         err(m) -> 0 - len(m)
 
-fn first_positive first Shape second Shape -> option<i64>
+fn first_positive first, second Shape -> option<i64>
     let a i64 = area(first)
     if a > 0
         return some(a)

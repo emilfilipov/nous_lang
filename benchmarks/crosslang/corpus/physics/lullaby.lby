@@ -2,36 +2,36 @@
 # All math is scaled-integer (no floats): temperatures are tenths (x10),
 # distances/speeds use fixed scale factors, energy uses g = 10 m/s^2.
 
-fn distance_uniform v i64 t i64
+fn distance_uniform v, t i64
     v * t
 
-fn distance_accel v i64 t i64 a i64
+fn distance_accel v, t, a i64
     v * t + a * t * t / 2
 
-fn final_velocity v i64 a i64 t i64
+fn final_velocity v, a, t i64
     v + a * t
 
-fn kinetic_energy_x2 m i64 v i64
+fn kinetic_energy_x2 m, v i64
     m * v * v
 
-fn momentum m i64 v i64
+fn momentum m, v i64
     m * v
 
-fn force m i64 a i64
+fn force m, a i64
     m * a
 
-fn work f i64 d i64
+fn work f, d i64
     f * d
 
-fn power_watts work i64 t i64
+fn power_watts work, t i64
     work / t
 
-fn pressure f i64 area i64
+fn pressure f, area i64
     if area == 0
         return 0
     f / area
 
-fn density mass i64 vol i64
+fn density mass, vol i64
     mass / vol
 
 fn celsius_to_fahrenheit_x10 c i64
@@ -55,7 +55,7 @@ fn mps_to_kmh mps i64
 fn gravity_fall_dist t i64
     5 * t * t
 
-fn potential_energy m i64 h i64
+fn potential_energy m, h i64
     m * 10 * h
 
 fn main
