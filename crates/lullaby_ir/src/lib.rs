@@ -285,6 +285,20 @@ pub enum IrExprKind {
     Char(char),
     Array(Vec<IrExpr>),
     Variable(String),
+    /// A slot-resolved local read produced by [`resolve_slots`] at interpretation
+    /// time: `Local(packed)` where `packed = ((depth << 16) | slot) + 1` names the
+    /// binding by its `(scopes-from-innermost depth, index-within-scope slot)`
+    /// instead of by name, so [`Env::get_slot`] indexes it directly with no
+    /// string scan. It only ever appears in the interpreter's resolved copy of a
+    /// function body — never in lowered/optimized/serialized IR, and never in the
+    /// WASM or native paths — because resolution runs after all of those and only
+    /// for the tree-walking evaluator. The binding's name is still retained in the
+    /// `Env` scope entry, so any code path that meets a `Local` it cannot use
+    /// falls back to the equivalent `Variable` behavior via the retained name.
+    Local {
+        name: String,
+        packed: u32,
+    },
     Index {
         target: Box<IrExpr>,
         index: Box<IrExpr>,
@@ -559,8 +573,251 @@ pub fn run_main(module: &IrModule) -> Result<Value, RuntimeError> {
 /// and ALSO holds an owned `Arc<IrModule>` clone purely to hand to spawned
 /// threads — two separate handles to the same shared data, not self-referential.
 pub fn run_main_with_args(module: &IrModule, args: Vec<String>) -> Result<Value, RuntimeError> {
-    let arc = Arc::new(module.clone());
+    let mut owned = module.clone();
+    resolve_module_slots(&mut owned);
+    let arc = Arc::new(owned);
     run_main_shared(arc, args)
+}
+
+// -- Slot-based variable resolution -------------------------------------------
+//
+// Every variable read in the tree-walking interpreter used to do a linear
+// name scan: walk the scope stack from the innermost scope outward, comparing
+// the target name against each binding's `String` key. Because the same IR
+// nodes are re-walked on every loop iteration, that scan is paid per access on
+// the hottest path.
+//
+// `resolve_module_slots` runs once, at interpretation entry, over an owned copy
+// of the module. It walks each function body with a scope model that mirrors the
+// evaluator's `push_scope`/`pop_scope`/`define` behavior exactly, and rewrites
+// each name-resolvable local *read* (`Variable`) into a `Local { name, packed }`
+// carrying the binding's `(depth, slot)` position. The evaluator then indexes it
+// directly via `Env::get_slot` — no scan.
+//
+// Safety is structural, not by careful analysis: `Env::get_slot` re-checks the
+// binding name at the resolved position and falls back to the name scan on any
+// mismatch, so a wrong `(depth, slot)` can only miss (and be slower), never read
+// the wrong binding. Closures are left unresolved (their bodies run against a
+// captured-snapshot environment whose scope shape differs from lexical nesting),
+// and any reference whose `(depth, slot)` would overflow the packed encoding
+// simply stays a `Variable`. The rewrite is confined to the interpreter's owned
+// copy: lowered/optimized/serialized IR and the WASM/native paths never see a
+// `Local`.
+
+/// Pack a `(depth, slot)` local reference into a `u32` (`depth` in the high 16
+/// bits, `slot` in the low 16). Returns `None` when either field would overflow,
+/// so the caller keeps the name-scanned `Variable` form for that reference.
+fn pack_slot(depth: usize, slot: usize) -> Option<u32> {
+    if depth > 0xffff || slot > 0xffff {
+        return None;
+    }
+    Some(((depth as u32) << 16) | (slot as u32))
+}
+
+/// Inverse of [`pack_slot`]: `(depth, slot)`.
+fn unpack_slot(packed: u32) -> (usize, usize) {
+    ((packed >> 16) as usize, (packed & 0xffff) as usize)
+}
+
+/// Resolve `name` to a packed `(depth, slot)` against the compile-time scope
+/// stack, searching innermost-first exactly like [`Env::get_ref`].
+fn resolve_var_slot(name: &str, scopes: &[Vec<String>]) -> Option<u32> {
+    for (index, scope) in scopes.iter().enumerate().rev() {
+        if let Some(slot) = scope.iter().position(|existing| existing == name) {
+            let depth = scopes.len() - 1 - index;
+            return pack_slot(depth, slot);
+        }
+    }
+    None
+}
+
+fn resolve_module_slots(module: &mut IrModule) {
+    for function in &mut module.functions {
+        resolve_function_slots(&mut function.params, &mut function.body);
+    }
+    for impl_method in &mut module.impls {
+        let function = &mut impl_method.function;
+        resolve_function_slots(&mut function.params, &mut function.body);
+    }
+    // Closures (`module.closures`) are intentionally not resolved: a closure body
+    // executes against a captured-snapshot environment, so its lexical nesting
+    // does not match the runtime scope stack the `(depth, slot)` model assumes.
+}
+
+fn resolve_function_slots(params: &mut [IrParam], body: &mut [IrStmt]) {
+    let mut scopes: Vec<Vec<String>> = vec![params.iter().map(|p| p.name.clone()).collect()];
+    resolve_block_slots(body, &mut scopes);
+}
+
+fn resolve_block_slots(body: &mut [IrStmt], scopes: &mut Vec<Vec<String>>) {
+    for stmt in body {
+        resolve_stmt_slots(stmt, scopes);
+    }
+}
+
+/// Add `name` to the innermost scope if it is not already bound there, matching
+/// `Env::define`'s replace-in-place-or-push behavior (a re-`let` of the same name
+/// keeps its existing slot).
+fn declare_in_scope(name: &str, scopes: &mut [Vec<String>]) {
+    if let Some(scope) = scopes.last_mut()
+        && !scope.iter().any(|existing| existing == name)
+    {
+        scope.push(name.to_string());
+    }
+}
+
+fn resolve_stmt_slots(stmt: &mut IrStmt, scopes: &mut Vec<Vec<String>>) {
+    match stmt {
+        IrStmt::Let { name, value, .. } => {
+            // The initializer is evaluated before the binding is introduced (or,
+            // for a re-`let`, while its previous value is still bound), so resolve
+            // it against the current scopes first, then declare the name.
+            resolve_expr_slots(value, scopes);
+            declare_in_scope(name, scopes);
+        }
+        IrStmt::Assign {
+            path, value, ..
+        } => {
+            // The target name keeps the name-scan `assign` path; only the RHS and
+            // any index expressions in the path are read positions.
+            for place in path.iter_mut() {
+                if let IrPlace::Index(index) = place {
+                    resolve_expr_slots(index, scopes);
+                }
+            }
+            resolve_expr_slots(value, scopes);
+        }
+        IrStmt::Return(expr) => {
+            if let Some(expr) = expr {
+                resolve_expr_slots(expr, scopes);
+            }
+        }
+        IrStmt::Expr(expr) | IrStmt::Throw { value: expr, .. } => {
+            resolve_expr_slots(expr, scopes);
+        }
+        IrStmt::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            for branch in branches {
+                resolve_expr_slots(&mut branch.condition, scopes);
+                scopes.push(Vec::new());
+                resolve_block_slots(&mut branch.body, scopes);
+                scopes.pop();
+            }
+            scopes.push(Vec::new());
+            resolve_block_slots(else_body, scopes);
+            scopes.pop();
+        }
+        IrStmt::While {
+            condition, body, ..
+        } => {
+            resolve_expr_slots(condition, scopes);
+            scopes.push(Vec::new());
+            resolve_block_slots(body, scopes);
+            scopes.pop();
+        }
+        IrStmt::For {
+            name,
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            resolve_expr_slots(start, scopes);
+            resolve_expr_slots(end, scopes);
+            if let Some(step) = step {
+                resolve_expr_slots(step, scopes);
+            }
+            // The loop variable lives in its own scope; the body opens a further
+            // child scope each iteration (mirroring the evaluator's two pushes).
+            scopes.push(vec![name.clone()]);
+            scopes.push(Vec::new());
+            resolve_block_slots(body, scopes);
+            scopes.pop();
+            scopes.pop();
+        }
+        IrStmt::Loop { body, .. } => {
+            scopes.push(Vec::new());
+            resolve_block_slots(body, scopes);
+            scopes.pop();
+        }
+        IrStmt::Try {
+            body,
+            catch_name,
+            catch_body,
+            ..
+        } => {
+            scopes.push(Vec::new());
+            resolve_block_slots(body, scopes);
+            scopes.pop();
+            scopes.push(vec![catch_name.clone()]);
+            resolve_block_slots(catch_body, scopes);
+            scopes.pop();
+        }
+        IrStmt::Match {
+            scrutinee, arms, ..
+        } => {
+            resolve_expr_slots(scrutinee, scopes);
+            for arm in arms {
+                let seeds = match &arm.pattern {
+                    IrMatchPattern::Variant { bindings, .. } => bindings.clone(),
+                    IrMatchPattern::Wildcard => Vec::new(),
+                };
+                scopes.push(seeds);
+                resolve_block_slots(&mut arm.body, scopes);
+                scopes.pop();
+            }
+        }
+        IrStmt::Break(_) | IrStmt::Continue(_) | IrStmt::Asm { .. } => {}
+    }
+}
+
+fn resolve_expr_slots(expr: &mut IrExpr, scopes: &[Vec<String>]) {
+    match &mut expr.kind {
+        IrExprKind::Variable(name) => {
+            if let Some(packed) = resolve_var_slot(name, scopes) {
+                let name = std::mem::take(name);
+                expr.kind = IrExprKind::Local { name, packed };
+            }
+        }
+        IrExprKind::Array(elements) => {
+            for element in elements {
+                resolve_expr_slots(element, scopes);
+            }
+        }
+        IrExprKind::Index { target, index } => {
+            resolve_expr_slots(target, scopes);
+            resolve_expr_slots(index, scopes);
+        }
+        IrExprKind::Unary { expr: inner, .. } | IrExprKind::Await { expr: inner } => {
+            resolve_expr_slots(inner, scopes);
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            resolve_expr_slots(left, scopes);
+            resolve_expr_slots(right, scopes);
+        }
+        IrExprKind::Call { args, .. } => {
+            for arg in args {
+                resolve_expr_slots(arg, scopes);
+            }
+        }
+        IrExprKind::Field { target, .. } => {
+            resolve_expr_slots(target, scopes);
+        }
+        // Leaves and already-resolved / opaque nodes: literals carry no reads, a
+        // `Closure` stores only an id (its body is resolved never), and a `Local`
+        // is already resolved.
+        IrExprKind::Integer(_)
+        | IrExprKind::Float(_)
+        | IrExprKind::Bool(_)
+        | IrExprKind::String(_)
+        | IrExprKind::Char(_)
+        | IrExprKind::Local { .. }
+        | IrExprKind::Closure { .. } => {}
+    }
 }
 
 /// Shared-module entry: build an interpreter borrowing `&*arc` while retaining an
@@ -568,6 +825,29 @@ pub fn run_main_with_args(module: &IrModule, args: Vec<String>) -> Result<Value,
 /// Read one element from an indexable value (`string` char or `array` element) by
 /// **borrowing** the container and cloning only the element, so a bare-variable
 /// `a[i]` does not clone the whole container on every access.
+/// The binding name of a bare local read — a `Variable` or a slot-resolved
+/// `Local` — or `None` for any other expression. Lets the borrow fast paths
+/// (`a[i]`, `s.field`) treat both read forms identically.
+fn bare_local_name(kind: &IrExprKind) -> Option<&str> {
+    match kind {
+        IrExprKind::Variable(name) | IrExprKind::Local { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// Borrow the value of a bare local read without cloning: a slot-resolved
+/// `Local` indexes directly (validated, falling back to the name scan on a
+/// miss), a `Variable` uses the name scan. `None` for a non-local expression.
+fn bare_local_ref<'e>(kind: &IrExprKind, env: &'e Env) -> Option<&'e Value> {
+    match kind {
+        IrExprKind::Variable(name) => env.get_ref(name),
+        IrExprKind::Local { name, packed } => {
+            env.get_slot(*packed, name).or_else(|| env.get_ref(name))
+        }
+        _ => None,
+    }
+}
+
 fn index_into(container: &Value, index: i64) -> Result<Value, RuntimeError> {
     match container {
         Value::String(text) => {
@@ -746,7 +1026,8 @@ fn collect_memory_operations_from_expr(
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
         | IrExprKind::Char(_)
-        | IrExprKind::Variable(_) => {}
+        | IrExprKind::Variable(_)
+        | IrExprKind::Local { .. } => {}
     }
 }
 
@@ -1868,6 +2149,9 @@ fn lower_bytecode_expr(expr: &IrExpr) -> BytecodeExpr {
             BytecodeExprKind::Array(values.iter().map(lower_bytecode_expr).collect())
         }
         IrExprKind::Variable(name) => BytecodeExprKind::Variable(name.clone()),
+        // A `Local` only exists in the interpreter's resolved copy; if one is
+        // lowered to bytecode it collapses back to its name-scanned form.
+        IrExprKind::Local { name, .. } => BytecodeExprKind::Variable(name.clone()),
         IrExprKind::Index { target, index } => BytecodeExprKind::Index {
             target: Box::new(lower_bytecode_expr(target)),
             index: Box::new(lower_bytecode_expr(index)),
@@ -2639,7 +2923,8 @@ impl ConstantFolder {
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
             | IrExprKind::Char(_)
-            | IrExprKind::Variable(_) => expr.clone(),
+            | IrExprKind::Variable(_)
+            | IrExprKind::Local { .. } => expr.clone(),
         }
     }
 
@@ -3085,7 +3370,8 @@ impl CommonSubexpressionEliminator {
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
             | IrExprKind::Char(_)
-            | IrExprKind::Variable(_) => expr.clone(),
+            | IrExprKind::Variable(_)
+            | IrExprKind::Local { .. } => expr.clone(),
         }
     }
 }
@@ -3104,7 +3390,7 @@ fn pure_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
         IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::Char(value) => (format!("char:{value}:{}", expr.ty.name), HashSet::new()),
-        IrExprKind::Variable(name) => {
+        IrExprKind::Variable(name) | IrExprKind::Local { name, .. } => {
             let mut dependencies = HashSet::new();
             dependencies.insert(name.clone());
             (format!("var:{name}:{}", expr.ty.name), dependencies)
@@ -3521,7 +3807,7 @@ fn loop_invariant_expr_signature(expr: &IrExpr) -> Option<ExprSignature> {
         IrExprKind::Bool(value) => (format!("bool:{value}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::String(value) => (format!("string:{value:?}:{}", expr.ty.name), HashSet::new()),
         IrExprKind::Char(value) => (format!("char:{value}:{}", expr.ty.name), HashSet::new()),
-        IrExprKind::Variable(name) => {
+        IrExprKind::Variable(name) | IrExprKind::Local { name, .. } => {
             let mut dependencies = HashSet::new();
             dependencies.insert(name.clone());
             (format!("var:{name}:{}", expr.ty.name), dependencies)
@@ -3882,12 +4168,16 @@ impl CopyPropagator {
             // A closure literal node carries only an id; its captured values are
             // materialized at runtime and its body lives in the module table, so
             // copy propagation has nothing to rewrite here.
+            // A `Local` is only introduced after every optimization pass (at
+            // interpretation time), so it never reaches copy propagation; copy it
+            // through unchanged for match completeness.
             IrExprKind::Closure { .. }
             | IrExprKind::Integer(_)
             | IrExprKind::Float(_)
             | IrExprKind::Bool(_)
             | IrExprKind::String(_)
-            | IrExprKind::Char(_) => expr.clone(),
+            | IrExprKind::Char(_)
+            | IrExprKind::Local { .. } => expr.clone(),
         }
     }
 }
@@ -3936,7 +4226,8 @@ fn expr_requires_optimizer_barrier(expr: &IrExpr) -> bool {
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
         | IrExprKind::Char(_)
-        | IrExprKind::Variable(_) => false,
+        | IrExprKind::Variable(_)
+        | IrExprKind::Local { .. } => false,
     }
 }
 
@@ -4343,7 +4634,7 @@ impl<'a> IrRuntime<'a> {
         }
         let mut target_idx: Option<usize> = None;
         for (i, arg) in args.iter().enumerate() {
-            let is_bare = matches!(&arg.kind, IrExprKind::Variable(v) if v == name);
+            let is_bare = bare_local_name(&arg.kind) == Some(name);
             if is_bare && target_idx.is_none() {
                 target_idx = Some(i);
             } else if expr_mentions_var(arg, name) {
@@ -4406,8 +4697,8 @@ impl<'a> IrRuntime<'a> {
         if !bound {
             return Ok(None);
         }
-        let left_bare = matches!(&left.kind, IrExprKind::Variable(v) if v == name);
-        let right_bare = matches!(&right.kind, IrExprKind::Variable(v) if v == name);
+        let left_bare = bare_local_name(&left.kind) == Some(name);
+        let right_bare = bare_local_name(&right.kind) == Some(name);
         let target_is_left = if left_bare && !expr_mentions_var(right, name) {
             true
         } else if right_bare && !expr_mentions_var(left, name) {
@@ -5078,6 +5369,28 @@ impl<'a> IrRuntime<'a> {
             .collect()
     }
 
+    /// Resolve a bare name to a value: a local binding (name scan), else a known
+    /// unit enum variant, else a first-class function value. Shared by the
+    /// `Variable` and (on a slot miss) `Local` evaluation arms.
+    fn eval_variable_name(&self, name: &str, env: &Env) -> Result<Value, RuntimeError> {
+        match env.get(name) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(enum_name) = self.variants.get(name) {
+                    Ok(Value::Enum(Box::new(EnumValue {
+                        enum_name: enum_name.to_string(),
+                        variant: name.to_string(),
+                        payload: Vec::new(),
+                    })))
+                } else if self.functions.contains_key(name) {
+                    Ok(Value::Func(name.to_string()))
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     fn eval_expr(&mut self, expr: &IrExpr, env: &Env) -> Result<Value, RuntimeError> {
         let result = match &expr.kind {
             IrExprKind::Integer(value) => Ok(Value::I64(*value)),
@@ -5090,33 +5403,22 @@ impl<'a> IrRuntime<'a> {
                 .map(|value| self.eval_expr(value, env))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array),
-            IrExprKind::Variable(name) => match env.get(name) {
-                Ok(value) => Ok(value),
-                Err(error) => {
-                    // A bare name that is not a local but is a known enum variant
-                    // constructs a unit variant.
-                    if let Some(enum_name) = self.variants.get(name.as_str()) {
-                        Ok(Value::Enum(Box::new(EnumValue {
-                            enum_name: enum_name.to_string(),
-                            variant: name.clone(),
-                            payload: Vec::new(),
-                        })))
-                    } else if self.functions.contains_key(name.as_str()) {
-                        // A bare name that is a known top-level function evaluates
-                        // to a first-class function value.
-                        Ok(Value::Func(name.clone()))
-                    } else {
-                        Err(error)
-                    }
-                }
+            // A slot-resolved local read: index the binding directly (no name
+            // scan). The lookup is validated, so a miss (resolver/runtime scope
+            // divergence, or a name that is really an enum variant / function
+            // rather than a local) falls back to the exact `Variable` path.
+            IrExprKind::Local { name, packed } => match env.get_slot(*packed, name) {
+                Some(value) => Ok(value.clone()),
+                None => self.eval_variable_name(name, env),
             },
+            IrExprKind::Variable(name) => self.eval_variable_name(name, env),
             IrExprKind::Index { target, index } => {
-                // Fast path: a bare-variable target is borrowed (clone only the
-                // element), so `a[i]` does not clone the whole array/string every
-                // access (which is O(len) per read).
-                if let IrExprKind::Variable(name) = &target.kind {
+                // Fast path: a bare-variable target (name-scanned or slot-resolved)
+                // is borrowed (clone only the element), so `a[i]` does not clone the
+                // whole array/string every access (which is O(len) per read).
+                if bare_local_name(&target.kind).is_some() {
                     let idx = self.eval_expr(index, env)?.as_i64()?;
-                    if let Some(container) = env.get_ref(name) {
+                    if let Some(container) = bare_local_ref(&target.kind, env) {
                         return index_into(container, idx);
                     }
                     let owned = self.eval_expr(target, env)?;
@@ -5127,17 +5429,16 @@ impl<'a> IrRuntime<'a> {
                 index_into(&target, index)
             }
             IrExprKind::Field { target, field } => {
-                // Fast path: borrow a bare-variable struct and clone only the field
-                // read, instead of cloning the whole struct on every `s.field`.
-                if let IrExprKind::Variable(name) = &target.kind {
-                    if let Some(Value::Struct(s)) = env.get_ref(name) {
-                        return s
-                            .fields
-                            .iter()
-                            .find(|(n, _)| n == field)
-                            .map(|(_, value)| value.clone())
-                            .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`")));
-                    }
+                // Fast path: borrow a bare-variable struct (name-scanned or
+                // slot-resolved) and clone only the field read, instead of cloning
+                // the whole struct on every `s.field`.
+                if let Some(Value::Struct(s)) = bare_local_ref(&target.kind, env) {
+                    return s
+                        .fields
+                        .iter()
+                        .find(|(n, _)| n == field)
+                        .map(|(_, value)| value.clone())
+                        .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`")));
                 }
                 match self.eval_expr(target, env)? {
                     Value::Struct(s) => s
@@ -8091,7 +8392,11 @@ fn expr_mentions_var(expr: &IrExpr, name: &str) -> bool {
         | IrExprKind::Bool(_)
         | IrExprKind::String(_)
         | IrExprKind::Char(_) => false,
-        IrExprKind::Variable(v) => v == name,
+        // A resolved `Local` still names the same binding, so it counts as a
+        // mention. Missing it here would let the move-on-functional-update fast
+        // path move a value that a `Local` still reads — an under-approximation
+        // that must never happen (over-approximating only forgoes the move).
+        IrExprKind::Variable(v) | IrExprKind::Local { name: v, .. } => v == name,
         IrExprKind::Array(items) => items.iter().any(|item| expr_mentions_var(item, name)),
         IrExprKind::Index { target, index } => {
             expr_mentions_var(target, name) || expr_mentions_var(index, name)
@@ -8223,6 +8528,22 @@ impl Env {
         }
         None
     }
+
+    /// Borrow a slot-resolved binding directly, with no name scan. `packed` is a
+    /// `(depth, slot)` pair produced by [`resolve_slots`]: `depth` counts scopes up
+    /// from the innermost and `slot` indexes within that scope. The lookup is
+    /// **validated** — it confirms the binding at that position still carries
+    /// `name` before returning it, and returns `None` (so the caller falls back to
+    /// the name scan) if the position is out of range or the name does not match.
+    /// That validation makes the fast path correct-or-slower by construction: a
+    /// mis-resolved slot can never read the wrong binding, only miss and fall back.
+    fn get_slot(&self, packed: u32, name: &str) -> Option<&Value> {
+        let (depth, slot) = unpack_slot(packed);
+        let idx = self.scopes.len().checked_sub(1 + depth)?;
+        let (existing, value) = self.scopes.get(idx)?.get(slot)?;
+        (existing == name).then_some(value)
+    }
+
 
     /// True when `name` is bound in the innermost (current) scope. A `let x =
     /// f(x, …)` re-binding only moves when the consumed binding lives here,
@@ -10411,6 +10732,158 @@ mod tests {
             run_main(&ir).expect("ir run"),
             run_bytecode_main(&bytecode).expect("bytecode run"),
         )
+    }
+
+    /// Recursively collect every slot-resolved `Local { name, packed }` and every
+    /// remaining name-scanned `Variable(name)` read in a resolved block. Used by the
+    /// slot-resolution tests to assert both that reads are rewritten and that their
+    /// `(depth, slot)` encoding is exactly right.
+    fn collect_reads(body: &[IrStmt], locals: &mut Vec<(String, u32)>, vars: &mut Vec<String>) {
+        fn walk_expr(e: &IrExpr, locals: &mut Vec<(String, u32)>, vars: &mut Vec<String>) {
+            match &e.kind {
+                IrExprKind::Local { name, packed } => locals.push((name.clone(), *packed)),
+                IrExprKind::Variable(name) => vars.push(name.clone()),
+                IrExprKind::Binary { left, right, .. } => {
+                    walk_expr(left, locals, vars);
+                    walk_expr(right, locals, vars);
+                }
+                IrExprKind::Unary { expr: inner, .. } | IrExprKind::Await { expr: inner } => {
+                    walk_expr(inner, locals, vars);
+                }
+                IrExprKind::Index { target, index } => {
+                    walk_expr(target, locals, vars);
+                    walk_expr(index, locals, vars);
+                }
+                IrExprKind::Field { target, .. } => walk_expr(target, locals, vars),
+                IrExprKind::Call { args, .. } => {
+                    for arg in args {
+                        walk_expr(arg, locals, vars);
+                    }
+                }
+                IrExprKind::Array(items) => {
+                    for item in items {
+                        walk_expr(item, locals, vars);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for stmt in body {
+            match stmt {
+                IrStmt::Let { value, .. }
+                | IrStmt::Expr(value)
+                | IrStmt::Throw { value, .. } => walk_expr(value, locals, vars),
+                IrStmt::Return(Some(value)) => walk_expr(value, locals, vars),
+                IrStmt::Assign { value, path, .. } => {
+                    walk_expr(value, locals, vars);
+                    for place in path {
+                        if let IrPlace::Index(index) = place {
+                            walk_expr(index, locals, vars);
+                        }
+                    }
+                }
+                IrStmt::If {
+                    branches,
+                    else_body,
+                    ..
+                } => {
+                    for branch in branches {
+                        walk_expr(&branch.condition, locals, vars);
+                        collect_reads(&branch.body, locals, vars);
+                    }
+                    collect_reads(else_body, locals, vars);
+                }
+                IrStmt::While {
+                    condition, body, ..
+                } => {
+                    walk_expr(condition, locals, vars);
+                    collect_reads(body, locals, vars);
+                }
+                IrStmt::For {
+                    start,
+                    end,
+                    step,
+                    body,
+                    ..
+                } => {
+                    walk_expr(start, locals, vars);
+                    walk_expr(end, locals, vars);
+                    if let Some(step) = step {
+                        walk_expr(step, locals, vars);
+                    }
+                    collect_reads(body, locals, vars);
+                }
+                IrStmt::Loop { body, .. } => collect_reads(body, locals, vars),
+                IrStmt::Try {
+                    body, catch_body, ..
+                } => {
+                    collect_reads(body, locals, vars);
+                    collect_reads(catch_body, locals, vars);
+                }
+                IrStmt::Match { scrutinee, arms, .. } => {
+                    walk_expr(scrutinee, locals, vars);
+                    for arm in arms {
+                        collect_reads(&arm.body, locals, vars);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn slot_resolution_rewrites_local_reads_with_exact_slots() {
+        let mut module =
+            lower_source("fn add x i64 y i64 -> i64\n    let s i64 = x + y\n    s\n");
+        resolve_module_slots(&mut module);
+        let mut locals = Vec::new();
+        let mut vars = Vec::new();
+        collect_reads(&module.functions[0].body, &mut locals, &mut vars);
+        // Params `x`,`y` are slots 0,1 of the function scope; `s` is slot 2. Every
+        // read is resolved (function scope is the innermost, so depth 0).
+        assert!(locals.contains(&("x".to_string(), pack_slot(0, 0).unwrap())));
+        assert!(locals.contains(&("y".to_string(), pack_slot(0, 1).unwrap())));
+        assert!(locals.contains(&("s".to_string(), pack_slot(0, 2).unwrap())));
+        assert!(
+            vars.is_empty(),
+            "every local read should be slot-resolved, found name-scanned {vars:?}"
+        );
+    }
+
+    #[test]
+    fn slot_resolution_models_the_two_scope_for_loop() {
+        // The `for` loop variable lives one scope above the body (the evaluator
+        // pushes a loop-var scope, then a separate body scope each iteration), so
+        // from inside the body `i` is at depth 1 slot 0 and the outer `t` — the
+        // only function-scope local — is at depth 2 slot 0.
+        let mut module = lower_source(
+            "fn main -> i64\n    let t i64 = 0\n    for i from 1 to 3\n        t = t + i\n    t\n",
+        );
+        resolve_module_slots(&mut module);
+        let mut locals = Vec::new();
+        let mut vars = Vec::new();
+        collect_reads(&module.functions[0].body, &mut locals, &mut vars);
+        assert!(
+            locals.contains(&("i".to_string(), pack_slot(1, 0).unwrap())),
+            "loop var `i` should resolve to depth 1 slot 0, got {locals:?}"
+        );
+        assert!(
+            locals.contains(&("t".to_string(), pack_slot(2, 0).unwrap())),
+            "outer `t` read inside the loop body should be depth 2 slot 0, got {locals:?}"
+        );
+    }
+
+    #[test]
+    fn slot_resolution_keeps_shadowing_correct_across_backends() {
+        // The inner `x` (10) shadows the outer `x` (1) only inside the `if` body,
+        // so `s` accumulates 10 there and 1 after — 11 total. A wrong `(depth,
+        // slot)` for either `x` would read the wrong binding; every backend
+        // (including the slot-resolved IR/bytecode) must still return 11.
+        let source = "fn main -> i64\n    let x i64 = 1\n    let s i64 = 0\n    if x == 1\n        let x i64 = 10\n        s = s + x\n    s = s + x\n    s\n";
+        let (ast, ir, bytecode) = run_all_backends(source);
+        assert_eq!(ast, Value::I64(11));
+        assert_eq!(ir, Value::I64(11));
+        assert_eq!(bytecode, Value::I64(11));
     }
 
     fn run_all_backend_variants(source: &str) -> (Value, Value, Value, Value, Value) {

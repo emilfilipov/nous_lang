@@ -1879,7 +1879,10 @@ fn lower_expr(ctx: &mut LowerCtx, expr: &IrExpr, out: &mut Vec<u8>) -> Result<()
             write_sleb(out, *value as i64);
             Ok(())
         }
-        IrExprKind::Variable(name) => {
+        // A `Local` only exists in the interpreter's resolved copy of the IR, so
+        // it never reaches WASM lowering in practice; handle it identically to a
+        // named `Variable` for match completeness and defensive correctness.
+        IrExprKind::Variable(name) | IrExprKind::Local { name, .. } => {
             let local = ctx
                 .locals
                 .get(name)
