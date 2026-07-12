@@ -32,10 +32,10 @@
       "note": "The counting-sum loop is now ILP-unrolled: the native backend recognizes `while i < N { acc = acc + i; i = i + 1 }` and folds four iterations per step into one dependent add — `lea rax,[i*4+6]` (the block sum 4*i + 0+1+2+3) then `add acc, rax` — with a scalar remainder. That breaks the serial `acc` dependency chain (one dependent add per FOUR iterations instead of one per iteration), taking native from 0.25 ns/iter (1.96x C) to 0.066 ns/iter — now ~2x FASTER than C (0.52x). Exact under wrapping arithmetic. Interpreter tiers: after slot-based variable resolution the IR and bytecode tiers now run FASTER than the AST tree-walker, which still name-scans.",
       "results": [
         {"lang": "Lullaby (native)", "value": 0.066, "vsC": 0.52},
-        {"lang": "C (cl /O2)", "value": 0.127, "vsC": 1.0},
-        {"lang": "Lullaby (bytecode)", "value": 152.6, "vsC": 1202.0},
-        {"lang": "Lullaby (ir)", "value": 152.8, "vsC": 1203.0},
-        {"lang": "Lullaby (ast)", "value": 161.7, "vsC": 1273.0}
+        {"lang": "C (cl /O2)", "value": 0.128, "vsC": 1.0},
+        {"lang": "Lullaby (bytecode VM)", "value": 72.3, "vsC": 565.0},
+        {"lang": "Lullaby (ast)", "value": 146.9, "vsC": 1148.0},
+        {"lang": "Lullaby (ir)", "value": 148.8, "vsC": 1163.0}
       ]
     },
     {
@@ -82,7 +82,7 @@
     "native_vectorization_speedup": [{"stage": "sum reduction s+=a[i] (SSE2 paddq)", "vsScalar": 3.3}, {"stage": "element-wise map c[i]=a[i]+/-b[i] (paddq/psubq)", "vsScalar": 3.36}, {"stage": "bitwise reduction acc=acc^a[i] (pand/por/pxor)", "vsScalar": 2.89}, {"stage": "bitwise map c[i]=a[i]&b[i] (pand/por/pxor)", "vsScalar": 2.89}],
     "interpreter_fib_ns": [{"stage": "baseline", "value": 435}, {"stage": "+release profile", "value": 383}, {"stage": "+env pooling", "value": 230}],
     "interpreter_forloop_ns": [{"stage": "per-iteration scope alloc + name clone", "value": 144}, {"stage": "+hoisted loop-var binding, in-place update", "value": 72}],
-    "interpreter_wholeset_vs_ast": [{"stage": "borrow-not-clone baseline: ir/bc SLOWER than ast", "irPct": 106, "bcPct": 105}, {"stage": "+slot-based variable resolution (ir/bc reads indexed, not scanned)", "irPct": 102, "bcPct": 101}],
+    "interpreter_wholeset_vs_ast": [{"stage": "borrow-not-clone baseline: ir/bc SLOWER than ast", "irPct": 106, "bcPct": 105}, {"stage": "+slot-based variable resolution (ir/bc reads indexed, not scanned)", "irPct": 102, "bcPct": 101}, {"stage": "+flat bytecode VM (dispatch loop, slot frame) on the bytecode tier", "irPct": 102, "bcPct": 77}],
     "interpreter_value_cell": [{"stage": "Value enum (String/Array/Func/Closure inline)", "bytes": 32}, {"stage": "+box the four largest variants (Box<str>/Box<[Value]>/Box<Closure>)", "bytes": 24}]
   }
 }

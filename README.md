@@ -64,7 +64,11 @@ and bytecode tiers instead of scanning names — so those tiers run **faster tha
 the AST tree-walker** (which still name-scans) on numeric code. A **tighter
 `Value` cell** (boxing the four largest variants) shrank the shared per-op
 footprint from **32 to 24 bytes**, cutting every clone/move — the AST tier
-dropped ~7% on the sum loop (1.30× → 1.20× C).
+dropped ~7% on the sum loop (1.30× → 1.20× C). And the **bytecode tier now runs
+a flat VM** — a `loop { match }` dispatch over a linear op stream with
+slot-indexed locals, instead of the recursive tree-walk — making it **2× faster
+than the tree-walkers** on tight loops and **~23% faster across the whole
+corpus**, distinctly the fastest interpreter tier.
 
 <sub>Measured on Windows/MSVC; compiled tiers at `-O2`/release, CPython for
 Python. Regenerate with `benchmarks/crosslang/run_benchmark.ps1`.</sub>
