@@ -5229,6 +5229,38 @@ fn promoted_reg_of_name(ctx: &NativeCtx, name: &str) -> Option<PReg> {
     ctx.promoted_reg(ctx.local_slot(name).ok()?)
 }
 
+/// If `expr` is `<promoted i64 reg> + const` or `<promoted i64 reg> - const` with
+/// the constant in `i32` range, return the register and the signed displacement to
+/// add — so the value can be formed with a single `lea reg2, [reg + disp]`.
+fn promoted_reg_plus_const(ctx: &NativeCtx, expr: &BytecodeExpr) -> Option<(PReg, i32)> {
+    let BytecodeExprKind::Binary { left, op, right } = &expr.kind else {
+        return None;
+    };
+    if left.ty.name != "i64" || right.ty.name != "i64" {
+        return None;
+    }
+    let reg = promoted_var_reg(ctx, left)?;
+    let BytecodeExprKind::Integer(value) = &right.kind else {
+        return None;
+    };
+    let value = i32::try_from(*value).ok()?;
+    match op {
+        BinaryOp::Add => Some((reg, value)),
+        // `reg - v` == `lea [reg + (-v)]`; `checked_neg` guards the `i32::MIN` edge.
+        BinaryOp::Subtract => value.checked_neg().map(|neg| (reg, neg)),
+        _ => None,
+    }
+}
+
+/// `lea rcx, [<reg> + disp32]` — form `reg ± const` directly into the first
+/// argument register.
+fn emit_lea_rcx_reg_disp(code: &mut Vec<u8>, reg: PReg, disp: i32) {
+    // REX.W 8D /r ; ModRM mod=10 (disp32) reg=rcx(001) rm=<reg>. rbx/rsi need no SIB.
+    let modrm = 0x80 | (0x01 << 3) | reg.code3();
+    code.extend_from_slice(&[0x48, 0x8D, modrm]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
 /// True when `stmt` is `target = target <Add> addend` (via `=` with a `+` RHS or
 /// via `+=`), i.e. an in-place add of `addend` into the promoted local `target`.
 fn is_promoted_self_add(stmt: &BytecodeInstruction, target: &str, addend: &AddendCheck) -> bool {
@@ -6470,6 +6502,13 @@ fn emit_native_call_args(
         Some(Some(t)) if t.is_aggregate() || matches!(t, NativeType::F64 | NativeType::F32)
     );
     if sret.is_none() && args.len() == 1 && !single_agg_or_float {
+        // `f(reg ± const)` (the recursive `fib(n - 1)` / `fib(n - 2)` idiom):
+        // compute the argument with a single `lea rcx, [reg ± imm]`, exactly as C
+        // does, instead of `mov rax, reg; add/sub rax, imm; mov rcx, rax`.
+        if let Some((reg, disp)) = promoted_reg_plus_const(ctx, &args[0]) {
+            emit_lea_rcx_reg_disp(code, reg, disp);
+            return Ok(());
+        }
         lower_native_expr(ctx, &args[0], code)?; // arg → rax
         code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
         return Ok(());
@@ -12332,6 +12371,15 @@ mod native_program_tests {
         assert!(
             !text.windows(3).any(|w| w == [0x0F, 0x9C, 0xC0]),
             "the `<` should be fused into the branch, not materialized as `setl al`"
+        );
+        // The recursive arguments `fib(n - 1)` / `fib(n - 2)` form the value with a
+        // single `lea rcx, [rbx - k]` (rbx is the promoted `n`), as C does, rather
+        // than `mov rax,rbx; sub rax,k; mov rcx,rax`. `lea rcx, [rbx - 1]` is
+        // 48 8D 8B FF FF FF FF (disp = -1).
+        assert!(
+            text.windows(7)
+                .any(|w| w == [0x48, 0x8D, 0x8B, 0xFF, 0xFF, 0xFF, 0xFF]),
+            "expected `lea rcx, [rbx - 1]` for the `fib(n - 1)` argument"
         );
     }
 
