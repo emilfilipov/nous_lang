@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -573,10 +574,21 @@ pub fn run_main(module: &IrModule) -> Result<Value, RuntimeError> {
 /// and ALSO holds an owned `Arc<IrModule>` clone purely to hand to spawned
 /// threads — two separate handles to the same shared data, not self-referential.
 pub fn run_main_with_args(module: &IrModule, args: Vec<String>) -> Result<Value, RuntimeError> {
+    run_shared(module, args, false)
+}
+
+/// The bytecode-tier entry: identical execution to [`run_main_with_args`] but
+/// with the flat dispatch-loop VM enabled, so eligible functions run through the
+/// linear `VmProgram` instead of the recursive tree-walker.
+fn run_main_with_args_vm(module: &IrModule, args: Vec<String>) -> Result<Value, RuntimeError> {
+    run_shared(module, args, true)
+}
+
+fn run_shared(module: &IrModule, args: Vec<String>, use_vm: bool) -> Result<Value, RuntimeError> {
     let mut owned = module.clone();
     resolve_module_slots(&mut owned);
     let arc = Arc::new(owned);
-    run_main_shared(arc, args)
+    run_main_shared(arc, args, use_vm)
 }
 
 // -- Slot-based variable resolution -------------------------------------------
@@ -877,9 +889,14 @@ fn index_into(container: &Value, index: i64) -> Result<Value, RuntimeError> {
     }
 }
 
-fn run_main_shared(arc: Arc<IrModule>, args: Vec<String>) -> Result<Value, RuntimeError> {
+fn run_main_shared(
+    arc: Arc<IrModule>,
+    args: Vec<String>,
+    use_vm: bool,
+) -> Result<Value, RuntimeError> {
     let mut runtime = IrRuntime::new(&arc, Arc::clone(&arc))?;
     runtime.program_args = args;
+    runtime.use_vm = use_vm;
     runtime.call_function("main", Vec::new())
 }
 
@@ -2002,7 +2019,7 @@ pub fn run_bytecode_main_with_args(
             })
             .collect(),
     };
-    run_main_with_args(&ir, args)
+    run_main_with_args_vm(&ir, args)
 }
 
 fn lower_bytecode_block(statements: &[IrStmt]) -> Vec<BytecodeInstruction> {
@@ -4444,6 +4461,20 @@ struct IrRuntime<'a> {
     /// path lets deep/repeated calls reuse the scope buffers instead of
     /// reallocating. Only returned on success; error paths drop theirs.
     env_pool: Vec<Env>,
+    /// The bytecode tier sets this: eligible functions are compiled to the flat
+    /// [`VmProgram`] and executed by the dispatch-loop VM ([`Self::run_vm`])
+    /// instead of the recursive tree-walker, so the bytecode tier is distinctly
+    /// faster than the IR tier. The IR tier leaves it `false` and always
+    /// tree-walks. Both produce identical results (backend parity).
+    use_vm: bool,
+    /// Per-function compiled `VmProgram` cache, keyed by the function's identity
+    /// (its address in the borrowed module — stable for the run). It must NOT be
+    /// keyed by name: trait-method impls share a method name across types
+    /// (`Card::rank` and `Coin::rank` are both `rank`), so a name key would reuse
+    /// one type's compiled body for another's. `Some` holds the program; a cached
+    /// `None` records VM-ineligibility so it tree-walks without recompiling. Only
+    /// populated when `use_vm` is set.
+    vm_cache: HashMap<*const IrFunction, Option<Rc<VmProgram>>>,
 }
 
 impl<'a> IrRuntime<'a> {
@@ -4535,6 +4566,8 @@ impl<'a> IrRuntime<'a> {
             extern_functions,
             closures,
             env_pool: Vec::new(),
+            use_vm: false,
+            vm_cache: HashMap::new(),
         })
     }
 
@@ -5011,6 +5044,34 @@ impl<'a> IrRuntime<'a> {
             ));
         }
 
+        // Bytecode tier: run the flat dispatch-loop VM for eligible functions
+        // (identical results, no recursive tree-walk). Ineligible functions fall
+        // through to the tree-walker below via a cached `None`.
+        if self.use_vm
+            && let Some(program) = self.vm_program_for(function)
+        {
+            self.call_stack.push(CallFrame {
+                function: function.name.as_str(),
+                span: Some(function.span),
+            });
+            let result = self.run_vm(&program, args);
+            return match result {
+                Err(error) => {
+                    let error = if error.traceback.is_empty() {
+                        error.with_traceback(self.build_traceback())
+                    } else {
+                        error
+                    };
+                    self.call_stack.pop();
+                    Err(error)
+                }
+                Ok(value) => {
+                    self.call_stack.pop();
+                    Ok(value)
+                }
+            };
+        }
+
         // Borrow a reset environment from the pool (or make a fresh one) instead
         // of allocating per call; returned to the pool on the normal exit below.
         let mut env = match self.env_pool.pop() {
@@ -5061,6 +5122,129 @@ impl<'a> IrRuntime<'a> {
                 "loop control escaped function body",
             )),
         }
+    }
+
+    /// Fetch (compiling on first use) the flat [`VmProgram`] for `function`, or
+    /// `None` if the function is VM-ineligible (a cached `None` avoids recompiling).
+    fn vm_program_for(&mut self, function: &IrFunction) -> Option<Rc<VmProgram>> {
+        let key = std::ptr::from_ref(function);
+        if let Some(cached) = self.vm_cache.get(&key) {
+            return cached.clone();
+        }
+        let compiled = compile_function_to_vm(function).map(Rc::new);
+        self.vm_cache.insert(key, compiled.clone());
+        compiled
+    }
+
+    /// Execute a compiled [`VmProgram`] with a flat operand stack and a flat local
+    /// frame (slots assigned at compile time, no scope stack, no name scan). This
+    /// is a single `loop { match }` dispatch instead of the recursive tree-walk;
+    /// every actual operation (arithmetic, calls, indexing, field access) reuses
+    /// the exact same `Value` helpers the tree-walker uses, so results are
+    /// identical to the other tiers — only the control-flow dispatch differs.
+    fn run_vm(&mut self, program: &VmProgram, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let mut frame: Vec<Value> = args;
+        frame.resize(program.frame_size, Value::Void);
+        let mut stack: Vec<Value> = Vec::with_capacity(8);
+        let mut pc = 0usize;
+        loop {
+            // Annotate any op failure with the op's source span (and function +
+            // traceback), exactly as the tree-walker annotates each node — so
+            // runtime errors are byte-identical across tiers.
+            match self.vm_exec(&program.ops[pc], &mut stack, &mut frame) {
+                Ok(VmStep::Next) => pc += 1,
+                Ok(VmStep::Jump(target)) => pc = target,
+                Ok(VmStep::Return(value)) => return Ok(value),
+                Err(error) => return Err(self.annotate_error(error, program.spans[pc])),
+            }
+        }
+    }
+
+    /// Execute a single VM op against the operand `stack` and local `frame`,
+    /// returning the control outcome. Every actual operation reuses the exact
+    /// `Value` helper the tree-walker uses, so results match tier-for-tier.
+    fn vm_exec(
+        &mut self,
+        op: &VmOp,
+        stack: &mut Vec<Value>,
+        frame: &mut [Value],
+    ) -> Result<VmStep, RuntimeError> {
+        match op {
+            VmOp::PushConst(value) => stack.push(value.clone()),
+            VmOp::PushVoid => stack.push(Value::Void),
+            VmOp::LoadLocal(slot) => stack.push(frame[*slot].clone()),
+            VmOp::StoreLocal(slot) => {
+                frame[*slot] = stack.pop().expect("vm: store underflow");
+            }
+            VmOp::Binary(op) => {
+                let right = stack.pop().expect("vm: binary underflow");
+                let left = stack.pop().expect("vm: binary underflow");
+                stack.push(self.eval_binary(left, *op, right)?);
+            }
+            VmOp::Unary(op) => {
+                let value = stack.pop().expect("vm: unary underflow");
+                stack.push(eval_unary_value(*op, value)?);
+            }
+            VmOp::Index => {
+                let index = stack.pop().expect("vm: index underflow").as_i64()?;
+                let target = stack.pop().expect("vm: index underflow");
+                stack.push(index_into(&target, index)?);
+            }
+            VmOp::IndexLocal(slot) => {
+                let index = stack.pop().expect("vm: index underflow").as_i64()?;
+                stack.push(index_into(&frame[*slot], index)?);
+            }
+            VmOp::Field(name) => {
+                let target = stack.pop().expect("vm: field underflow");
+                stack.push(field_of(&target, name)?);
+            }
+            VmOp::FieldLocal(slot, name) => {
+                stack.push(field_of(&frame[*slot], name)?);
+            }
+            VmOp::Call(name, argc) => {
+                let at = stack.len() - argc;
+                let call_args = stack.split_off(at);
+                stack.push(self.dispatch_named_call(name, call_args)?);
+            }
+            VmOp::MakeArray(count) => {
+                let at = stack.len() - count;
+                let elements = stack.split_off(at);
+                stack.push(Value::Array(elements.into()));
+            }
+            VmOp::Jump(target) => return Ok(VmStep::Jump(*target)),
+            VmOp::JumpIfFalse(target) => {
+                if !stack.pop().expect("vm: jz underflow").as_bool()? {
+                    return Ok(VmStep::Jump(*target));
+                }
+            }
+            VmOp::JumpIfTrue(target) => {
+                if stack.pop().expect("vm: jnz underflow").as_bool()? {
+                    return Ok(VmStep::Jump(*target));
+                }
+            }
+            VmOp::Pop => {
+                stack.pop();
+            }
+            VmOp::CheckStepNonzero(slot) => {
+                if frame[*slot].as_i64()? == 0 {
+                    return Err(RuntimeError::new("L0411", "for loop step cannot be zero"));
+                }
+            }
+            VmOp::ForCheck { var, end, step } => {
+                let i = frame[*var].as_i64()?;
+                let end = frame[*end].as_i64()?;
+                let step = frame[*step].as_i64()?;
+                let running = if step > 0 { i <= end } else { i >= end };
+                stack.push(Value::Bool(running));
+            }
+            VmOp::ForStep { var, step } => {
+                let i = frame[*var].as_i64()?;
+                let step = frame[*step].as_i64()?;
+                frame[*var] = Value::I64(i.wrapping_add(step));
+            }
+            VmOp::Return => return Ok(VmStep::Return(stack.pop().unwrap_or(Value::Void))),
+        }
+        Ok(VmStep::Next)
     }
 
     /// Invoke a closure value: look its body up in the id-keyed closure table,
@@ -8365,6 +8549,558 @@ impl<'a> IrRuntime<'a> {
     }
 }
 
+// -- Flat bytecode VM ---------------------------------------------------------
+//
+// The bytecode tier compiles each eligible function body once into a linear
+// `VmProgram` (a `Vec<VmOp>`) and executes it with a single `loop { match }`
+// dispatch loop and slot-indexed locals — no recursive tree-walk, no scope
+// stack, no name scan — so it is distinctly faster than the IR tree-walker.
+// Every actual operation (arithmetic, calls, indexing, field reads) reuses the
+// exact `Value` helpers the tree-walker uses, so only control-flow lowering is
+// new: results are identical to the AST and IR tiers (backend parity, enforced
+// by the cross-tier tests). Functions containing constructs the compiler does
+// not lower (`match`, `try`, `throw`, `asm`, closures, `await`, indexed/field
+// assignment, or a call through a local function value) are marked ineligible
+// and fall back to the tree-walker, so correctness never depends on coverage.
+
+/// One instruction of the flat VM. Locals are addressed by their frame slot;
+/// jumps carry absolute op indices patched at compile time.
+enum VmOp {
+    PushConst(Value),
+    PushVoid,
+    LoadLocal(usize),
+    StoreLocal(usize),
+    Binary(BinaryOp),
+    Unary(UnaryOp),
+    Index,
+    /// `a[i]` where `a` is a bare local: borrow the container from its slot and
+    /// clone only the element (the tree-walker's borrow fast path).
+    IndexLocal(usize),
+    Field(String),
+    /// `s.field` where `s` is a bare local: borrow the struct from its slot.
+    FieldLocal(usize, String),
+    Call(String, usize),
+    MakeArray(usize),
+    Jump(usize),
+    JumpIfFalse(usize),
+    JumpIfTrue(usize),
+    Pop,
+    CheckStepNonzero(usize),
+    /// Push whether the range-`for` counter (slot `var`) is still within `end`
+    /// given `step`'s sign — the loop-continuation test.
+    ForCheck {
+        var: usize,
+        end: usize,
+        step: usize,
+    },
+    /// Advance the range-`for` counter (slot `var`) by `step` (wrapping).
+    ForStep {
+        var: usize,
+        step: usize,
+    },
+    Return,
+}
+
+/// A compiled function body: the op stream, a parallel span per op (so a runtime
+/// error carries the same source span the tree-walker would attach), and the
+/// number of frame slots it uses.
+struct VmProgram {
+    ops: Vec<VmOp>,
+    spans: Vec<Span>,
+    frame_size: usize,
+}
+
+/// The control outcome of executing one [`VmOp`].
+enum VmStep {
+    Next,
+    Jump(usize),
+    Return(Value),
+}
+
+/// Apply a unary operator to a value — the exact logic of the tree-walker's
+/// `Unary` arm, reused by the VM so results match.
+fn eval_unary_value(op: UnaryOp, value: Value) -> Result<Value, RuntimeError> {
+    match op {
+        UnaryOp::Not => Ok(Value::Bool(!value.as_bool()?)),
+        UnaryOp::BitNot => match value {
+            Value::Int { value, ty } => Ok(Value::int(!value, ty)),
+            other => Ok(Value::I64(!other.as_i64()?)),
+        },
+        UnaryOp::Negate => match value {
+            Value::Int { value, ty } => Ok(Value::int(value.wrapping_neg(), ty)),
+            Value::F64(f) => Ok(Value::F64(-f)),
+            Value::F32(f) => Ok(Value::F32(-f)),
+            other => Ok(Value::I64(other.as_i64()?.wrapping_neg())),
+        },
+    }
+}
+
+/// Read a struct field — the tree-walker's `Field` logic, reused by the VM.
+fn field_of(target: &Value, field: &str) -> Result<Value, RuntimeError> {
+    match target {
+        Value::Struct(s) => s
+            .fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| value.clone())
+            .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`"))),
+        _ => Err(RuntimeError::new(
+            "L0371",
+            format!("cannot access field `{field}` on non-struct value"),
+        )),
+    }
+}
+
+/// The binary operator a compound assignment applies (`x += v` is `x = x + v`).
+fn assign_binop(op: AssignOp) -> BinaryOp {
+    match op {
+        AssignOp::Add => BinaryOp::Add,
+        AssignOp::Subtract => BinaryOp::Subtract,
+        AssignOp::Multiply => BinaryOp::Multiply,
+        AssignOp::Divide => BinaryOp::Divide,
+        AssignOp::Remainder => BinaryOp::Remainder,
+        AssignOp::Replace => unreachable!("Replace is not a compound op"),
+    }
+}
+
+/// Break/continue patch targets for one loop being compiled (mirrors the native
+/// backend's `NativeLoop`). `continue_target` is set when known up front
+/// (`while`/`loop` continue to the top); a range-`for` continue jumps forward to
+/// its step block, so those jumps are recorded and patched once its offset exists.
+struct VmLoop {
+    continue_target: Option<usize>,
+    continue_sites: Vec<usize>,
+    break_sites: Vec<usize>,
+}
+
+/// Compiles an [`IrFunction`] body into a [`VmProgram`], assigning every binding
+/// a flat frame slot and linearizing control flow to jumps. Returns `Err(())` the
+/// moment it meets a construct it does not lower, so the caller falls back.
+struct VmCompiler {
+    ops: Vec<VmOp>,
+    /// Source span for each emitted op (parallel to `ops`), so a failing op
+    /// reports the same span the tree-walker would attach.
+    spans: Vec<Span>,
+    /// The span attached to subsequently-emitted ops; set to the current
+    /// statement/expression before emitting its op.
+    cur_span: Span,
+    /// Lexical scopes of `(name, slot)`, searched innermost-first (and newest-first
+    /// within a scope, so a re-`let` shadows) — matching the tree-walker's
+    /// resolution. Slots themselves are unique across the whole function.
+    scopes: Vec<Vec<(String, usize)>>,
+    next_slot: usize,
+    /// Every name ever bound as a local, so a `Call` whose name is a local (a
+    /// first-class function value) can be rejected as ineligible.
+    locals: HashSet<String>,
+    loops: Vec<VmLoop>,
+}
+
+fn compile_function_to_vm(function: &IrFunction) -> Option<VmProgram> {
+    let mut c = VmCompiler {
+        ops: Vec::new(),
+        spans: Vec::new(),
+        cur_span: function.span,
+        scopes: vec![Vec::new()],
+        next_slot: 0,
+        locals: HashSet::new(),
+        loops: Vec::new(),
+    };
+    for param in &function.params {
+        c.declare(&param.name);
+    }
+    // The function body is the function scope (params + top-level lets share it,
+    // like the tree-walker): compile the statements in tail position so the last
+    // one's value is the implicit return, then a trailing `Return` yields it.
+    c.compile_stmts(&function.body, true).ok()?;
+    c.emit(VmOp::Return);
+    Some(VmProgram {
+        ops: c.ops,
+        spans: c.spans,
+        frame_size: c.next_slot,
+    })
+}
+
+impl VmCompiler {
+    fn emit(&mut self, op: VmOp) -> usize {
+        let index = self.ops.len();
+        self.ops.push(op);
+        self.spans.push(self.cur_span);
+        index
+    }
+
+    fn patch(&mut self, site: usize, target: usize) {
+        match &mut self.ops[site] {
+            VmOp::Jump(t) | VmOp::JumpIfFalse(t) | VmOp::JumpIfTrue(t) => *t = target,
+            _ => unreachable!("patch site is not a jump"),
+        }
+    }
+
+    /// Introduce a binding, giving it a fresh unique slot in the current scope.
+    fn declare(&mut self, name: &str) -> usize {
+        let slot = self.next_slot;
+        self.next_slot += 1;
+        self.scopes
+            .last_mut()
+            .expect("a scope is always open")
+            .push((name.to_string(), slot));
+        self.locals.insert(name.to_string());
+        slot
+    }
+
+    /// A slot with no source name (a range-`for`'s `end`/`step` temporaries).
+    fn alloc_temp(&mut self) -> usize {
+        let slot = self.next_slot;
+        self.next_slot += 1;
+        slot
+    }
+
+    fn resolve(&self, name: &str) -> Option<usize> {
+        for scope in self.scopes.iter().rev() {
+            if let Some((_, slot)) = scope.iter().rev().find(|(n, _)| n == name) {
+                return Some(*slot);
+            }
+        }
+        None
+    }
+
+    fn bare_local_slot(&self, expr: &IrExpr) -> Option<usize> {
+        match &expr.kind {
+            IrExprKind::Variable(name) | IrExprKind::Local { name, .. } => self.resolve(name),
+            _ => None,
+        }
+    }
+
+    fn compile_stmts(&mut self, body: &[IrStmt], tail: bool) -> Result<(), ()> {
+        if body.is_empty() {
+            if tail {
+                self.emit(VmOp::PushVoid);
+            }
+            return Ok(());
+        }
+        let last = body.len() - 1;
+        for (index, stmt) in body.iter().enumerate() {
+            self.compile_stmt(stmt, tail && index == last)?;
+        }
+        Ok(())
+    }
+
+    fn compile_scoped_block(&mut self, body: &[IrStmt], tail: bool) -> Result<(), ()> {
+        self.scopes.push(Vec::new());
+        let result = self.compile_stmts(body, tail);
+        self.scopes.pop();
+        result
+    }
+
+    fn compile_stmt(&mut self, stmt: &IrStmt, tail: bool) -> Result<(), ()> {
+        self.cur_span = statement_span(stmt);
+        match stmt {
+            IrStmt::Let { name, value, .. } => {
+                self.compile_expr(value)?;
+                let slot = self.declare(name);
+                self.emit(VmOp::StoreLocal(slot));
+                if tail {
+                    self.emit(VmOp::PushVoid);
+                }
+            }
+            IrStmt::Assign {
+                name,
+                path,
+                op,
+                value,
+                ..
+            } => {
+                if !path.is_empty() {
+                    return Err(()); // indexed/field assignment: fall back
+                }
+                let slot = self.resolve(name).ok_or(())?;
+                match op {
+                    AssignOp::Replace => {
+                        self.compile_expr(value)?;
+                        self.emit(VmOp::StoreLocal(slot));
+                    }
+                    other => {
+                        self.emit(VmOp::LoadLocal(slot));
+                        self.compile_expr(value)?;
+                        self.emit(VmOp::Binary(assign_binop(*other)));
+                        self.emit(VmOp::StoreLocal(slot));
+                    }
+                }
+                if tail {
+                    self.emit(VmOp::PushVoid);
+                }
+            }
+            IrStmt::Return(expr) => {
+                match expr {
+                    Some(expr) => self.compile_expr(expr)?,
+                    None => {
+                        self.emit(VmOp::PushVoid);
+                    }
+                }
+                self.emit(VmOp::Return);
+            }
+            IrStmt::Expr(expr) => {
+                self.compile_expr(expr)?;
+                if !tail {
+                    self.emit(VmOp::Pop);
+                }
+            }
+            IrStmt::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                let mut end_jumps = Vec::new();
+                for branch in branches {
+                    self.compile_expr(&branch.condition)?;
+                    let skip = self.emit(VmOp::JumpIfFalse(0));
+                    self.compile_scoped_block(&branch.body, tail)?;
+                    end_jumps.push(self.emit(VmOp::Jump(0)));
+                    let next = self.ops.len();
+                    self.patch(skip, next);
+                }
+                self.compile_scoped_block(else_body, tail)?;
+                let end = self.ops.len();
+                for jump in end_jumps {
+                    self.patch(jump, end);
+                }
+            }
+            IrStmt::While {
+                condition, body, ..
+            } => {
+                let top = self.ops.len();
+                self.compile_expr(condition)?;
+                let exit = self.emit(VmOp::JumpIfFalse(0));
+                self.loops.push(VmLoop {
+                    continue_target: Some(top),
+                    continue_sites: Vec::new(),
+                    break_sites: Vec::new(),
+                });
+                self.compile_scoped_block(body, false)?;
+                self.emit(VmOp::Jump(top));
+                let loop_ctx = self.loops.pop().expect("loop pushed");
+                let end = self.ops.len();
+                self.patch(exit, end);
+                for site in loop_ctx.break_sites {
+                    self.patch(site, end);
+                }
+                if tail {
+                    self.emit(VmOp::PushVoid);
+                }
+            }
+            IrStmt::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                // The loop variable lives in its own scope (popped after the loop).
+                self.scopes.push(Vec::new());
+                self.compile_expr(start)?;
+                let var = self.declare(name);
+                self.emit(VmOp::StoreLocal(var));
+                self.compile_expr(end)?;
+                let end_slot = self.alloc_temp();
+                self.emit(VmOp::StoreLocal(end_slot));
+                match step {
+                    Some(step) => self.compile_expr(step)?,
+                    None => {
+                        self.emit(VmOp::PushConst(Value::I64(1)));
+                    }
+                }
+                let step_slot = self.alloc_temp();
+                self.emit(VmOp::StoreLocal(step_slot));
+                self.emit(VmOp::CheckStepNonzero(step_slot));
+                let top = self.ops.len();
+                self.emit(VmOp::ForCheck {
+                    var,
+                    end: end_slot,
+                    step: step_slot,
+                });
+                let exit = self.emit(VmOp::JumpIfFalse(0));
+                self.loops.push(VmLoop {
+                    continue_target: None,
+                    continue_sites: Vec::new(),
+                    break_sites: Vec::new(),
+                });
+                self.compile_scoped_block(body, false)?;
+                let loop_ctx = self.loops.pop().expect("loop pushed");
+                let step_pc = self.ops.len();
+                self.emit(VmOp::ForStep {
+                    var,
+                    step: step_slot,
+                });
+                self.emit(VmOp::Jump(top));
+                let end_pc = self.ops.len();
+                self.patch(exit, end_pc);
+                for site in loop_ctx.break_sites {
+                    self.patch(site, end_pc);
+                }
+                for site in loop_ctx.continue_sites {
+                    self.patch(site, step_pc);
+                }
+                self.scopes.pop();
+                if tail {
+                    self.emit(VmOp::PushVoid);
+                }
+            }
+            IrStmt::Loop { body, .. } => {
+                let top = self.ops.len();
+                self.loops.push(VmLoop {
+                    continue_target: Some(top),
+                    continue_sites: Vec::new(),
+                    break_sites: Vec::new(),
+                });
+                self.compile_scoped_block(body, false)?;
+                self.emit(VmOp::Jump(top));
+                let loop_ctx = self.loops.pop().expect("loop pushed");
+                let end = self.ops.len();
+                for site in loop_ctx.break_sites {
+                    self.patch(site, end);
+                }
+                if tail {
+                    self.emit(VmOp::PushVoid);
+                }
+            }
+            IrStmt::Break(_) => {
+                let site = self.emit(VmOp::Jump(0));
+                self.loops.last_mut().ok_or(())?.break_sites.push(site);
+            }
+            IrStmt::Continue(_) => {
+                let target = self.loops.last().ok_or(())?.continue_target;
+                match target {
+                    Some(top) => {
+                        self.emit(VmOp::Jump(top));
+                    }
+                    None => {
+                        let site = self.emit(VmOp::Jump(0));
+                        self.loops
+                            .last_mut()
+                            .expect("loop present")
+                            .continue_sites
+                            .push(site);
+                    }
+                }
+            }
+            // Constructs the VM does not lower: fall back to the tree-walker.
+            IrStmt::Try { .. }
+            | IrStmt::Match { .. }
+            | IrStmt::Throw { .. }
+            | IrStmt::Asm { .. } => return Err(()),
+        }
+        Ok(())
+    }
+
+    fn compile_expr(&mut self, expr: &IrExpr) -> Result<(), ()> {
+        let span = expr.span;
+        self.cur_span = span;
+        match &expr.kind {
+            IrExprKind::Integer(value) => {
+                self.emit(VmOp::PushConst(Value::I64(*value)));
+            }
+            IrExprKind::Float(value) => {
+                self.emit(VmOp::PushConst(Value::F64(*value)));
+            }
+            IrExprKind::Bool(value) => {
+                self.emit(VmOp::PushConst(Value::Bool(*value)));
+            }
+            IrExprKind::String(value) => {
+                self.emit(VmOp::PushConst(Value::String(value.clone().into())));
+            }
+            IrExprKind::Char(value) => {
+                self.emit(VmOp::PushConst(Value::Char(*value)));
+            }
+            IrExprKind::Variable(name) | IrExprKind::Local { name, .. } => {
+                // A bare name that is not a local (an enum variant or a top-level
+                // function used as a value) needs the tree-walker's fallback logic.
+                let slot = self.resolve(name).ok_or(())?;
+                self.emit(VmOp::LoadLocal(slot));
+            }
+            IrExprKind::Unary { op, expr } => {
+                self.compile_expr(expr)?;
+                self.cur_span = span;
+                self.emit(VmOp::Unary(*op));
+            }
+            IrExprKind::Binary { left, op, right } => match op {
+                // Short-circuit: `a && b` = if !a { false } else { b }.
+                BinaryOp::And => {
+                    self.compile_expr(left)?;
+                    let to_false = self.emit(VmOp::JumpIfFalse(0));
+                    self.compile_expr(right)?;
+                    let to_end = self.emit(VmOp::Jump(0));
+                    let false_pc = self.ops.len();
+                    self.patch(to_false, false_pc);
+                    self.emit(VmOp::PushConst(Value::Bool(false)));
+                    let end = self.ops.len();
+                    self.patch(to_end, end);
+                }
+                // `a || b` = if a { true } else { b }.
+                BinaryOp::Or => {
+                    self.compile_expr(left)?;
+                    let to_true = self.emit(VmOp::JumpIfTrue(0));
+                    self.compile_expr(right)?;
+                    let to_end = self.emit(VmOp::Jump(0));
+                    let true_pc = self.ops.len();
+                    self.patch(to_true, true_pc);
+                    self.emit(VmOp::PushConst(Value::Bool(true)));
+                    let end = self.ops.len();
+                    self.patch(to_end, end);
+                }
+                _ => {
+                    self.compile_expr(left)?;
+                    self.compile_expr(right)?;
+                    self.cur_span = span;
+                    self.emit(VmOp::Binary(*op));
+                }
+            },
+            IrExprKind::Index { target, index } => {
+                if let Some(slot) = self.bare_local_slot(target) {
+                    self.compile_expr(index)?;
+                    self.cur_span = span;
+                    self.emit(VmOp::IndexLocal(slot));
+                } else {
+                    self.compile_expr(target)?;
+                    self.compile_expr(index)?;
+                    self.cur_span = span;
+                    self.emit(VmOp::Index);
+                }
+            }
+            IrExprKind::Field { target, field } => {
+                self.cur_span = span;
+                if let Some(slot) = self.bare_local_slot(target) {
+                    self.emit(VmOp::FieldLocal(slot, field.clone()));
+                } else {
+                    self.compile_expr(target)?;
+                    self.cur_span = span;
+                    self.emit(VmOp::Field(field.clone()));
+                }
+            }
+            IrExprKind::Call { name, args } => {
+                // A call through a local (a first-class function value) needs the
+                // tree-walker's env-based dispatch; the VM only calls by name.
+                if self.locals.contains(name) {
+                    return Err(());
+                }
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                self.cur_span = span;
+                self.emit(VmOp::Call(name.clone(), args.len()));
+            }
+            IrExprKind::Array(elements) => {
+                for element in elements {
+                    self.compile_expr(element)?;
+                }
+                self.emit(VmOp::MakeArray(elements.len()));
+            }
+            // `await` and closure literals are not lowered by the VM.
+            IrExprKind::Await { .. } | IrExprKind::Closure { .. } => return Err(()),
+        }
+        Ok(())
+    }
+}
+
 enum Control {
     Return(Value),
     Break,
@@ -10897,6 +11633,52 @@ mod tests {
         assert_eq!(ast, Value::I64(11));
         assert_eq!(ir, Value::I64(11));
         assert_eq!(bytecode, Value::I64(11));
+    }
+
+    #[test]
+    fn vm_eligibility_gate_excludes_unsupported_constructs() {
+        // A plain scalar/loop function compiles to a flat VM program; a function
+        // containing a `match` (which the VM does not lower) is ineligible and
+        // returns `None`, so it falls back to the tree-walker.
+        let simple = lower_source(
+            "fn sum n i64 -> i64\n    let acc i64 = 0\n    for i from 1 to n\n        acc = acc + i\n    acc\n",
+        );
+        assert!(
+            compile_function_to_vm(&simple.functions[0]).is_some(),
+            "a scalar for-loop function should be VM-eligible"
+        );
+        let with_match = lower_source(
+            "enum E\n    A\n    B\n\nfn pick e E -> i64\n    match e\n        A -> 1\n        B -> 2\n",
+        );
+        let pick = with_match
+            .functions
+            .iter()
+            .find(|f| f.name == "pick")
+            .expect("pick");
+        assert!(
+            compile_function_to_vm(pick).is_none(),
+            "a function containing `match` must be VM-ineligible (falls back)"
+        );
+    }
+
+    #[test]
+    fn vm_matches_tree_walkers_on_mixed_program() {
+        // A program exercising recursion, a range `for`, a `while`, nested `if`,
+        // early `return`, a struct field read, and string concatenation — all
+        // through the VM on the bytecode tier — must return the identical value the
+        // AST and IR tree-walkers do.
+        let source = concat!(
+            "struct P\n    x i64\n    y i64\n\n",
+            "fn fib n i64 -> i64\n    if n < 2\n        return n\n    return fib(n - 1) + fib(n - 2)\n\n",
+            "fn tri n i64 -> i64\n    let acc i64 = 0\n    for i from 1 to n\n        acc = acc + i\n    acc\n\n",
+            "fn countdown n i64 -> i64\n    let steps i64 = 0\n    while n > 0\n        n = n - 1\n        steps = steps + 1\n    steps\n\n",
+            "fn main -> i64\n    let p P = P(3, 4)\n    fib(10) + tri(5) + countdown(7) + p.x * p.y\n",
+        );
+        let (ast, ir, bytecode) = run_all_backends(source);
+        // fib(10)=55, tri(5)=15, countdown(7)=7, p.x*p.y=12 -> 89.
+        assert_eq!(ast, Value::I64(89));
+        assert_eq!(ir, ast);
+        assert_eq!(bytecode, ast);
     }
 
     fn run_all_backend_variants(source: &str) -> (Value, Value, Value, Value, Value) {
