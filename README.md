@@ -31,15 +31,17 @@ and the tersest *statically-typed* one (o200k_base tokens, definitions only):
 
 | Language    | Tokens | vs Lullaby |
 | ----------- | -----: | ---------: |
-| Python      | 19,120 |      −5.9% |
-| **Lullaby** | **20,321** |      — |
-| JavaScript  | 22,146 |      +9.0% |
-| Rust        | 24,867 |     +22.4% |
-| C           | 26,030 |     +28.1% |
-| C++         | 26,894 |     +32.3% |
+| Python      | 19,120 |      −4.2% |
+| **Lullaby** | **19,960** |      — |
+| JavaScript  | 22,146 |     +11.0% |
+| Rust        | 24,867 |     +24.6% |
+| C           | 26,002 |     +30.3% |
+| C++         | 26,894 |     +34.7% |
 
-That is ~8% terser than JavaScript, ~18% than Rust, ~22% than C, and ~24% than
-C++ — within +6.3% of Python while keeping full static typing.
+That is ~10% terser than JavaScript, ~20% than Rust, ~23% than C, and ~26% than
+C++ — within +4.4% of Python while keeping full static typing. The remaining gap
+is concentrated in string/parse-heavy code; on structured and numeric code
+Lullaby already beats Python.
 
 **Native performance** (x86-64, best-of-N whole-program wall time vs `cl /O2`):
 
@@ -48,6 +50,10 @@ C++ — within +6.3% of Python while keeping full static typing.
 - SIMD auto-vectorization of `i64` array reductions and maps (`+`, `-`,
   `& | ^`): **2.89–3.36× faster** than the scalar loop, bit-for-bit identical.
 - Deep recursion (`fib(35)`): 1.26× C — the one workload still above C.
+
+**Interpreter performance**: the AST / IR / bytecode tiers are development tools
+(~200–1200× C), but range `for`-loops run **~2× faster** across all three after
+binding the loop variable once instead of per-iteration.
 
 <sub>Measured on Windows/MSVC; compiled tiers at `-O2`/release, CPython for
 Python. Regenerate with `benchmarks/crosslang/run_benchmark.ps1`.</sub>
