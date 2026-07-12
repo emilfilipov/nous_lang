@@ -3684,14 +3684,19 @@ impl<'a> Runtime<'a> {
                         let new = apply_compound(env.get(name)?, op, rhs)?;
                         env.assign(name, new)?;
                     } else {
+                        // Mutate the element/field in place: borrow the container
+                        // mutably instead of cloning the whole array/struct,
+                        // mutating a copy, and writing it back (which is O(len) per
+                        // write, O(len^2) in a write loop).
                         let resolved = self.resolve_places(path, env)?;
-                        let mut root = env.get(name)?;
+                        let root = env
+                            .get_mut(name)
+                            .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))?;
                         let new = match op {
                             AssignOp::Replace => rhs,
-                            _ => apply_compound(get_place(&root, &resolved)?, op, rhs)?,
+                            _ => apply_compound(get_place(root, &resolved)?, op, rhs)?,
                         };
-                        set_place(&mut root, &resolved, new)?;
-                        env.assign(name, root)?;
+                        set_place(root, &resolved, new)?;
                     }
                 }
                 Ok(Control::Value(Value::Void))
@@ -6576,6 +6581,20 @@ impl Env {
             }
         }
         scope.push((name.to_string(), value));
+    }
+
+    /// Borrow the nearest binding of `name` mutably, for in-place mutation of an
+    /// element/field (`a[i] = v`, `s.field = v`) without cloning the whole
+    /// container and writing it back. Resolves nearest-first like `assign`.
+    fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            for (existing, slot) in scope.iter_mut() {
+                if existing == name {
+                    return Some(slot);
+                }
+            }
+        }
+        None
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
