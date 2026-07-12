@@ -3815,18 +3815,35 @@ impl<'a> Runtime<'a> {
                         ));
                     }
                 };
+                // Bind the loop variable once and update it in place each pass
+                // (via `set_loop_var`) instead of re-`define`ing it (allocating a
+                // scope and cloning the name every iteration). The body runs in its
+                // own fresh scope so its `let`s clear between iterations, and the
+                // final `pop_scope` always runs so the stack stays balanced for
+                // `try`/`catch`. (Matches the range-`for` fast path.)
+                env.push_scope();
+                env.define(name.clone(), Value::Void);
+                let mut outcome: Result<Control, RuntimeError> = Ok(Control::Value(Value::Void));
                 for element in elements {
+                    env.set_loop_var(name, element);
                     env.push_scope();
-                    env.define(name.clone(), element);
                     let result = self.eval_block(body, env);
                     env.pop_scope();
-                    match result? {
-                        Control::Return(value) => return Ok(Control::Return(value)),
-                        Control::Break => break,
-                        Control::Continue | Control::Value(_) => {}
+                    match result {
+                        Ok(Control::Return(value)) => {
+                            outcome = Ok(Control::Return(value));
+                            break;
+                        }
+                        Ok(Control::Break) => break,
+                        Ok(Control::Continue) | Ok(Control::Value(_)) => {}
+                        Err(error) => {
+                            outcome = Err(error);
+                            break;
+                        }
                     }
                 }
-                Ok(Control::Value(Value::Void))
+                env.pop_scope();
+                outcome
             }
             Stmt::Loop { body, .. } => {
                 loop {
