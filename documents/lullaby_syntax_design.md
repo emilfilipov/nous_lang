@@ -306,7 +306,7 @@ Only essential keywords (~12 core words):
 Operators use single-character or natural English:
 - No `++`, `--` -> Use `inc()`, `dec()` functions
 - No `&&`, `||`, `!` -> Use `and`, `or`, `not`
-- No ternary operator -> Use `x when condition else value`
+- No C-style `?:` ternary -> Use the inline conditional expression `value if condition else other`
 
 ### Type Inference Priority
 Types inferred from:

@@ -63,10 +63,12 @@ Python. Regenerate with `benchmarks/crosslang/run_benchmark.ps1`.</sub>
 The implemented surface runs identically on the interpreter backends (with the
 WebAssembly and native backends supporting growing subsets):
 
-- **Types**: `i64`, `f64`, `bool`, `string`, `char`, `byte`, `void`; fixed
-  `array<T>`, growable `list<T>`, and `map<K, V>`; nominal `struct` and `enum`
-  (tagged unions); the built-in generic enums `option<T>` and `result<T, E>`;
-  function values `fn(T) -> R`; and `rc<T>` / `ref<T>` / `ptr<T>` references.
+- **Types**: `i64`, the fixed-width integers `i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`u64`
+  and `isize`/`usize`, `f64` and `f32` (with typed literal suffixes like `5i32` /
+  `1.5f32`), `bool`, `string`, `char`, `byte`, `void`; fixed `array<T>`, growable
+  `list<T>`, and `map<K, V>`; nominal `struct` and `enum` (tagged unions); the
+  built-in generic enums `option<T>` and `result<T, E>`; function values
+  `fn(T) -> R`; and `rc<T>` / `ref<T>` / `ptr<T>` references.
 - **Data & collections**: struct construction (positional and named
   `Point(x: 3, y: 4)`), field access and mutation, UFCS method calls
   (`p.dist()`), enum variants with payloads, `list<T>` / `map<K, V>` with
@@ -100,12 +102,12 @@ For the authoritative, always-current list of what is implemented, see the
 
 ## Roadmap
 
-Lullaby is not yet at 1.0. Genuinely planned work includes wider integer types,
-`f32`, environment-capturing (capturing) closures, the WebAssembly heap phase
-and a broader browser/DOM interop surface, wider FFI breadth, and the
-branding / packaging / installer work (a named toolchain and native install
-channels). See [documents/roadmap_1_0.md](documents/roadmap_1_0.md)
-for the current sequencing.
+Lullaby is not yet at 1.0. Genuinely planned work includes
+environment-capturing (capturing) closures, generic user types and trait
+objects, a broader browser/DOM interop surface, wider FFI breadth, and the
+packaging / installer work (native install channels). See
+[documents/roadmap_1_0.md](documents/roadmap_1_0.md) for the current sequencing.
+(Wider integer types, `f32`, and the WebAssembly heap phase have since shipped.)
 
 ## Build From Source
 

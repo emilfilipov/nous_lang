@@ -24,7 +24,7 @@ The language today includes:
 
 - **Source and scope.** `.lby` source files, indentation-only blocks (curly braces and semicolon terminators are compile errors), and a canonical formatter (`lullaby fmt`).
 - **Functions.** `fn name param Type -> ReturnType` (the `-> ReturnType` clause is **optional** — the return type is inferred from the body when omitted, except for a recursive function, which must state it), last-expression return with explicit early `return`, `-> void` procedures, **first-class function values** (`fn(T) -> R` types; passing/returning functions), and **generic functions** (`fn name<T> ...` and bounded `<T: Trait>`) with call-site inference. `async fn`/`await`/`Future<T>` are supported on the interpreter backends.
-- **Types and inference.** Scalars `i64`, `f64`, `bool`, `char`, `byte`, `string`, and `void`; local-binding type inference; nominal **structs** (positional and named construction, field access/mutation, UFCS methods); **enums** (tagged unions) with exhaustive **`match`**; built-in generic enums **`option<T>`** and **`result<T, E>`** with the postfix **`?`** error-propagation operator; **`list<T>`** (growable) and **`map<K, V>`** (hash map) with iteration and `sort`.
+- **Types and inference.** Scalars `i64`, the fixed-width integers `i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`u64` and `isize`/`usize`, `f64` and `f32`, `bool`, `char`, `byte`, `string`, and `void` (with typed literal suffixes like `5i32`/`1.5f32` and `to_<T>`/`to_i64`/`to_f32`/`to_f64` conversions); local-binding type inference; nominal **structs** (positional and named construction, field access/mutation, UFCS methods); **enums** (tagged unions) with exhaustive **`match`**; built-in generic enums **`option<T>`** and **`result<T, E>`** with the postfix **`?`** error-propagation operator; **`list<T>`** (growable) and **`map<K, V>`** (hash map) with iteration and `sort`.
 - **Traits and generics.** `trait` declarations, `impl Trait for Type`, receiver-type method dispatch, and trait bounds on generic functions (`<T: Ord>`).
 - **Modules.** File-as-module with `import NAME` and `pub` exports, multi-file projects via a `lullaby.json` manifest with local path dependencies.
 - **Control flow.** `if`/`elif`/`else`, `while`, range `for`, `loop`, `break`, `continue`, and `throw`/`try`/`catch` structured error handling, plus the **inline conditional** expression `THEN if COND else ELSE` (a Python-style ternary; scalar or `string` result).
@@ -40,11 +40,12 @@ The language today includes:
 
 The following are designed and planned but not yet fully implemented (see [roadmap_1_0.md](roadmap_1_0.md) for scope and order):
 
-- Wider integer types (`i8`–`u64`, `usize`/`isize`) and `f32`, typed literal suffixes, and total conversion/cast rules.
 - Environment-capturing closures; generic user *types*, trait objects/`dyn`, associated types, and default trait bodies.
-- Broader FFI / C-ABI coverage across calling conventions, marshalling, callbacks, and header generation; native ARM64 and ELF/Mach-O output.
-- The WASM heap/allocator phase and richer DOM interop; raw-memory completeness (`sizeof`/`alignof`/`offsetof`, volatile MMIO) and atomic memory orderings/fences.
-- Packaging and ease-of-access work (installers, `lullaby new` scaffolding).
+- Broader FFI / C-ABI coverage across calling conventions, marshalling, callbacks, and header generation.
+- Richer WASM DOM interop; the remaining raw-memory forms (volatile MMIO) and atomic memory orderings/fences.
+- Packaging and ease-of-access work (native installers; `lullaby new` scaffolding already ships).
+
+Recently completed and now part of the implemented surface above (previously listed here): the fixed-width integer types (`i8`–`u64`, `usize`/`isize`) and `f32` with typed literal suffixes and `to_<T>` conversions; `sizeof`/`alignof`/`offsetof`; native **ARM64 (AArch64)** codegen and **ELF/Mach-O** object output; and the WASM heap/allocator phase (strings, structs, fixed arrays, `list`/`map`, enums in linear memory).
 
 ### CLI summary
 
@@ -52,7 +53,7 @@ Current commands: `lullaby check`, `compile`, `build`, `inspect`, `run` (with `-
 
 ## Design Material Notes
 
-The sections below are the broader language and systems-programming design. Where a section shows syntax the current compiler does not yet accept (for example wider integer types or capturing closures), treat it as a roadmap illustration rather than current behavior; the "Currently implemented" list above and [standard_library.md](standard_library.md) are authoritative for what runs today.
+The sections below are the broader language and systems-programming design. Where a section shows syntax the current compiler does not yet accept (for example capturing closures or trait objects), treat it as a roadmap illustration rather than current behavior; the "Currently implemented" list above and [standard_library.md](standard_library.md) are authoritative for what runs today.
 
 ## Language Philosophy
 
@@ -144,7 +145,7 @@ Pragmatic type system for systems programming:
 - **Generics and traits**: Generic functions with call-site inference, `trait`/`impl`, and trait bounds on type parameters.
 - **Built-in generic enums**: `option<T>` and `result<T, E>` with the postfix `?` operator.
 
-**Core scalar types** (current): `i64`, `f64`, `bool`, `char`, `byte`, `string`, `void`. Wider integer widths (`i8`–`u64`, `usize`/`isize`) and `f32` are on the roadmap.
+**Core scalar types** (current): `i64`, the fixed-width integers `i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`u64` and `isize`/`usize`, `f64` and `f32`, `bool`, `char`, `byte`, `string`, `void`. Fixed-width integers and `f32` take typed literal suffixes (`5i32`, `1.5f32`) and convert via `to_<T>`/`to_i64`/`to_f32`/`to_f64`.
 
 ### 5. I/O and Concurrency (See: `lullaby_input_output.md`)
 
@@ -197,7 +198,7 @@ Implemented today:
 **Bitwise**: `& | ^ ~ << >>`, plus bit intrinsics `rotate_left`/`rotate_right`/`count_ones`/`leading_zeros`/`trailing_zeros`/`reverse_bytes`
 **Error propagation**: postfix `?` on `option`/`result`
 
-Planned: `xor`, `^=`, and closure-based functional helpers (`map`/`reduce`/`filter`). `min`/`max`/`sum`-style helpers exist as math/collection builtins — see [standard_library.md](standard_library.md).
+The functional helpers `list_map`/`list_filter`/`list_reduce` and `min`/`max`/`sum`-style helpers already exist as math/collection builtins (they take function *values*; capturing closures are still on the roadmap) — see [standard_library.md](standard_library.md). Planned: bitwise compound-assignment operators (`^=`, `&=`, `|=`, `<<=`, `>>=`).
 
 ### Control Flow
 ```lullaby
@@ -450,7 +451,7 @@ Several items once listed as future work are now implemented:
 
 ## Future Extensions (Genuinely Planned)
 
-- **Wider numeric lattice and FFI breadth**: full integer widths, `f32`, and broader C-ABI interop.
+- **Broader FFI breadth**: additional calling conventions, callbacks, and header generation (the fixed-width integer lattice and `f32` are already implemented).
 - **Generic user types, trait objects (`dyn`), and capturing closures**.
 - **DSL / embedding support** and **profiling/optimization tooling**.
 

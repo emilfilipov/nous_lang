@@ -4,22 +4,37 @@ Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
 ## Current Type Checker
 
-The compiler currently validates `i64`, `bool`, `string`, `void`, interim pointer types such as `ptr_i64`, and homogeneous arrays spelled `array<T>`.
+> **Authoritative surface:** the concise, current list of implemented types lives
+> in [language_surface.md](language_surface.md) and the "Currently implemented"
+> section of [language_specification.md](language_specification.md). The design
+> material further below uses illustrative names for some constructs; where it
+> differs, those two documents and the canonical spellings here win.
 
-Implemented local binding inference:
-- Explicit local annotations use `let name Type = expression`.
-- Omitted local annotations use `let name = expression` and infer the binding type from the initializer.
-- Literal, function-call, array-literal, index, unary, binary, and builtin-call expressions can provide inferred binding types when semantic validation succeeds.
-- Empty arrays and `void` initializers cannot provide a usable inferred local type in the current implementation.
+The compiler validates, with real (space-separated, colon-free) syntax:
 
-Implemented array rules:
-- Array literals use bracket syntax, for example `[1, 2, 3]`.
-- Array literals must be non-empty in the current implementation because empty-array inference is not implemented yet.
-- All array literal values must have the same static type.
-- Index expressions use `values[index]`.
-- Index expressions require an `array<T>` target and an `i64` index.
-- Runtime execution bounds-checks array indexes.
-- Equality comparisons require matching operand types; ordering comparisons currently require `i64` operands.
+- **Scalars:** `i64`; the fixed-width integers `i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`u64`
+  and `isize`/`usize`; `f64` and `f32`; `bool`, `char`, `byte`, `string`, and
+  `void`. Fixed-width integers and `f32` take typed literal suffixes (`5i32`,
+  `1.5f32`) and convert via `to_<T>`/`to_i64`/`to_f32`/`to_f64`.
+- **Composites:** nominal `struct` (fields declared `name Type`, positional and
+  named construction, `.field` access/mutation, UFCS methods); `enum` tagged
+  unions with exhaustive `match` (there is **no** `union` keyword — `union` is
+  reserved and rejected with `L0211`); the built-in generic enums `option<T>` and
+  `result<T, E>`; fixed `array<T>`, growable `list<T>`, and `map<K, V>`.
+- **Reference/function:** `rc<T>`/`ref<T>`/`ptr<T>` and function values `fn(T) -> R`.
+- **Generics and traits:** generic functions `fn name<T> ...` with call-site
+  inference and trait bounds `<T: Trait>`; `trait`/`impl` with receiver-type dispatch.
+
+Local binding inference:
+- Explicit local annotations use `let name Type = expression` (no colon).
+- Omitted annotations use `let name = expression` and infer from the initializer;
+  an empty array or a `void` initializer cannot provide an inferred type.
+
+Array rules:
+- Array literals use bracket syntax `[1, 2, 3]` and must be non-empty (empty-array
+  inference is not implemented); all elements share one static type.
+- Index expressions `values[index]` require an `array<T>`/`list<T>` target and an
+  `i64` index, and are bounds-checked at runtime.
 
 ## Overview
 Lullaby employs a **hybrid typing system** combining static type safety with automatic type inference, optimized for tiny LLM comprehension while maintaining strong guarantees for systems programming in OS development.
@@ -44,20 +59,21 @@ Lullaby employs a **hybrid typing system** combining static type safety with aut
 Core scalar types inferred automatically or explicitly declared:
 
 ```lullaby
-// Numeric primitives (signed/unsigned variants):
-int8, int16, int32, int64       // signed integers
-uint8, uint16, uint32, uint64   // unsigned integers
-float32, float64                // IEEE 754 floating point
+# Numeric primitives (signed/unsigned variants):
+i8  i16  i32  i64   isize       # signed integers (isize is pointer-width)
+u8  u16  u32  u64   usize       # unsigned integers (usize is pointer-width)
+f32  f64                        # IEEE 754 floating point
 
-// Other primitives:
-bool                            // boolean (true/false)
-char                            // single character literal
-string                          // byte sequence
+# Other primitives:
+bool                            # boolean (true / false)
+char                            # single Unicode scalar
+byte                            # a raw 8-bit byte
+string                          # UTF-8 text
 
-// Example usage:
-let x: int32 = 42               // explicit type declaration
-var pi: float64 = 3.14159       // explicit for precision control
-let text: string = "hello"      // inferred from literal
+# Example usage (annotations are space-separated, no colon; no `var` keyword):
+let x i32 = 42i32               # explicit type + typed literal suffix
+let pi f64 = 3.14159            # f64 literal
+let text = "hello"              # inferred from the literal
 ```
 
 ### Composite Types
