@@ -61,7 +61,10 @@ Lullaby already beats Python.
 binding the loop variable once instead of per-iteration, and **slot-based
 variable resolution** now indexes each local read by `(depth, slot)` on the IR
 and bytecode tiers instead of scanning names — so those tiers run **faster than
-the AST tree-walker** (which still name-scans) on numeric code.
+the AST tree-walker** (which still name-scans) on numeric code. A **tighter
+`Value` cell** (boxing the four largest variants) shrank the shared per-op
+footprint from **32 to 24 bytes**, cutting every clone/move — the AST tier
+dropped ~7% on the sum loop (1.30× → 1.20× C).
 
 <sub>Measured on Windows/MSVC; compiled tiers at `-O2`/release, CPython for
 Python. Regenerate with `benchmarks/crosslang/run_benchmark.ps1`.</sub>
