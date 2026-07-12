@@ -3724,25 +3724,39 @@ impl<'a> Runtime<'a> {
                     return Err(RuntimeError::new("L0411", "for loop step cannot be zero"));
                 }
 
-                while if step > 0 {
-                    current <= end
-                } else {
-                    current >= end
-                } {
+                // Bind the loop variable once in an enclosing scope and update it
+                // in place each iteration, rather than re-`define`ing it (which
+                // clones the name `String` and reallocates a scope every pass). The
+                // body still runs in its own fresh scope so its `let`s are cleared
+                // between iterations. The final `pop_scope` always runs (even on an
+                // error break) so the scope stack stays balanced for `try`/`catch`.
+                env.push_scope();
+                env.define(name.clone(), Value::I64(current));
+                let outcome: Result<Control, RuntimeError> = loop {
+                    let running = if step > 0 {
+                        current <= end
+                    } else {
+                        current >= end
+                    };
+                    if !running {
+                        break Ok(Control::Value(Value::Void));
+                    }
+                    env.set_loop_var(name, Value::I64(current));
                     env.push_scope();
-                    env.define(name.clone(), Value::I64(current));
                     let result = self.eval_block(body, env);
                     env.pop_scope();
 
-                    match result? {
-                        Control::Return(value) => return Ok(Control::Return(value)),
-                        Control::Break => break,
-                        Control::Continue | Control::Value(_) => {}
+                    match result {
+                        Ok(Control::Return(value)) => break Ok(Control::Return(value)),
+                        Ok(Control::Break) => break Ok(Control::Value(Value::Void)),
+                        Ok(Control::Continue) | Ok(Control::Value(_)) => {}
+                        Err(error) => break Err(error),
                     }
 
                     current += step;
-                }
-                Ok(Control::Value(Value::Void))
+                };
+                env.pop_scope();
+                outcome
             }
             Stmt::ForEach {
                 name,
@@ -6517,6 +6531,21 @@ impl Env {
             }
         }
         scope.push((name, value));
+    }
+
+    /// Update the loop variable's binding in the innermost scope in place. The
+    /// range-`for` lowering calls this each iteration with the loop-variable scope
+    /// innermost (the body scope has been popped), so it never allocates or clones
+    /// the name — the hot-path replacement for a per-iteration `define`.
+    fn set_loop_var(&mut self, name: &str, value: Value) {
+        let scope = self.scopes.last_mut().expect("env always has a scope");
+        for (existing, slot) in scope.iter_mut() {
+            if existing == name {
+                *slot = value;
+                return;
+            }
+        }
+        scope.push((name.to_string(), value));
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {

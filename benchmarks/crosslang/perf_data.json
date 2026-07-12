@@ -26,7 +26,7 @@
       ]
     },
     {
-      "name": "sum 0..1e9 (tight loop)",
+      "name": "sum 0..1e9 (tight while loop)",
       "kind": "compute-bound loop",
       "unit": "ns per iteration (best-of-5)",
       "results": [
@@ -35,6 +35,20 @@
         {"lang": "Lullaby (bytecode)", "value": 162.0, "vsC": 1256.0},
         {"lang": "Lullaby (ir)", "value": 160.6, "vsC": 1245.0},
         {"lang": "Lullaby (ast)", "value": 160.7, "vsC": 1246.0}
+      ]
+    },
+    {
+      "name": "for-loop reduction (interpreters)",
+      "kind": "range for-loop, per-iteration interpreter overhead",
+      "unit": "ns per iteration (best-of-3, 10M iterations)",
+      "note": "The range `for` interpreters bound the loop variable once and update it in place, instead of re-`define`ing it (allocating a scope and cloning the name `String`) every iteration. Measured ~2x faster across all three interpreter tiers. The native tier compiles `for` to machine code with register-promoted counters and is unaffected. (The while-loop workload above does not exercise this path.)",
+      "results": [
+        {"lang": "Lullaby (bytecode, before)", "value": 142.7, "vsAfter": 2.03},
+        {"lang": "Lullaby (bytecode, after)", "value": 70.3, "vsAfter": 1.0},
+        {"lang": "Lullaby (ir, before)", "value": 145.0, "vsAfter": 2.02},
+        {"lang": "Lullaby (ir, after)", "value": 71.8, "vsAfter": 1.0},
+        {"lang": "Lullaby (ast, before)", "value": 144.1, "vsAfter": 1.92},
+        {"lang": "Lullaby (ast, after)", "value": 75.0, "vsAfter": 1.0}
       ]
     },
     {
@@ -65,6 +79,7 @@
     "native_loop_vs_c": [{"stage": "compare-fusion + imm-fold", "vsC": 5.6}, {"stage": "+register promotion", "vsC": 2.1}],
     "native_primes_vs_c": [{"stage": "before (call per iter)", "vsC": 1.57}, {"stage": "+for-loop reg promotion", "vsC": 1.53}, {"stage": "+leaf-helper inlining", "vsC": 1.04}, {"stage": "+native % (idiv remainder)", "vsC": 1.01}],
     "native_vectorization_speedup": [{"stage": "sum reduction s+=a[i] (SSE2 paddq)", "vsScalar": 3.3}, {"stage": "element-wise map c[i]=a[i]+/-b[i] (paddq/psubq)", "vsScalar": 3.36}, {"stage": "bitwise reduction acc=acc^a[i] (pand/por/pxor)", "vsScalar": 2.89}, {"stage": "bitwise map c[i]=a[i]&b[i] (pand/por/pxor)", "vsScalar": 2.89}],
-    "interpreter_fib_ns": [{"stage": "baseline", "value": 435}, {"stage": "+release profile", "value": 383}, {"stage": "+env pooling", "value": 230}]
+    "interpreter_fib_ns": [{"stage": "baseline", "value": 435}, {"stage": "+release profile", "value": 383}, {"stage": "+env pooling", "value": 230}],
+    "interpreter_forloop_ns": [{"stage": "per-iteration scope alloc + name clone", "value": 144}, {"stage": "+hoisted loop-var binding, in-place update", "value": 72}]
   }
 }
