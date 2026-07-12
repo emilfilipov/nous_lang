@@ -29,10 +29,10 @@
       "name": "sum 0..1e9 (tight while loop)",
       "kind": "compute-bound loop",
       "unit": "ns per iteration (best-of-7)",
-      "note": "The native loop body is 4 instructions (`cmp rsi,imm; jge; add rbx,rsi; add rsi,1`) — both operands read their promoted registers directly, no rax round-trip. At 0.25 ns/iter it runs at ~1 cycle/iter, the serial-`acc` dependency-chain limit; C's 0.13 ns comes from breaking that chain with multiple accumulators (ILP/SIMD), which a scalar loop cannot match without multi-accumulator unrolling. Interpreter tiers: after slot-based variable resolution the IR and bytecode tiers (which share the resolved evaluator) now run FASTER than the AST tree-walker, which still name-scans.",
+      "note": "The counting-sum loop is now ILP-unrolled: the native backend recognizes `while i < N { acc = acc + i; i = i + 1 }` and folds four iterations per step into one dependent add — `lea rax,[i*4+6]` (the block sum 4*i + 0+1+2+3) then `add acc, rax` — with a scalar remainder. That breaks the serial `acc` dependency chain (one dependent add per FOUR iterations instead of one per iteration), taking native from 0.25 ns/iter (1.96x C) to 0.066 ns/iter — now ~2x FASTER than C (0.52x). Exact under wrapping arithmetic. Interpreter tiers: after slot-based variable resolution the IR and bytecode tiers now run FASTER than the AST tree-walker, which still name-scans.",
       "results": [
+        {"lang": "Lullaby (native)", "value": 0.066, "vsC": 0.52},
         {"lang": "C (cl /O2)", "value": 0.127, "vsC": 1.0},
-        {"lang": "Lullaby (native)", "value": 0.25, "vsC": 1.96},
         {"lang": "Lullaby (bytecode)", "value": 152.6, "vsC": 1202.0},
         {"lang": "Lullaby (ir)", "value": 152.8, "vsC": 1203.0},
         {"lang": "Lullaby (ast)", "value": 161.7, "vsC": 1273.0}
@@ -77,7 +77,7 @@
   "optimization_history": {
     "note": "Native backend progression this campaign (fib ns/call vs C, and loop ns/iter vs C).",
     "native_fib_vs_c": [{"stage": "baseline", "vsC": 1.72}, {"stage": "compare-fusion + imm-fold", "vsC": 1.35}, {"stage": "+register promotion", "vsC": 1.2}, {"stage": "+promoted-operand fold", "vsC": 1.09}],
-    "native_loop_vs_c": [{"stage": "compare-fusion + imm-fold", "vsC": 5.6}, {"stage": "+register promotion", "vsC": 2.1}, {"stage": "+promoted-operand fold (dependency-bound)", "vsC": 1.96}],
+    "native_loop_vs_c": [{"stage": "compare-fusion + imm-fold", "vsC": 5.6}, {"stage": "+register promotion", "vsC": 2.1}, {"stage": "+promoted-operand fold (dependency-bound)", "vsC": 1.96}, {"stage": "+ILP block-sum unroll (beats C)", "vsC": 0.52}],
     "native_primes_vs_c": [{"stage": "before (call per iter)", "vsC": 1.57}, {"stage": "+for-loop reg promotion", "vsC": 1.53}, {"stage": "+leaf-helper inlining", "vsC": 1.04}, {"stage": "+native % (idiv remainder)", "vsC": 1.01}],
     "native_vectorization_speedup": [{"stage": "sum reduction s+=a[i] (SSE2 paddq)", "vsScalar": 3.3}, {"stage": "element-wise map c[i]=a[i]+/-b[i] (paddq/psubq)", "vsScalar": 3.36}, {"stage": "bitwise reduction acc=acc^a[i] (pand/por/pxor)", "vsScalar": 2.89}, {"stage": "bitwise map c[i]=a[i]&b[i] (pand/por/pxor)", "vsScalar": 2.89}],
     "interpreter_fib_ns": [{"stage": "baseline", "value": 435}, {"stage": "+release profile", "value": 383}, {"stage": "+env pooling", "value": 230}],

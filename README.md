@@ -51,8 +51,9 @@ Lullaby already beats Python.
   `& | ^`): **2.89–3.36× faster** than the scalar loop, bit-for-bit identical.
 - Deep recursion (`fib(35)`): **1.09× C** (from 1.26× — the per-call `if n < 2`
   now compares the promoted register directly, no `rax` reload).
-- Tight scalar `sum` loop: **1.96× C** — at the ~1-cycle serial-`acc`
-  dependency limit; only multi-accumulator ILP unrolling would close it further.
+- Tight counting-`sum` loop: **0.52× C — faster than C** — the backend
+  ILP-unrolls `while i < N: acc = acc + i; i = i + 1`, folding four iterations
+  per step into one dependent add and breaking the serial `acc` chain.
 
 **Interpreter performance**: the AST / IR / bytecode tiers are development tools
 (~200–1200× C). Range `for`-loops run **~2× faster** across all three after
