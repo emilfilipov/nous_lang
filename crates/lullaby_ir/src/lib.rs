@@ -675,9 +675,7 @@ fn resolve_stmt_slots(stmt: &mut IrStmt, scopes: &mut Vec<Vec<String>>) {
             resolve_expr_slots(value, scopes);
             declare_in_scope(name, scopes);
         }
-        IrStmt::Assign {
-            path, value, ..
-        } => {
+        IrStmt::Assign { path, value, .. } => {
             // The target name keeps the name-scan `assign` path; only the RHS and
             // any index expressions in the path are read positions.
             for place in path.iter_mut() {
@@ -5287,7 +5285,10 @@ impl<'a> IrRuntime<'a> {
             } => match self.eval_scoped_block(body, env) {
                 Err(error) if error.code == "L0420" => {
                     env.push_scope();
-                    env.define(catch_name.clone(), Value::String(error.message.clone()));
+                    env.define(
+                        catch_name.clone(),
+                        Value::String((error.message.clone()).into()),
+                    );
                     let result = self.eval_block(catch_body, env);
                     env.pop_scope();
                     result
@@ -5383,7 +5384,7 @@ impl<'a> IrRuntime<'a> {
                         payload: Vec::new(),
                     })))
                 } else if self.functions.contains_key(name) {
-                    Ok(Value::Func(name.to_string()))
+                    Ok(Value::Func((name.to_string()).into()))
                 } else {
                     Err(error)
                 }
@@ -5396,13 +5397,13 @@ impl<'a> IrRuntime<'a> {
             IrExprKind::Integer(value) => Ok(Value::I64(*value)),
             IrExprKind::Float(value) => Ok(Value::F64(*value)),
             IrExprKind::Bool(value) => Ok(Value::Bool(*value)),
-            IrExprKind::String(value) => Ok(Value::String(value.clone())),
+            IrExprKind::String(value) => Ok(Value::String((value.clone()).into())),
             IrExprKind::Char(value) => Ok(Value::Char(*value)),
             IrExprKind::Array(values) => values
                 .iter()
                 .map(|value| self.eval_expr(value, env))
                 .collect::<Result<Vec<_>, _>>()
-                .map(Value::Array),
+                .map(|v| Value::Array(v.into())),
             // A slot-resolved local read: index the binding directly (no name
             // scan). The lookup is validated, so a miss (resolver/runtime scope
             // divergence, or a name that is really an enum variant / function
@@ -5529,10 +5530,10 @@ impl<'a> IrRuntime<'a> {
             // literal's id plus that snapshot. The body lives in `self.closures`
             // (keyed by id) and is looked up at invocation time, mirroring the AST
             // runtime exactly for backend parity.
-            IrExprKind::Closure { id } => Ok(Value::Closure(Closure {
+            IrExprKind::Closure { id } => Ok(Value::Closure(Box::new(Closure {
                 id: *id,
                 captured: env.snapshot_locals(),
-            })),
+            }))),
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
     }
@@ -5666,7 +5667,9 @@ impl<'a> IrRuntime<'a> {
                 // Reuse the left operand's heap buffer (see the AST runtime): the
                 // `String + &str` is a `push_str`, keeping `s = s + piece` loops
                 // O(n) overall rather than reallocating on every concat.
-                Ok(Value::String(left.into_string()? + &right.as_string()?))
+                Ok(Value::String(
+                    (left.into_string()? + &right.as_string()?).into(),
+                ))
             }
             BinaryOp::Add => Ok(Value::I64(left.as_i64()? + right.as_i64()?)),
             BinaryOp::Subtract => Ok(Value::I64(left.as_i64()? - right.as_i64()?)),
@@ -5864,7 +5867,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("read_file", 1, args.len()))?;
         let path = path.as_string()?;
         fs::read_to_string(&path)
-            .map(Value::String)
+            .map(|s| Value::String(s.into()))
             .map_err(|error| {
                 RuntimeError::resource("L0414", format!("failed to read `{path}`: {error}"))
             })
@@ -5919,7 +5922,7 @@ impl<'a> IrRuntime<'a> {
         Ok(Value::Array(
             contents
                 .lines()
-                .map(|line| Value::String(line.to_string()))
+                .map(|line| Value::String((line.to_string()).into()))
                 .collect(),
         ))
     }
@@ -6016,10 +6019,10 @@ impl<'a> IrRuntime<'a> {
                 RuntimeError::resource("L0414", format!("failed to read `{path}`: {error}"))
             })?;
             names.push(Value::String(
-                entry.file_name().to_string_lossy().to_string(),
+                (entry.file_name().to_string_lossy().to_string()).into(),
             ));
         }
-        Ok(Value::Array(names))
+        Ok(Value::Array((names).into()))
     }
 
     fn builtin_make_dir(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -6086,7 +6089,7 @@ impl<'a> IrRuntime<'a> {
                 RuntimeError::resource("L0416", format!("failed to run `{program}`: {error}"))
             })?;
         Ok(Value::String(
-            String::from_utf8_lossy(&output.stdout).to_string(),
+            (String::from_utf8_lossy(&output.stdout).to_string()).into(),
         ))
     }
 
@@ -6252,7 +6255,7 @@ impl<'a> IrRuntime<'a> {
             | Value::Bool(_)
             | Value::String(_)
             | Value::Char(_)
-            | Value::Byte(_) => Ok(Value::String(value.to_string())),
+            | Value::Byte(_) => Ok(Value::String((value.to_string()).into())),
             other => Err(RuntimeError::new(
                 "L0417",
                 format!("to_string cannot convert `{other}`"),
@@ -6440,7 +6443,7 @@ impl<'a> IrRuntime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("list_new", 0, args.len()))?;
-        Ok(Value::Array(Vec::new()))
+        Ok(Value::Array((Vec::new()).into()))
     }
 
     /// `env(name string) -> option<string>`: `some(value)` when the environment
@@ -6450,7 +6453,9 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("env", 1, args.len()))?;
         let name = expect_string("env", name)?;
-        Ok(option_value(std::env::var(&name).ok().map(Value::String)))
+        Ok(option_value(
+            std::env::var(&name).ok().map(|s| Value::String(s.into())),
+        ))
     }
 
     /// `os_random(len i64) -> result<list<byte>, string>`: `len`
@@ -6468,7 +6473,7 @@ impl<'a> IrRuntime<'a> {
         let len = expect_i64("os_random", len)?;
         Ok(result_value(match os_random_bytes(len) {
             Ok(bytes) => Ok(Value::Array(bytes.into_iter().map(Value::Byte).collect())),
-            Err(message) => Err(Value::String(message)),
+            Err(message) => Err(Value::String((message).into())),
         }))
     }
 
@@ -6482,7 +6487,7 @@ impl<'a> IrRuntime<'a> {
             self.program_args
                 .iter()
                 .cloned()
-                .map(Value::String)
+                .map(|s| Value::String(s.into()))
                 .collect(),
         ))
     }
@@ -6503,8 +6508,8 @@ impl<'a> IrRuntime<'a> {
         // id-keyed body table from the shared module, so invoking it there is
         // sound and stays order-deterministic.
         let callable = match callee {
-            Value::Func(name) => IrParallelCallable::Func(name),
-            Value::Closure(closure) => IrParallelCallable::Closure(closure),
+            Value::Func(name) => IrParallelCallable::Func((name).into()),
+            Value::Closure(closure) => IrParallelCallable::Closure(*closure),
             other => {
                 return Err(RuntimeError::new(
                     "L0417",
@@ -6550,7 +6555,7 @@ impl<'a> IrRuntime<'a> {
                 .collect::<Result<Vec<_>, _>>()
         })?;
 
-        Ok(Value::Array(results))
+        Ok(Value::Array((results).into()))
     }
 
     /// `chan_new() -> Chan`: create an unbounded `i64` message-passing channel.
@@ -6882,7 +6887,7 @@ impl<'a> IrRuntime<'a> {
                 let handle = self.register_process(ProcessResource { child });
                 Ok(result_value(Ok(handle)))
             }
-            Err(error) => Ok(result_value(Err(Value::String(error.to_string())))),
+            Err(error) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -6894,12 +6899,12 @@ impl<'a> IrRuntime<'a> {
         let slot = self.process_slot("proc_wait", &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
             return Ok(result_value(Err(Value::String(
-                "proc_wait requires a live process".to_string(),
+                ("proc_wait requires a live process".to_string()).into(),
             ))));
         };
         match resource.child.wait() {
             Ok(status) => Ok(result_value(Ok(Value::I64(process_exit_code(&status))))),
-            Err(error) => Ok(result_value(Err(Value::String(error.to_string())))),
+            Err(error) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -6913,7 +6918,7 @@ impl<'a> IrRuntime<'a> {
         let slot = self.process_slot("proc_stdout", &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
             return Ok(result_value(Err(Value::String(
-                "proc_stdout requires a live process".to_string(),
+                ("proc_stdout requires a live process".to_string()).into(),
             ))));
         };
         let mut buffer = String::new();
@@ -6923,9 +6928,9 @@ impl<'a> IrRuntime<'a> {
             .take()
             .map(|mut pipe| pipe.read_to_string(&mut buffer))
         {
-            None => Ok(result_value(Ok(Value::String(String::new())))),
-            Some(Ok(_)) => Ok(result_value(Ok(Value::String(buffer)))),
-            Some(Err(error)) => Ok(result_value(Err(Value::String(error.to_string())))),
+            None => Ok(result_value(Ok(Value::String((String::new()).into())))),
+            Some(Ok(_)) => Ok(result_value(Ok(Value::String((buffer).into())))),
+            Some(Err(error)) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -6939,7 +6944,7 @@ impl<'a> IrRuntime<'a> {
         let slot = self.process_slot("proc_stderr", &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
             return Ok(result_value(Err(Value::String(
-                "proc_stderr requires a live process".to_string(),
+                ("proc_stderr requires a live process".to_string()).into(),
             ))));
         };
         let mut buffer = String::new();
@@ -6949,9 +6954,9 @@ impl<'a> IrRuntime<'a> {
             .take()
             .map(|mut pipe| pipe.read_to_string(&mut buffer))
         {
-            None => Ok(result_value(Ok(Value::String(String::new())))),
-            Some(Ok(_)) => Ok(result_value(Ok(Value::String(buffer)))),
-            Some(Err(error)) => Ok(result_value(Err(Value::String(error.to_string())))),
+            None => Ok(result_value(Ok(Value::String((String::new()).into())))),
+            Some(Ok(_)) => Ok(result_value(Ok(Value::String((buffer).into())))),
+            Some(Err(error)) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -6963,12 +6968,12 @@ impl<'a> IrRuntime<'a> {
         let slot = self.process_slot("proc_kill", &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
             return Ok(result_value(Err(Value::String(
-                "proc_kill requires a live process".to_string(),
+                ("proc_kill requires a live process".to_string()).into(),
             ))));
         };
         match resource.child.kill() {
             Ok(()) => Ok(result_value(Ok(Value::I64(0)))),
-            Err(error) => Ok(result_value(Err(Value::String(error.to_string())))),
+            Err(error) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -7015,7 +7020,7 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Listener(listener)) => listener.accept(),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_accept requires a listening socket".to_string(),
+                    ("tcp_accept requires a listening socket".to_string()).into(),
                 ))));
             }
         };
@@ -7042,7 +7047,7 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Listener(listener)) => listener.accept(),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_accept_nb requires a listening socket".to_string(),
+                    ("tcp_accept_nb requires a listening socket".to_string()).into(),
                 ))));
             }
         };
@@ -7071,13 +7076,13 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Stream(stream)) => stream.read(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_read requires a connected stream socket".to_string(),
+                    ("tcp_read requires a connected stream socket".to_string()).into(),
                 ))));
             }
         };
         match read {
             Ok(count) => Ok(result_value(Ok(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))),
             Err(error) => Ok(net_err(&error)),
         }
@@ -7099,7 +7104,7 @@ impl<'a> IrRuntime<'a> {
         let max = expect_i64("tcp_read_nb", max)?;
         if max <= 0 {
             return Ok(result_value(Err(Value::String(
-                "tcp_read_nb requires a positive `max` byte count".to_string(),
+                ("tcp_read_nb requires a positive `max` byte count".to_string()).into(),
             ))));
         }
         let mut buffer = vec![0u8; max as usize];
@@ -7107,13 +7112,13 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Stream(stream)) => stream.read(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_read_nb requires a connected stream socket".to_string(),
+                    ("tcp_read_nb requires a connected stream socket".to_string()).into(),
                 ))));
             }
         };
         match read {
             Ok(count) => Ok(result_value(Ok(option_value(Some(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))))),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 Ok(result_value(Ok(option_value(None))))
@@ -7139,7 +7144,7 @@ impl<'a> IrRuntime<'a> {
             }
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_write requires a connected stream socket".to_string(),
+                    ("tcp_write requires a connected stream socket".to_string()).into(),
                 ))));
             }
         };
@@ -7207,7 +7212,7 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Udp(socket)) => socket.set_nonblocking(enabled),
             None => {
                 return Ok(result_value(Err(Value::String(
-                    "set_nonblocking requires an open socket".to_string(),
+                    ("set_nonblocking requires an open socket".to_string()).into(),
                 ))));
             }
         };
@@ -7249,7 +7254,7 @@ impl<'a> IrRuntime<'a> {
             }
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "udp_send_to requires a UDP socket".to_string(),
+                    ("udp_send_to requires a UDP socket".to_string()).into(),
                 ))));
             }
         };
@@ -7271,13 +7276,13 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Udp(socket)) => socket.recv_from(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "udp_recv requires a UDP socket".to_string(),
+                    ("udp_recv requires a UDP socket".to_string()).into(),
                 ))));
             }
         };
         match received {
             Ok((count, _addr)) => Ok(result_value(Ok(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))),
             Err(error) => Ok(net_err(&error)),
         }
@@ -7299,13 +7304,13 @@ impl<'a> IrRuntime<'a> {
             Some(SocketResource::Udp(socket)) => socket.recv_from(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "udp_recv_nb requires a UDP socket".to_string(),
+                    ("udp_recv_nb requires a UDP socket".to_string()).into(),
                 ))));
             }
         };
         match received {
             Ok((count, _addr)) => Ok(result_value(Ok(option_value(Some(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))))),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 Ok(result_value(Ok(option_value(None))))
@@ -7344,7 +7349,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("push", 2, args.len()))?;
         let mut values = expect_list("push", list)?;
         values.push(value);
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `array_fill(n, x) -> array<T>`: a new array of length `n`, every element
@@ -7360,7 +7365,7 @@ impl<'a> IrRuntime<'a> {
                 format!("array_fill length `{n}` is negative"),
             ));
         }
-        Ok(Value::Array(vec![value; n as usize]))
+        Ok(Value::Array((vec![value; n as usize]).into()))
     }
 
     /// `get(l, i) -> T`: bounds-checked element read.
@@ -7393,7 +7398,7 @@ impl<'a> IrRuntime<'a> {
             ));
         }
         values[index as usize] = value;
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `pop(l) -> list<T>`: a new list without the last element.
@@ -7405,7 +7410,7 @@ impl<'a> IrRuntime<'a> {
         if values.pop().is_none() {
             return Err(RuntimeError::new("L0413", "cannot pop from an empty list"));
         }
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `list_index_of(l, x) -> i64`: index of the first element equal to `x`, or -1.
@@ -7438,7 +7443,7 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("reverse", 1, args.len()))?;
         let mut values = expect_list("reverse", list)?;
         values.reverse();
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `sort(l list<i64>) -> list<i64>`: a new list sorted ascending.
@@ -7485,7 +7490,7 @@ impl<'a> IrRuntime<'a> {
         if let Some(err) = error {
             return Err(err);
         }
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `concat(a, b) -> list<T>`: a new list with `b`'s elements appended to `a`.
@@ -7496,7 +7501,7 @@ impl<'a> IrRuntime<'a> {
         let mut values = expect_list("concat", a)?;
         let mut rest = expect_list("concat", b)?;
         values.append(&mut rest);
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `slice(l, start, end) -> list<T>`: the half-open range `[start, end)`,
@@ -7512,9 +7517,9 @@ impl<'a> IrRuntime<'a> {
         let start = start.clamp(0, len) as usize;
         let end = end.clamp(0, len) as usize;
         if start >= end {
-            return Ok(Value::Array(Vec::new()));
+            return Ok(Value::Array((Vec::new()).into()));
         }
-        Ok(Value::Array(values[start..end].to_vec()))
+        Ok(Value::Array((values[start..end].to_vec()).into()))
     }
 
     /// Invoke a first-class function value (`Value::Func` name or a capturing
@@ -7548,7 +7553,7 @@ impl<'a> IrRuntime<'a> {
         for value in values {
             mapped.push(self.invoke_callable("list_map", callee.clone(), vec![value])?);
         }
-        Ok(Value::Array(mapped))
+        Ok(Value::Array((mapped).into()))
     }
 
     /// `list_filter(l list<T>, pred fn(T) -> bool) -> list<T>`: keep the elements
@@ -7565,7 +7570,7 @@ impl<'a> IrRuntime<'a> {
                 kept.push(value);
             }
         }
-        Ok(Value::Array(kept))
+        Ok(Value::Array((kept).into()))
     }
 
     /// `list_reduce(l list<T>, init U, f fn(U, T) -> U) -> U`: a left fold,
@@ -7679,7 +7684,7 @@ impl<'a> IrRuntime<'a> {
             ));
         }
         let slice: String = chars[start as usize..end as usize].iter().collect();
-        Ok(Value::String(slice))
+        Ok(Value::String((slice).into()))
     }
 
     fn builtin_find(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -7729,7 +7734,7 @@ impl<'a> IrRuntime<'a> {
         } else {
             text.repeat(count as usize)
         };
-        Ok(Value::String(result))
+        Ok(Value::String((result).into()))
     }
 
     fn builtin_split(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -7746,7 +7751,7 @@ impl<'a> IrRuntime<'a> {
         }
         let parts = text
             .split(sep.as_str())
-            .map(|part| Value::String(part.to_string()))
+            .map(|part| Value::String((part.to_string()).into()))
             .collect();
         Ok(Value::Array(parts))
     }
@@ -7758,7 +7763,7 @@ impl<'a> IrRuntime<'a> {
         let text = expect_string("words", text)?;
         let parts = text
             .split_whitespace()
-            .map(|part| Value::String(part.to_string()))
+            .map(|part| Value::String((part.to_string()).into()))
             .collect();
         Ok(Value::Array(parts))
     }
@@ -7793,7 +7798,7 @@ impl<'a> IrRuntime<'a> {
         for part in parts {
             pieces.push(expect_string("join", part)?);
         }
-        Ok(Value::String(pieces.join(sep.as_str())))
+        Ok(Value::String((pieces.join(sep.as_str())).into()))
     }
 
     fn builtin_trim(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -7802,8 +7807,10 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("trim", 1, args.len()))?;
         let text = expect_string("trim", text)?;
         Ok(Value::String(
-            text.trim_matches(|c: char| c.is_ascii_whitespace())
-                .to_string(),
+            (text
+                .trim_matches(|c: char| c.is_ascii_whitespace())
+                .to_string())
+            .into(),
         ))
     }
 
@@ -7820,7 +7827,9 @@ impl<'a> IrRuntime<'a> {
                 "replace requires a non-empty `from` pattern".to_string(),
             ));
         }
-        Ok(Value::String(text.replace(from.as_str(), to.as_str())))
+        Ok(Value::String(
+            (text.replace(from.as_str(), to.as_str())).into(),
+        ))
     }
 
     fn builtin_upper(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -7828,7 +7837,7 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("upper", 1, args.len()))?;
         let text = expect_string("upper", text)?;
-        Ok(Value::String(text.to_uppercase()))
+        Ok(Value::String((text.to_uppercase()).into()))
     }
 
     /// `chars(s) -> list<char>`: the characters of `s` in order.
@@ -7858,7 +7867,7 @@ impl<'a> IrRuntime<'a> {
                 }
             }
         }
-        Ok(Value::String(out))
+        Ok(Value::String((out).into()))
     }
 
     fn builtin_lower(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -7866,7 +7875,7 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("lower", 1, args.len()))?;
         let text = expect_string("lower", text)?;
-        Ok(Value::String(text.to_lowercase()))
+        Ok(Value::String((text.to_lowercase()).into()))
     }
 
     /// `to_bytes(s string) -> list<byte>`: the UTF-8 encoding of `s` as a
@@ -7890,8 +7899,8 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("from_bytes", 1, args.len()))?;
         let bytes = Self::value_to_bytes("from_bytes", data)?;
         Ok(result_value(match String::from_utf8(bytes) {
-            Ok(text) => Ok(Value::String(text)),
-            Err(error) => Err(Value::String(format!("invalid utf-8: {error}"))),
+            Ok(text) => Ok(Value::String((text).into())),
+            Err(error) => Err(Value::String(format!("invalid utf-8: {error}").into())),
         }))
     }
 
@@ -7917,7 +7926,9 @@ impl<'a> IrRuntime<'a> {
         let text = expect_string("parse_i64", text)?;
         Ok(result_value(match text.parse::<i64>() {
             Ok(value) => Ok(Value::I64(value)),
-            Err(_) => Err(Value::String(format!("cannot parse `{text}` as i64"))),
+            Err(_) => Err(Value::String(
+                format!("cannot parse `{text}` as i64").into(),
+            )),
         }))
     }
 
@@ -7932,7 +7943,9 @@ impl<'a> IrRuntime<'a> {
         let text = expect_string("parse_f64", text)?;
         Ok(result_value(match text.parse::<f64>() {
             Ok(value) => Ok(Value::F64(value)),
-            Err(_) => Err(Value::String(format!("cannot parse `{text}` as f64"))),
+            Err(_) => Err(Value::String(
+                format!("cannot parse `{text}` as f64").into(),
+            )),
         }))
     }
 
@@ -8543,7 +8556,6 @@ impl Env {
         let (existing, value) = self.scopes.get(idx)?.get(slot)?;
         (existing == name).then_some(value)
     }
-
 
     /// True when `name` is bound in the innermost (current) scope. A `let x =
     /// f(x, …)` re-binding only moves when the consumed binding lives here,
@@ -10770,9 +10782,9 @@ mod tests {
         }
         for stmt in body {
             match stmt {
-                IrStmt::Let { value, .. }
-                | IrStmt::Expr(value)
-                | IrStmt::Throw { value, .. } => walk_expr(value, locals, vars),
+                IrStmt::Let { value, .. } | IrStmt::Expr(value) | IrStmt::Throw { value, .. } => {
+                    walk_expr(value, locals, vars)
+                }
                 IrStmt::Return(Some(value)) => walk_expr(value, locals, vars),
                 IrStmt::Assign { value, path, .. } => {
                     walk_expr(value, locals, vars);
@@ -10820,7 +10832,9 @@ mod tests {
                     collect_reads(body, locals, vars);
                     collect_reads(catch_body, locals, vars);
                 }
-                IrStmt::Match { scrutinee, arms, .. } => {
+                IrStmt::Match {
+                    scrutinee, arms, ..
+                } => {
                     walk_expr(scrutinee, locals, vars);
                     for arm in arms {
                         collect_reads(&arm.body, locals, vars);
@@ -10833,8 +10847,7 @@ mod tests {
 
     #[test]
     fn slot_resolution_rewrites_local_reads_with_exact_slots() {
-        let mut module =
-            lower_source("fn add x i64 y i64 -> i64\n    let s i64 = x + y\n    s\n");
+        let mut module = lower_source("fn add x i64 y i64 -> i64\n    let s i64 = x + y\n    s\n");
         resolve_module_slots(&mut module);
         let mut locals = Vec::new();
         let mut vars = Vec::new();
@@ -11723,7 +11736,7 @@ mod tests {
     fn ir_and_bytecode_match_ast_for_error_handling() {
         let source = "fn checked n i64 -> string\n    try\n        if n < 0\n            throw \"neg\"\n        \"ok:\" + to_string(n)\n    catch message\n        \"err:\" + message\n\nfn main -> string\n    checked(5) + \" \" + checked(0 - 1)\n";
         let (ast, ir, bytecode) = run_all_backends(source);
-        assert_eq!(ast, Value::String("ok:5 err:neg".to_string()));
+        assert_eq!(ast, Value::String(("ok:5 err:neg".to_string()).into()));
         assert_eq!(ir, ast);
         assert_eq!(bytecode, ast);
     }

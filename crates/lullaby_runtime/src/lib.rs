@@ -440,7 +440,7 @@ impl MapKey {
     fn from_value(value: &Value) -> Option<MapKey> {
         match value {
             Value::I64(n) => Some(MapKey::I64(*n)),
-            Value::String(s) => Some(MapKey::Str(s.clone())),
+            Value::String(s) => Some(MapKey::Str(s.to_string())),
             _ => None,
         }
     }
@@ -604,12 +604,23 @@ pub enum Value {
     /// distinct `f32` never mixes with an `f64` without an explicit conversion.
     F32(f32),
     Bool(bool),
-    String(String),
+    /// A string value. Held as a `Box<str>` (pointer + length, 16 bytes) rather
+    /// than a `String` (pointer + length + capacity, 24 bytes): interpreter
+    /// strings are immutable values (concatenation and slicing build fresh
+    /// strings), so the growth capacity is never used, and the narrower cell keeps
+    /// the whole `Value` enum small — every scalar clone/move on the hot path
+    /// copies fewer bytes. Access is the same single indirection as `&str`.
+    String(Box<str>),
     /// A Unicode scalar value.
     Char(char),
     /// An 8-bit unsigned integer (0-255).
     Byte(u8),
-    Array(Vec<Value>),
+    /// A fixed array. Held as a `Box<[Value]>` (pointer + length, 16 bytes) rather
+    /// than a `Vec<Value>` (24 bytes): a `Value::Array` is value-semantic and
+    /// never grown in place (element assignment mutates in place; map/filter/slice
+    /// build fresh arrays), so the growth capacity is unused and the narrower cell
+    /// keeps `Value` small. Element access/mutation is unchanged.
+    Array(Box<[Value]>),
     Ptr(usize),
     /// A struct value. Boxed so the common scalar `Value` variants stay small
     /// (the interpreter moves/clones `Value`s constantly, so enum size is on the
@@ -625,12 +636,13 @@ pub enum Value {
     /// every `Value`.
     Map(Box<OrderedMap>),
     /// A first-class function value: a handle to a top-level function by name.
-    /// No environment is captured in this increment.
-    Func(String),
+    /// `Box<str>` for the same small-cell reason as [`Value::String`].
+    Func(Box<str>),
     /// An environment-capturing closure value: a parse-order `id` keying the
     /// runtime's closure-body table plus a by-value snapshot of captured locals.
-    /// Invoked through the same `Call` dispatch as [`Value::Func`].
-    Closure(Closure),
+    /// Boxed so its `id + captured Vec` payload (32 bytes) does not inflate every
+    /// `Value`; invoked through the same `Call` dispatch as [`Value::Func`].
+    Closure(Box<Closure>),
     /// A network socket handle: an index into the interpreter's per-runtime
     /// `sockets` table. The underlying OS resource (a `TcpListener`,
     /// `TcpStream`, or `UdpSocket`) is not `Clone`, so sockets are represented
@@ -847,7 +859,7 @@ impl fmt::Display for ErrorCategory {
 /// Unwrap a runtime `Value` expected to be a string, reporting `L0417` otherwise.
 pub fn expect_string(name: &str, value: Value) -> Result<String, RuntimeError> {
     match value {
-        Value::String(text) => Ok(text),
+        Value::String(text) => Ok((text).into()),
         other => Err(RuntimeError::new(
             "L0417",
             format!("{name} expects a string but got `{other}`"),
@@ -970,7 +982,7 @@ pub fn shift_right(value: i64, amount: i64) -> i64 {
 /// otherwise. A `list<T>` is represented at runtime as a `Value::Array`.
 pub fn expect_list(name: &str, value: Value) -> Result<Vec<Value>, RuntimeError> {
     match value {
-        Value::Array(values) => Ok(values),
+        Value::Array(values) => Ok((values).into()),
         other => Err(RuntimeError::new(
             "L0417",
             format!("{name} expects a list but got `{other}`"),
@@ -1415,7 +1427,7 @@ pub fn list_extreme(
 /// homogeneous; a mixed or unsupported element type yields `L0417`.
 pub fn sort_scalar_list(name: &str, values: Vec<Value>) -> Result<Value, RuntimeError> {
     let Some(first) = values.first() else {
-        return Ok(Value::Array(Vec::new()));
+        return Ok(Value::Array((Vec::new()).into()));
     };
     match first {
         Value::I64(_) => {
@@ -1444,12 +1456,14 @@ pub fn sort_scalar_list(name: &str, values: Vec<Value>) -> Result<Value, Runtime
             let mut strs: Vec<String> = Vec::with_capacity(values.len());
             for value in values {
                 match value {
-                    Value::String(s) => strs.push(s),
+                    Value::String(s) => strs.push((s).into()),
                     other => return Err(mixed_numeric_list_error(name, &other)),
                 }
             }
             strs.sort();
-            Ok(Value::Array(strs.into_iter().map(Value::String).collect()))
+            Ok(Value::Array(
+                strs.into_iter().map(|s| Value::String(s.into())).collect(),
+            ))
         }
         other => Err(RuntimeError::new(
             "L0417",
@@ -1540,7 +1554,7 @@ pub fn await_future(future: &Future) -> Result<Value, RuntimeError> {
 /// network error. Network builtins report failures as runtime `result` values
 /// rather than propagating a `RuntimeError`.
 pub fn net_err(error: &std::io::Error) -> Value {
-    result_value(Err(Value::String(error.to_string())))
+    result_value(Err(Value::String((error.to_string()).into())))
 }
 
 /// Perform one HTTP/1.1 exchange over a fresh `TcpStream` and return the
@@ -1560,13 +1574,17 @@ pub fn http_exchange(method: &str, url: &str, body: Option<&str>) -> Value {
 
     let (scheme, rest) = match url.split_once("://") {
         Some(parts) => parts,
-        None => return result_value(Err(Value::String("invalid url".to_string()))),
+        None => return result_value(Err(Value::String(("invalid url".to_string()).into()))),
     };
     if scheme.eq_ignore_ascii_case("https") {
-        return result_value(Err(Value::String("https not supported".to_string())));
+        return result_value(Err(Value::String(
+            ("https not supported".to_string()).into(),
+        )));
     }
     if !scheme.eq_ignore_ascii_case("http") {
-        return result_value(Err(Value::String(format!("unsupported scheme `{scheme}`"))));
+        return result_value(Err(Value::String(
+            format!("unsupported scheme `{scheme}`").into(),
+        )));
     }
 
     // Split `host[:port]` from the path (default `/`).
@@ -1575,13 +1593,15 @@ pub fn http_exchange(method: &str, url: &str, body: Option<&str>) -> Value {
         None => (rest, "/"),
     };
     if authority.is_empty() {
-        return result_value(Err(Value::String("missing host".to_string())));
+        return result_value(Err(Value::String(("missing host".to_string()).into())));
     }
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port_text)) => match port_text.parse::<u16>() {
             Ok(port) => (host, port),
             Err(_) => {
-                return result_value(Err(Value::String(format!("invalid port `{port_text}`"))));
+                return result_value(Err(Value::String(
+                    format!("invalid port `{port_text}`").into(),
+                )));
             }
         },
         None => (authority, 80u16),
@@ -1622,7 +1642,7 @@ pub fn http_exchange(method: &str, url: &str, body: Option<&str>) -> Value {
         Some(index) => (&response[..index], &response[index + 4..]),
         None => {
             return result_value(Err(Value::String(
-                "malformed response: no header terminator".to_string(),
+                ("malformed response: no header terminator".to_string()).into(),
             )));
         }
     };
@@ -1634,14 +1654,18 @@ pub fn http_exchange(method: &str, url: &str, body: Option<&str>) -> Value {
         .and_then(|token| token.parse::<u16>().ok());
     let body_text = String::from_utf8_lossy(resp_body).into_owned();
     match code {
-        Some(code) if (200..400).contains(&code) => result_value(Ok(Value::String(body_text))),
+        Some(code) if (200..400).contains(&code) => {
+            result_value(Ok(Value::String((body_text).into())))
+        }
         Some(code) => {
             let first_line = body_text.lines().next().unwrap_or("");
-            result_value(Err(Value::String(format!("http {code}: {first_line}"))))
+            result_value(Err(Value::String(
+                format!("http {code}: {first_line}").into(),
+            )))
         }
-        None => result_value(Err(Value::String(format!(
-            "malformed status line `{status_line}`"
-        )))),
+        None => result_value(Err(Value::String(
+            format!("malformed status line `{status_line}`").into(),
+        ))),
     }
 }
 
@@ -2598,7 +2622,9 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("env", 1, args.len()))?;
         let name = expect_string("env", name)?;
-        Ok(option_value(std::env::var(&name).ok().map(Value::String)))
+        Ok(option_value(
+            std::env::var(&name).ok().map(|s| Value::String(s.into())),
+        ))
     }
 
     /// `os_random(len i64) -> result<list<byte>, string>`: `len`
@@ -2615,7 +2641,7 @@ impl<'a> Runtime<'a> {
         let len = expect_i64("os_random", len)?;
         Ok(result_value(match os_random_bytes(len) {
             Ok(bytes) => Ok(Value::Array(bytes.into_iter().map(Value::Byte).collect())),
-            Err(message) => Err(Value::String(message)),
+            Err(message) => Err(Value::String((message).into())),
         }))
     }
 
@@ -2629,7 +2655,7 @@ impl<'a> Runtime<'a> {
             self.program_args
                 .iter()
                 .cloned()
-                .map(Value::String)
+                .map(|s| Value::String(s.into()))
                 .collect(),
         ))
     }
@@ -2650,8 +2676,8 @@ impl<'a> Runtime<'a> {
         // id-keyed body table from the shared program, so invoking it there is
         // sound and stays order-deterministic.
         let callable = match callee {
-            Value::Func(name) => ParallelCallable::Func(name),
-            Value::Closure(closure) => ParallelCallable::Closure(closure),
+            Value::Func(name) => ParallelCallable::Func((name).into()),
+            Value::Closure(closure) => ParallelCallable::Closure(*closure),
             other => {
                 return Err(RuntimeError::new(
                     "L0417",
@@ -2697,7 +2723,7 @@ impl<'a> Runtime<'a> {
                 .collect::<Result<Vec<_>, _>>()
         })?;
 
-        Ok(Value::Array(results))
+        Ok(Value::Array((results).into()))
     }
 
     /// `chan_new() -> Chan`: create an unbounded `i64` message-passing channel.
@@ -3042,7 +3068,7 @@ impl<'a> Runtime<'a> {
                 let handle = self.register_process(ProcessResource { child });
                 Ok(result_value(Ok(handle)))
             }
-            Err(error) => Ok(result_value(Err(Value::String(error.to_string())))),
+            Err(error) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -3056,12 +3082,12 @@ impl<'a> Runtime<'a> {
         let slot = self.process_slot("proc_wait", &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
             return Ok(result_value(Err(Value::String(
-                "proc_wait requires a live process".to_string(),
+                ("proc_wait requires a live process".to_string()).into(),
             ))));
         };
         match resource.child.wait() {
             Ok(status) => Ok(result_value(Ok(Value::I64(process_exit_code(&status))))),
-            Err(error) => Ok(result_value(Err(Value::String(error.to_string())))),
+            Err(error) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -3092,9 +3118,9 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity(name, 1, args.len()))?;
         let slot = self.process_slot(name, &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
-            return Ok(result_value(Err(Value::String(format!(
-                "{name} requires a live process"
-            )))));
+            return Ok(result_value(Err(Value::String(
+                format!("{name} requires a live process").into(),
+            ))));
         };
         let mut buffer = String::new();
         let read = match kind {
@@ -3111,9 +3137,9 @@ impl<'a> Runtime<'a> {
         };
         match read {
             // Pipe already drained (or was never captured): report EOF.
-            None => Ok(result_value(Ok(Value::String(String::new())))),
-            Some(Ok(_)) => Ok(result_value(Ok(Value::String(buffer)))),
-            Some(Err(error)) => Ok(result_value(Err(Value::String(error.to_string())))),
+            None => Ok(result_value(Ok(Value::String((String::new()).into())))),
+            Some(Ok(_)) => Ok(result_value(Ok(Value::String((buffer).into())))),
+            Some(Err(error)) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -3126,12 +3152,12 @@ impl<'a> Runtime<'a> {
         let slot = self.process_slot("proc_kill", &proc)?;
         let Some(resource) = self.processes[slot].as_mut() else {
             return Ok(result_value(Err(Value::String(
-                "proc_kill requires a live process".to_string(),
+                ("proc_kill requires a live process".to_string()).into(),
             ))));
         };
         match resource.child.kill() {
             Ok(()) => Ok(result_value(Ok(Value::I64(0)))),
-            Err(error) => Ok(result_value(Err(Value::String(error.to_string())))),
+            Err(error) => Ok(result_value(Err(Value::String((error.to_string()).into())))),
         }
     }
 
@@ -3178,7 +3204,7 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Listener(listener)) => listener.accept(),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_accept requires a listening socket".to_string(),
+                    ("tcp_accept requires a listening socket".to_string()).into(),
                 ))));
             }
         };
@@ -3205,7 +3231,7 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Listener(listener)) => listener.accept(),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_accept_nb requires a listening socket".to_string(),
+                    ("tcp_accept_nb requires a listening socket".to_string()).into(),
                 ))));
             }
         };
@@ -3234,13 +3260,13 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Stream(stream)) => stream.read(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_read requires a connected stream socket".to_string(),
+                    ("tcp_read requires a connected stream socket".to_string()).into(),
                 ))));
             }
         };
         match read {
             Ok(count) => Ok(result_value(Ok(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))),
             Err(error) => Ok(net_err(&error)),
         }
@@ -3262,7 +3288,7 @@ impl<'a> Runtime<'a> {
         let max = expect_i64("tcp_read_nb", max)?;
         if max <= 0 {
             return Ok(result_value(Err(Value::String(
-                "tcp_read_nb requires a positive `max` byte count".to_string(),
+                ("tcp_read_nb requires a positive `max` byte count".to_string()).into(),
             ))));
         }
         let mut buffer = vec![0u8; max as usize];
@@ -3270,13 +3296,13 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Stream(stream)) => stream.read(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_read_nb requires a connected stream socket".to_string(),
+                    ("tcp_read_nb requires a connected stream socket".to_string()).into(),
                 ))));
             }
         };
         match read {
             Ok(count) => Ok(result_value(Ok(option_value(Some(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))))),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 Ok(result_value(Ok(option_value(None))))
@@ -3302,7 +3328,7 @@ impl<'a> Runtime<'a> {
             }
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "tcp_write requires a connected stream socket".to_string(),
+                    ("tcp_write requires a connected stream socket".to_string()).into(),
                 ))));
             }
         };
@@ -3371,7 +3397,7 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Udp(socket)) => socket.set_nonblocking(enabled),
             None => {
                 return Ok(result_value(Err(Value::String(
-                    "set_nonblocking requires an open socket".to_string(),
+                    ("set_nonblocking requires an open socket".to_string()).into(),
                 ))));
             }
         };
@@ -3413,7 +3439,7 @@ impl<'a> Runtime<'a> {
             }
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "udp_send_to requires a UDP socket".to_string(),
+                    ("udp_send_to requires a UDP socket".to_string()).into(),
                 ))));
             }
         };
@@ -3435,13 +3461,13 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Udp(socket)) => socket.recv_from(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "udp_recv requires a UDP socket".to_string(),
+                    ("udp_recv requires a UDP socket".to_string()).into(),
                 ))));
             }
         };
         match received {
             Ok((count, _addr)) => Ok(result_value(Ok(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))),
             Err(error) => Ok(net_err(&error)),
         }
@@ -3463,13 +3489,13 @@ impl<'a> Runtime<'a> {
             Some(SocketResource::Udp(socket)) => socket.recv_from(&mut buffer),
             _ => {
                 return Ok(result_value(Err(Value::String(
-                    "udp_recv_nb requires a UDP socket".to_string(),
+                    ("udp_recv_nb requires a UDP socket".to_string()).into(),
                 ))));
             }
         };
         match received {
             Ok((count, _addr)) => Ok(result_value(Ok(option_value(Some(Value::String(
-                String::from_utf8_lossy(&buffer[..count]).into_owned(),
+                (String::from_utf8_lossy(&buffer[..count]).into_owned()).into(),
             )))))),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 Ok(result_value(Ok(option_value(None))))
@@ -3689,9 +3715,9 @@ impl<'a> Runtime<'a> {
                         // mutating a copy, and writing it back (which is O(len) per
                         // write, O(len^2) in a write loop).
                         let resolved = self.resolve_places(path, env)?;
-                        let root = env
-                            .get_mut(name)
-                            .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))?;
+                        let root = env.get_mut(name).ok_or_else(|| {
+                            RuntimeError::new("L0403", format!("unknown variable `{name}`"))
+                        })?;
                         let new = match op {
                             AssignOp::Replace => rhs,
                             _ => apply_compound(get_place(root, &resolved)?, op, rhs)?,
@@ -3806,7 +3832,7 @@ impl<'a> Runtime<'a> {
                 // Iterate `name` over each element of an array/list, or each char
                 // of a string. (Semantics guarantees the collection type.)
                 let elements: Vec<Value> = match self.eval_expr(iterable, env)? {
-                    Value::Array(values) => values,
+                    Value::Array(values) => (values).into(),
                     Value::String(text) => text.chars().map(Value::Char).collect(),
                     _ => {
                         return Err(RuntimeError::new(
@@ -3878,7 +3904,7 @@ impl<'a> Runtime<'a> {
                 // Only user-thrown errors are recoverable; system errors propagate.
                 Err(error) if error.code == "L0420" => {
                     env.push_scope();
-                    env.define(catch_name.clone(), Value::String(error.message));
+                    env.define(catch_name.clone(), Value::String((error.message).into()));
                     let result = self.eval_block(catch_body, env);
                     env.pop_scope();
                     result
@@ -3972,7 +3998,9 @@ impl<'a> Runtime<'a> {
                             .iter()
                             .find(|(n, _)| n == field)
                             .map(|(_, value)| value.clone())
-                            .ok_or_else(|| RuntimeError::new("L0371", format!("no field `{field}`")));
+                            .ok_or_else(|| {
+                                RuntimeError::new("L0371", format!("no field `{field}`"))
+                            });
                     }
                 }
                 match self.eval_expr(target, env)? {
@@ -3991,13 +4019,13 @@ impl<'a> Runtime<'a> {
             ExprKind::Integer(value) => Ok(Value::I64(*value)),
             ExprKind::Float(value) => Ok(Value::F64(*value)),
             ExprKind::Bool(value) => Ok(Value::Bool(*value)),
-            ExprKind::String(value) => Ok(Value::String(value.clone())),
+            ExprKind::String(value) => Ok(Value::String((value.clone()).into())),
             ExprKind::Char(value) => Ok(Value::Char(*value)),
             ExprKind::Array(values) => values
                 .iter()
                 .map(|value| self.eval_expr(value, env))
                 .collect::<Result<Vec<_>, _>>()
-                .map(Value::Array),
+                .map(|v| Value::Array(v.into())),
             ExprKind::Variable(name) => match env.get(name) {
                 Ok(value) => Ok(value),
                 Err(error) => {
@@ -4012,7 +4040,7 @@ impl<'a> Runtime<'a> {
                     } else if self.functions.contains_key(name.as_str()) {
                         // A bare name that is a known top-level function evaluates
                         // to a first-class function value.
-                        Ok(Value::Func(name.clone()))
+                        Ok(Value::Func((name.clone()).into()))
                     } else {
                         Err(error)
                     }
@@ -4195,10 +4223,10 @@ impl<'a> Runtime<'a> {
             // `Value::Closure` carrying the literal's parse-order `id` plus that
             // snapshot. The body is not stored here — it lives in `self.closures`,
             // keyed by `id`, and is looked up at invocation time.
-            ExprKind::Closure { id, .. } => Ok(Value::Closure(Closure {
+            ExprKind::Closure { id, .. } => Ok(Value::Closure(Box::new(Closure {
                 id: *id,
                 captured: env.snapshot_locals(),
-            })),
+            }))),
             // Inline conditional `THEN if COND else ELSE`: evaluate the
             // condition, then evaluate exactly the taken branch. Semantics has
             // already verified `cond` is `bool` and the branch types agree.
@@ -4222,7 +4250,7 @@ impl<'a> Runtime<'a> {
                 let val = self.eval_expr(value, env)?;
                 match &coll {
                     Value::String(_) => {
-                        let needle = Value::String(val.as_concat_string()?);
+                        let needle = Value::String((val.as_concat_string()?).into());
                         Self::builtin_contains(vec![coll, needle])
                     }
                     _ => Self::builtin_list_contains(vec![coll, val]),
@@ -4385,7 +4413,9 @@ impl<'a> Runtime<'a> {
                 // `push_str`, amortized O(1) when capacity allows, so building a
                 // string with `s = s + piece` in a loop stays O(n) overall
                 // instead of reallocating a fresh buffer on every concat.
-                Ok(Value::String(left.into_string()? + &right.as_string()?))
+                Ok(Value::String(
+                    (left.into_string()? + &right.as_string()?).into(),
+                ))
             }
             // `string + char` (either order) concatenates the char as a
             // one-character string.
@@ -4396,7 +4426,7 @@ impl<'a> Runtime<'a> {
                 ) =>
             {
                 Ok(Value::String(
-                    left.as_concat_string()? + &right.as_concat_string()?,
+                    (left.as_concat_string()? + &right.as_concat_string()?).into(),
                 ))
             }
             BinaryOp::Add => Ok(Value::I64(left.as_i64()? + right.as_i64()?)),
@@ -4601,7 +4631,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("read_file", 1, args.len()))?;
         let path = path.as_string()?;
         fs::read_to_string(&path)
-            .map(Value::String)
+            .map(|s| Value::String(s.into()))
             .map_err(|error| {
                 RuntimeError::resource("L0414", format!("failed to read `{path}`: {error}"))
             })
@@ -4656,7 +4686,7 @@ impl<'a> Runtime<'a> {
         Ok(Value::Array(
             contents
                 .lines()
-                .map(|line| Value::String(line.to_string()))
+                .map(|line| Value::String((line.to_string()).into()))
                 .collect(),
         ))
     }
@@ -4753,10 +4783,10 @@ impl<'a> Runtime<'a> {
                 RuntimeError::resource("L0414", format!("failed to read `{path}`: {error}"))
             })?;
             names.push(Value::String(
-                entry.file_name().to_string_lossy().to_string(),
+                (entry.file_name().to_string_lossy().to_string()).into(),
             ));
         }
-        Ok(Value::Array(names))
+        Ok(Value::Array((names).into()))
     }
 
     fn builtin_make_dir(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -4823,7 +4853,7 @@ impl<'a> Runtime<'a> {
                 RuntimeError::resource("L0416", format!("failed to run `{program}`: {error}"))
             })?;
         Ok(Value::String(
-            String::from_utf8_lossy(&output.stdout).to_string(),
+            (String::from_utf8_lossy(&output.stdout).to_string()).into(),
         ))
     }
 
@@ -5007,7 +5037,7 @@ impl<'a> Runtime<'a> {
             | Value::Bool(_)
             | Value::String(_)
             | Value::Char(_)
-            | Value::Byte(_) => Ok(Value::String(value.to_string())),
+            | Value::Byte(_) => Ok(Value::String((value.to_string()).into())),
             other => Err(RuntimeError::new(
                 "L0417",
                 format!("to_string cannot convert `{other}`"),
@@ -5197,7 +5227,7 @@ impl<'a> Runtime<'a> {
         let []: [Value; 0] = args
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("list_new", 0, args.len()))?;
-        Ok(Value::Array(Vec::new()))
+        Ok(Value::Array((Vec::new()).into()))
     }
 
     /// `array_fill(n, x) -> array<T>`: a new array of length `n` with every
@@ -5215,7 +5245,7 @@ impl<'a> Runtime<'a> {
                 format!("array_fill length `{n}` is negative"),
             ));
         }
-        Ok(Value::Array(vec![value; n as usize]))
+        Ok(Value::Array((vec![value; n as usize]).into()))
     }
 
     /// `push(l, x) -> list<T>`: a new list with `x` appended.
@@ -5225,7 +5255,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("push", 2, args.len()))?;
         let mut values = expect_list("push", list)?;
         values.push(value);
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `get(l, i) -> T`: bounds-checked element read.
@@ -5258,7 +5288,7 @@ impl<'a> Runtime<'a> {
             ));
         }
         values[index as usize] = value;
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `pop(l) -> list<T>`: a new list without the last element.
@@ -5270,7 +5300,7 @@ impl<'a> Runtime<'a> {
         if values.pop().is_none() {
             return Err(RuntimeError::new("L0413", "cannot pop from an empty list"));
         }
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `list_index_of(l, x) -> i64`: index of the first element equal to `x`, or -1.
@@ -5303,7 +5333,7 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("reverse", 1, args.len()))?;
         let mut values = expect_list("reverse", list)?;
         values.reverse();
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `sort(l list<i64>) -> list<i64>`: a new list with the elements sorted
@@ -5350,7 +5380,7 @@ impl<'a> Runtime<'a> {
         if let Some(err) = error {
             return Err(err);
         }
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `concat(a, b) -> list<T>`: a new list with `b`'s elements appended to `a`.
@@ -5361,7 +5391,7 @@ impl<'a> Runtime<'a> {
         let mut values = expect_list("concat", a)?;
         let mut rest = expect_list("concat", b)?;
         values.append(&mut rest);
-        Ok(Value::Array(values))
+        Ok(Value::Array((values).into()))
     }
 
     /// `slice(l, start, end) -> list<T>`: the half-open range `[start, end)`,
@@ -5377,9 +5407,9 @@ impl<'a> Runtime<'a> {
         let start = start.clamp(0, len) as usize;
         let end = end.clamp(0, len) as usize;
         if start >= end {
-            return Ok(Value::Array(Vec::new()));
+            return Ok(Value::Array((Vec::new()).into()));
         }
-        Ok(Value::Array(values[start..end].to_vec()))
+        Ok(Value::Array((values[start..end].to_vec()).into()))
     }
 
     /// Invoke a first-class function value (`Value::Func` name or a capturing
@@ -5414,7 +5444,7 @@ impl<'a> Runtime<'a> {
         for value in values {
             mapped.push(self.invoke_callable("list_map", callee.clone(), vec![value])?);
         }
-        Ok(Value::Array(mapped))
+        Ok(Value::Array((mapped).into()))
     }
 
     /// `list_filter(l list<T>, pred fn(T) -> bool) -> list<T>`: keep the elements
@@ -5431,7 +5461,7 @@ impl<'a> Runtime<'a> {
                 kept.push(value);
             }
         }
-        Ok(Value::Array(kept))
+        Ok(Value::Array((kept).into()))
     }
 
     /// `list_reduce(l list<T>, init U, f fn(U, T) -> U) -> U`: a left fold,
@@ -5545,7 +5575,7 @@ impl<'a> Runtime<'a> {
             ));
         }
         let slice: String = chars[start as usize..end as usize].iter().collect();
-        Ok(Value::String(slice))
+        Ok(Value::String((slice).into()))
     }
 
     fn builtin_find(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5595,7 +5625,7 @@ impl<'a> Runtime<'a> {
         } else {
             text.repeat(count as usize)
         };
-        Ok(Value::String(result))
+        Ok(Value::String((result).into()))
     }
 
     fn builtin_split(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5612,7 +5642,7 @@ impl<'a> Runtime<'a> {
         }
         let parts = text
             .split(sep.as_str())
-            .map(|part| Value::String(part.to_string()))
+            .map(|part| Value::String((part.to_string()).into()))
             .collect();
         Ok(Value::Array(parts))
     }
@@ -5624,7 +5654,7 @@ impl<'a> Runtime<'a> {
         let text = expect_string("words", text)?;
         let parts = text
             .split_whitespace()
-            .map(|part| Value::String(part.to_string()))
+            .map(|part| Value::String((part.to_string()).into()))
             .collect();
         Ok(Value::Array(parts))
     }
@@ -5659,7 +5689,7 @@ impl<'a> Runtime<'a> {
         for part in parts {
             pieces.push(expect_string("join", part)?);
         }
-        Ok(Value::String(pieces.join(sep.as_str())))
+        Ok(Value::String((pieces.join(sep.as_str())).into()))
     }
 
     fn builtin_trim(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5668,8 +5698,10 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("trim", 1, args.len()))?;
         let text = expect_string("trim", text)?;
         Ok(Value::String(
-            text.trim_matches(|c: char| c.is_ascii_whitespace())
-                .to_string(),
+            (text
+                .trim_matches(|c: char| c.is_ascii_whitespace())
+                .to_string())
+            .into(),
         ))
     }
 
@@ -5686,7 +5718,9 @@ impl<'a> Runtime<'a> {
                 "replace requires a non-empty `from` pattern".to_string(),
             ));
         }
-        Ok(Value::String(text.replace(from.as_str(), to.as_str())))
+        Ok(Value::String(
+            (text.replace(from.as_str(), to.as_str())).into(),
+        ))
     }
 
     fn builtin_upper(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5694,7 +5728,7 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("upper", 1, args.len()))?;
         let text = expect_string("upper", text)?;
-        Ok(Value::String(text.to_uppercase()))
+        Ok(Value::String((text.to_uppercase()).into()))
     }
 
     /// `chars(s) -> list<char>`: the characters of `s` in order.
@@ -5724,7 +5758,7 @@ impl<'a> Runtime<'a> {
                 }
             }
         }
-        Ok(Value::String(out))
+        Ok(Value::String((out).into()))
     }
 
     fn builtin_lower(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -5732,7 +5766,7 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("lower", 1, args.len()))?;
         let text = expect_string("lower", text)?;
-        Ok(Value::String(text.to_lowercase()))
+        Ok(Value::String((text.to_lowercase()).into()))
     }
 
     /// `to_bytes(s string) -> list<byte>`: the UTF-8 encoding of `s` as a
@@ -5756,8 +5790,8 @@ impl<'a> Runtime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("from_bytes", 1, args.len()))?;
         let bytes = Self::value_to_bytes("from_bytes", data)?;
         Ok(result_value(match String::from_utf8(bytes) {
-            Ok(text) => Ok(Value::String(text)),
-            Err(error) => Err(Value::String(format!("invalid utf-8: {error}"))),
+            Ok(text) => Ok(Value::String((text).into())),
+            Err(error) => Err(Value::String(format!("invalid utf-8: {error}").into())),
         }))
     }
 
@@ -5783,7 +5817,9 @@ impl<'a> Runtime<'a> {
         let text = expect_string("parse_i64", text)?;
         Ok(result_value(match text.parse::<i64>() {
             Ok(value) => Ok(Value::I64(value)),
-            Err(_) => Err(Value::String(format!("cannot parse `{text}` as i64"))),
+            Err(_) => Err(Value::String(
+                format!("cannot parse `{text}` as i64").into(),
+            )),
         }))
     }
 
@@ -5798,7 +5834,9 @@ impl<'a> Runtime<'a> {
         let text = expect_string("parse_f64", text)?;
         Ok(result_value(match text.parse::<f64>() {
             Ok(value) => Ok(Value::F64(value)),
-            Err(_) => Err(Value::String(format!("cannot parse `{text}` as f64"))),
+            Err(_) => Err(Value::String(
+                format!("cannot parse `{text}` as f64").into(),
+            )),
         }))
     }
 
@@ -6240,7 +6278,7 @@ pub fn apply_compound(current: Value, op: &AssignOp, rhs: Value) -> Result<Value
         // `s += piece` where `piece` is a `string` or a `char` (coerced to a
         // one-character string).
         return Ok(Value::String(
-            current.into_string()? + &rhs.as_concat_string()?,
+            (current.into_string()? + &rhs.as_concat_string()?).into(),
         ));
     }
     if let (Value::F64(a), Value::F64(b)) = (&current, &rhs) {
@@ -6843,7 +6881,7 @@ impl Value {
 
     pub fn as_string(&self) -> Result<String, RuntimeError> {
         match self {
-            Self::String(value) => Ok(value.clone()),
+            Self::String(value) => Ok((value.clone()).into()),
             _ => Err(RuntimeError::new("L0417", "expected string value")),
         }
     }
@@ -6853,7 +6891,7 @@ impl Value {
     /// concatenation operands to `string`/`char`, so nothing else reaches here.
     pub fn as_concat_string(&self) -> Result<String, RuntimeError> {
         match self {
-            Self::String(value) => Ok(value.clone()),
+            Self::String(value) => Ok((value.clone()).into()),
             Self::Char(c) => Ok(c.to_string()),
             _ => Err(RuntimeError::new("L0417", "expected string or char value")),
         }
@@ -6865,7 +6903,7 @@ impl Value {
     /// the result is byte-identical to `as_string`, only cheaper.
     pub fn into_string(self) -> Result<String, RuntimeError> {
         match self {
-            Self::String(value) => Ok(value),
+            Self::String(value) => Ok((value).into()),
             _ => Err(RuntimeError::new("L0417", "expected string value")),
         }
     }
@@ -7197,7 +7235,7 @@ mod tests {
         );
         assert_eq!(
             run_source(source).expect("run"),
-            Value::String("A_B".to_string())
+            Value::String(("A_B".to_string()).into())
         );
     }
 
@@ -7349,7 +7387,7 @@ mod tests {
         );
         assert_eq!(
             run_source(&source).expect("run"),
-            Value::String("alpha beta".to_string())
+            Value::String(("alpha beta".to_string()).into())
         );
         let _ = std::fs::remove_file(path);
     }
@@ -7394,12 +7432,9 @@ mod tests {
         let source = "fn sq x i64 -> i64\n    x * x\n\nfn main -> list<i64>\n    let base list<i64> = list_new()\n    base = push(base, 1)\n    base = push(base, 2)\n    base = push(base, 3)\n    base = push(base, 4)\n    parallel_map(sq, base)\n";
         assert_eq!(
             run_source(source).expect("run"),
-            Value::Array(vec![
-                Value::I64(1),
-                Value::I64(4),
-                Value::I64(9),
-                Value::I64(16),
-            ])
+            Value::Array(
+                (vec![Value::I64(1), Value::I64(4), Value::I64(9), Value::I64(16),]).into()
+            )
         );
     }
 
@@ -7631,7 +7666,7 @@ mod tests {
         let caught = "fn main -> string\n    try\n        throw \"boom\"\n    catch message\n        \"caught: \" + message\n";
         assert_eq!(
             run_source(caught).expect("run"),
-            Value::String("caught: boom".to_string())
+            Value::String(("caught: boom".to_string()).into())
         );
         let ok = "fn main -> i64\n    try\n        42\n    catch message\n        0\n";
         assert_eq!(run_source(ok).expect("run"), Value::I64(42));
@@ -7695,7 +7730,7 @@ mod tests {
         let source = "fn risky -> i64\n    throw \"from risky\"\n\nfn main -> string\n    let captured string = \"\"\n    try\n        let value i64 = risky()\n    catch message\n        captured = message\n    captured\n";
         assert_eq!(
             run_source(source).expect("run"),
-            Value::String("from risky".to_string())
+            Value::String(("from risky".to_string()).into())
         );
     }
 
@@ -7716,7 +7751,7 @@ mod tests {
         let source = "struct Player\n    name string\n    score i64\n\nfn label hero Player -> string\n    hero.name + \":\" + to_string(hero.score)\n\nfn main -> string\n    label(Player(\"Ada\", 100))\n";
         assert_eq!(
             run_source(source).expect("run"),
-            Value::String("Ada:100".to_string())
+            Value::String(("Ada:100".to_string()).into())
         );
     }
 
@@ -7731,7 +7766,7 @@ mod tests {
         let source = "fn main -> string\n    let x f64 = 2.5\n    to_string(x < 3.0) + \" \" + to_string(x * 2.0)\n";
         assert_eq!(
             run_source(source).expect("run"),
-            Value::String("true 5".to_string())
+            Value::String(("true 5".to_string()).into())
         );
     }
 
@@ -7740,7 +7775,7 @@ mod tests {
         let source = "fn main -> string\n    let n i64 = 40 + 2\n    \"answer: \" + to_string(n) + \" ok=\" + to_string(n == 42)\n";
         assert_eq!(
             run_source(source).expect("run"),
-            Value::String("answer: 42 ok=true".to_string())
+            Value::String(("answer: 42 ok=true".to_string()).into())
         );
     }
 
@@ -7814,7 +7849,7 @@ mod tests {
         );
         assert_eq!(
             run_source(source).expect("run"),
-            Value::String("ok 103 / err boom".to_string())
+            Value::String(("ok 103 / err boom".to_string()).into())
         );
     }
 
@@ -8311,5 +8346,22 @@ mod tests {
             "    add10(5) + add100(3)\n",
         );
         assert_eq!(run_source(source).expect("run"), Value::I64(118));
+    }
+}
+
+#[cfg(test)]
+mod value_size_check {
+    /// The interpreters move and clone `Value` on every operation, so its size is
+    /// on the hot path. Boxing the four largest variants (`String`/`Array` as
+    /// `Box<str>`/`Box<[Value]>`, `Func` as `Box<str>`, `Closure` as
+    /// `Box<Closure>`) keeps the cell at 24 bytes instead of 32. This guards
+    /// against a future variant silently inflating it again.
+    #[test]
+    fn value_cell_stays_small() {
+        assert!(
+            std::mem::size_of::<super::Value>() <= 24,
+            "Value grew past 24 bytes ({}); box the offending variant",
+            std::mem::size_of::<super::Value>()
+        );
     }
 }

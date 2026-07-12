@@ -12360,7 +12360,8 @@ mod native_program_tests {
             "expected a fused `cmp rbx, 2` reading the promoted register directly"
         );
         assert!(
-            !text.windows(6)
+            !text
+                .windows(6)
                 .any(|w| w == [0x48, 0x3D, 0x02, 0x00, 0x00, 0x00]),
             "the promoted operand should not be reloaded into rax before the compare"
         );
