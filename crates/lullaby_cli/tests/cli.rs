@@ -614,6 +614,46 @@ fn rejects_in_incompatible_operands() {
     }
 }
 
+/// String slicing `s[i:j]` / `s[i:]` / `s[:j]` / `s[:]` desugars to `substring`,
+/// identically on all three interpreter backends (fixture -> hello|world|hello|rld).
+#[test]
+fn runs_string_slice_fixture_on_all_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_string_slice.lby");
+    for backend in [None, Some("ir"), Some("bytecode")] {
+        let mut args = vec!["run".to_string()];
+        if let Some(b) = backend {
+            args.push("--backend".to_string());
+            args.push(b.to_string());
+        }
+        args.push(fixture.to_str().expect("fixture path").to_string());
+        let output = lullaby().args(&args).output().expect("run cli");
+        assert!(output.status.success(), "{backend:?}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "hello|world|hello|rld",
+            "backend {backend:?}"
+        );
+    }
+}
+
+/// A slice requires a `string` target and `i64` bounds, else `L0438`.
+#[test]
+fn rejects_slice_incompatible_operands() {
+    for name in ["slice_non_string_target", "slice_non_int_bound"] {
+        let fixture = workspace_root().join(format!("tests/fixtures/invalid/{name}.lby"));
+        let output = lullaby()
+            .args(["check", fixture.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        assert!(!output.status.success(), "{name}: {output:?}");
+        assert!(
+            stderr(&output).contains("L0438"),
+            "{name}: {}",
+            stderr(&output)
+        );
+    }
+}
+
 /// `string + <non-char scalar>` is still a type error (`L0307`); only
 /// string+string and string+char concatenate.
 #[test]

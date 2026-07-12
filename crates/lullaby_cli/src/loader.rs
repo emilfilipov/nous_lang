@@ -644,6 +644,15 @@ fn collect_expr_references(expr: &Expr, out: &mut Vec<(String, Span)>) {
             collect_expr_references(value, out);
             collect_expr_references(collection, out);
         }
+        ExprKind::Slice { target, start, end } => {
+            collect_expr_references(target, out);
+            if let Some(start) = start {
+                collect_expr_references(start, out);
+            }
+            if let Some(end) = end {
+                collect_expr_references(end, out);
+            }
+        }
     }
 }
 

@@ -701,6 +701,17 @@ pub enum ExprKind {
         value: Box<Expr>,
         collection: Box<Expr>,
     },
+    /// String slice `target[start:end]`, yielding a substring over the half-open
+    /// char range `[start, end)`. Either bound may be omitted: `s[:end]` starts
+    /// at `0`, `s[start:]` runs to `len(s)`, and `s[:]` copies the whole string.
+    /// The target must be a `string`. The AST interpreter evaluates it directly;
+    /// the IR lowerer desugars it to a `substring(target, start, end)` builtin
+    /// call, so no backend needs a slice node.
+    Slice {
+        target: Box<Expr>,
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2609,18 +2620,45 @@ impl<'a> ExprParser<'a> {
         let mut expr = self.parse_primary()?;
         loop {
             if self.eat_symbol("[") {
-                let index = self.parse_conditional()?;
-                if !self.eat_symbol("]") {
-                    return Err("expected `]` after index expression".to_string());
-                }
-                let span = expr.span;
-                expr = Expr {
-                    kind: ExprKind::Index {
-                        target: Box::new(expr),
-                        index: Box::new(index),
-                    },
-                    span,
+                // `target[i]` is an index; `target[a:b]` (with either bound
+                // optional) is a string slice. A leading `:` means the start is
+                // omitted.
+                let start = if self.at_symbol(":") {
+                    None
+                } else {
+                    Some(self.parse_conditional()?)
                 };
+                let span = expr.span;
+                if self.eat_symbol(":") {
+                    let end = if self.at_symbol("]") {
+                        None
+                    } else {
+                        Some(self.parse_conditional()?)
+                    };
+                    if !self.eat_symbol("]") {
+                        return Err("expected `]` after slice bounds".to_string());
+                    }
+                    expr = Expr {
+                        kind: ExprKind::Slice {
+                            target: Box::new(expr),
+                            start: start.map(Box::new),
+                            end: end.map(Box::new),
+                        },
+                        span,
+                    };
+                } else {
+                    let index = start.ok_or_else(|| "expected an index expression".to_string())?;
+                    if !self.eat_symbol("]") {
+                        return Err("expected `]` after index expression".to_string());
+                    }
+                    expr = Expr {
+                        kind: ExprKind::Index {
+                            target: Box::new(expr),
+                            index: Box::new(index),
+                        },
+                        span,
+                    };
+                }
             } else if self.eat_symbol(".") {
                 let span = expr.span;
                 let name = match self.peek().map(|token| token.kind.clone()) {

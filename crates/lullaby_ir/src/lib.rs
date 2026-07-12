@@ -9210,6 +9210,65 @@ impl<'a> Lowerer<'a> {
                 };
                 (call, TypeRef::new("bool"))
             }
+            // String slice `target[start:end]` desugars to
+            // `substring(target, start, end)`. An omitted `start` is `0`; an
+            // omitted `end` is `len(target)` — in which case `target` is bound to
+            // a temp so it is evaluated exactly once, before `start`.
+            ExprKind::Slice { target, start, end } => {
+                let i64_ty = TypeRef::new("i64");
+                let string_ty = TypeRef::new("string");
+                let span = expr.span;
+                let target_ir = self.lower_expr(target, scope)?;
+
+                let (target_arg, len_end): (IrExpr, Option<IrExpr>) = if end.is_none() {
+                    let id = self.next_cond_temp.get();
+                    self.next_cond_temp.set(id + 1);
+                    let temp = format!("__slice_{id}");
+                    self.try_prelude.borrow_mut().push(IrStmt::Let {
+                        name: temp.clone(),
+                        ty: string_ty.clone(),
+                        value: target_ir,
+                        span,
+                    });
+                    let var = IrExpr {
+                        kind: IrExprKind::Variable(temp),
+                        ty: string_ty.clone(),
+                        span,
+                    };
+                    let len_call = IrExpr {
+                        kind: IrExprKind::Call {
+                            name: "len".to_string(),
+                            args: vec![var.clone()],
+                        },
+                        ty: i64_ty.clone(),
+                        span,
+                    };
+                    (var, Some(len_call))
+                } else {
+                    (target_ir, None)
+                };
+
+                let start_ir = match start {
+                    Some(start) => self.lower_expr(start, scope)?,
+                    None => IrExpr {
+                        kind: IrExprKind::Integer(0),
+                        ty: i64_ty.clone(),
+                        span,
+                    },
+                };
+                let end_ir = match end {
+                    Some(end) => self.lower_expr(end, scope)?,
+                    None => len_end.expect("len bound for omitted slice end"),
+                };
+
+                (
+                    IrExprKind::Call {
+                        name: "substring".to_string(),
+                        args: vec![target_arg, start_ir, end_ir],
+                    },
+                    string_ty,
+                )
+            }
             // Lower a closure literal: lower its body in a child scope that layers
             // the closure parameters over the enclosing scope, register the lowered
             // `(param names, body)` in the module's closure table keyed by the

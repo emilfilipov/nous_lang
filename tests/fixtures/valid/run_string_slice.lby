@@ -1,0 +1,3 @@
+fn main -> string
+    let s string = "hello world"
+    s[0:5] + "|" + s[6:] + "|" + s[:5] + "|" + s[8:11]

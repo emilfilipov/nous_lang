@@ -1865,6 +1865,15 @@ fn collect_closures_in_expr<'a>(
             collect_closures_in_expr(value, table);
             collect_closures_in_expr(collection, table);
         }
+        ExprKind::Slice { target, start, end } => {
+            collect_closures_in_expr(target, table);
+            if let Some(start) = start {
+                collect_closures_in_expr(start, table);
+            }
+            if let Some(end) = end {
+                collect_closures_in_expr(end, table);
+            }
+        }
     }
 }
 
@@ -4149,6 +4158,23 @@ impl<'a> Runtime<'a> {
                     _ => Self::builtin_list_contains(vec![coll, val]),
                 }
             }
+            // String slice `target[start:end]`. Reuse the `substring` builtin so
+            // the range, bounds check, and char-based indexing match the IR
+            // desugar exactly; an omitted `start` is `0` and an omitted `end` is
+            // the string length.
+            ExprKind::Slice { target, start, end } => {
+                let target = self.eval_expr(target, env)?;
+                let length = target.as_string()?.chars().count() as i64;
+                let start = match start {
+                    Some(start) => self.eval_expr(start, env)?,
+                    None => Value::I64(0),
+                };
+                let end = match end {
+                    Some(end) => self.eval_expr(end, env)?,
+                    None => Value::I64(length),
+                };
+                Self::builtin_substring(vec![target, start, end])
+            }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
     }
@@ -6332,6 +6358,15 @@ fn expr_mentions_var(expr: &Expr, name: &str) -> bool {
         }
         ExprKind::In { value, collection } => {
             expr_mentions_var(value, name) || expr_mentions_var(collection, name)
+        }
+        ExprKind::Slice { target, start, end } => {
+            expr_mentions_var(target, name)
+                || start
+                    .as_deref()
+                    .is_some_and(|start| expr_mentions_var(start, name))
+                || end
+                    .as_deref()
+                    .is_some_and(|end| expr_mentions_var(end, name))
         }
     }
 }

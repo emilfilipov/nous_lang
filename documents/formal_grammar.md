@@ -183,7 +183,7 @@ Expression precedence, from lowest to highest:
 5. addition and subtraction: `+`, `-`
 6. multiplication, division, and remainder: `*`, `/`, `%`
 7. unary: `not`, unary `-`
-8. postfix indexing: `target[index]`
+8. postfix indexing and slicing: `target[index]`, `target[start:end]`
 9. primary expressions
 
 The inline conditional binds looser than every operator and is
@@ -223,7 +223,10 @@ unary_expr =
   | postfix_expr ;
 
 postfix_expr =
-    primary_expr { "[" expr "]" } ;
+    primary_expr { "[" ( expr | slice_bounds ) "]" } ;
+
+slice_bounds =
+    [ expr ] ":" [ expr ] ;
 
 primary_expr =
     NUMBER

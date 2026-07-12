@@ -529,6 +529,12 @@ fn render_expr(expr: &Expr) -> String {
                 render_ternary_branch(collection),
             )
         }
+        // String slice `target[start:end]`; either bound may be empty.
+        ExprKind::Slice { target, start, end } => {
+            let start = start.as_deref().map(render_expr).unwrap_or_default();
+            let end = end.as_deref().map(render_expr).unwrap_or_default();
+            format!("{}[{start}:{end}]", render_postfix_target(target))
+        }
     }
 }
 
@@ -753,6 +759,24 @@ mod tests {
     #[test]
     fn in_operator_fixture_is_idempotent() {
         assert_fixture_idempotent("run_in_operator");
+    }
+
+    #[test]
+    fn formats_string_slice() {
+        // All four slice shapes round-trip with the terse `[start:end]` syntax.
+        for src in [
+            "fn f s string -> string\n    s[1:3]\n",
+            "fn f s string -> string\n    s[2:]\n",
+            "fn f s string -> string\n    s[:4]\n",
+            "fn f s string -> string\n    s[:]\n",
+        ] {
+            assert_eq!(fmt(src), src);
+        }
+    }
+
+    #[test]
+    fn string_slice_fixture_is_idempotent() {
+        assert_fixture_idempotent("run_string_slice");
     }
 
     #[test]

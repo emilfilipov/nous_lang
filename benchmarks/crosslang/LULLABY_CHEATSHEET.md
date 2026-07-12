@@ -44,7 +44,12 @@ let g = 1 if s >= 90 else 2 if s >= 80 else 3   # right-associative else-chain (
 
 if c in "aeiou"              # membership: char/substring in a string, or element in a list<T>
     ...                      # `x in xs` on a list<T>; yields bool. Replaces contains(...) / long `or` chains.
+
+let head = s[0:3]            # string slice s[start:end] (half-open); s[i:] to end, s[:j] from 0, s[:] whole.
 ```
+
+Prefer `s[i:j]` over `substring(s, i, j)` (fewer tokens). Bounds are `i64`;
+either may be omitted. Slicing is `string`-only (there is no array slice).
 
 **Prefer the inline conditional over a block `if/else` when returning a value.**
 `return 1 if cond else 0` is one line and far fewer tokens than the `if cond` /

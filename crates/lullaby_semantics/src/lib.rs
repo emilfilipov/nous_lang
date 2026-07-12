@@ -1965,6 +1965,15 @@ impl<'a> Checker<'a> {
                 self.check_freed_uses(value, freed, function);
                 self.check_freed_uses(collection, freed, function);
             }
+            ExprKind::Slice { target, start, end } => {
+                self.check_freed_uses(target, freed, function);
+                if let Some(start) = start {
+                    self.check_freed_uses(start, freed, function);
+                }
+                if let Some(end) = end {
+                    self.check_freed_uses(end, freed, function);
+                }
+            }
             ExprKind::Integer(_)
             | ExprKind::Float(_)
             | ExprKind::Bool(_)
@@ -2504,6 +2513,37 @@ impl<'a> Checker<'a> {
                         None
                     }
                 }
+            }
+            // String slice `target[start:end]` yields a `string`. The target
+            // must be a `string` and each present bound must be `i64` (`L0438`).
+            ExprKind::Slice { target, start, end } => {
+                let target_type = self.check_expr(target, scope, function);
+                if target_type.as_ref().map(|t| t.name.as_str()) != Some("string") {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0438",
+                        format!(
+                            "a slice `target[start:end]` requires a `string` target, but got `{}`",
+                            target_type.as_ref().map_or("?", |t| t.name.as_str())
+                        ),
+                        Some(function.name.clone()),
+                        target.span,
+                    ));
+                }
+                for bound in [start, end].into_iter().flatten() {
+                    let bound_type = self.check_expr(bound, scope, function);
+                    if bound_type.as_ref().map(|t| t.name.as_str()) != Some("i64") {
+                        self.diagnostics.push(SemanticDiagnostic::at(
+                            "L0438",
+                            format!(
+                                "a slice bound must be `i64`, but got `{}`",
+                                bound_type.as_ref().map_or("?", |t| t.name.as_str())
+                            ),
+                            Some(function.name.clone()),
+                            bound.span,
+                        ));
+                    }
+                }
+                Some(TypeRef::new("string"))
             }
         };
 
