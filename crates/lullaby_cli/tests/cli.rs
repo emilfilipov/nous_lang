@@ -500,6 +500,40 @@ fn native_inferred_return_parity_when_linkable() {
     assert_eq!(exe.status.code().expect("exit"), 21);
 }
 
+/// String interpolation `"a=${expr}"` desugars to a `to_string`/`+`
+/// concatenation and produces the same string on all three interpreter backends.
+#[test]
+fn runs_string_interpolation_fixture_on_all_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_string_interpolation.lby");
+    for backend in [None, Some("ir"), Some("bytecode")] {
+        let mut args = vec!["run".to_string()];
+        if let Some(b) = backend {
+            args.push("--backend".to_string());
+            args.push(b.to_string());
+        }
+        args.push(fixture.to_str().expect("fixture path").to_string());
+        let output = lullaby().args(&args).output().expect("run cli");
+        assert!(output.status.success(), "{backend:?}: {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "n=7 sq=49 big=0",
+            "backend {backend:?}"
+        );
+    }
+}
+
+/// An unterminated `${` in a string interpolation is a parse error (`L0207`).
+#[test]
+fn rejects_unterminated_interpolation() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/interpolation_unterminated.lby");
+    let output = lullaby()
+        .args(["check", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stderr(&output).contains("L0207"), "{}", stderr(&output));
+}
+
 /// A function whose inferred return type is (mutually) recursive must be
 /// annotated: `L0439`.
 #[test]

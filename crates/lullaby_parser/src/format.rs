@@ -715,6 +715,16 @@ mod tests {
     }
 
     #[test]
+    fn interpolation_desugars_to_concatenation() {
+        // `fmt` normalizes string interpolation to explicit `to_string`/`+`
+        // concatenation (it is parse-time sugar, not a distinct AST node).
+        assert_eq!(
+            fmt("fn f n i64 -> string\n    \"n=${n}\"\n"),
+            "fn f n i64 -> string\n    \"n=\" + to_string(n)\n"
+        );
+    }
+
+    #[test]
     fn formats_inferred_return_without_arrow() {
         // A function with no `-> T` clause round-trips without one (the return
         // type is inferred); an explicit return type keeps its clause.

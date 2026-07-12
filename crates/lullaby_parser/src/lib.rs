@@ -1,4 +1,4 @@
-use lullaby_lexer::{Diagnostic, Keyword, Span, Token, TokenKind};
+use lullaby_lexer::{Diagnostic, Keyword, Span, Token, TokenKind, lex};
 use serde::{Deserialize, Serialize};
 
 mod format;
@@ -2621,6 +2621,96 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    /// Build a string expression, desugaring interpolation `"a=${expr}b"` into a
+    /// `+`-concatenation of string literals and `to_string(expr)` calls (so no
+    /// backend, formatter, or walker needs an interpolation node). A `${` with no
+    /// closing `}` is an error; a plain string with no `${` stays a literal.
+    fn build_string_expr(&mut self, value: String, span: Span) -> Result<Expr, String> {
+        if !value.contains("${") {
+            return Ok(Expr {
+                kind: ExprKind::String(value),
+                span,
+            });
+        }
+        let str_lit = |text: &str| Expr {
+            kind: ExprKind::String(text.to_string()),
+            span,
+        };
+        let mut parts: Vec<Expr> = Vec::new();
+        let mut rest = value.as_str();
+        loop {
+            match rest.find("${") {
+                None => {
+                    if !rest.is_empty() {
+                        parts.push(str_lit(rest));
+                    }
+                    break;
+                }
+                Some(pos) => {
+                    if pos > 0 {
+                        parts.push(str_lit(&rest[..pos]));
+                    }
+                    let after = &rest[pos + 2..];
+                    let close = after
+                        .find('}')
+                        .ok_or_else(|| "unterminated `${` in string interpolation".to_string())?;
+                    let inner = after[..close].trim();
+                    if inner.is_empty() {
+                        return Err("empty `${}` in string interpolation".to_string());
+                    }
+                    let expr = self.parse_interpolated_expr(inner)?;
+                    // Wrap in `to_string(...)`; it accepts every scalar and is the
+                    // identity on a `string`, so any interpolated value renders.
+                    parts.push(Expr {
+                        kind: ExprKind::Call {
+                            name: "to_string".to_string(),
+                            args: vec![expr],
+                        },
+                        span,
+                    });
+                    rest = &after[close + 1..];
+                }
+            }
+        }
+        // `parts` is non-empty (the value contained `${`). Fold left with `+`.
+        let mut iter = parts.into_iter();
+        let mut acc = iter.next().expect("interpolation yields at least one part");
+        for part in iter {
+            acc = Expr {
+                kind: ExprKind::Binary {
+                    left: Box::new(acc),
+                    op: BinaryOp::Add,
+                    right: Box::new(part),
+                },
+                span,
+            };
+        }
+        Ok(acc)
+    }
+
+    /// Lex and parse a single expression from the inside of a `${...}` segment.
+    /// The inner text is one expression (Lullaby strings hold no nested strings),
+    /// so structural indentation tokens are dropped before expression parsing.
+    fn parse_interpolated_expr(&mut self, inner: &str) -> Result<Expr, String> {
+        let tokens =
+            lex(inner).map_err(|_| "invalid expression in string interpolation".to_string())?;
+        let expr_tokens: Vec<Token> = tokens
+            .into_iter()
+            .filter(|token| {
+                !matches!(
+                    token.kind,
+                    TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
+                )
+            })
+            .collect();
+        let mut sub = ExprParser::new(&expr_tokens, self.closure_counter);
+        let expr = sub
+            .parse()
+            .map_err(|message| format!("in string interpolation: {message}"))?;
+        self.closure_counter = sub.closure_counter;
+        Ok(expr)
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -2732,10 +2822,7 @@ impl<'a> ExprParser<'a> {
                     span: token.span,
                 })
             }
-            TokenKind::String(value) => Ok(Expr {
-                kind: ExprKind::String(value),
-                span: token.span,
-            }),
+            TokenKind::String(value) => self.build_string_expr(value, token.span),
             TokenKind::Char(value) => Ok(Expr {
                 kind: ExprKind::Char(value),
                 span: token.span,

@@ -71,7 +71,8 @@ type; the result must be a scalar or `string` (use a block `if` for aggregates).
 - No `++`/`--`. Inline conditional `A if C else B` IS available (see Control flow) — prefer it over a block `if/else` for value selection.
 - String concatenation is `+`. A `char` concatenates onto a string directly —
   `s + c` and `s += c` work (the char becomes a one-char string); numbers still
-  need `to_string(x)`.
+  need `to_string(x)`. Interpolation `"n=${x} sq=${x * x}"` embeds any expression
+  (sugar for `+`/`to_string`; `lullaby fmt` expands it back to concatenation).
 - **String literals do NOT interpret escapes** (`"\n"` is backslash-n, not a
   newline). For control chars use `char_from(code)` (10 = LF, 13 = CR, 9 = tab);
   a `char` appends to a string directly (`s += char_from(10)`), no `to_string`.
