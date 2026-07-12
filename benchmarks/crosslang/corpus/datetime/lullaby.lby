@@ -41,16 +41,10 @@ fn days_from_civil y i64 m i64 d i64 -> i64
     if m <= 2
         y = y - 1
     let era = 0
-    if y >= 0
-        era = y / 400
-    else
-        era = (y - 399) / 400
+    era = y / 400 if y >= 0 else (y - 399) / 400
     let yoe = y - era * 400
     let mp = 0
-    if m > 2
-        mp = m - 3
-    else
-        mp = m + 9
+    mp = m - 3 if m > 2 else m + 9
     let doy = (153 * mp + 2) / 5 + d - 1
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
     era * 146097 + doe - 719468
@@ -58,20 +52,14 @@ fn days_from_civil y i64 m i64 d i64 -> i64
 fn year_from_days z i64 -> i64
     z = z + 719468
     let era = 0
-    if z >= 0
-        era = z / 146097
-    else
-        era = (z - 146096) / 146097
+    era = z / 146097 if z >= 0 else (z - 146096) / 146097
     let doe = z - era * 146097
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
     let y = yoe + era * 400
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
     let mp = (5 * doy + 2) / 153
     let m = 0
-    if mp < 10
-        m = mp + 3
-    else
-        m = mp - 9
+    m = mp + 3 if mp < 10 else mp - 9
     if m <= 2
         y = y + 1
     y

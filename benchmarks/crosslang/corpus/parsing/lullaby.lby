@@ -211,7 +211,7 @@ fn main -> void
     println("is_valid_int=" + to_string(is_valid_int("-42")))
     println("count_fields=" + to_string(count_fields("a,b,c,d", ",")))
     println("nth_field_len=" + to_string(nth_field_len("a,bb,ccc", ",", 2)))
-    println("count_lines=" + to_string(count_lines("a" + to_string(char_from(10)) + "b")))
+    println("count_lines=" + to_string(count_lines("a" + char_from(10) + "b")))
     println("strip_leading_zeros_len=" + to_string(strip_leading_zeros_len("00042")))
     println("eval_rpn=" + to_string(eval_rpn(rpn)))
     println("count_digits_in=" + to_string(count_digits_in("ab12cd34")))

@@ -13,13 +13,37 @@ changes.
 
 | Metric | Lullaby | Target | Gap |
 |---|---|---|---|
-| Corpus tokens | 22,356 | < 19,120 (Python) | **+16.9% over Python** |
+| Corpus tokens | 21,535 | < 19,120 (Python) | **+12.6% over Python** |
 | `count_primes_below` native | 29.3 ms | ≤ 28.3 ms (C) | **1.04× C** |
 | `fib(40)` native | 1.53 ns/call | ≤ 1.28 ns (C) | **1.20× C** |
 
-Lullaby is already terser than C (1.16×), C++ (1.20×), Rust (1.11×) and ties
-JavaScript (0.99×). Python is the only language it loses to on tokens, and only
-C/Rust beat it on native speed — both by a hair.
+Lullaby is terser than C (1.21×), C++ (1.25×), Rust (1.16×) and now **beats
+JavaScript** (Lullaby is 0.97× of JS). Python is the only language it loses to on
+tokens, and only C/Rust beat it on native speed — both by a hair.
+
+### Shipped: the four token gaps (2026-07-12)
+
+All four language gaps below are **implemented end-to-end** (parser → semantics →
+IR desugar → AST interpreter, with the IR/bytecode/native/WASM backends covered
+by the desugar) and adopted in the corpus:
+
+- **Inline conditional** `A if C else B` — the broad win, replacing 1/0 (and
+  small-value) block `if`/`else` across most categories.
+- **`string + char` / `+= char`** — drops the `to_string(char_from(...))` wrapper.
+- **Membership `x in collection`** — `c in "aeiou"`, `sub in s`, list membership.
+- **String slicing `s[i:j]`** (and `s[i:]`, `s[:j]`, `s[:]`).
+
+Adopting them (plus `array_fill(n, 0)` for the DP-buffer literals) moved the
+corpus from 22,356 → 21,535 tokens (+16.9% → +12.6% over Python) with every
+function's output byte-identical.
+
+The remaining Python gap is now **structural, not ergonomic**: the corpus is
+mostly array/numeric algorithms, so the string features have limited reach. What
+still separates Lullaby from Python is (a) **mandatory type annotations** on
+every parameter and return, and (b) **explicit array-length parameters** (`n`,
+`la`, `lb`) carried for cross-language algorithm parity. Closing the rest means
+optional **return-type inference** and dropping redundant length params in favor
+of `len(a)` — see below.
 
 ## Token gap: where it lives
 

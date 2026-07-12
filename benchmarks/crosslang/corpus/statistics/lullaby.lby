@@ -84,10 +84,7 @@ fn running_max_sum a array<i64> -> i64
     let best = a[0]
     let cur = a[0]
     for i from 1 to len(a) - 1
-        if cur + a[i] > a[i]
-            cur = cur + a[i]
-        else
-            cur = a[i]
+        cur = cur + a[i] if cur + a[i] > a[i] else a[i]
         if cur > best
             best = cur
     best

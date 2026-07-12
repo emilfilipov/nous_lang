@@ -695,8 +695,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 44,
-     "source": "fn is_bit_palindrome x i64 n i64 -> i64\n    if reverse_bits_n(x, n) == extract_bits(x, 0, n)\n        1\n    else\n        0"
+     "tokens": 39,
+     "source": "fn is_bit_palindrome x i64 n i64 -> i64\n    1 if reverse_bits_n(x, n) == extract_bits(x, 0, n) else 0"
     },
     "C": {
      "tokens": 45,
@@ -726,8 +726,8 @@
    "category": "bitwise",
    "langs": {
     "Lullaby": {
-     "tokens": 45,
-     "source": "fn is_power_of_two x i64 -> i64\n    if x <= 0\n        return 0\n    if count_set_bits(x) == 1\n        1\n    else\n        0"
+     "tokens": 39,
+     "source": "fn is_power_of_two x i64 -> i64\n    if x <= 0\n        return 0\n    1 if count_set_bits(x) == 1 else 0"
     },
     "C": {
      "tokens": 43,
@@ -2493,8 +2493,8 @@
    "category": "combinatorics",
    "langs": {
     "Lullaby": {
-     "tokens": 185,
-     "source": "fn partition_count n i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    dp[0] = 1\n    for p from 1 to n\n        for j from p to n\n            dp[j] = dp[j] + dp[j - p]\n    dp[n]"
+     "tokens": 70,
+     "source": "fn partition_count n i64 -> i64\n    let dp array<i64> = array_fill(41, 0)\n    dp[0] = 1\n    for p from 1 to n\n        for j from p to n\n            dp[j] = dp[j] + dp[j - p]\n    dp[n]"
     },
     "C": {
      "tokens": 91,
@@ -2729,8 +2729,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn chebyshev a Point b Point -> i64\n    let dx = abs_val(a.x - b.x)\n    let dy = abs_val(a.y - b.y)\n    if dx > dy\n        dx\n    else\n        dy"
+     "tokens": 44,
+     "source": "fn chebyshev a Point b Point -> i64\n    let dx = abs_val(a.x - b.x)\n    let dy = abs_val(a.y - b.y)\n    dx if dx > dy else dy"
     },
     "C": {
      "tokens": 52,
@@ -2822,8 +2822,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 38,
-     "source": "fn interval_overlaps a Interval b Interval -> i64\n    if a.lo < b.hi and b.lo < a.hi\n        1\n    else\n        0"
+     "tokens": 32,
+     "source": "fn interval_overlaps a Interval b Interval -> i64\n    1 if a.lo < b.hi and b.lo < a.hi else 0"
     },
     "C": {
      "tokens": 39,
@@ -3039,8 +3039,8 @@
    "category": "data_records",
    "langs": {
     "Lullaby": {
-     "tokens": 47,
-     "source": "fn rect_contains r Rect px i64 py i64 -> i64\n    if px >= 0 and py >= 0 and px <= r.w and py <= r.h\n        1\n    else\n        0"
+     "tokens": 41,
+     "source": "fn rect_contains r Rect px i64 py i64 -> i64\n    1 if px >= 0 and py >= 0 and px <= r.w and py <= r.h else 0"
     },
     "C": {
      "tokens": 50,
@@ -3349,8 +3349,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 173,
-     "source": "fn days_from_civil y i64 m i64 d i64 -> i64\n    if m <= 2\n        y = y - 1\n    let era = 0\n    if y >= 0\n        era = y / 400\n    else\n        era = (y - 399) / 400\n    let yoe = y - era * 400\n    let mp = 0\n    if m > 2\n        mp = m - 3\n    else\n        mp = m + 9\n    let doy = (153 * mp + 2) / 5 + d - 1\n    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy\n    era * 146097 + doe - 719468"
+     "tokens": 157,
+     "source": "fn days_from_civil y i64 m i64 d i64 -> i64\n    if m <= 2\n        y = y - 1\n    let era = 0\n    era = y / 400 if y >= 0 else (y - 399) / 400\n    let yoe = y - era * 400\n    let mp = 0\n    mp = m - 3 if m > 2 else m + 9\n    let doy = (153 * mp + 2) / 5 + d - 1\n    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy\n    era * 146097 + doe - 719468"
     },
     "C": {
      "tokens": 147,
@@ -3442,8 +3442,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 49,
-     "source": "fn is_leap_year y i64 -> i64\n    if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)\n        1\n    else\n        0"
+     "tokens": 44,
+     "source": "fn is_leap_year y i64 -> i64\n    1 if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0) else 0"
     },
     "C": {
      "tokens": 49,
@@ -3473,8 +3473,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn is_valid_time h i64 mi i64 s i64 -> i64\n    if h >= 0 and h <= 23 and mi >= 0 and mi <= 59 and s >= 0 and s <= 59\n        1\n    else\n        0"
+     "tokens": 53,
+     "source": "fn is_valid_time h i64 mi i64 s i64 -> i64\n    1 if h >= 0 and h <= 23 and mi >= 0 and mi <= 59 and s >= 0 and s <= 59 else 0"
     },
     "C": {
      "tokens": 63,
@@ -3504,8 +3504,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn is_weekend dow i64 -> i64\n    if dow == 0 or dow == 6\n        1\n    else\n        0"
+     "tokens": 27,
+     "source": "fn is_weekend dow i64 -> i64\n    1 if dow == 0 or dow == 6 else 0"
     },
     "C": {
      "tokens": 33,
@@ -3628,8 +3628,8 @@
    "category": "datetime",
    "langs": {
     "Lullaby": {
-     "tokens": 206,
-     "source": "fn year_from_days z i64 -> i64\n    z = z + 719468\n    let era = 0\n    if z >= 0\n        era = z / 146097\n    else\n        era = (z - 146096) / 146097\n    let doe = z - era * 146097\n    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365\n    let y = yoe + era * 400\n    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)\n    let mp = (5 * doy + 2) / 153\n    let m = 0\n    if mp < 10\n        m = mp + 3\n    else\n        m = mp - 9\n    if m <= 2\n        y = y + 1\n    y"
+     "tokens": 190,
+     "source": "fn year_from_days z i64 -> i64\n    z = z + 719468\n    let era = 0\n    era = z / 146097 if z >= 0 else (z - 146096) / 146097\n    let doe = z - era * 146097\n    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365\n    let y = yoe + era * 400\n    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)\n    let mp = (5 * doy + 2) / 153\n    let m = 0\n    m = mp + 3 if mp < 10 else mp - 9\n    if m <= 2\n        y = y + 1\n    y"
     },
     "C": {
      "tokens": 181,
@@ -3969,8 +3969,8 @@
    "category": "encoding",
    "langs": {
     "Lullaby": {
-     "tokens": 106,
-     "source": "fn luhn_from_array a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        let d = a[n - 1 - i]\n        if i % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
+     "tokens": 100,
+     "source": "fn luhn_from_array a array<i64> n i64 -> i64\n    let sum = 0\n    for i from 0 to n - 1\n        let d = a[n - 1 - i]\n        if i % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    1 if sum % 10 == 0 else 0"
     },
     "C": {
      "tokens": 122,
@@ -5228,8 +5228,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 38,
-     "source": "fn collinear a Point b Point c Point -> i64\n    if triangle_area2(a, b, c) == 0\n        1\n    else\n        0"
+     "tokens": 32,
+     "source": "fn collinear a Point b Point c Point -> i64\n    1 if triangle_area2(a, b, c) == 0 else 0"
     },
     "C": {
      "tokens": 37,
@@ -5352,8 +5352,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 39,
-     "source": "fn is_ccw a Point b Point c Point -> i64\n    if triangle_area2(a, b, c) > 0\n        1\n    else\n        0"
+     "tokens": 33,
+     "source": "fn is_ccw a Point b Point c Point -> i64\n    1 if triangle_area2(a, b, c) > 0 else 0"
     },
     "C": {
      "tokens": 38,
@@ -5487,8 +5487,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 67,
-     "source": "fn on_segment_x a Point b Point px i64 -> i64\n    let lo = a.x\n    let hi = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    if px >= lo and px <= hi\n        1\n    else\n        0"
+     "tokens": 61,
+     "source": "fn on_segment_x a Point b Point px i64 -> i64\n    let lo = a.x\n    let hi = b.x\n    if hi < lo\n        lo = b.x\n        hi = a.x\n    1 if px >= lo and px <= hi else 0"
     },
     "C": {
      "tokens": 73,
@@ -5549,8 +5549,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 50,
-     "source": "fn point_in_rect px i64 py i64 w i64 h i64 -> i64\n    if px >= 0 and py >= 0 and px <= w and py <= h\n        1\n    else\n        0"
+     "tokens": 44,
+     "source": "fn point_in_rect px i64 py i64 w i64 h i64 -> i64\n    1 if px >= 0 and py >= 0 and px <= w and py <= h else 0"
     },
     "C": {
      "tokens": 56,
@@ -5642,8 +5642,8 @@
    "category": "geometry",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn taxicab_circle_points r i64 -> i64\n    if r > 0\n        4 * r\n    else\n        1"
+     "tokens": 26,
+     "source": "fn taxicab_circle_points r i64 -> i64\n    4 * r if r > 0 else 1"
     },
     "C": {
      "tokens": 30,
@@ -7206,8 +7206,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 75,
-     "source": "fn is_armstrong n i64 -> i64\n    let d = num_digits(n)\n    let sum = 0\n    let m = n\n    while m > 0\n        sum += int_pow(m % 10, d)\n        m = m / 10\n    if sum == n\n        1\n    else\n        0"
+     "tokens": 69,
+     "source": "fn is_armstrong n i64 -> i64\n    let d = num_digits(n)\n    let sum = 0\n    let m = n\n    while m > 0\n        sum += int_pow(m % 10, d)\n        m = m / 10\n    1 if sum == n else 0"
     },
     "C": {
      "tokens": 83,
@@ -7237,8 +7237,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 64,
-     "source": "fn is_happy n i64 -> i64\n    let steps = 0\n    while n != 1 and steps < 1000\n        n = sum_of_squares_digits(n)\n        steps += 1\n    if n == 1\n        1\n    else\n        0"
+     "tokens": 58,
+     "source": "fn is_happy n i64 -> i64\n    let steps = 0\n    while n != 1 and steps < 1000\n        n = sum_of_squares_digits(n)\n        steps += 1\n    1 if n == 1 else 0"
     },
     "C": {
      "tokens": 65,
@@ -7268,8 +7268,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 31,
-     "source": "fn is_palindrome_number n i64 -> i64\n    if reverse_digits(n) == n\n        1\n    else\n        0"
+     "tokens": 25,
+     "source": "fn is_palindrome_number n i64 -> i64\n    1 if reverse_digits(n) == n else 0"
     },
     "C": {
      "tokens": 29,
@@ -7299,8 +7299,8 @@
    "category": "number_theory",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn is_perfect n i64 -> i64\n    if divisor_sum(n) - n == n\n        1\n    else\n        0"
+     "tokens": 26,
+     "source": "fn is_perfect n i64 -> i64\n    1 if divisor_sum(n) - n == n else 0"
     },
     "C": {
      "tokens": 30,
@@ -10500,8 +10500,8 @@
    "category": "statistics",
    "langs": {
     "Lullaby": {
-     "tokens": 84,
-     "source": "fn running_max_sum a array<i64> -> i64\n    let best = a[0]\n    let cur = a[0]\n    for i from 1 to len(a) - 1\n        if cur + a[i] > a[i]\n            cur = cur + a[i]\n        else\n            cur = a[i]\n        if cur > best\n            best = cur\n    best"
+     "tokens": 78,
+     "source": "fn running_max_sum a array<i64> -> i64\n    let best = a[0]\n    let cur = a[0]\n    for i from 1 to len(a) - 1\n        cur = cur + a[i] if cur + a[i] > a[i] else a[i]\n        if cur > best\n            best = cur\n    best"
     },
     "C": {
      "tokens": 94,
@@ -10810,8 +10810,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 360,
-     "source": "fn edit_distance a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    for j from 0 to lb\n        dp[j] = j\n    for i from 1 to la\n        let prev = dp[0]\n        dp[0] = i\n        for j from 1 to lb\n            let tmp = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev\n            else\n                let m = dp[j - 1]\n                if dp[j] < m\n                    m = dp[j]\n                if prev < m\n                    m = prev\n                dp[j] = m + 1\n            prev = tmp\n    dp[lb]"
+     "tokens": 176,
+     "source": "fn edit_distance a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = array_fill(64, 0)\n    for j from 0 to lb\n        dp[j] = j\n    for i from 1 to la\n        let prev = dp[0]\n        dp[0] = i\n        for j from 1 to lb\n            let tmp = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev\n            else\n                let m = dp[j - 1]\n                if dp[j] < m\n                    m = dp[j]\n                if prev < m\n                    m = prev\n                dp[j] = m + 1\n            prev = tmp\n    dp[lb]"
     },
     "C": {
      "tokens": 217,
@@ -10965,8 +10965,8 @@
    "category": "string_algos",
    "langs": {
     "Lullaby": {
-     "tokens": 334,
-     "source": "fn lcs_length a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]\n    for j from 0 to lb\n        dp[j] = 0\n    for i from 1 to la\n        let prev = 0\n        for j from 1 to lb\n            let tmp = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev + 1\n            else\n                if dp[j - 1] > dp[j]\n                    dp[j] = dp[j - 1]\n            prev = tmp\n    dp[lb]"
+     "tokens": 150,
+     "source": "fn lcs_length a array<i64> la i64 b array<i64> lb i64 -> i64\n    let dp array<i64> = array_fill(64, 0)\n    for j from 0 to lb\n        dp[j] = 0\n    for i from 1 to la\n        let prev = 0\n        for j from 1 to lb\n            let tmp = dp[j]\n            if a[i - 1] == b[j - 1]\n                dp[j] = prev + 1\n            else\n                if dp[j - 1] > dp[j]\n                    dp[j] = dp[j - 1]\n            prev = tmp\n    dp[lb]"
     },
     "C": {
      "tokens": 189,
@@ -11275,8 +11275,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 28,
-     "source": "fn contains_sub s string sub string -> i64\n    if contains(s, sub)\n        1\n    else\n        0"
+     "tokens": 21,
+     "source": "fn contains_sub s string sub string -> i64\n    1 if sub in s else 0"
     },
     "C": {
      "tokens": 32,
@@ -11306,8 +11306,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn count_char s string c string -> i64\n    let target = c[0]\n    let count = 0\n    for ch in s\n        if ch == target\n            count += 1\n    count"
+     "tokens": 47,
+     "source": "fn count_char s string c string -> i64\n    let target = c[0]\n    let count = 0\n    for ch in s\n        count += 1 if ch == target else 0\n    count"
     },
     "C": {
      "tokens": 54,
@@ -11337,8 +11337,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 62,
-     "source": "fn count_vowels s string -> i64\n    let count = 0\n    for c in s\n        if c == 'a' or c == 'e' or c == 'i' or c == 'o' or c == 'u'\n            count += 1\n    count"
+     "tokens": 41,
+     "source": "fn count_vowels s string -> i64\n    let count = 0\n    for c in s\n        count += 1 if c in \"aeiou\" else 0\n    count"
     },
     "C": {
      "tokens": 77,
@@ -11368,8 +11368,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 30,
-     "source": "fn ends_with_suffix s string p string -> i64\n    if ends_with(s, p)\n        1\n    else\n        0"
+     "tokens": 25,
+     "source": "fn ends_with_suffix s string p string -> i64\n    1 if ends_with(s, p) else 0"
     },
     "C": {
      "tokens": 63,
@@ -11399,8 +11399,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 100,
-     "source": "fn initials name string -> string\n    let out string = \"\"\n    let in_word = 0\n    for c in name\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            let code = char_code(c)\n            if code >= 97 and code <= 122\n                out += to_string(char_from(code - 32))\n            else\n                out += to_string(c)\n    out"
+     "tokens": 89,
+     "source": "fn initials name string -> string\n    let out string = \"\"\n    let in_word = 0\n    for c in name\n        if is_whitespace(c)\n            in_word = 0\n        elif in_word == 0\n            in_word = 1\n            let code = char_code(c)\n            out += char_from(code - 32) if code >= 97 and code <= 122 else c\n    out"
     },
     "C": {
      "tokens": 138,
@@ -11461,8 +11461,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 46,
-     "source": "fn left_pad s string width i64 c string -> string\n    let pad = width - len(s)\n    let out string = \"\"\n    for i from 1 to pad\n        out += c\n    out + s"
+     "tokens": 37,
+     "source": "fn left_pad s string width i64 c string -> string\n    let pad = width - len(s)\n    repeat(c, pad) + s if pad > 0 else s"
     },
     "C": {
      "tokens": 79,
@@ -11492,8 +11492,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn repeat_str s string n i64 -> string\n    let out string = \"\"\n    for i from 1 to n\n        out += s\n    out"
+     "tokens": 24,
+     "source": "fn repeat_str s string n i64 -> string\n    repeat(s, n) if n > 0 else \"\""
     },
     "C": {
      "tokens": 73,
@@ -11534,8 +11534,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 48,
-     "source": "fn reverse_str s string -> string\n    let out string = \"\"\n    let i = len(s) - 1\n    while i >= 0\n        out += to_string(s[i])\n        i -= 1\n    out"
+     "tokens": 46,
+     "source": "fn reverse_str s string -> string\n    let out string = \"\"\n    let i = len(s) - 1\n    while i >= 0\n        out += s[i]\n        i -= 1\n    out"
     },
     "C": {
      "tokens": 59,
@@ -11565,8 +11565,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 30,
-     "source": "fn starts_with_prefix s string p string -> i64\n    if starts_with(s, p)\n        1\n    else\n        0"
+     "tokens": 25,
+     "source": "fn starts_with_prefix s string p string -> i64\n    1 if starts_with(s, p) else 0"
     },
     "C": {
      "tokens": 38,
@@ -11596,8 +11596,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 65,
-     "source": "fn to_lower_ascii s string -> string\n    let out string = \"\"\n    for c in s\n        let code = char_code(c)\n        if code >= 65 and code <= 90\n            out += to_string(char_from(code + 32))\n        else\n            out += to_string(c)\n    out"
+     "tokens": 54,
+     "source": "fn to_lower_ascii s string -> string\n    let out string = \"\"\n    for c in s\n        let code = char_code(c)\n        out += char_from(code + 32) if code >= 65 and code <= 90 else c\n    out"
     },
     "C": {
      "tokens": 78,
@@ -11627,8 +11627,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 65,
-     "source": "fn to_upper_ascii s string -> string\n    let out string = \"\"\n    for c in s\n        let code = char_code(c)\n        if code >= 97 and code <= 122\n            out += to_string(char_from(code - 32))\n        else\n            out += to_string(c)\n    out"
+     "tokens": 54,
+     "source": "fn to_upper_ascii s string -> string\n    let out string = \"\"\n    for c in s\n        let code = char_code(c)\n        out += char_from(code - 32) if code >= 97 and code <= 122 else c\n    out"
     },
     "C": {
      "tokens": 78,
@@ -11658,8 +11658,8 @@
    "category": "text_processing",
    "langs": {
     "Lullaby": {
-     "tokens": 39,
-     "source": "fn truncate_ellipsis s string max i64 -> string\n    if len(s) <= max\n        return s\n    substring(s, 0, max - 3) + \"...\""
+     "tokens": 32,
+     "source": "fn truncate_ellipsis s string max i64 -> string\n    s if len(s) <= max else s[0:max - 3] + \"...\""
     },
     "C": {
      "tokens": 78,
@@ -12336,8 +12336,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 90,
-     "source": "fn days_in_month y i64 m i64 -> i64\n    if m == 2\n        if is_leap_year(y) == 1\n            return 29\n        return 28\n    if m == 4 or m == 6 or m == 9 or m == 11\n        return 30\n    if m >= 1 and m <= 12\n        return 31\n    0"
+     "tokens": 86,
+     "source": "fn days_in_month y i64 m i64 -> i64\n    if m == 2\n        return 29 if is_leap_year(y) == 1 else 28\n    if m == 4 or m == 6 or m == 9 or m == 11\n        return 30\n    if m >= 1 and m <= 12\n        return 31\n    0"
     },
     "C": {
      "tokens": 86,
@@ -12367,8 +12367,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn even_parity bits array<i64> -> i64\n    let ones = 0\n    for b in bits\n        if b == 1\n            ones += 1\n    if ones % 2 == 0\n        1\n    else\n        0"
+     "tokens": 54,
+     "source": "fn even_parity bits array<i64> -> i64\n    let ones = 0\n    for b in bits\n        ones += 1 if b == 1 else 0\n    1 if ones % 2 == 0 else 0"
     },
     "C": {
      "tokens": 72,
@@ -12398,8 +12398,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 36,
-     "source": "fn in_range x i64 lo i64 hi i64 -> i64\n    if x >= lo and x <= hi\n        1\n    else\n        0"
+     "tokens": 30,
+     "source": "fn in_range x i64 lo i64 hi i64 -> i64\n    1 if x >= lo and x <= hi else 0"
     },
     "C": {
      "tokens": 34,
@@ -12429,8 +12429,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 55,
-     "source": "fn is_ascii_alpha c string -> i64\n    let code = char_code(c[0])\n    if (code >= 65 and code <= 90) or (code >= 97 and code <= 122)\n        1\n    else\n        0"
+     "tokens": 50,
+     "source": "fn is_ascii_alpha c string -> i64\n    let code = char_code(c[0])\n    1 if (code >= 65 and code <= 90) or (code >= 97 and code <= 122) else 0"
     },
     "C": {
      "tokens": 58,
@@ -12460,8 +12460,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 28,
-     "source": "fn is_ascii_digit c string -> i64\n    if is_digit(c[0])\n        1\n    else\n        0"
+     "tokens": 23,
+     "source": "fn is_ascii_digit c string -> i64\n    1 if is_digit(c[0]) else 0"
     },
     "C": {
      "tokens": 38,
@@ -12491,8 +12491,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 114,
-     "source": "fn is_hex_string s string -> i64\n    if len(s) == 0\n        return 0\n    for c in s\n        let code = char_code(c)\n        let ok = 0\n        if code >= 48 and code <= 57\n            ok = 1\n        if code >= 97 and code <= 102\n            ok = 1\n        if code >= 65 and code <= 70\n            ok = 1\n        if ok == 0\n            return 0\n    1"
+     "tokens": 84,
+     "source": "fn is_hex_string s string -> i64\n    if len(s) == 0\n        return 0\n    for c in s\n        let code = char_code(c)\n        if not ((code >= 48 and code <= 57) or (code >= 97 and code <= 102) or (code >= 65 and code <= 70))\n            return 0\n    1"
     },
     "C": {
      "tokens": 114,
@@ -12522,8 +12522,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 60,
-     "source": "fn is_leap_year y i64 -> i64\n    if y % 400 == 0\n        return 1\n    if y % 100 == 0\n        return 0\n    if y % 4 == 0\n        return 1\n    0"
+     "tokens": 48,
+     "source": "fn is_leap_year y i64 -> i64\n    1 if y % 400 == 0 else 0 if y % 100 == 0 else 1 if y % 4 == 0 else 0"
     },
     "C": {
      "tokens": 58,
@@ -12584,8 +12584,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 79,
-     "source": "fn is_valid_isbn10 digits array<i64> -> i64\n    if len(digits) != 10\n        return 0\n    let sum = 0\n    for i from 0 to 9\n        sum += (10 - i) * digits[i]\n    if sum % 11 == 0\n        1\n    else\n        0"
+     "tokens": 73,
+     "source": "fn is_valid_isbn10 digits array<i64> -> i64\n    if len(digits) != 10\n        return 0\n    let sum = 0\n    for i from 0 to 9\n        sum += (10 - i) * digits[i]\n    1 if sum % 11 == 0 else 0"
     },
     "C": {
      "tokens": 87,
@@ -12615,8 +12615,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 33,
-     "source": "fn is_valid_month m i64 -> i64\n    if m >= 1 and m <= 12\n        1\n    else\n        0"
+     "tokens": 27,
+     "source": "fn is_valid_month m i64 -> i64\n    1 if m >= 1 and m <= 12 else 0"
     },
     "C": {
      "tokens": 29,
@@ -12646,8 +12646,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 59,
-     "source": "fn is_valid_rgb r i64 g i64 b i64 -> i64\n    if r >= 0 and r <= 255 and g >= 0 and g <= 255 and b >= 0 and b <= 255\n        1\n    else\n        0"
+     "tokens": 53,
+     "source": "fn is_valid_rgb r i64 g i64 b i64 -> i64\n    1 if r >= 0 and r <= 255 and g >= 0 and g <= 255 and b >= 0 and b <= 255 else 0"
     },
     "C": {
      "tokens": 57,
@@ -12677,8 +12677,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 116,
-     "source": "fn luhn_check digits array<i64> -> i64\n    let n = len(digits)\n    let sum = 0\n    for i from 0 to n - 1\n        let d = digits[i]\n        let pos = n - 1 - i\n        if pos % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    if sum % 10 == 0\n        1\n    else\n        0"
+     "tokens": 110,
+     "source": "fn luhn_check digits array<i64> -> i64\n    let n = len(digits)\n    let sum = 0\n    for i from 0 to n - 1\n        let d = digits[i]\n        let pos = n - 1 - i\n        if pos % 2 == 1\n            d = d * 2\n            if d > 9\n                d = d - 9\n        sum += d\n    1 if sum % 10 == 0 else 0"
     },
     "C": {
      "tokens": 124,
@@ -12746,8 +12746,8 @@
    "category": "validation",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn valid_percentage x i64 -> i64\n    if x >= 0 and x <= 100\n        1\n    else\n        0"
+     "tokens": 26,
+     "source": "fn valid_percentage x i64 -> i64\n    1 if x >= 0 and x <= 100 else 0"
     },
     "C": {
      "tokens": 28,
@@ -13281,7 +13281,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 22356,
+  "Lullaby": 21535,
   "C": 26030,
   "C++": 26894,
   "Rust": 24867,
@@ -13298,7 +13298,7 @@
    "JavaScript": 953
   },
   "bitwise": {
-   "Lullaby": 808,
+   "Lullaby": 797,
    "C": 954,
    "C++": 954,
    "Rust": 933,
@@ -13322,7 +13322,7 @@
    "JavaScript": 1241
   },
   "combinatorics": {
-   "Lullaby": 1151,
+   "Lullaby": 1036,
    "C": 1275,
    "C++": 1275,
    "Rust": 1200,
@@ -13330,7 +13330,7 @@
    "JavaScript": 1111
   },
   "data_records": {
-   "Lullaby": 512,
+   "Lullaby": 494,
    "C": 567,
    "C++": 600,
    "Rust": 500,
@@ -13338,7 +13338,7 @@
    "JavaScript": 416
   },
   "datetime": {
-   "Lullaby": 1019,
+   "Lullaby": 970,
    "C": 1051,
    "C++": 1052,
    "Rust": 1056,
@@ -13346,7 +13346,7 @@
    "JavaScript": 968
   },
   "encoding": {
-   "Lullaby": 907,
+   "Lullaby": 901,
    "C": 1050,
    "C++": 1050,
    "Rust": 1025,
@@ -13370,7 +13370,7 @@
    "JavaScript": 1090
   },
   "geometry": {
-   "Lullaby": 576,
+   "Lullaby": 546,
    "C": 647,
    "C++": 727,
    "Rust": 632,
@@ -13402,7 +13402,7 @@
    "JavaScript": 813
   },
   "number_theory": {
-   "Lullaby": 928,
+   "Lullaby": 904,
    "C": 1098,
    "C++": 1098,
    "Rust": 1089,
@@ -13450,7 +13450,7 @@
    "JavaScript": 791
   },
   "statistics": {
-   "Lullaby": 678,
+   "Lullaby": 672,
    "C": 969,
    "C++": 1097,
    "Rust": 884,
@@ -13458,7 +13458,7 @@
    "JavaScript": 765
   },
   "string_algos": {
-   "Lullaby": 1996,
+   "Lullaby": 1628,
    "C": 1836,
    "C++": 2064,
    "Rust": 1836,
@@ -13466,7 +13466,7 @@
    "JavaScript": 1528
   },
   "text_processing": {
-   "Lullaby": 703,
+   "Lullaby": 606,
    "C": 1028,
    "C++": 863,
    "Rust": 584,
@@ -13482,7 +13482,7 @@
    "JavaScript": 319
   },
   "validation": {
-   "Lullaby": 1035,
+   "Lullaby": 938,
    "C": 1131,
    "C++": 1067,
    "Rust": 1186,
