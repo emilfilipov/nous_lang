@@ -1848,6 +1848,9 @@ fn lower_for(
 #[path = "wasm_lowering.rs"]
 mod lowering;
 pub(crate) use lowering::*;
+#[path = "wasm_lowering_mem.rs"]
+mod lowering_mem;
+pub(crate) use lowering_mem::*;
 
 #[cfg(test)]
 #[path = "wasm_tests.rs"]

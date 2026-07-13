@@ -34,7 +34,6 @@ pub(crate) fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 #[path = "cli/suite1.rs"]
 mod suite1;
 
-
 /// A fresh temp directory for a file-system test, using forward slashes so the
 /// path can be embedded in a `.lby` string literal on every platform (Windows
 /// accepts `/` in `std::fs` paths). The directory is recreated empty.
@@ -689,7 +688,6 @@ pub(crate) fn node_available() -> bool {
 #[path = "cli/suite2.rs"]
 mod suite2;
 
-
 // -- Native x86-64 backend (i64-scalar subset, link-to-exe) ------------------
 
 /// Locate `rust-lld.exe` under the rustc sysroot (mirrors the CLI's discovery).
@@ -1243,7 +1241,6 @@ pub(crate) fn llvm_readobj_path() -> Option<PathBuf> {
 /// A file with no i64-scalar function eligible reports diagnostic `L0339`.
 #[path = "cli/suite3.rs"]
 mod suite3;
-
 
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
