@@ -2664,7 +2664,7 @@ struct LoweredNativeFunction {
 
 /// A relocation inside a function body: patch a 4-byte REL32 field at `offset`
 /// (relative to the function's own code start) to reference `symbol`.
-struct CodeRelocation {
+pub(crate) struct CodeRelocation {
     /// Byte offset of the 4-byte field within this function's code.
     offset: u32,
     /// The symbol name referenced.
@@ -11227,7 +11227,7 @@ const COFF_RELOC_SIZE: u32 = 10;
 // `len` result and hence the process exit code.
 
 /// A machine-code blob plus the symbols it references via REL32 relocations.
-struct HelperFunction {
+pub(crate) struct HelperFunction {
     name: String,
     code: Vec<u8>,
     relocations: Vec<CodeRelocation>,
