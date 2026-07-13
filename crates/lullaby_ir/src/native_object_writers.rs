@@ -340,6 +340,8 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_str_count_helper(),
         emit_str_repeat_helper(),
         emit_str_trim_helper(),
+        emit_str_upper_helper(),
+        emit_str_lower_helper(),
         emit_str_find_helper(),
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
@@ -378,6 +380,8 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_COUNT_SYMBOL
                     | STR_REPEAT_SYMBOL
                     | STR_TRIM_SYMBOL
+                    | STR_UPPER_SYMBOL
+                    | STR_LOWER_SYMBOL
                     | STR_FIND_SYMBOL
                     | STR_CONTAINS_SYMBOL
                     | STR_STARTS_WITH_SYMBOL
@@ -858,6 +862,8 @@ fn write_object_with_data(
         emit_str_count_helper(),
         emit_str_repeat_helper(),
         emit_str_trim_helper(),
+        emit_str_upper_helper(),
+        emit_str_lower_helper(),
         emit_str_find_helper(),
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
@@ -940,6 +946,8 @@ fn write_object_with_data(
         STR_COUNT_SYMBOL,
         STR_REPEAT_SYMBOL,
         STR_TRIM_SYMBOL,
+        STR_UPPER_SYMBOL,
+        STR_LOWER_SYMBOL,
         STR_FIND_SYMBOL,
         STR_CONTAINS_SYMBOL,
         STR_STARTS_WITH_SYMBOL,

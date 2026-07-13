@@ -1029,6 +1029,53 @@ pub(crate) fn native_string_ops_execution_parity_when_linkable() {
     );
 }
 
+/// Native `upper`/`lower` (ASCII case fold) execution parity: a byte-wise case fold
+/// over the ASCII strings the native subset builds matches the interpreters'
+/// `to_uppercase`/`to_lowercase` exactly. Includes `upper(lower(x))` (whose inner
+/// result is a fresh temporary reclaimed through `str_read_own`).
+#[test]
+pub(crate) fn native_string_case_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_string_case.lby");
+    let out = std::env::temp_dir().join("lullaby_native_string_case_parity.exe");
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 17829, "upper/lower fixture main computes 17829");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld/kernel32.lib unavailable; skipping native string-case parity");
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "native upper/lower must match the interpreters"
+    );
+}
+
 /// Best-effort execution parity for first-class native heap `string` values:
 /// native-compile a program that builds strings by concatenation (`+`), converts
 /// integers/bools with `to_string`, passes a string to a helper that returns its

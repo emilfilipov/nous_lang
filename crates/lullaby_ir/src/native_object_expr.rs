@@ -357,6 +357,19 @@ pub(crate) fn lower_native_expr(
             if name == "trim" && args.len() == 1 && is_string_type(&args[0].ty) {
                 return lower_string_trim(ctx, &args[0], code);
             }
+            // `upper(text)`/`lower(text)`: ASCII case fold (fresh record). The native
+            // string subset is ASCII, so a byte-wise fold matches the interpreters.
+            if (name == "upper" || name == "lower")
+                && args.len() == 1
+                && is_string_type(&args[0].ty)
+            {
+                let symbol = if name == "upper" {
+                    STR_UPPER_SYMBOL
+                } else {
+                    STR_LOWER_SYMBOL
+                };
+                return lower_string_case(ctx, &args[0], symbol, code);
+            }
             if name == "contains"
                 && args.len() == 2
                 && is_string_type(&args[0].ty)

@@ -1365,6 +1365,14 @@ const STR_REPEAT_SYMBOL: &str = "__lullaby_str_repeat";
 /// char indices for the ASCII strings the native subset builds).
 const STR_TRIM_SYMBOL: &str = "__lullaby_str_trim";
 
+/// The `upper`/`lower` helpers emitted in `.text`. Signature: the source record
+/// pointer in `rcx`; returns in `rax` a fresh record with each ASCII letter
+/// upper-/lower-cased (non-letters copied verbatim). The native string subset is
+/// ASCII, so a byte-wise ASCII case fold matches the interpreters' `to_uppercase`/
+/// `to_lowercase` (which are length-preserving on ASCII) exactly.
+const STR_UPPER_SYMBOL: &str = "__lullaby_str_upper";
+const STR_LOWER_SYMBOL: &str = "__lullaby_str_lower";
+
 /// The `find` helper emitted in `.text`. Signature: the haystack record pointer
 /// in `rcx`, the needle record pointer in `rdx`; returns in `rax` the CHAR index
 /// (i64) of the first byte-level occurrence of the needle, or `-1` if absent. An

@@ -1948,6 +1948,81 @@ pub(crate) fn emit_str_trim_helper() -> HelperFunction {
     }
 }
 
+/// Emit an ASCII case-fold helper (`__lullaby_str_upper`/`_lower`). `lower_bound`
+/// is the low letter of the case range to transform (`b'a'` for upper, `b'A'` for
+/// lower); `subtract` picks `-0x20` (upper) or `+0x20` (lower). Allocates a fresh
+/// record the same size as the source, copies the two headers, and copies each
+/// byte, case-folding those in `[lower_bound, lower_bound + 25]`.
+fn emit_str_case_helper(symbol: &str, lower_bound: u8, subtract: bool) -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 3 callee-saved pushes (%16 -> 0), `sub rsp, 0x20` (shadow).
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 0x20
+
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (source)
+    code.extend_from_slice(&[0x48, 0x8B, 0x73, 0x08]); // mov rsi, [rbx + STR_BYTE_LEN_OFF]
+    code.extend_from_slice(&[0x48, 0x8D, 0x4E, 0x10]); // lea rcx, [rsi + STR_DATA_OFF]
+    emit_helper_call(&mut code, &mut relocations, HEAP_ALLOC_SYMBOL); // rax = dst
+    // Copy the two headers verbatim (ASCII case fold is length-preserving).
+    code.extend_from_slice(&[0x48, 0x8B, 0x53, 0x00]); // mov rdx, [rbx + STR_CHAR_LEN_OFF]
+    code.extend_from_slice(&[0x48, 0x89, 0x50, 0x00]); // mov [rax + STR_CHAR_LEN_OFF], rdx
+    code.extend_from_slice(&[0x48, 0x8B, 0x53, 0x08]); // mov rdx, [rbx + STR_BYTE_LEN_OFF]
+    code.extend_from_slice(&[0x48, 0x89, 0x50, 0x08]); // mov [rax + STR_BYTE_LEN_OFF], rdx
+
+    // Copy loop with the case fold. rdi = i.
+    code.extend_from_slice(&[0x31, 0xFF]); // xor edi, edi
+    let loop_top = code.len();
+    code.extend_from_slice(&[0x48, 0x39, 0xF7]); // cmp rdi, rsi
+    code.extend_from_slice(&[0x0F, 0x83]); // jae done
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // ecx = src_data[i].
+    code.extend_from_slice(&[0x0F, 0xB6, 0x8C, 0x3B]); // movzx ecx, byte [rbx + rdi + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    // edx = ecx - lower_bound; if (unsigned) edx <= 25 -> in range.
+    code.extend_from_slice(&[0x8D, 0x51, (0u8).wrapping_sub(lower_bound)]); // lea edx, [rcx - lower_bound]
+    code.extend_from_slice(&[0x83, 0xFA, 0x19]); // cmp edx, 25
+    code.extend_from_slice(&[0x77, 0x03]); // ja store (skip the 3-byte fold)
+    if subtract {
+        code.extend_from_slice(&[0x83, 0xE9, 0x20]); // sub ecx, 0x20 (uppercase)
+    } else {
+        code.extend_from_slice(&[0x83, 0xC1, 0x20]); // add ecx, 0x20 (lowercase)
+    }
+    // store: dst_data[i] = cl.
+    code.extend_from_slice(&[0x88, 0x8C, 0x38]); // mov [rax + rdi + disp32], cl
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi
+    emit_jmp_to(&mut code, loop_top);
+
+    // done: rax already holds the dst record.
+    patch_rel32(&mut code, done_site);
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 0x20
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: symbol.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_upper(rcx = source) -> rax`: ASCII-uppercased copy.
+pub(crate) fn emit_str_upper_helper() -> HelperFunction {
+    emit_str_case_helper(STR_UPPER_SYMBOL, b'a', true)
+}
+
+/// `__lullaby_str_lower(rcx = source) -> rax`: ASCII-lowercased copy.
+pub(crate) fn emit_str_lower_helper() -> HelperFunction {
+    emit_str_case_helper(STR_LOWER_SYMBOL, b'A', false)
+}
+
 /// `__lullaby_str_repeat(rcx = s, rdx = count) -> rax = record`.
 ///
 /// Builds a fresh `[char_len][byte_len][utf8]` record equal to the source repeated

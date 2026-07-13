@@ -1,0 +1,5 @@
+fn main -> i64
+    let a string = upper("Hello, World! 123")
+    let b string = lower("Hello, World! 123")
+    let c string = upper(lower("MiXeD"))
+    len(a) * 1000 + char_code(a[0]) * 10 + char_code(b[0]) + len(c)

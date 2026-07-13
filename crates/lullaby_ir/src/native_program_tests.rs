@@ -2680,6 +2680,43 @@ fn rc_drop_inserted_for_owned_loop_string_but_not_when_it_escapes() {
 }
 
 #[test]
+fn upper_lower_helpers_fold_ascii_case() {
+    // The uppercase helper subtracts 0x20 (`83 E9 20`) from a byte in `a..=z`; the
+    // lowercase helper adds 0x20 (`83 C1 20`) to a byte in `A..=Z`. Both allocate a
+    // fresh same-size record (reference the bump allocator).
+    let upper = emit_str_upper_helper();
+    assert!(
+        upper.code.windows(3).any(|w| w == [0x83, 0xE9, 0x20]),
+        "upper must `sub ecx, 0x20`"
+    );
+    assert!(
+        upper
+            .relocations
+            .iter()
+            .any(|r| r.symbol == HEAP_ALLOC_SYMBOL),
+        "upper must allocate a fresh record"
+    );
+    let lower = emit_str_lower_helper();
+    assert!(
+        lower.code.windows(3).any(|w| w == [0x83, 0xC1, 0x20]),
+        "lower must `add ecx, 0x20`"
+    );
+    // A program using them compiles natively and defines the symbols.
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    len(upper(\"aB\")) + len(lower(\"Cd\"))\n",
+    )))
+    .expect("emit upper/lower program");
+    assert!(program.compiled.contains(&"main".to_string()));
+    for symbol in [STR_UPPER_SYMBOL, STR_LOWER_SYMBOL] {
+        assert!(
+            coff_symbol(&program.bytes, symbol).is_some_and(|(s, _)| s == 1),
+            "{symbol} must be defined in .text"
+        );
+    }
+}
+
+#[test]
 fn read_own_helper_forwards_and_reclaims_the_source() {
     // The string-read ownership helper indirect-calls the op (`call r9`), then
     // `rc_dec`s the source. `substring(to_string(i), …)` on a fresh temp emits it.

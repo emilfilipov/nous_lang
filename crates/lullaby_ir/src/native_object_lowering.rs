@@ -1199,6 +1199,21 @@ pub(crate) fn lower_string_trim(
     Ok(())
 }
 
+/// Lower `upper(s)`/`lower(s)`: stage the source record into `rcx` and call the
+/// ASCII case-fold helper (fresh record in `rax`; a fresh-temp source is reclaimed
+/// through `__lullaby_str_read_own`, like `trim`).
+pub(crate) fn lower_string_case(
+    ctx: &mut NativeCtx,
+    s: &BytecodeExpr,
+    symbol: &str,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, s, code)?; // record pointer -> rax
+    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
+    emit_str_read_op(ctx, s, symbol, code);
+    Ok(())
+}
+
 /// Lower a two-string operation (`find`/`contains`/`starts_with`/`ends_with`):
 /// evaluate the first string record pointer into `rcx` and the second into `rdx`,
 /// then call the named `.text` helper, which leaves its result (an `i64` char
