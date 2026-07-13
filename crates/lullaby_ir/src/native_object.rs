@@ -2824,11 +2824,14 @@ enum ScalarPlace {
     /// A dynamic scalar word. `base_slot` is the enclosing local's first word;
     /// `const_words` accumulates the static word offset from field hops and
     /// constant indices; `elem_words` is the per-element word stride of the
-    /// dynamic array; and the runtime index expression selects the element.
+    /// dynamic array; `index_len` is the element count of the array the runtime
+    /// index selects into (its static length), used to emit a bounds check; and
+    /// the runtime index expression selects the element.
     Dynamic {
         base_slot: i32,
         const_words: i64,
         elem_words: i64,
+        index_len: i64,
         index: BytecodeExpr,
     },
 }
@@ -4500,7 +4503,7 @@ fn resolve_place_steps(
     let base_slot = local.slot;
     let mut ty = local.ty.clone();
     let mut const_words: i64 = 0;
-    let mut dynamic: Option<(i64, BytecodeExpr)> = None;
+    let mut dynamic: Option<(i64, i64, BytecodeExpr)> = None;
 
     for step in steps {
         match (step, &ty) {
@@ -4518,12 +4521,20 @@ fn resolve_place_steps(
                 const_words += offset;
                 ty = fty;
             }
-            (PathStep::Index(index), NativeType::Array { elem, .. }) => {
+            (PathStep::Index(index), NativeType::Array { elem, len }) => {
                 let stride = elem.words() as i64;
                 if let BytecodeExprKind::Integer(literal) = index.kind {
+                    // A constant index is bounds-checked at compile time: an
+                    // out-of-range literal is rejected so the function skips
+                    // gracefully rather than emitting an out-of-bounds access.
+                    if literal < 0 || literal >= *len as i64 {
+                        return Err(format!(
+                            "array index `{literal}` is out of bounds for length {len}"
+                        ));
+                    }
                     const_words += literal * stride;
                 } else if dynamic.is_none() {
-                    dynamic = Some((stride, (*index).clone()));
+                    dynamic = Some((stride, *len as i64, (*index).clone()));
                 } else {
                     return Err(
                         "at most one runtime array index is supported per access".to_string()
@@ -4548,10 +4559,11 @@ fn resolve_place_steps(
         None => Ok(ScalarPlace::Const {
             slot: base_slot + const_words as i32 * 8,
         }),
-        Some((elem_words, index)) => Ok(ScalarPlace::Dynamic {
+        Some((elem_words, index_len, index)) => Ok(ScalarPlace::Dynamic {
             base_slot,
             const_words,
             elem_words,
+            index_len,
             index,
         }),
     }
@@ -4628,6 +4640,7 @@ fn emit_dynamic_addr_into_rcx(
         base_slot,
         const_words,
         elem_words,
+        index_len,
         index,
     } = place
     else {
@@ -4635,6 +4648,11 @@ fn emit_dynamic_addr_into_rcx(
     };
     // rax = index
     lower_native_expr(ctx, index, code)?;
+    // Bounds check: trap on out-of-range, mirroring the interpreters' L0413.
+    // One UNSIGNED compare catches both `index < 0` (a huge unsigned value) and
+    // `index >= len`, so a negative or over-large index faults deterministically
+    // (`ud2`) instead of reading adjacent stack memory.
+    emit_bounds_check_rax(code, *index_len);
     // rax = index * elem_words   (imul rax, rax, imm32)
     emit_imul_rax_imm(code, *elem_words);
     // rax = rax * 8  -> byte stride  (shl rax, 3)
@@ -4653,6 +4671,57 @@ fn emit_dynamic_addr_into_rcx(
 fn emit_imul_rax_imm(code: &mut Vec<u8>, imm: i64) {
     code.extend_from_slice(&[0x48, 0x69, 0xC0]);
     code.extend_from_slice(&(imm as i32).to_le_bytes());
+}
+
+/// Emit an array-index bounds check on the index already in `rax`: trap with
+/// `ud2` unless `0 <= rax < len`. A single UNSIGNED comparison (`cmp`+`jb`) covers
+/// both ends — a negative index is a huge unsigned value, so it is `>= len` too.
+/// Matches the interpreters' `L0413` (fail, don't read out of bounds); `ud2` is
+/// the same deterministic trap the string-slice helper already uses. `len` is a
+/// static array length that always fits `imm32`.
+fn emit_bounds_check_rax(code: &mut Vec<u8>, len: i64) {
+    code.extend_from_slice(&[0x48, 0x3D]); // cmp rax, imm32
+    code.extend_from_slice(&(len as i32).to_le_bytes());
+    code.extend_from_slice(&[0x72, 0x02]); // jb +2  (in bounds -> skip the trap)
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2    (out of bounds -> fault)
+}
+
+/// Emit a hoisted bounds guard for an auto-vectorized `for` loop over an array of
+/// `len` elements, given the counter's start slot and inclusive-end slot. The
+/// vectorized loop bodies address the array inline (bypassing the per-access
+/// [`emit_bounds_check_rax`]), so this one-time guard at loop entry keeps them
+/// memory-safe: if the loop is NON-EMPTY (`start <= end`) it traps (`ud2`) unless
+/// `start >= 0` and `end < len`. The emptiness guard means an empty range (e.g.
+/// `for i from 0 to n-1` with `n == 0`, i.e. `end == -1`) never false-traps.
+fn emit_loop_bounds_guard(code: &mut Vec<u8>, i_slot: i32, end_slot: i32, len: i64) {
+    load_local(code, i_slot); // rax = start
+    code.extend_from_slice(&[0x48, 0x3B, 0x85]); // cmp rax, [rbp-end_slot]
+    code.extend_from_slice(&(-end_slot).to_le_bytes());
+    code.extend_from_slice(&[0x0F, 0x8F]); // jg skip (start > end -> empty, no access)
+    let skip_a = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Non-empty: start >= 0 (rax still holds start) ...
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x00]); // cmp rax, 0
+    code.extend_from_slice(&[0x0F, 0x8C]); // jl trap
+    let trap_a = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // ... and end < len.
+    load_local(code, end_slot); // rax = end
+    code.extend_from_slice(&[0x48, 0x3D]); // cmp rax, imm32 (len)
+    code.extend_from_slice(&(len as i32).to_le_bytes());
+    code.extend_from_slice(&[0x0F, 0x83]); // jae trap (end >= len)
+    let trap_b = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.push(0xE9); // jmp skip (in bounds)
+    let skip_b = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // trap:
+    patch_rel32(code, trap_a);
+    patch_rel32(code, trap_b);
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+    // skip:
+    patch_rel32(code, skip_a);
+    patch_rel32(code, skip_b);
 }
 
 // -- SSE2 integer-SIMD encoders (auto-vectorization) -------------------------
@@ -5732,6 +5801,7 @@ fn emit_for_compare(code: &mut Vec<u8>, end_slot: i32, set_opcode: u8) {
 struct Reduction {
     acc_slot: i32,
     array_base_static: i32,
+    array_len: i64,
     op: ReduceOp,
 }
 
@@ -5818,6 +5888,7 @@ fn detect_reduction(
         base_slot,
         const_words,
         elem_words,
+        index_len,
         ..
     } = place
     else {
@@ -5834,6 +5905,7 @@ fn detect_reduction(
     Some(Reduction {
         acc_slot: acc_local.slot,
         array_base_static: base_slot + const_words as i32 * 8,
+        array_len: index_len,
         op,
     })
 }
@@ -5844,6 +5916,7 @@ fn detect_reduction(
 struct MinMaxReduction {
     acc_slot: i32,
     array_base_static: i32,
+    array_len: i64,
     op: MinMaxOp,
 }
 
@@ -5913,6 +5986,7 @@ fn detect_minmax_reduction(
         base_slot,
         const_words,
         elem_words,
+        index_len,
         ..
     } = resolve_read_place(ctx, element).ok()?
     else {
@@ -5928,6 +6002,7 @@ fn detect_minmax_reduction(
     Some(MinMaxReduction {
         acc_slot: acc_local.slot,
         array_base_static: base_slot + const_words as i32 * 8,
+        array_len: index_len,
         op,
     })
 }
@@ -5939,6 +6014,9 @@ struct ElementwiseMap {
     dest_base: i32,
     lhs_base: i32,
     rhs_base: i32,
+    /// The smallest of the three arrays' lengths — the loop must stay within all
+    /// of dest/lhs/rhs, so the hoisted bounds guard checks against the minimum.
+    min_len: i64,
     op: MapOp,
 }
 
@@ -5947,9 +6025,9 @@ fn index_is_counter(expr: &BytecodeExpr, counter: &str) -> bool {
     matches!(&expr.kind, BytecodeExprKind::Variable(v) if v == counter)
 }
 
-/// If `expr` is `array[counter]` over a contiguous `i64` array, return the
-/// array's static element-0 base (`base_slot + 8*const_words`).
-fn indexed_i64_base(ctx: &NativeCtx, expr: &BytecodeExpr, counter: &str) -> Option<i32> {
+/// If `expr` is `array[counter]` over a contiguous `i64` array, return the array's
+/// static element-0 base (`base_slot + 8*const_words`) and its element count.
+fn indexed_i64_base(ctx: &NativeCtx, expr: &BytecodeExpr, counter: &str) -> Option<(i32, i64)> {
     let BytecodeExprKind::Index { index, .. } = &expr.kind else {
         return None;
     };
@@ -5960,6 +6038,7 @@ fn indexed_i64_base(ctx: &NativeCtx, expr: &BytecodeExpr, counter: &str) -> Opti
         base_slot,
         const_words,
         elem_words,
+        index_len,
         ..
     } = resolve_read_place(ctx, expr).ok()?
     else {
@@ -5968,7 +6047,7 @@ fn indexed_i64_base(ctx: &NativeCtx, expr: &BytecodeExpr, counter: &str) -> Opti
     if elem_words != 1 {
         return None;
     }
-    Some(base_slot + const_words as i32 * 8)
+    Some((base_slot + const_words as i32 * 8, index_len))
 }
 
 /// Recognize `for counter from S to E: dest[counter] = lhs[counter] (+|-)
@@ -6018,13 +6097,14 @@ fn detect_elementwise_map(
         BinaryOp::BitXor => MapOp::Xor,
         _ => return None,
     };
-    let lhs_base = indexed_i64_base(ctx, left, counter)?;
-    let rhs_base = indexed_i64_base(ctx, right, counter)?;
+    let (lhs_base, lhs_len) = indexed_i64_base(ctx, left, counter)?;
+    let (rhs_base, rhs_len) = indexed_i64_base(ctx, right, counter)?;
     let dest_place = resolve_scalar_place(ctx, dest, path).ok()?;
     let ScalarPlace::Dynamic {
         base_slot,
         const_words,
         elem_words,
+        index_len: dest_len,
         ..
     } = dest_place
     else {
@@ -6037,6 +6117,7 @@ fn detect_elementwise_map(
         dest_base: base_slot + const_words as i32 * 8,
         lhs_base,
         rhs_base,
+        min_len: dest_len.min(lhs_len).min(rhs_len),
         op: map_op,
     })
 }
@@ -6061,6 +6142,9 @@ fn lower_native_vectorized_map(
     store_local(code, i_slot);
     lower_native_expr(ctx, end, code)?;
     store_local(code, end_slot);
+    // Hoisted bounds guard against the smallest of dest/lhs/rhs (all three are
+    // indexed inline below without a per-access check).
+    emit_loop_bounds_guard(code, i_slot, end_slot, map.min_len);
 
     // `rcx = &array[i+1]` given `rdx = 8*(i+1)`: rcx = rbp - rdx - base.
     let block_addr = |code: &mut Vec<u8>, base: i32| {
@@ -6169,6 +6253,9 @@ fn lower_native_vectorized_reduction(
     store_local(code, i_slot);
     lower_native_expr(ctx, end, code)?;
     store_local(code, end_slot);
+    // Hoisted bounds guard: the inline-addressed loop below bypasses the per-access
+    // check, so trap here if the (non-empty) index range escapes the array.
+    emit_loop_bounds_guard(code, i_slot, end_slot, reduction.array_len);
     op.emit_packed_identity(code); // packed accumulator = identity
 
     // --- main SIMD loop: while i + 1 <= end, combine the pair (a[i], a[i+1]) ---
@@ -6246,6 +6333,8 @@ fn lower_native_minmax_reduction(
     store_local(code, i_slot);
     lower_native_expr(ctx, end, code)?;
     store_local(code, end_slot);
+    // Hoisted bounds guard (both the SSE4.2 and scalar paths below index inline).
+    emit_loop_bounds_guard(code, i_slot, end_slot, red.array_len);
 
     // Runtime CPUID gate: jump to the scalar fallback when SSE4.2 is absent.
     let fallback_site = emit_cpuid_sse42_probe(code);
@@ -12872,6 +12961,83 @@ mod native_program_tests {
         assert!(
             text.windows(4).any(|w| w == [0x48, 0x0F, 0x4C, 0xC1]),
             "expected a `cmovl` scalar max fold"
+        );
+    }
+
+    #[test]
+    fn vectorized_reduction_has_a_hoisted_bounds_guard() {
+        // An auto-vectorized `acc += a[i]` loop addresses the array inline, so it
+        // carries a one-time hoisted bounds guard at loop entry: a `ud2` (0F 0B)
+        // reachable when the (non-empty) index range escapes the array. Confirm the
+        // guard's `ud2` is present (the scalar per-access path is tested separately).
+        let program = emit_native_program(&module_for(concat!(
+            "fn arr_sum a array<i64> n i64 -> i64\n",
+            "    let acc = 0\n",
+            "    for i from 0 to n - 1\n",
+            "        acc += a[i]\n",
+            "    acc\n\n",
+            "fn main -> i64\n",
+            "    let a array<i64> = [1, 2, 3, 4, 5]\n",
+            "    arr_sum(a, 5)\n",
+        )))
+        .expect("emit native program");
+        assert!(program.compiled.contains(&"arr_sum".to_string()));
+        let sec = COFF_HEADER_SIZE as usize;
+        let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+        let text_size = read_u32(&program.bytes, sec + 16) as usize;
+        let text = &program.bytes[text_offset..text_offset + text_size];
+        assert!(
+            text.windows(2).any(|w| w == [0x0F, 0x0B]),
+            "expected a `ud2` bounds-guard trap in the vectorized reduction"
+        );
+    }
+
+    #[test]
+    fn dynamic_array_index_is_bounds_checked() {
+        // A runtime array index `a[idx]` emits a bounds check: `cmp rax, len`
+        // (48 3D <len>) then `jb +2` (72 02) over a `ud2` (0F 0B), so an
+        // out-of-range index faults deterministically instead of reading adjacent
+        // memory — mirroring the interpreters' L0413. A constant in-range index
+        // stays a static offset (no check).
+        let program = emit_native_program(&module_for(concat!(
+            "fn at a array<i64> idx i64 -> i64\n",
+            "    a[idx]\n\n",
+            "fn main -> i64\n",
+            "    let a array<i64> = [10, 20, 30]\n",
+            "    at(a, 2)\n",
+        )))
+        .expect("emit native program");
+        assert!(program.compiled.contains(&"at".to_string()));
+        let sec = COFF_HEADER_SIZE as usize;
+        let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+        let text_size = read_u32(&program.bytes, sec + 16) as usize;
+        let text = &program.bytes[text_offset..text_offset + text_size];
+        // `cmp rax, 3` (len) then `jb +2` then `ud2` — 10 bytes.
+        assert!(
+            text.windows(10)
+                .any(|w| w == [0x48, 0x3D, 0x03, 0x00, 0x00, 0x00, 0x72, 0x02, 0x0F, 0x0B]),
+            "expected a `cmp rax,3; jb +2; ud2` bounds check on the dynamic index"
+        );
+    }
+
+    #[test]
+    fn constant_out_of_bounds_index_is_rejected_at_compile_time() {
+        // A literal index past the end can't fault at runtime — it's rejected up
+        // front so the function skips gracefully rather than emitting an OOB read.
+        // `main` is the only function and it is demoted, so the emit reports
+        // L0339 — but the error carries the skip reason, which is what we assert.
+        let err = emit_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let a array<i64> = [10, 20, 30]\n",
+            "    a[7]\n",
+        )))
+        .expect_err("a program whose only function is demoted should not emit");
+        assert!(
+            err.skipped
+                .iter()
+                .any(|s| s.name == "main" && s.reason.contains("out of bounds")),
+            "the constant out-of-bounds index should demote `main` with a bounds reason: {:?}",
+            err.skipped
         );
     }
 
