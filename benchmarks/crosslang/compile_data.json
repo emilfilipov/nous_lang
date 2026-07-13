@@ -5,33 +5,33 @@
     "results":  [
                     {
                         "lang":  "Lullaby (build, whole program)",
-                        "value":  12.6,
+                        "value":  13.2,
                         "vsLullaby":  1
                     },
                     {
                         "lang":  "Lullaby (check only)",
-                        "value":  10.3,
+                        "value":  10.4,
                         "vsLullaby":  0.8
                     },
                     {
                         "lang":  "C (cl /O2)",
-                        "value":  166.3,
-                        "vsLullaby":  13.2
+                        "value":  168,
+                        "vsLullaby":  12.7
                     },
                     {
                         "lang":  "C (cl /Od, debug)",
                         "value":  115.6,
-                        "vsLullaby":  9.2
+                        "vsLullaby":  8.8
                     },
                     {
                         "lang":  "Rust (rustc -O)",
-                        "value":  295.2,
-                        "vsLullaby":  23.4
+                        "value":  294.1,
+                        "vsLullaby":  22.3
                     },
                     {
                         "lang":  "Rust (rustc, debug)",
-                        "value":  196.2,
-                        "vsLullaby":  15.6
+                        "value":  195.1,
+                        "vsLullaby":  14.8
                     }
                 ]
 }
