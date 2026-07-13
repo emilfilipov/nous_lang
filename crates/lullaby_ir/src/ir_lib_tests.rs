@@ -1,4 +1,3 @@
-
 use std::path::{Path, PathBuf};
 
 use lullaby_lexer::lex;

@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{IrEnumVariant, lower};
 use lullaby_lexer::lex;

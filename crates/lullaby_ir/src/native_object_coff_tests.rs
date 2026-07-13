@@ -1,4 +1,3 @@
-
 use lullaby_diagnostics::Span;
 use lullaby_parser::{BinaryOp, TypeRef};
 
