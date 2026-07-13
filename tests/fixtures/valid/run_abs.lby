@@ -1,0 +1,16 @@
+fn dist a f64 b f64 -> i64
+    let d f64 = abs(a - b)
+    let r i64 = 0
+    if d > 2.99
+        if d < 3.01
+            r = 1
+    r
+
+fn main -> i64
+    let x f64 = abs(-7.5)
+    let ok i64 = dist(10.0, 7.0)
+    let pos i64 = 0
+    if x > 7.49
+        if x < 7.51
+            pos = 1
+    ok * 10 + pos

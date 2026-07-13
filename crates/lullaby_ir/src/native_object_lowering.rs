@@ -91,6 +91,28 @@ pub(crate) fn lower_native_float_expr(
                 code.extend_from_slice(&[0xF2, 0x0F, 0x51, 0xC0]);
                 return Ok(FloatWidth::F64);
             }
+            // `abs(x f64) -> f64`: clear the IEEE-754 sign bit with SSE2 only. The
+            // 0x7FFF_FFFF_FFFF_FFFF mask is built in-register (no `.rdata`
+            // constant, no relocation): all-ones via `pcmpeqd`, then a 1-bit
+            // logical right shift per 64-bit lane, then `andpd`. Bit-for-bit
+            // `f64::abs` (|-0.0| = +0.0; a NaN keeps its payload with the sign
+            // cleared) — matching the interpreters' `n.abs()`. This fires only for
+            // an f64 argument; `abs(i64)` and `abs(f32)` stay on the interpreters.
+            if name == "abs"
+                && args.len() == 1
+                && float_width_of_expr(ctx, &args[0]) == Some(FloatWidth::F64)
+            {
+                let arg_width = lower_native_float_expr(ctx, &args[0], code)?;
+                if arg_width != FloatWidth::F64 {
+                    return Err("native `abs` expects an f64 argument".to_string());
+                }
+                code.extend_from_slice(&[
+                    0x66, 0x0F, 0x76, 0xC9, // pcmpeqd xmm1, xmm1   (xmm1 = all ones)
+                    0x66, 0x0F, 0x73, 0xD1, 0x01, // psrlq xmm1, 1  (0x7FFF..FF per lane)
+                    0x66, 0x0F, 0x54, 0xC1, // andpd xmm0, xmm1     (clear sign bit)
+                ]);
+                return Ok(FloatWidth::F64);
+            }
             // `get(l, i)` on a float-element list: load the raw 8-byte element
             // word into `rax`, then move its bits into `xmm0` at the element's
             // width (the low four bytes of the word for f32).
@@ -313,9 +335,15 @@ pub(crate) fn float_width_of_expr(ctx: &NativeCtx, expr: &BytecodeExpr) -> Optio
             NativeType::F32 => Some(FloatWidth::F32),
             _ => None,
         },
-        BytecodeExprKind::Call { name, .. } => match name.as_str() {
+        BytecodeExprKind::Call { name, args } => match name.as_str() {
             "to_f32" => Some(FloatWidth::F32),
             "to_f64" | "sqrt" => Some(FloatWidth::F64),
+            // `abs` follows its argument's width, but only the f64 case lowers
+            // natively; an f32/i64 `abs` reports `None` so it skips gracefully.
+            "abs" if args.len() == 1 => match float_width_of_expr(ctx, &args[0]) {
+                Some(FloatWidth::F64) => Some(FloatWidth::F64),
+                _ => None,
+            },
             _ => None,
         },
         // Float arithmetic propagates its operands' width; a comparison yields a

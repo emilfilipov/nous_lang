@@ -851,6 +851,49 @@ fn compiles_sqrt_as_sqrtsd() {
 }
 
 #[test]
+fn compiles_abs_f64_as_sse2_sign_clear() {
+    // `abs(x f64)` lowers to an SSE2 in-register sign-bit clear with no memory
+    // constant: pcmpeqd xmm1,xmm1 / psrlq xmm1,1 / andpd xmm0,xmm1, so a function
+    // using it (f64 locals, i64 result) compiles natively.
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let r f64 = abs(0.0 - 7.5)\n",
+        "    let flag i64 = 0\n",
+        "    if r > 7.4\n",
+        "        flag = 1\n",
+        "    flag\n",
+    )))
+    .expect("emit abs program");
+    assert!(
+        program.compiled.contains(&"main".to_string()),
+        "an abs(f64)-using function must compile natively: {:?}",
+        program.skipped
+    );
+    assert!(
+        program.bytes.windows(13).any(|w| w
+            == [
+                0x66, 0x0F, 0x76, 0xC9, // pcmpeqd xmm1, xmm1
+                0x66, 0x0F, 0x73, 0xD1, 0x01, // psrlq xmm1, 1
+                0x66, 0x0F, 0x54, 0xC1, // andpd xmm0, xmm1
+            ]),
+        "abs(f64) must emit the SSE2 sign-bit-clear sequence"
+    );
+}
+
+#[test]
+fn abs_i64_defers_gracefully() {
+    // `abs(i64)` has no native lowering (only the f64 case is delivered): the
+    // integer call path finds `abs` is not a compiled user function and skips the
+    // whole function to the interpreters — it must never miscompile.
+    let err = emit_native_program(&module_for(
+        concat!("fn main -> i64\n", "    abs(0 - 5)\n",),
+    ))
+    .expect_err("abs(i64) is deferred");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
 fn compiles_overflow_builtins() {
     // The overflow-aware builtins are now emitted natively (not deferred):
     // `wrapping_*`/`saturating_*` produce a fixed-width scalar and `checked_*`
