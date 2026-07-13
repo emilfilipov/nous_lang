@@ -938,6 +938,58 @@ pub(crate) fn native_rc_string_reclaim_execution_parity_when_linkable() {
     );
 }
 
+/// RC call-argument reclamation: `len(<fresh temp>)` frees the temporary it reads.
+/// `len(to_string(i))` in a loop allocates a `to_string` record each iteration that
+/// `len` reads and (before this) leaked; over 300k iterations (~10 MB) in the fixed
+/// 1 MiB heap, completing with the interpreter's result proves the ownership-aware
+/// `len` helper reclaims it.
+#[test]
+pub(crate) fn native_rc_len_reclaim_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_rc_len_reclaim.lby");
+    let out = std::env::temp_dir().join("lullaby_native_rc_len_reclaim.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(
+        interp, 1_688_896,
+        "sum of len(to_string(i)) for i in 0..=300000"
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib not available; skipping native RC len-reclaim parity"
+        );
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "len(fresh temp) must reclaim the read temporary (a crash means it leaked)"
+    );
+}
+
 /// RC recursive drop reclaims a uniquely-owned `array<string>` loop temporary (a
 /// `split` result): each iteration allocates a `list<string>` block plus its string
 /// elements plus `split`'s internal `rest` slices, all reclaimed (elements+block by

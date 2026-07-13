@@ -301,7 +301,17 @@ pub(crate) fn lower_native_expr(
             // literals.
             if name == "len" && args.len() == 1 && is_string_type(&args[0].ty) {
                 lower_native_expr(ctx, &args[0], code)?; // string pointer -> rax
-                emit_mov_rax_from_rax_disp(code, STR_CHAR_LEN_OFF);
+                // If the operand is a uniquely-owned fresh temporary (a literal,
+                // `to_string`, `substring`/`trim`/`repeat`, or a concat — never a
+                // borrowed variable/field), it is dead after `len` reads its header,
+                // so reclaim it via the ownership-aware helper; otherwise just read
+                // the header word (borrowed value, keep it).
+                if is_owning_string_alloc(&args[0]) {
+                    code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (fresh-temp pointer)
+                    emit_call_symbol(ctx, STR_LEN_OWN_SYMBOL, code); // rax = char_len, frees it
+                } else {
+                    emit_mov_rax_from_rax_disp(code, STR_CHAR_LEN_OFF);
+                }
                 return Ok(());
             }
             // Index-based string operations over the heap `[char_len][byte_len]

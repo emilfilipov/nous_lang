@@ -1115,6 +1115,37 @@ pub(crate) fn emit_str_concat_own_helper() -> HelperFunction {
     }
 }
 
+/// `__lullaby_str_len_own(rcx = fresh-temp string record) -> rax = char_len`.
+///
+/// Reads the `char_len` header into a callee-saved register, then `rc_dec`s the
+/// record (reclaiming the uniquely-owned temporary), and returns the length. Used
+/// for `len(<fresh temp>)` so the temporary the length is read from does not leak.
+pub(crate) fn emit_str_len_own_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 1 callee-saved push (%16 -> 0), `sub rsp, 32` (shadow) keeps %16 == 0
+    // at the internal rc_dec call.
+    code.push(0x53); // push rbx
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
+
+    // rbx = char_len (read while the record is still live); rcx (the pointer) is the
+    // rc_dec argument and is preserved by the call.
+    code.extend_from_slice(&[0x48, 0x8B, 0x59, 0x00]); // mov rbx, [rcx + STR_CHAR_LEN_OFF]
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
+    code.extend_from_slice(&[0x48, 0x89, 0xD8]); // mov rax, rbx (the length)
+
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 32
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_LEN_OWN_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// `__lullaby_str_from_int(rcx = value, rdx = signed_flag) -> rax = string record`.
 ///
 /// Formats `value` in decimal. When `signed_flag` is nonzero the value is treated

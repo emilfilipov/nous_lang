@@ -1288,6 +1288,14 @@ const STR_CONCAT_SYMBOL: &str = "__lullaby_str_concat";
 /// `__lullaby_str_concat`.
 const STR_CONCAT_OWN_SYMBOL: &str = "__lullaby_str_concat_own";
 
+/// The ownership-aware `len` helper: a string record pointer in `rcx` that is a
+/// uniquely-owned fresh temporary. Reads the `char_len` header, then `rc_dec`s the
+/// record (reclaiming it), and returns the length in `rax`. Lets `len(<fresh
+/// temp>)` — e.g. `len(to_string(i))`, `len(a + b)`, `len(substring(…))` — reclaim
+/// the temporary that `len` would otherwise read and leak. A `len` on a borrowed
+/// string value keeps the plain header read.
+const STR_LEN_OWN_SYMBOL: &str = "__lullaby_str_len_own";
+
 /// The integer-to-string helper emitted in `.text`. Signature: a signed 64-bit
 /// value in `rcx` and a signedness flag in `rdx` (0 = format as unsigned `u64`,
 /// nonzero = format as signed `i64`); returns in `rax` a fresh string record of

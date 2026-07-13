@@ -2680,6 +2680,38 @@ fn rc_drop_inserted_for_owned_loop_string_but_not_when_it_escapes() {
 }
 
 #[test]
+fn len_of_fresh_temp_emits_and_uses_ownership_aware_helper() {
+    // `len(to_string(i))` reads a fresh temporary, so the object emits and
+    // (per the reclamation parity test) calls `__lullaby_str_len_own`, which reads
+    // the `char_len` header then `rc_dec`s the record. The helper is emitted only
+    // on the heap path; assert it is defined in `.text` and has the right shape.
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to 3\n",
+        "        total = total + len(to_string(i))\n",
+        "    total\n",
+    )))
+    .expect("emit len-of-temp program");
+    let (section, _storage) = coff_symbol(&program.bytes, STR_LEN_OWN_SYMBOL)
+        .unwrap_or_else(|| panic!("missing helper symbol {STR_LEN_OWN_SYMBOL}"));
+    assert_eq!(section, 1, "{STR_LEN_OWN_SYMBOL} must be defined in .text");
+    // The helper reads the header (mov rbx, [rcx]) then rc_decs the record.
+    let helper = emit_str_len_own_helper();
+    assert!(
+        helper
+            .code
+            .windows(4)
+            .any(|w| w == [0x48, 0x8B, 0x59, 0x00]),
+        "str_len_own must read the char_len header (mov rbx, [rcx])"
+    );
+    assert!(
+        helper.relocations.iter().any(|r| r.symbol == RC_DEC_SYMBOL),
+        "str_len_own must rc_dec the fresh temporary after reading its length"
+    );
+}
+
+#[test]
 fn concat_of_fresh_temps_uses_ownership_aware_helper() {
     // `to_string(i) + "…"` has two fresh-temp operands, so the concat lowers to
     // the ownership-aware helper (which `rc_dec`s the intermediates); a plain
