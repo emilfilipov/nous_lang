@@ -867,6 +867,50 @@ fn native_parse_i64_execution_parity_when_linkable() {
     );
 }
 
+/// `split(text, sep) -> array<string>` (plus `array<string>` indexing, `len`,
+/// `join`, and passing/returning it across functions) compiles to native and runs
+/// with the same result as the interpreters. The `array<string>` is a heap
+/// `list<string>`-layout block; `split` slices fields (empty fields for
+/// leading/trailing/consecutive separators), and `join` reverses it.
+#[test]
+fn native_split_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_split.lby");
+    let out = std::env::temp_dir().join("lullaby_native_split_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 342134, "split/index/len/join fold");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld and/or kernel32.lib not available; skipping native split parity");
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(exit, expected, "native split result must match interpreter");
+}
+
 /// An inline-conditional condition must be `bool` (`L0305`, shared with `if`).
 #[test]
 fn rejects_conditional_non_bool_condition() {

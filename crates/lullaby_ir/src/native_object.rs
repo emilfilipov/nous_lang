@@ -1036,6 +1036,17 @@ fn supported_list_element(ty: &TypeRef) -> Option<TypeRef> {
     }
 }
 
+/// A heap-backed `array<string>` — the `split`/`words` result and `array<string>`
+/// literals. It is represented natively exactly like a `list<string>`: a pointer
+/// to a `[len][cap][slot…]` block of shared immutable string pointers. Returns the
+/// element type (`string`) when `ty` is such an array, else `None`. Only `string`
+/// elements are heap-backed here; `array<i64>`/`array<f64>` stay stack-flattened
+/// with a statically-inferred length, so they are excluded.
+fn heap_string_array_element(ty: &TypeRef) -> Option<TypeRef> {
+    let elem = ty.name.strip_prefix("array<")?.strip_suffix('>')?;
+    (elem == "string").then(|| TypeRef::new("string"))
+}
+
 /// Structural shape test for a collection element / map value / enum payload: a
 /// scalar, a `string`, a named type (a struct — validated for real by
 /// `native_collection_slot`/`resolve_native_type`), or a nested `list<…>` whose own
@@ -1308,6 +1319,22 @@ const STR_ENDS_WITH_SYMBOL: &str = "__lullaby_str_ends_with";
 /// accumulation so an out-of-range value is an `err`. The error message is the same
 /// fixed `` cannot parse `{text}` as i64 `` the interpreters produce.
 const PARSE_I64_SYMBOL: &str = "__lullaby_parse_i64";
+
+/// The `split` helper emitted in `.text`. Signature: the text record pointer in
+/// `rcx`, the separator record pointer in `rdx`; returns in `rax` a fresh
+/// `list<string>`-layout block (`[len][cap][slot…]`) of the fields, matching the
+/// interpreters' `text.split(sep)` (leading/trailing/consecutive separators yield
+/// empty fields; an empty input yields one empty field). Composed from the tested
+/// `__lullaby_str_count`/`_find`/`_substring` helpers. An empty separator traps
+/// with `ud2` (the interpreters' `L0417`).
+const STR_SPLIT_SYMBOL: &str = "__lullaby_str_split";
+
+/// The `join` helper emitted in `.text`. Signature: an `array<string>`
+/// (`list<string>`-layout) block pointer in `rcx`, the separator record pointer in
+/// `rdx`; returns in `rax` a fresh record joining the fields with the separator
+/// between them, matching the interpreters' `parts.join(sep)`. An empty array
+/// yields the empty string.
+const STR_JOIN_SYMBOL: &str = "__lullaby_str_join";
 
 /// Whether `ty` is the native heap `string` type. A string value is a single
 /// pointer word (like a list/map) but immutable, so it needs no deep copy.
@@ -1778,8 +1805,12 @@ fn infer_array_lengths(
 ) -> Result<ArrayLengths, String> {
     let mut lengths = ArrayLengths::new();
 
-    // Return array: length taken from the function's returned array value(s).
-    if function.return_type.name.starts_with("array<") {
+    // Return array: length taken from the function's returned array value(s). A
+    // heap-backed `array<string>` return is a pointer word (a `list<string>` block)
+    // and needs no length.
+    if function.return_type.name.starts_with("array<")
+        && heap_string_array_element(&function.return_type).is_none()
+    {
         let len = infer_return_array_len(function).ok_or_else(|| {
             format!(
                 "return array length of `{}` could not be inferred (return an array literal \
@@ -1794,7 +1825,9 @@ fn infer_array_lengths(
     // to the same length. A function that is never called (e.g. an unreferenced
     // helper) has no callers to size its array params, so it is demoted.
     for (index, param) in function.params.iter().enumerate() {
-        if !param.ty.name.starts_with("array<") {
+        // A heap-backed `array<string>` param is a pointer word (a `list<string>`
+        // block), not a stack array, so it needs no inferred length.
+        if !param.ty.name.starts_with("array<") || heap_string_array_element(&param.ty).is_some() {
             continue;
         }
         let mut found: Option<usize> = None;
@@ -2258,6 +2291,15 @@ fn resolve_native_type(
         // unchanged. Its only distinguished behavior is at the FFI boundary, where
         // it marshals to a C `T*` (see `emit_extern_call`).
         name if is_raw_pointer_type_name(name) => Ok(NativeType::I64),
+        // A heap-backed `array<string>` — the `split`/`words` result and
+        // `array<string>` literals — is a single pointer word to a `[len][cap]
+        // [slot…]` block of shared immutable string pointers, laid out and
+        // deep-copied exactly like a `list<string>`. (Scalar `array<i64>`/
+        // `array<f64>` stay stack-flattened with a statically-inferred length,
+        // handled by the `array<` arm below / the signature length path.)
+        _ if heap_string_array_element(ty).is_some() => Ok(NativeType::List {
+            elem: Box::new(NativeType::String),
+        }),
         name if name.starts_with("array<") => Err(format!(
             "array length for `{name}` is unknown from its type"
         )),
@@ -2536,6 +2578,13 @@ fn resolve_signature_native_type(
     array_lengths: &ArrayLengths,
     key: &str,
 ) -> Result<NativeType, String> {
+    // A heap-backed `array<string>` param/return is a pointer word (a `list<string>`
+    // block), not a stack-flattened array, so it needs no inferred length.
+    if heap_string_array_element(ty).is_some() {
+        return Ok(NativeType::List {
+            elem: Box::new(NativeType::String),
+        });
+    }
     if let Some(rest) = ty.name.strip_prefix("array<") {
         let elem_name = rest.strip_suffix('>').unwrap_or(rest);
         let elem = resolve_signature_native_type(
@@ -7054,6 +7103,36 @@ fn lower_native_expr(
                 emit_mov_rax_from_rax_disp(code, LIST_LEN_OFF);
                 return Ok(());
             }
+            // `len(a)` on a heap `array<string>` reads the same `len` header word
+            // (it shares the `list<string>` block layout).
+            if name == "len"
+                && args.len() == 1
+                && heap_string_array_element(&args[0].ty).is_some()
+            {
+                lower_native_expr(ctx, &args[0], code)?; // block pointer -> rax
+                emit_mov_rax_from_rax_disp(code, LIST_LEN_OFF);
+                return Ok(());
+            }
+            // `split(text, sep) -> array<string>`: stage the two string operands into
+            // rcx/rdx and call the split helper, which builds a fresh `list<string>`
+            // block of the fields. The result is a single pointer word (like
+            // `list_new`), so it lowers here in the scalar path.
+            if name == "split"
+                && args.len() == 2
+                && is_string_type(&args[0].ty)
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(ctx, &args[0], &args[1], STR_SPLIT_SYMBOL, code);
+            }
+            // `join(a, sep) -> string`: stage the `array<string>` block and the
+            // separator into rcx/rdx and call the join helper (a fresh record).
+            if name == "join"
+                && args.len() == 2
+                && heap_string_array_element(&args[0].ty).is_some()
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(ctx, &args[0], &args[1], STR_JOIN_SYMBOL, code);
+            }
             // Growable `map<K, V>` (scalar key/value) builtins with a *scalar*
             // result. `map_new()` allocates an empty header; `map_set` deep-copies
             // then updates-or-appends (value-semantic, returns the fresh map
@@ -7336,6 +7415,14 @@ fn lower_native_expr(
         // normal array index still resolves as a stack access below.
         BytecodeExprKind::Index { target, index } if is_string_type(&target.ty) => {
             lower_string_char_at(ctx, target, index, code)
+        }
+        // `a[i]` on a heap `array<string>` loads the `i`-th shared string pointer
+        // from the `[len][cap][slot…]` block, bounds-checked against `len` (trapping
+        // with `ud2` on an out-of-range index, mirroring the interpreters' `L0413`).
+        BytecodeExprKind::Index { target, index }
+            if heap_string_array_element(&target.ty).is_some() =>
+        {
+            lower_array_string_index(ctx, target, index, code)
         }
         BytecodeExprKind::Field { .. } | BytecodeExprKind::Index { .. } => {
             // A struct-field or array-index read yielding an i64 scalar. Resolve
@@ -9621,6 +9708,33 @@ fn lower_list_pop(
 /// touches the list's element. The result is a heap pointer word; a consumer that
 /// wants the stack-flattened struct (a `Struct`-typed local or call argument)
 /// bridges it via [`lower_aggregate_init`]'s heap-source path.
+/// `a[i]` on a heap `array<string>` (a `list<string>`-layout block): load the
+/// `i`-th slot's shared string pointer, bounds-checked against the `len` header.
+/// An out-of-range index (including a negative one, caught by the unsigned compare)
+/// traps with `ud2`, mirroring the interpreters' `L0413`.
+fn lower_array_string_index(
+    ctx: &mut NativeCtx,
+    target: &BytecodeExpr,
+    index: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    lower_native_expr(ctx, index, code)?; // rax = index
+    code.push(0x50); // push rax (index)
+    lower_native_expr(ctx, target, code)?; // rax = block pointer
+    code.push(0x59); // pop rcx (index)
+    // r10 = [rax + LIST_LEN_OFF] (element count).
+    code.extend_from_slice(&[0x4C, 0x8B, 0x90]); // mov r10, [rax + disp32]
+    code.extend_from_slice(&LIST_LEN_OFF.to_le_bytes());
+    // if (unsigned) index >= len -> trap. cmp rcx, r10 ; jb ok ; ud2 ; ok:
+    code.extend_from_slice(&[0x4C, 0x39, 0xD1]); // cmp rcx, r10
+    code.extend_from_slice(&[0x72, 0x02]); // jb +2 (skip the ud2)
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+    // rax = [rax + rcx*8 + LIST_DATA_OFF] (the shared string pointer word).
+    code.extend_from_slice(&[0x48, 0x8B, 0x84, 0xC8]);
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    Ok(())
+}
+
 fn lower_list_get(
     ctx: &mut NativeCtx,
     list: &BytecodeExpr,
@@ -10425,6 +10539,8 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
         emit_str_ends_with_helper(),
+        emit_str_split_helper(),
+        emit_str_join_helper(),
         emit_parse_i64_helper(),
         emit_to_cstr_helper(),
     ]
@@ -10461,6 +10577,8 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_CONTAINS_SYMBOL
                     | STR_STARTS_WITH_SYMBOL
                     | STR_ENDS_WITH_SYMBOL
+                    | STR_SPLIT_SYMBOL
+                    | STR_JOIN_SYMBOL
                     | PARSE_I64_SYMBOL
                     | TO_CSTR_SYMBOL
             )
@@ -12759,6 +12877,210 @@ fn emit_parse_i64_helper() -> HelperFunction {
     }
 }
 
+/// Emit `call <symbol>` (rel32) inside a runtime helper, recording the relocation
+/// against `relocations`. Generalizes [`emit_helper_call_alloc`] to any helper
+/// symbol so a helper can compose other `.text` helpers.
+fn emit_helper_call(code: &mut Vec<u8>, relocations: &mut Vec<CodeRelocation>, symbol: &str) {
+    code.push(0xE8);
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: symbol.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+}
+
+/// `__lullaby_str_split(rcx = text, rdx = sep) -> rax = list<string> block`.
+///
+/// Builds a fresh `[len][cap][slot…]` block of the fields, exactly matching the
+/// interpreters' `text.split(sep)`. Composed from the tested string helpers:
+/// `__lullaby_str_count` sizes the field count (occurrences + 1); then a loop uses
+/// `__lullaby_str_find`/`__lullaby_str_substring` to slice each field between
+/// separators (advancing non-overlapping, so leading/trailing/consecutive
+/// separators yield empty fields and an empty input yields one empty field). An
+/// empty separator traps with `ud2` (the interpreters' `L0417`; a program that can
+/// pass an empty separator must run on an interpreter). Char indices equal byte
+/// offsets for the ASCII strings the native subset builds.
+fn emit_str_split_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 7 callee-saved pushes → rsp%16 == 0; `sub rsp, 0x30` keeps %16 == 0
+    // at the internal calls and reserves 32 shadow + a 16-byte spill area.
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    code.extend_from_slice(&[0x41, 0x56]); // push r14
+    code.extend_from_slice(&[0x41, 0x57]); // push r15
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x30]); // sub rsp, 0x30
+
+    code.extend_from_slice(&[0x49, 0x89, 0xCC]); // mov r12, rcx (text)
+    code.extend_from_slice(&[0x49, 0x89, 0xD5]); // mov r13, rdx (sep)
+
+    // Empty separator -> trap (L0417). if sep.char_len == 0: ud2.
+    code.extend_from_slice(&[0x49, 0x8B, 0x45, 0x00]); // mov rax, [r13 + STR_CHAR_LEN_OFF]
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x75, 0x02]); // jnz sepok
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+
+    // nfields (r14) = str_count(text, sep) + 1.
+    code.extend_from_slice(&[0x4C, 0x89, 0xE1]); // mov rcx, r12
+    code.extend_from_slice(&[0x4C, 0x89, 0xEA]); // mov rdx, r13
+    emit_helper_call(&mut code, &mut relocations, STR_COUNT_SYMBOL); // rax = count
+    code.extend_from_slice(&[0x4C, 0x8D, 0x70, 0x01]); // lea r14, [rax + 1]
+
+    // Allocate the block: LIST_DATA_OFF + nfields*8. rcx = [r14*8 + LIST_DATA_OFF].
+    code.extend_from_slice(&[0x4A, 0x8D, 0x0C, 0xF5]); // lea rcx, [r14*8 + disp32]
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    emit_helper_call(&mut code, &mut relocations, HEAP_ALLOC_SYMBOL); // rax = block
+    code.extend_from_slice(&[0x48, 0x89, 0xC3]); // mov rbx, rax (block)
+    code.extend_from_slice(&[0x4C, 0x89, 0x73, 0x00]); // mov [rbx + LIST_LEN_OFF], r14
+    code.extend_from_slice(&[0x4C, 0x89, 0x73, 0x08]); // mov [rbx + LIST_CAP_OFF], r14
+
+    // Fill loop. rsi = pos (char index), rdi = slot, r15 = text char_len.
+    code.extend_from_slice(&[0x31, 0xF6]); // xor esi, esi
+    code.extend_from_slice(&[0x31, 0xFF]); // xor edi, edi
+    code.extend_from_slice(&[0x4D, 0x8B, 0x7C, 0x24, 0x00]); // mov r15, [r12 + STR_CHAR_LEN_OFF]
+
+    let loop_top = code.len();
+    // rest = substring(text, pos, text_char_len).
+    code.extend_from_slice(&[0x4C, 0x89, 0xE1]); // mov rcx, r12
+    code.extend_from_slice(&[0x48, 0x89, 0xF2]); // mov rdx, rsi (pos)
+    code.extend_from_slice(&[0x4D, 0x89, 0xF8]); // mov r8, r15 (end = char_len)
+    emit_helper_call(&mut code, &mut relocations, STR_SUBSTRING_SYMBOL); // rax = rest
+    code.extend_from_slice(&[0x49, 0x89, 0xC6]); // mov r14, rax (rest)
+    // idx = find(rest, sep).
+    code.extend_from_slice(&[0x4C, 0x89, 0xF1]); // mov rcx, r14
+    code.extend_from_slice(&[0x4C, 0x89, 0xEA]); // mov rdx, r13
+    emit_helper_call(&mut code, &mut relocations, STR_FIND_SYMBOL); // rax = idx or -1
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x0F, 0x88]); // js last (idx < 0 -> remaining is the final field)
+    let last_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // field = substring(rest, 0, idx). Spill idx for the pos update after the call.
+    code.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, 0x20]); // mov [rsp+0x20], rax
+    code.extend_from_slice(&[0x4C, 0x89, 0xF1]); // mov rcx, r14 (rest)
+    code.extend_from_slice(&[0x31, 0xD2]); // xor edx, edx (start = 0)
+    code.extend_from_slice(&[0x49, 0x89, 0xC0]); // mov r8, rax (end = idx)
+    emit_helper_call(&mut code, &mut relocations, STR_SUBSTRING_SYMBOL); // rax = field
+    // block.slot[slot] = field.
+    code.extend_from_slice(&[0x48, 0x89, 0x84, 0xFB]); // mov [rbx + rdi*8 + disp32], rax
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi
+    // pos += idx + sep.char_len.
+    code.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, 0x20]); // mov rax, [rsp+0x20] (idx)
+    code.extend_from_slice(&[0x48, 0x01, 0xC6]); // add rsi, rax
+    code.extend_from_slice(&[0x49, 0x03, 0x75, 0x00]); // add rsi, [r13 + STR_CHAR_LEN_OFF]
+    emit_jmp_to(&mut code, loop_top); // jmp loop_top
+
+    // last: block.slot[slot] = rest (the remaining suffix is the final field).
+    patch_rel32(&mut code, last_site);
+    code.extend_from_slice(&[0x4C, 0x89, 0xB4, 0xFB]); // mov [rbx + rdi*8 + disp32], r14
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0xD8]); // mov rax, rbx (return block)
+
+    // Epilogue.
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x30]); // add rsp, 0x30
+    code.extend_from_slice(&[0x41, 0x5F]); // pop r15
+    code.extend_from_slice(&[0x41, 0x5E]); // pop r14
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_SPLIT_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_join(rcx = array<string> block, rdx = sep) -> rax = record`.
+///
+/// Joins the block's fields with the separator between them, matching the
+/// interpreters' `parts.join(sep)`. Built by chaining the tested
+/// `__lullaby_str_concat` (`acc = concat(concat(acc, sep), field)`), so the final
+/// record's bytes/headers are exactly a direct join. An empty array yields a fresh
+/// empty record.
+fn emit_str_join_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 5 callee-saved pushes → rsp%16 == 0; `sub rsp, 0x20` (shadow).
+    code.push(0x53); // push rbx
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    code.extend_from_slice(&[0x41, 0x56]); // push r14
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 0x20
+
+    code.extend_from_slice(&[0x49, 0x89, 0xCC]); // mov r12, rcx (block)
+    code.extend_from_slice(&[0x49, 0x89, 0xD5]); // mov r13, rdx (sep)
+    code.extend_from_slice(&[0x4D, 0x8B, 0x74, 0x24, 0x00]); // mov r14, [r12 + LIST_LEN_OFF]
+
+    // Empty array -> fresh empty record.
+    code.extend_from_slice(&[0x4D, 0x85, 0xF6]); // test r14, r14
+    code.extend_from_slice(&[0x0F, 0x85]); // jnz nonempty
+    let nonempty_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0xB9, 0x10, 0x00, 0x00, 0x00]); // mov ecx, STR_DATA_OFF (16)
+    emit_helper_call(&mut code, &mut relocations, HEAP_ALLOC_SYMBOL); // rax = rec
+    code.extend_from_slice(&[0x48, 0x31, 0xD2]); // xor rdx, rdx
+    code.extend_from_slice(&[0x48, 0x89, 0x50, 0x00]); // mov [rax + STR_CHAR_LEN_OFF], rdx
+    code.extend_from_slice(&[0x48, 0x89, 0x50, 0x08]); // mov [rax + STR_BYTE_LEN_OFF], rdx
+    code.push(0xE9); // jmp done
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // nonempty: acc (rbx) = fields[0]; i (rdi) = 1.
+    patch_rel32(&mut code, nonempty_site);
+    code.extend_from_slice(&[0x49, 0x8B, 0x9C, 0x24]); // mov rbx, [r12 + disp32] (field 0)
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0xBF, 0x01, 0x00, 0x00, 0x00]); // mov edi, 1
+
+    let loop_top = code.len();
+    code.extend_from_slice(&[0x4C, 0x39, 0xF7]); // cmp rdi, r14
+    code.extend_from_slice(&[0x0F, 0x83]); // jae ret_acc
+    let ret_acc_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // acc = concat(acc, sep).
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx (acc)
+    code.extend_from_slice(&[0x4C, 0x89, 0xEA]); // mov rdx, r13 (sep)
+    emit_helper_call(&mut code, &mut relocations, STR_CONCAT_SYMBOL); // rax = acc+sep
+    code.extend_from_slice(&[0x48, 0x89, 0xC3]); // mov rbx, rax
+    // acc = concat(acc, fields[i]).
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x49, 0x8B, 0x94, 0xFC]); // mov rdx, [r12 + rdi*8 + disp32]
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    emit_helper_call(&mut code, &mut relocations, STR_CONCAT_SYMBOL); // rax = acc+field
+    code.extend_from_slice(&[0x48, 0x89, 0xC3]); // mov rbx, rax
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi
+    emit_jmp_to(&mut code, loop_top); // jmp loop_top
+
+    // ret_acc: return acc.
+    patch_rel32(&mut code, ret_acc_site);
+    code.extend_from_slice(&[0x48, 0x89, 0xD8]); // mov rax, rbx
+
+    // done: epilogue.
+    patch_rel32(&mut code, done_site);
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 0x20
+    code.extend_from_slice(&[0x41, 0x5E]); // pop r14
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_JOIN_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// Emit the char-index-to-byte walk. Reads the target char index in `rax`, the
 /// data pointer in `rsi`, and the byte length in `r15`; advances a byte offset
 /// past exactly `target` whole UTF-8 characters and leaves that byte offset in
@@ -13158,6 +13480,8 @@ fn write_object_with_data(
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
         emit_str_ends_with_helper(),
+        emit_str_split_helper(),
+        emit_str_join_helper(),
         emit_parse_i64_helper(),
         emit_to_cstr_helper(),
     ] {
@@ -13231,6 +13555,8 @@ fn write_object_with_data(
         STR_CONTAINS_SYMBOL,
         STR_STARTS_WITH_SYMBOL,
         STR_ENDS_WITH_SYMBOL,
+        STR_SPLIT_SYMBOL,
+        STR_JOIN_SYMBOL,
         PARSE_I64_SYMBOL,
         TO_CSTR_SYMBOL,
     ] {
@@ -16782,6 +17108,62 @@ mod native_program_tests {
         let (section, _storage) = coff_symbol(&program.bytes, PARSE_I64_SYMBOL)
             .unwrap_or_else(|| panic!("missing helper symbol {PARSE_I64_SYMBOL}"));
         assert_eq!(section, 1, "{PARSE_I64_SYMBOL} must be defined in .text");
+    }
+
+    #[test]
+    fn split_and_join_compile_native_and_emit_their_helpers() {
+        // A function that builds an `array<string>` with `split`, indexes it,
+        // reads `len`, and `join`s it back compiles natively (the heap
+        // `array<string>` reuses the `list<string>` block layout), and the object
+        // defines the `__lullaby_str_split`/`__lullaby_str_join` helpers in `.text`.
+        let program = emit_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let p array<string> = split(\"a,b,c\", \",\")\n",
+            "    let j string = join(p, \"-\")\n",
+            "    len(p) * 100 + len(p[0]) * 10 + len(j)\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"main".to_string()),
+            "split/join user must compile natively: skipped {:?}",
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        for symbol in [STR_SPLIT_SYMBOL, STR_JOIN_SYMBOL] {
+            let (section, _storage) = coff_symbol(&program.bytes, symbol)
+                .unwrap_or_else(|| panic!("missing helper symbol {symbol}"));
+            assert_eq!(section, 1, "{symbol} must be defined in .text");
+        }
+    }
+
+    #[test]
+    fn split_helper_traps_empty_separator_and_composes_string_helpers() {
+        // The split helper composes the tested count/find/substring helpers and
+        // traps (`ud2`) on an empty separator (the interpreters' `L0417`).
+        let helper = emit_str_split_helper();
+        assert!(
+            helper.code.windows(2).any(|w| w == [0x0F, 0x0B]),
+            "the split helper must carry a `ud2` trap for an empty separator"
+        );
+        for symbol in [
+            STR_COUNT_SYMBOL,
+            STR_FIND_SYMBOL,
+            STR_SUBSTRING_SYMBOL,
+            HEAP_ALLOC_SYMBOL,
+        ] {
+            assert!(
+                helper.relocations.iter().any(|r| r.symbol == symbol),
+                "the split helper must call {symbol}"
+            );
+        }
+        // Join is built from the concat helper.
+        let join = emit_str_join_helper();
+        assert!(
+            join.relocations
+                .iter()
+                .any(|r| r.symbol == STR_CONCAT_SYMBOL),
+            "the join helper must chain the concat helper"
+        );
     }
 
     #[test]

@@ -1,0 +1,23 @@
+fn make s string -> array<string>
+    split(s, ",")
+
+fn first_len parts array<string> -> i64
+    len(parts[0])
+
+fn main -> i64
+    let p array<string> = split("alpha,beta,gamma", ",")
+    let count i64 = len(p)
+    let mid i64 = len(p[1])
+    let joined string = join(p, "::")
+
+    let empties array<string> = split("a,,b", ",")
+    let mid_empty i64 = len(empties[1])
+
+    let both array<string> = split(",x,", ",")
+    let bn i64 = len(both)
+
+    let passed array<string> = make("one,two,three,four")
+    let fl i64 = first_len(passed)
+    let pn i64 = len(passed)
+
+    count * 100000 + mid * 10000 + len(joined) * 100 + mid_empty * 1000 + bn * 100 + fl * 10 + pn
