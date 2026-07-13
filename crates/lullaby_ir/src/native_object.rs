@@ -1299,6 +1299,16 @@ const STR_STARTS_WITH_SYMBOL: &str = "__lullaby_str_starts_with";
 /// `rax`. An empty suffix matches; a longer-than-haystack suffix does not.
 const STR_ENDS_WITH_SYMBOL: &str = "__lullaby_str_ends_with";
 
+/// The `parse_i64` helper emitted in `.text`. Signature: the source string record
+/// pointer in `rcx`; returns the `result<i64, string>` variant tag in `rax`
+/// (`0` = `ok`, `1` = `err`) and the payload in `rdx` (the parsed `i64` on `ok`,
+/// or a freshly-allocated error-message string record on `err`). The parse matches
+/// Rust's `str::parse::<i64>()` exactly: an optional single leading `+`/`-`, then
+/// one or more ASCII digits, no surrounding whitespace, and a checked base-10
+/// accumulation so an out-of-range value is an `err`. The error message is the same
+/// fixed `` cannot parse `{text}` as i64 `` the interpreters produce.
+const PARSE_I64_SYMBOL: &str = "__lullaby_parse_i64";
+
 /// Whether `ty` is the native heap `string` type. A string value is a single
 /// pointer word (like a list/map) but immutable, so it needs no deep copy.
 fn is_string_type(ty: &TypeRef) -> bool {
@@ -4381,6 +4391,15 @@ fn lower_aggregate_init(
             ctx, base_slot, &value.ty, ovf_op, kind, &args[0], &args[1], code,
         );
     }
+    // `parse_i64(s) -> result<i64, string>` is a builtin producing an aggregate:
+    // materialize the `ok(n)`/`err(message)` result directly into `base_slot`.
+    if let BytecodeExprKind::Call { name, args } = &value.kind
+        && name == "parse_i64"
+        && args.len() == 1
+        && is_string_type(&args[0].ty)
+    {
+        return lower_parse_i64_into(ctx, base_slot, &args[0], code);
+    }
     // A `get(list<struct>, i)` initializing a stack `Struct` local/scratch: the
     // element is a HEAP struct; `lower_list_get` deep-copies it and leaves the fresh
     // heap pointer in `rax`. Bridge it into the stack-flattened `Struct` layout by
@@ -5256,6 +5275,17 @@ fn lower_native_match(
                 &args[1],
                 code,
             )?;
+            base
+        }
+        BytecodeExprKind::Call { name, args }
+            if name == "parse_i64" && args.len() == 1 && is_string_type(&args[0].ty) =>
+        {
+            // `match parse_i64(s)`: materialize the builtin's `result<i64, string>`
+            // (tag + payload words) directly into scratch, then dispatch on it, just
+            // like a `map_get` option scrutinee.
+            let words = 1 + payload_words;
+            let base = ctx.alloc_scratch(words);
+            lower_parse_i64_into(ctx, base, &args[0], code)?;
             base
         }
         BytecodeExprKind::Call { name, .. }
@@ -9904,6 +9934,32 @@ fn lower_map_get_into(
     Ok(())
 }
 
+/// `parse_i64(s) -> result<i64, string>`: evaluate the string operand into `rcx`,
+/// call the `__lullaby_parse_i64` helper (tag in `rax`, payload in `rdx`), and
+/// store the two words into `base_slot` (tag) and `base_slot + 8` (payload). `ok`
+/// is tag `0` with the parsed `i64` payload; `err` is tag `1` with a freshly-built
+/// error-message string-record pointer payload, matching the `result<T, E>`
+/// variant order (`ok` then `err`) the interpreters use.
+fn lower_parse_i64_into(
+    ctx: &mut NativeCtx,
+    base_slot: i32,
+    arg: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    if !is_string_type(&arg.ty) {
+        return Err("parse_i64 expects a string argument".to_string());
+    }
+    lower_native_expr(ctx, arg, code)?; // rax = source string record pointer
+    emit_mov_reg_reg(code, REG_RCX, REG_RAX); // rcx = source pointer (arg 0)
+    emit_call_symbol(ctx, PARSE_I64_SYMBOL, code); // rax = tag, rdx = payload
+    // Payload word at base_slot + 8: mov [rbp - (base_slot + 8)], rdx.
+    code.extend_from_slice(&[0x48, 0x89, 0x95]);
+    code.extend_from_slice(&(-(base_slot + 8)).to_le_bytes());
+    // Tag word at base_slot (store_local writes rax, the tag).
+    store_local(code, base_slot);
+    Ok(())
+}
+
 /// `movq rax, xmm0` (f64) or `movd eax, xmm0` (f32, zero-extending the low four
 /// bytes into rax) — move a float's bit pattern into `rax` so it can be stored as
 /// a flat 8-byte list element word bit-for-bit.
@@ -10369,6 +10425,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
         emit_str_ends_with_helper(),
+        emit_parse_i64_helper(),
         emit_to_cstr_helper(),
     ]
 }
@@ -10404,6 +10461,7 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_CONTAINS_SYMBOL
                     | STR_STARTS_WITH_SYMBOL
                     | STR_ENDS_WITH_SYMBOL
+                    | PARSE_I64_SYMBOL
                     | TO_CSTR_SYMBOL
             )
         })
@@ -12524,6 +12582,183 @@ fn emit_str_ends_with_helper() -> HelperFunction {
     }
 }
 
+/// `__lullaby_parse_i64(rcx = source string record ptr) -> (rax = tag, rdx = payload)`.
+///
+/// Parses the source bytes as a base-10 signed 64-bit integer with exactly Rust's
+/// `str::parse::<i64>()` semantics: an optional single leading `+`/`-`, then one or
+/// more ASCII digits, no surrounding whitespace, and a checked accumulation
+/// (`imul`/`add`/`sub` with a `jo` after each) so any out-of-range value is an
+/// error. On success returns tag `0` (`ok`) in `rax` and the value in `rdx`. On any
+/// failure returns tag `1` (`err`) in `rax` and a freshly bump-allocated string
+/// record in `rdx` holding the same `` cannot parse `{text}` as i64 `` message the
+/// interpreters produce (prefix + the source bytes + suffix), so every backend
+/// matches byte-for-byte. Accumulates in the sign's direction (`acc*10 - digit` for
+/// a negative literal) so `i64::MIN` parses exactly like `checked` Rust does.
+fn emit_parse_i64_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+    let mut err_sites: Vec<usize> = Vec::new();
+
+    // Prologue: preserve rbx/rsi/rdi/r12/r13 (5 pushes → rsp%16 == 0), then
+    // `sub rsp, 32` keeps %16 == 0 at the internal alloc call and reserves shadow.
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
+
+    // rbx = src ptr; rsi = count (byte_len); rdi = i; r10 = acc; r11 = neg flag.
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx
+    code.extend_from_slice(&[0x48, 0x8B, 0x73, 0x08]); // mov rsi, [rbx + STR_BYTE_LEN_OFF]
+    code.extend_from_slice(&[0x48, 0x31, 0xFF]); // xor rdi, rdi
+    code.extend_from_slice(&[0x4D, 0x31, 0xD2]); // xor r10, r10
+    code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
+
+    // Empty string -> err.
+    code.extend_from_slice(&[0x48, 0x85, 0xF6]); // test rsi, rsi
+    code.extend_from_slice(&[0x0F, 0x84]); // jz err
+    err_sites.push(code.len());
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // First byte: optional single sign. movzx eax, byte [rbx + rdi + STR_DATA_OFF].
+    code.extend_from_slice(&[0x0F, 0xB6, 0x84, 0x3B]);
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x3C, 0x2D]); // cmp al, '-'
+    code.extend_from_slice(&[0x0F, 0x85]); // jne chk_plus
+    let jne_plus = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // '-' branch: neg = 1, i = 1, then fall to after_sign.
+    code.extend_from_slice(&[0x41, 0xBB, 0x01, 0x00, 0x00, 0x00]); // mov r11d, 1
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi
+    code.push(0xE9); // jmp after_sign
+    let jmp_after1 = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // chk_plus:
+    patch_rel32(&mut code, jne_plus);
+    code.extend_from_slice(&[0x3C, 0x2B]); // cmp al, '+'
+    code.extend_from_slice(&[0x0F, 0x85]); // jne after_sign
+    let jne_after = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi ('+' consumed)
+    // after_sign:
+    patch_rel32(&mut code, jmp_after1);
+    patch_rel32(&mut code, jne_after);
+
+    // Require at least one digit: if i >= count -> err (a lone sign or empty).
+    code.extend_from_slice(&[0x48, 0x39, 0xF7]); // cmp rdi, rsi
+    code.extend_from_slice(&[0x0F, 0x83]); // jae err
+    err_sites.push(code.len());
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // Digit loop.
+    let loop_top = code.len();
+    code.extend_from_slice(&[0x48, 0x39, 0xF7]); // cmp rdi, rsi
+    code.extend_from_slice(&[0x0F, 0x83]); // jae ok
+    let ok_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // c = data[i]; digit-classify via one unsigned range test.
+    code.extend_from_slice(&[0x0F, 0xB6, 0x84, 0x3B]); // movzx eax, byte [rbx + rdi + disp32]
+    code.extend_from_slice(&STR_DATA_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x2C, 0x30]); // sub al, '0'
+    code.extend_from_slice(&[0x3C, 0x09]); // cmp al, 9
+    code.extend_from_slice(&[0x0F, 0x87]); // ja err (not a digit)
+    err_sites.push(code.len());
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x0F, 0xB6, 0xC0]); // movzx eax, al (digit 0..9)
+    // acc = acc * 10 (checked).
+    code.extend_from_slice(&[0x4D, 0x6B, 0xD2, 0x0A]); // imul r10, r10, 10
+    code.extend_from_slice(&[0x0F, 0x80]); // jo err
+    err_sites.push(code.len());
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Sign-directed accumulate.
+    code.extend_from_slice(&[0x4D, 0x85, 0xDB]); // test r11, r11
+    code.extend_from_slice(&[0x0F, 0x85]); // jnz neg
+    let jnz_neg = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x49, 0x01, 0xC2]); // add r10, rax
+    code.extend_from_slice(&[0x0F, 0x80]); // jo err
+    err_sites.push(code.len());
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.push(0xE9); // jmp after_acc
+    let jmp_after_acc = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // neg:
+    patch_rel32(&mut code, jnz_neg);
+    code.extend_from_slice(&[0x49, 0x29, 0xC2]); // sub r10, rax
+    code.extend_from_slice(&[0x0F, 0x80]); // jo err
+    err_sites.push(code.len());
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // after_acc:
+    patch_rel32(&mut code, jmp_after_acc);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi
+    emit_jmp_to(&mut code, loop_top); // jmp loop_top
+
+    // ok: tag = 0 (rax), payload = acc (rdx).
+    patch_rel32(&mut code, ok_site);
+    code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
+    code.extend_from_slice(&[0x4C, 0x89, 0xD2]); // mov rdx, r10
+    code.push(0xE9); // jmp done
+    let jmp_done = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // err: build the `cannot parse `{text}` as i64` message record.
+    let err_target = code.len();
+    for site in &err_sites {
+        patch_rel32_to(&mut code, *site, err_target);
+    }
+    // r12 = src byte_len; allocate STR_DATA_OFF + 22 + byte_len.
+    code.extend_from_slice(&[0x4C, 0x8B, 0x63, 0x08]); // mov r12, [rbx + STR_BYTE_LEN_OFF]
+    code.extend_from_slice(&[0x49, 0x8D, 0x8C, 0x24]); // lea rcx, [r12 + disp32]
+    code.extend_from_slice(&(STR_DATA_OFF + 22).to_le_bytes());
+    emit_helper_call_alloc(&mut code, &mut relocations); // rax = dst record
+    code.extend_from_slice(&[0x49, 0x89, 0xC5]); // mov r13, rax (preserve dst)
+    // Headers: char_len = src char_len + 22, byte_len = src byte_len + 22.
+    code.extend_from_slice(&[0x48, 0x8B, 0x53, 0x00]); // mov rdx, [rbx + STR_CHAR_LEN_OFF]
+    code.extend_from_slice(&[0x48, 0x83, 0xC2, 0x16]); // add rdx, 22
+    code.extend_from_slice(&[0x48, 0x89, 0x50, 0x00]); // mov [rax + STR_CHAR_LEN_OFF], rdx
+    code.extend_from_slice(&[0x49, 0x8D, 0x54, 0x24, 0x16]); // lea rdx, [r12 + 22]
+    code.extend_from_slice(&[0x48, 0x89, 0x50, 0x08]); // mov [rax + STR_BYTE_LEN_OFF], rdx
+    // Prefix "cannot parse `" (14 bytes) at [rax + STR_DATA_OFF].
+    code.extend_from_slice(&[0x48, 0xB9]); // mov rcx, imm64
+    code.extend_from_slice(&u64::from_le_bytes(*b"cannot p").to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0x48, 0x10]); // mov [rax + 16], rcx
+    code.push(0xB9); // mov ecx, imm32
+    code.extend_from_slice(&u32::from_le_bytes(*b"arse").to_le_bytes());
+    code.extend_from_slice(&[0x89, 0x48, 0x18]); // mov [rax + 24], ecx
+    code.extend_from_slice(&[0x66, 0xB9]); // mov cx, imm16
+    code.extend_from_slice(&u16::from_le_bytes(*b" `").to_le_bytes());
+    code.extend_from_slice(&[0x66, 0x89, 0x48, 0x1C]); // mov [rax + 28], cx
+    // Copy the source bytes: rsi = src data, rdi = dst data + 14, rcx = byte_len.
+    code.extend_from_slice(&[0x48, 0x8D, 0x73, 0x10]); // lea rsi, [rbx + 16]
+    code.extend_from_slice(&[0x48, 0x8D, 0x78, 0x1E]); // lea rdi, [rax + 30]
+    code.extend_from_slice(&[0x4C, 0x89, 0xE1]); // mov rcx, r12
+    code.extend_from_slice(&[0xF3, 0xA4]); // rep movsb
+    // Suffix "` as i64" (8 bytes) at [rdi] (rdi is one past the copied source).
+    code.extend_from_slice(&[0x48, 0xB9]); // mov rcx, imm64
+    code.extend_from_slice(&u64::from_le_bytes(*b"` as i64").to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x89, 0x0F]); // mov [rdi], rcx
+    // tag = 1 (err); payload = dst record.
+    code.extend_from_slice(&[0xB8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
+    code.extend_from_slice(&[0x4C, 0x89, 0xEA]); // mov rdx, r13
+
+    // done: epilogue.
+    patch_rel32(&mut code, jmp_done);
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 32
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: PARSE_I64_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// Emit the char-index-to-byte walk. Reads the target char index in `rax`, the
 /// data pointer in `rsi`, and the byte length in `r15`; advances a byte offset
 /// past exactly `target` whole UTF-8 characters and leaves that byte offset in
@@ -12923,6 +13158,7 @@ fn write_object_with_data(
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
         emit_str_ends_with_helper(),
+        emit_parse_i64_helper(),
         emit_to_cstr_helper(),
     ] {
         append_code(
@@ -12995,6 +13231,7 @@ fn write_object_with_data(
         STR_CONTAINS_SYMBOL,
         STR_STARTS_WITH_SYMBOL,
         STR_ENDS_WITH_SYMBOL,
+        PARSE_I64_SYMBOL,
         TO_CSTR_SYMBOL,
     ] {
         symbols.push(SymbolDef {
@@ -16519,6 +16756,54 @@ mod native_program_tests {
                 .unwrap_or_else(|| panic!("missing helper symbol {symbol}"));
             assert_eq!(section, 1, "{symbol} must be defined in .text");
         }
+    }
+
+    #[test]
+    fn parse_i64_compiles_native_and_emits_its_helper() {
+        // A function that `match`es `parse_i64(s)` compiles natively (the aggregate
+        // `result<i64, string>` is materialized into scratch and dispatched), and
+        // the emitted object defines the `__lullaby_parse_i64` helper in `.text`.
+        let program = emit_native_program(&module_for(concat!(
+            "fn to_int s string -> i64\n",
+            "    match parse_i64(s)\n",
+            "        ok(n) -> n\n",
+            "        err(m) -> 0 - len(m)\n\n",
+            "fn main -> i64\n",
+            "    to_int(\"41\") + to_int(\"nope\")\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"to_int".to_string())
+                && program.compiled.contains(&"main".to_string()),
+            "parse_i64 users must compile natively: skipped {:?}",
+            program.skipped
+        );
+        assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+        let (section, _storage) = coff_symbol(&program.bytes, PARSE_I64_SYMBOL)
+            .unwrap_or_else(|| panic!("missing helper symbol {PARSE_I64_SYMBOL}"));
+        assert_eq!(section, 1, "{PARSE_I64_SYMBOL} must be defined in .text");
+    }
+
+    #[test]
+    fn parse_i64_helper_allocates_its_error_message() {
+        // The `err` path builds a fresh `cannot parse `{text}` as i64` record, so
+        // the helper references the bump allocator and carries a checked `imul`
+        // (`4D 6B D2 0A` = `imul r10, r10, 10`) for the overflow-detecting accumulate.
+        let helper = emit_parse_i64_helper();
+        assert!(
+            helper
+                .relocations
+                .iter()
+                .any(|r| r.symbol == HEAP_ALLOC_SYMBOL),
+            "the parse_i64 helper must call the bump allocator to build its error string"
+        );
+        assert!(
+            helper
+                .code
+                .windows(4)
+                .any(|w| w == [0x4D, 0x6B, 0xD2, 0x0A]),
+            "the parse_i64 helper must use a checked `imul r10, r10, 10` accumulate"
+        );
     }
 
     #[test]

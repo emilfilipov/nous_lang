@@ -1,0 +1,24 @@
+fn to_int s string -> i64
+    match parse_i64(s)
+        ok(n) -> n
+        err(m) -> 0 - len(m)
+
+fn count_ok s string -> i64
+    match parse_i64(s)
+        ok(n) -> 1
+        err(m) -> 0
+
+fn is_max s string -> i64
+    match parse_i64(s)
+        ok(n) -> 1 if n == 9223372036854775807 else 0
+        err(m) -> 0
+
+fn main -> i64
+    let a i64 = to_int("40")
+    let plus i64 = to_int("+2")
+    let neg i64 = to_int("-5")
+    let atmax i64 = is_max("9223372036854775807")
+    let overflowed i64 = count_ok("99999999999999999999")
+    let badlen i64 = 0 - to_int("xx")
+
+    a + plus + neg + atmax + overflowed + badlen

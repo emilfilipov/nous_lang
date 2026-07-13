@@ -818,6 +818,55 @@ fn native_tail_if_return_parity_when_linkable() {
     );
 }
 
+/// `parse_i64(s) -> result<i64, string>` compiles to native and runs with the
+/// same result as the interpreters: `ok(n)` / `err(message)` matched, the error
+/// path builds the exact `` cannot parse `{text}` as i64 `` record (so `len(m)`
+/// agrees), overflow is an `err`, and `i64::MAX` parses without a false overflow.
+#[test]
+fn native_parse_i64_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_parse_i64.lby");
+    let out = std::env::temp_dir().join("lullaby_native_parse_i64_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(
+        interp, 62,
+        "40 + 2 + (-5) + is_max(1) + overflow_ok(0) + badlen(24) = 62"
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld and/or kernel32.lib not available; skipping native parse_i64 parity");
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "native parse_i64 result must match interpreter"
+    );
+}
+
 /// An inline-conditional condition must be `bool` (`L0305`, shared with `if`).
 #[test]
 fn rejects_conditional_non_bool_condition() {
