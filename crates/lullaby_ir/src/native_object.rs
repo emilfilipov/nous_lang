@@ -1306,6 +1306,14 @@ const STR_LEN_OWN_SYMBOL: &str = "__lullaby_str_len_own";
 /// temp; a `var`/`var` call keeps the bare op with zero overhead.
 const STR_BINOP_OWN_SYMBOL: &str = "__lullaby_str_binop_own";
 
+/// The ownership-aware string-read helper: a fresh-temp source string in `rcx`,
+/// the op's other (scalar) arguments already in `rdx`/`r8`, and the op's address in
+/// `r9`. It calls the op (`call r9`, forwarding `rcx`/`rdx`/`r8`), then `rc_dec`s
+/// the source, and returns the op's single result in `rax` — reclaiming a fresh
+/// temporary passed to `substring`/`char_at`/`repeat`/`trim` (each reads the source
+/// and produces an independent new value, so the source is dead afterwards).
+const STR_READ_OWN_SYMBOL: &str = "__lullaby_str_read_own";
+
 /// The integer-to-string helper emitted in `.text`. Signature: a signed 64-bit
 /// value in `rcx` and a signedness flag in `rdx` (0 = format as unsigned `u64`,
 /// nonzero = format as signed `i64`); returns in `rax` a fresh string record of

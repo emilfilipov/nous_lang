@@ -1111,6 +1111,26 @@ pub(crate) fn lower_string_concat(
 /// and byte-copies the slice. The slice record pointer is left in `rax`. Operands
 /// are evaluated left-to-right and spilled, because each evaluation may itself be
 /// a call that clobbers the argument registers.
+/// Emit the call for a string-read op (`substring`/`char_at`/`repeat`/`trim`) whose
+/// source string is already in `rcx` (and scalar args in `rdx`/`r8`). If the source
+/// `s` is a uniquely-owned fresh temporary it is dead after the op reads it, so go
+/// through `__lullaby_str_read_own` (which `rc_dec`s it); otherwise the bare op.
+fn emit_str_read_op(ctx: &mut NativeCtx, s: &BytecodeExpr, op_symbol: &str, code: &mut Vec<u8>) {
+    if is_owning_string_alloc(s) {
+        // lea r9, [rip + <op symbol>] ; call __lullaby_str_read_own
+        code.extend_from_slice(&[0x4C, 0x8D, 0x0D]);
+        let site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+        ctx.relocations.push(CodeRelocation {
+            offset: site as u32,
+            symbol: op_symbol.to_string(),
+        });
+        emit_call_symbol(ctx, STR_READ_OWN_SYMBOL, code);
+    } else {
+        emit_call_symbol(ctx, op_symbol, code);
+    }
+}
+
 pub(crate) fn lower_string_substring(
     ctx: &mut NativeCtx,
     s: &BytecodeExpr,
@@ -1126,7 +1146,7 @@ pub(crate) fn lower_string_substring(
     code.extend_from_slice(&[0x49, 0x89, 0xC0]); // mov r8, rax (end)
     code.push(0x5A); // pop rdx (start)
     code.push(0x59); // pop rcx (string record)
-    emit_call_symbol(ctx, STR_SUBSTRING_SYMBOL, code);
+    emit_str_read_op(ctx, s, STR_SUBSTRING_SYMBOL, code);
     Ok(())
 }
 
@@ -1145,7 +1165,7 @@ pub(crate) fn lower_string_char_at(
     lower_native_expr(ctx, index, code)?; // index i64 -> rax
     code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (index)
     code.push(0x59); // pop rcx (string record)
-    emit_call_symbol(ctx, STR_CHAR_AT_SYMBOL, code);
+    emit_str_read_op(ctx, s, STR_CHAR_AT_SYMBOL, code);
     Ok(())
 }
 
@@ -1162,7 +1182,7 @@ pub(crate) fn lower_string_repeat(
     lower_native_expr(ctx, count, code)?; // count -> rax
     code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (count)
     code.push(0x59); // pop rcx (record)
-    emit_call_symbol(ctx, STR_REPEAT_SYMBOL, code);
+    emit_str_read_op(ctx, s, STR_REPEAT_SYMBOL, code);
     Ok(())
 }
 
@@ -1175,7 +1195,7 @@ pub(crate) fn lower_string_trim(
 ) -> Result<(), String> {
     lower_native_expr(ctx, s, code)?; // record pointer -> rax
     code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
-    emit_call_symbol(ctx, STR_TRIM_SYMBOL, code);
+    emit_str_read_op(ctx, s, STR_TRIM_SYMBOL, code);
     Ok(())
 }
 

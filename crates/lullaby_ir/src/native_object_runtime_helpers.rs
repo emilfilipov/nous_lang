@@ -1200,6 +1200,41 @@ pub(crate) fn emit_str_binop_own_helper() -> HelperFunction {
     }
 }
 
+/// `__lullaby_str_read_own(rcx = source, rdx = a, r8 = b, r9 = op) -> rax`.
+///
+/// Calls the op `r9` (forwarding the source + its scalar args), then `rc_dec`s the
+/// source string and returns the op's result — reclaiming a fresh temporary passed
+/// to `substring`/`char_at`/`repeat`/`trim`. The source is preserved across the op
+/// call in callee-saved `rbx`, the result across the `rc_dec` in `r12`.
+pub(crate) fn emit_str_read_own_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 2 callee-saved pushes (%16 -> 8), `sub rsp, 0x28` -> %16 == 0 with
+    // 32 shadow bytes for the internal calls.
+    code.push(0x53); // push rbx
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 0x28
+
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (source)
+    code.extend_from_slice(&[0x41, 0xFF, 0xD1]); // call r9 (op forwards rcx/rdx/r8)
+    code.extend_from_slice(&[0x49, 0x89, 0xC4]); // mov r12, rax (result)
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx (source)
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
+    code.extend_from_slice(&[0x4C, 0x89, 0xE0]); // mov rax, r12 (result)
+
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]); // add rsp, 0x28
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_READ_OWN_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
 /// `__lullaby_str_from_int(rcx = value, rdx = signed_flag) -> rax = string record`.
 ///
 /// Formats `value` in decimal. When `signed_flag` is nonzero the value is treated

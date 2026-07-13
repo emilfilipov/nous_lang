@@ -2680,6 +2680,32 @@ fn rc_drop_inserted_for_owned_loop_string_but_not_when_it_escapes() {
 }
 
 #[test]
+fn read_own_helper_forwards_and_reclaims_the_source() {
+    // The string-read ownership helper indirect-calls the op (`call r9`), then
+    // `rc_dec`s the source. `substring(to_string(i), …)` on a fresh temp emits it.
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to 3\n",
+        "        total = total + len(substring(to_string(i), 0, 1))\n",
+        "    total\n",
+    )))
+    .expect("emit substring-of-temp program");
+    let (section, _storage) = coff_symbol(&program.bytes, STR_READ_OWN_SYMBOL)
+        .unwrap_or_else(|| panic!("missing helper symbol {STR_READ_OWN_SYMBOL}"));
+    assert_eq!(section, 1, "{STR_READ_OWN_SYMBOL} must be defined in .text");
+    let helper = emit_str_read_own_helper();
+    assert!(
+        helper.code.windows(3).any(|w| w == [0x41, 0xFF, 0xD1]),
+        "read_own must indirect-call the op (`call r9`)"
+    );
+    assert!(
+        helper.relocations.iter().any(|r| r.symbol == RC_DEC_SYMBOL),
+        "read_own must rc_dec the fresh source"
+    );
+}
+
+#[test]
 fn binop_own_helper_forwards_operands_and_reclaims_fresh_ones() {
     // The two-string ownership-aware helper must `mov rsi, rdx` (48 89 D6 — NOT the
     // no-op 48 89 F6 that a prior typo emitted, which left the right operand as

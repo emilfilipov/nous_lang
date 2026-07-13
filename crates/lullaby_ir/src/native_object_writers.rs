@@ -331,6 +331,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_str_concat_own_helper(),
         emit_str_len_own_helper(),
         emit_str_binop_own_helper(),
+        emit_str_read_own_helper(),
         emit_str_from_int_helper(),
         emit_str_from_bool_helper(),
         emit_str_from_char_helper(),
@@ -387,6 +388,7 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | RC_DEC_SYMBOL
                     | STR_LEN_OWN_SYMBOL
                     | STR_BINOP_OWN_SYMBOL
+                    | STR_READ_OWN_SYMBOL
                     | DROP_STRING_ARRAY_SYMBOL
                     | TO_CSTR_SYMBOL
             )
@@ -847,6 +849,7 @@ fn write_object_with_data(
         emit_str_concat_own_helper(),
         emit_str_len_own_helper(),
         emit_str_binop_own_helper(),
+        emit_str_read_own_helper(),
         emit_str_from_int_helper(),
         emit_str_from_bool_helper(),
         emit_str_from_char_helper(),
@@ -928,6 +931,7 @@ fn write_object_with_data(
         STR_CONCAT_OWN_SYMBOL,
         STR_LEN_OWN_SYMBOL,
         STR_BINOP_OWN_SYMBOL,
+        STR_READ_OWN_SYMBOL,
         STR_FROM_INT_SYMBOL,
         STR_FROM_BOOL_SYMBOL,
         STR_FROM_CHAR_SYMBOL,
