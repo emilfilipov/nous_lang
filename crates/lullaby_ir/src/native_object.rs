@@ -4053,6 +4053,36 @@ fn lower_native_stmt(
                 store_local(code, slot);
                 return Ok(());
             }
+            // A float array element / float struct field store (`a[i] = <f64>`):
+            // resolve permitting a float element and store through xmm0. Only a
+            // plain `Replace` is supported (a float compound `a[i] += ...` is
+            // deferred, mirroring the string/list rejection above).
+            let (typed_place, elem_ty) = resolve_scalar_place_typed(ctx, name, path)?;
+            if matches!(elem_ty, NativeType::F64 | NativeType::F32) {
+                if !matches!(op, AssignOp::Replace) {
+                    return Err(
+                        "compound assignment on a float array element is not supported".to_string(),
+                    );
+                }
+                let width = match elem_ty {
+                    NativeType::F32 => FloatWidth::F32,
+                    _ => FloatWidth::F64,
+                };
+                match typed_place {
+                    ScalarPlace::Const { slot } => {
+                        lower_native_float_expr(ctx, value, code)?; // xmm0 = value
+                        store_float_local(code, slot, width);
+                    }
+                    ScalarPlace::Dynamic { .. } => {
+                        lower_native_float_expr(ctx, value, code)?; // xmm0 = value
+                        push_xmm0(code); // spill (address calc clobbers gprs)
+                        emit_dynamic_addr_into_rcx(ctx, &typed_place, code)?; // rcx = &elem
+                        pop_xmm0(code); // xmm0 = value
+                        store_float_from_rcx(code, width); // movsd [rcx], xmm0
+                    }
+                }
+                return Ok(());
+            }
             let place = resolve_scalar_place(ctx, name, path)?;
             match op {
                 AssignOp::Replace => {
@@ -4490,6 +4520,13 @@ fn lower_value_into(
             store_local(code, word_slot);
             Ok(())
         }
+        // A float array/aggregate element: evaluate into xmm0 and store the whole
+        // 8-byte (f64) or 4-byte (f32) word — mirrors the enum-payload float path.
+        NativeType::F64 | NativeType::F32 => {
+            let width = lower_native_float_expr(ctx, value, code)?;
+            store_float_local(code, word_slot, width);
+            Ok(())
+        }
         _ => lower_aggregate_init(ctx, word_slot, ty, value, code),
     }
 }
@@ -4512,6 +4549,25 @@ fn resolve_place_steps(
     root: &str,
     steps: &[PathStep],
 ) -> Result<ScalarPlace, String> {
+    // The strict i64-only resolver: every existing scalar/SIMD caller relies on
+    // this rejecting a float element, so float arrays never reach the integer
+    // load/store or the packed-integer SIMD detectors.
+    let (place, ty) = resolve_place_steps_typed(ctx, root, steps)?;
+    if ty != NativeType::I64 {
+        return Err("native access must resolve to an i64 scalar".to_string());
+    }
+    Ok(place)
+}
+
+/// Like [`resolve_place_steps`] but also accepts an `f64`/`f32` final element and
+/// returns the resolved element type, so the float read/store paths can pick
+/// `movsd`/`movss`. Kept separate from the strict i64 resolver so the SIMD
+/// detectors (which call the strict one) never fire on a float array.
+fn resolve_place_steps_typed(
+    ctx: &NativeCtx,
+    root: &str,
+    steps: &[PathStep],
+) -> Result<(ScalarPlace, NativeType), String> {
     let local = ctx.local(root)?;
     let base_slot = local.slot;
     let mut ty = local.ty.clone();
@@ -4564,22 +4620,49 @@ fn resolve_place_steps(
         }
     }
 
-    if ty != NativeType::I64 {
-        return Err("native access must resolve to an i64 scalar".to_string());
+    if !matches!(ty, NativeType::I64 | NativeType::F64 | NativeType::F32) {
+        return Err("native access must resolve to an i64 or f64 scalar".to_string());
     }
 
-    match dynamic {
-        None => Ok(ScalarPlace::Const {
+    let place = match dynamic {
+        None => ScalarPlace::Const {
             slot: base_slot + const_words as i32 * 8,
-        }),
-        Some((elem_words, index_len, index)) => Ok(ScalarPlace::Dynamic {
+        },
+        Some((elem_words, index_len, index)) => ScalarPlace::Dynamic {
             base_slot,
             const_words,
             elem_words,
             index_len,
             index,
-        }),
-    }
+        },
+    };
+    Ok((place, ty))
+}
+
+/// Read-place decomposition (like [`resolve_read_place`]) that also permits a
+/// float element and returns its type — for the float `Index`/`Field` read path.
+fn resolve_read_place_typed(
+    ctx: &NativeCtx,
+    expr: &BytecodeExpr,
+) -> Result<(ScalarPlace, NativeType), String> {
+    let mut steps: Vec<PathStep> = Vec::new();
+    let mut cursor = expr;
+    let root = loop {
+        match &cursor.kind {
+            BytecodeExprKind::Variable(name) => break name.as_str(),
+            BytecodeExprKind::Field { target, field } => {
+                steps.push(PathStep::Field(field.as_str()));
+                cursor = target;
+            }
+            BytecodeExprKind::Index { target, index } => {
+                steps.push(PathStep::Index(index));
+                cursor = target;
+            }
+            _ => return Err("native access must be rooted at a local variable".to_string()),
+        }
+    };
+    steps.reverse();
+    resolve_place_steps_typed(ctx, root, &steps)
 }
 
 /// Resolve an assignment target `(name, path)` to a scalar place.
@@ -4596,6 +4679,23 @@ fn resolve_scalar_place(
         })
         .collect();
     resolve_place_steps(ctx, name, &steps)
+}
+
+/// Like [`resolve_scalar_place`] but permits a float element and returns its type
+/// — for the float array-element store path (`a[i] = <f64>`).
+fn resolve_scalar_place_typed(
+    ctx: &NativeCtx,
+    name: &str,
+    path: &[BytecodePlace],
+) -> Result<(ScalarPlace, NativeType), String> {
+    let steps: Vec<PathStep> = path
+        .iter()
+        .map(|place| match place {
+            BytecodePlace::Field(field) => PathStep::Field(field.as_str()),
+            BytecodePlace::Index(index) => PathStep::Index(index),
+        })
+        .collect();
+    resolve_place_steps_typed(ctx, name, &steps)
 }
 
 /// Decompose a nested `Field`/`Index` read expression into a root variable and
@@ -7615,6 +7715,25 @@ fn lower_native_float_expr(
             emit_movq_xmm0_from_rax(code, width); // xmm0 = negated bits
             Ok(width)
         }
+        // A float array element / float struct field read: `a[i]` / `s.f` where the
+        // element is f64/f32. Resolve the place (constant or bounds-checked dynamic
+        // address) and load it into xmm0 with movsd/movss.
+        BytecodeExprKind::Index { .. } | BytecodeExprKind::Field { .. } => {
+            let (place, elem_ty) = resolve_read_place_typed(ctx, expr)?;
+            let width = match elem_ty {
+                NativeType::F64 => FloatWidth::F64,
+                NativeType::F32 => FloatWidth::F32,
+                _ => return Err("float access resolved to a non-float element".to_string()),
+            };
+            match place {
+                ScalarPlace::Const { slot } => load_float_local(code, slot, width),
+                ScalarPlace::Dynamic { .. } => {
+                    emit_dynamic_addr_into_rcx(ctx, &place, code)?; // rcx = &elem (bounds-checked)
+                    load_float_from_rcx(code, width);
+                }
+            }
+            Ok(width)
+        }
         _ => Err("expression is not in the native float subset".to_string()),
     }
 }
@@ -7755,6 +7874,16 @@ fn float_width_of_expr(ctx: &NativeCtx, expr: &BytecodeExpr) -> Option<FloatWidt
             op: lullaby_parser::UnaryOp::Negate,
             expr: inner,
         } => float_width_of_expr(ctx, inner),
+        // A float array element / float struct field read (`a[i]`, `s.f`): resolve
+        // the place (read-only) and report the element width, so `a[i] + x` and
+        // `a[i] < x` route to the float lowerer / float comparator.
+        BytecodeExprKind::Index { .. } | BytecodeExprKind::Field { .. } => {
+            match resolve_read_place_typed(ctx, expr) {
+                Ok((_, NativeType::F64)) => Some(FloatWidth::F64),
+                Ok((_, NativeType::F32)) => Some(FloatWidth::F32),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -7794,6 +7923,26 @@ fn load_float_local(code: &mut Vec<u8>, slot: i32, width: FloatWidth) {
     };
     code.extend_from_slice(&[prefix, 0x0F, 0x10, 0x85]);
     code.extend_from_slice(&(-slot).to_le_bytes());
+}
+
+/// `movsd xmm0, [rcx]` (F64) / `movss xmm0, [rcx]` (F32) — load a float array
+/// element from its computed address in `rcx`. ModRM 0x01 = `[rcx]`, reg 0.
+fn load_float_from_rcx(code: &mut Vec<u8>, width: FloatWidth) {
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    code.extend_from_slice(&[prefix, 0x0F, 0x10, 0x01]);
+}
+
+/// `movsd [rcx], xmm0` (F64) / `movss [rcx], xmm0` (F32) — store xmm0 to a float
+/// array element at its computed address in `rcx`. ModRM 0x01 = `[rcx]`, reg 0.
+fn store_float_from_rcx(code: &mut Vec<u8>, width: FloatWidth) {
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    code.extend_from_slice(&[prefix, 0x0F, 0x11, 0x01]);
 }
 
 /// `movs{d,s} [rbp - slot], xmm0` — store `xmm0` into a float local.
@@ -13233,6 +13382,37 @@ mod native_program_tests {
                 .windows(STR_CHAR_AT_SYMBOL.len())
                 .any(|w| w == STR_CHAR_AT_SYMBOL.as_bytes()),
             "expected the char-at helper `{STR_CHAR_AT_SYMBOL}` in the object"
+        );
+    }
+
+    #[test]
+    fn compiles_f64_array_read_and_write() {
+        // `array<f64>` literal init, const- and dynamic-index reads, and element
+        // stores all compile natively (via the float xmm path). A movsd store to a
+        // computed address (F2 0F 11 01) confirms the dynamic float store emitted.
+        let program = emit_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let a array<f64> = [1.5, 2.5, 3.5]\n",
+            "    let i i64 = 1\n",
+            "    a[i] = a[0] + a[2]\n",
+            "    let r i64 = 0\n",
+            "    if a[i] > 4.0\n",
+            "        r = 1\n",
+            "    return r\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"main".to_string()),
+            "an array<f64> read+write function should compile natively: {:?}",
+            program.skipped
+        );
+        let sec = COFF_HEADER_SIZE as usize;
+        let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+        let text_size = read_u32(&program.bytes, sec + 16) as usize;
+        let text = &program.bytes[text_offset..text_offset + text_size];
+        assert!(
+            text.windows(4).any(|w| w == [0xF2, 0x0F, 0x11, 0x01]),
+            "expected a `movsd [rcx], xmm0` dynamic float-element store"
         );
     }
 
