@@ -1,0 +1,9 @@
+fn clampi lo i64 hi i64 x i64 -> i64
+    max(lo, min(hi, x))
+
+fn main -> i64
+    let a i64 = min(7, 3)
+    let b i64 = max(0 - 4, 0 - 9)
+    let c i64 = clampi(0, 100, 250)
+    let d i64 = clampi(0, 100, 0 - 5)
+    a + (b + 10) + c + d

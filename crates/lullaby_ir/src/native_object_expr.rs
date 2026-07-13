@@ -422,6 +422,29 @@ pub(crate) fn lower_native_expr(
                     OverflowMode::Checked => {}
                 }
             }
+            // `min(a, b)` / `max(a, b)` on plain `i64`: a branchless signed
+            // `cmp` + `cmov`, matching the interpreters' `i64::min`/`i64::max`
+            // exactly. Evaluate left→rax (spilled), right→rax, then `pop rcx`
+            // (left) and conditionally move it over the right. Only the `i64` case
+            // is lowered here; an `f64` `min`/`max` is deferred (the SSE `minsd`/
+            // `maxsd` NaN/`±0.0` rules diverge from `f64::min`/`f64::max`), and a
+            // fixed-width kind cannot occur (the type checker admits only i64/f64).
+            if (name == "min" || name == "max")
+                && args.len() == 2
+                && args[0].ty.name == "i64"
+                && args[1].ty.name == "i64"
+            {
+                lower_native_expr(ctx, &args[0], code)?; // left in rax
+                code.push(0x50); // push rax (left)
+                lower_native_expr(ctx, &args[1], code)?; // right in rax
+                code.push(0x59); // pop rcx (left)
+                code.extend_from_slice(&[0x48, 0x39, 0xC1]); // cmp rcx, rax
+                // min: rcx < rax (left smaller) -> cmovl takes rcx.
+                // max: rcx > rax (left larger)  -> cmovg takes rcx.
+                let cmov = if name == "min" { 0x4C } else { 0x4F };
+                code.extend_from_slice(&[0x48, 0x0F, cmov, 0xC1]); // cmov(l|g) rax, rcx
+                return Ok(());
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"

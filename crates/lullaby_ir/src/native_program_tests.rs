@@ -894,6 +894,57 @@ fn abs_i64_defers_gracefully() {
 }
 
 #[test]
+fn compiles_min_max_i64_as_cmp_cmov() {
+    // `min`/`max` on plain `i64` lower to a branchless `cmp rcx, rax` (48 39 C1)
+    // plus `cmovl`/`cmovg rax, rcx` (48 0F 4C C1 / 48 0F 4F C1) — signed, matching
+    // `i64::min`/`i64::max`. A function using both compiles natively.
+    let program = emit_native_program(&module_for(concat!(
+        "fn pick a i64 b i64 -> i64\n",
+        "    min(a, b) + max(a, b)\n\n",
+        "fn main -> i64\n",
+        "    pick(7, 3)\n",
+    )))
+    .expect("emit min/max program");
+    assert!(
+        program.compiled.contains(&"pick".to_string()),
+        "a min/max-using function must compile natively: {:?}",
+        program.skipped
+    );
+    assert!(
+        program
+            .bytes
+            .windows(4)
+            .any(|w| w == [0x48, 0x0F, 0x4C, 0xC1]),
+        "min must emit `cmovl rax, rcx`"
+    );
+    assert!(
+        program
+            .bytes
+            .windows(4)
+            .any(|w| w == [0x48, 0x0F, 0x4F, 0xC1]),
+        "max must emit `cmovg rax, rcx`"
+    );
+}
+
+#[test]
+fn min_max_f64_defers_gracefully() {
+    // Only the `i64` case of `min`/`max` is lowered natively; an `f64` `min`/`max`
+    // (whose SSE `minsd`/`maxsd` NaN/±0.0 rules diverge from `f64::min`) skips the
+    // whole function to the interpreters rather than miscompiling.
+    let err = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let m f64 = min(1.5, 2.5)\n",
+        "    let flag i64 = 0\n",
+        "    if m < 2.0\n",
+        "        flag = 1\n",
+        "    flag\n",
+    )))
+    .expect_err("f64 min is deferred");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
 fn compiles_overflow_builtins() {
     // The overflow-aware builtins are now emitted natively (not deferred):
     // `wrapping_*`/`saturating_*` produce a fixed-width scalar and `checked_*`
