@@ -139,11 +139,14 @@ deterministic refcount assertions).
 2. **Scope-based drop insertion (the core).** 🚧 **FIRST INCREMENT LANDED.** The
    backend inserts `rc_dec` (free-at-zero) for a **uniquely-owned, borrow-only
    `string` local in a loop body**, on the loop's fallthrough back-edge — reclaiming
-   per-iteration temporaries that previously leaked and could exhaust the heap
-   (verified: ~300k allocs / ~14 MB in a 1 MiB heap completes). The analysis is
-   default-deny (any escape → not dropped → leak, never double-freed); early-exit
-   edges leak safely. Remaining for this stage: `inc` for aliased/shared owners,
-   intermediate sub-expression temporaries, list/map/struct/enum drops, and drops on
+   per-iteration temporaries that previously leaked and could exhaust the heap. A
+   `string` concat whose operand is a fresh temp also frees that intermediate via the
+   ownership-aware `__lullaby_str_concat_own(left, right, mask)` helper, so the common
+   `to_string(i) + "…"` idiom fully reclaims (verified: 200k iterations / ~24 MB of
+   records in a 1 MiB heap completes). The analysis is default-deny (any escape → not
+   dropped → leak, never double-freed); early-exit edges leak safely. Remaining for
+   this stage: `inc` for aliased/shared owners, non-concat intermediate temporaries,
+   list/map/struct/enum drops, and drops on
    `return`/`break`/`continue`/`?`/`throw`/`match`-arm exit edges (not just
    fallthrough). At each binding/copy of a
    reference-counted value insert `inc`; at each scope exit insert `dec`/drop —

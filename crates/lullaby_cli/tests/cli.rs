@@ -911,11 +911,13 @@ fn native_split_execution_parity_when_linkable() {
     assert_eq!(exit, expected, "native split result must match interpreter");
 }
 
-/// RC drop insertion (memory model stage 2) reclaims a uniquely-owned, borrow-only
-/// `string` local allocated each loop iteration. The fixture allocates ~300k string
-/// records (~14 MB total) in the fixed 1 MiB native heap: without per-iteration
-/// `rc_dec`/`rc_free` reuse it would exhaust the heap and crash, so a correct exit
-/// code equal to the interpreter's result is proof the block is actually reclaimed.
+/// RC drop insertion (memory model stage 2) reclaims per-iteration string
+/// allocations. The `to_string(i) + "…"` idiom allocates THREE records each pass —
+/// the `to_string(i)` temp, the literal temp, and the concat result bound to `s` —
+/// all reclaimed (the two operands by the ownership-aware `concat_own`, `s` by the
+/// loop-body drop). Over 200k iterations that is far more than the fixed 1 MiB heap,
+/// so a correct exit code equal to the interpreter's result proves reclamation; a
+/// heap-exhaustion crash would mean it regressed.
 #[test]
 fn native_rc_string_reclaim_execution_parity_when_linkable() {
     let fixture = workspace_root().join("tests/fixtures/valid/run_rc_string_reclaim.lby");
@@ -938,7 +940,10 @@ fn native_rc_string_reclaim_execution_parity_when_linkable() {
         .expect("run cli");
     assert!(run.status.success(), "{}", stderr(&run));
     let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
-    assert_eq!(interp, 9_600_032, "32 chars * 300001 iterations");
+    assert_eq!(
+        interp, 3_088_906,
+        "sum of len(to_string(i)+\"!!!!!!!!!!\") for i in 0..=200000"
+    );
 
     if rust_lld_path().is_none() || !kernel32_available() {
         eprintln!("rust-lld and/or kernel32.lib not available; skipping native RC reclaim parity");

@@ -1267,6 +1267,16 @@ const TO_CSTR_SYMBOL: &str = "__lullaby_to_cstr";
 /// bytes are the two operands' UTF-8 ranges concatenated.
 const STR_CONCAT_SYMBOL: &str = "__lullaby_str_concat";
 
+/// The ownership-aware concat helper: left in `rcx`, right in `rdx`, and a
+/// compile-time ownership mask in `r8` (bit 0 = the left operand is a
+/// uniquely-owned fresh temporary, bit 1 = the right is). It concatenates (via
+/// `__lullaby_str_concat`), then `rc_dec`s each operand the mask marks — reclaiming
+/// intermediate string temporaries (e.g. the `to_string(i)` and the literal inside
+/// `to_string(i) + "…"`) that would otherwise leak. Emitted only when at least one
+/// operand is a fresh temp; a plain `var + var` concat still lowers to the bare
+/// `__lullaby_str_concat`.
+const STR_CONCAT_OWN_SYMBOL: &str = "__lullaby_str_concat_own";
+
 /// The integer-to-string helper emitted in `.text`. Signature: a signed 64-bit
 /// value in `rcx` and a signedness flag in `rdx` (0 = format as unsigned `u64`,
 /// nonzero = format as signed `i64`); returns in `rax` a fresh string record of
@@ -9352,7 +9362,21 @@ fn lower_string_concat(
     lower_native_expr(ctx, right, code)?; // right pointer -> rax
     code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (right)
     code.push(0x59); // pop rcx (left)
-    emit_call_symbol(ctx, STR_CONCAT_SYMBOL, code);
+    // If an operand is a uniquely-owned fresh string temporary (a literal,
+    // `to_string`/`substring`/`trim`/`repeat`, or a nested concat — never a borrowed
+    // variable/container read), it is dead after the concat; use the ownership-aware
+    // helper to `rc_dec` it, reclaiming the intermediate. When neither operand is a
+    // fresh temp (the common `var + var`), the bare concat keeps zero overhead.
+    let mask =
+        (is_owning_string_alloc(left) as i32) | ((is_owning_string_alloc(right) as i32) << 1);
+    if mask == 0 {
+        emit_call_symbol(ctx, STR_CONCAT_SYMBOL, code);
+    } else {
+        // mov r8d, mask ; call __lullaby_str_concat_own
+        code.extend_from_slice(&[0x41, 0xB8]);
+        code.extend_from_slice(&mask.to_le_bytes());
+        emit_call_symbol(ctx, STR_CONCAT_OWN_SYMBOL, code);
+    }
     Ok(())
 }
 
@@ -10780,6 +10804,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_map_find_helper(),
         emit_str_lit_helper(),
         emit_str_concat_helper(),
+        emit_str_concat_own_helper(),
         emit_str_from_int_helper(),
         emit_str_from_bool_helper(),
         emit_str_from_char_helper(),
@@ -12147,6 +12172,61 @@ fn emit_str_concat_helper() -> HelperFunction {
 
     HelperFunction {
         name: STR_CONCAT_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_str_concat_own(rcx = left, rdx = right, r8 = ownership mask) -> rax`.
+///
+/// Concatenates (via `__lullaby_str_concat`), then `rc_dec`s each operand the
+/// compile-time mask marks as a uniquely-owned fresh temporary (bit 0 = left,
+/// bit 1 = right) — reclaiming intermediate string temporaries. Preserves the two
+/// operands and the mask across the concat call (callee-saved `rbx`/`rsi`/`rdi`)
+/// and the result across the `rc_dec` calls (`r12`).
+fn emit_str_concat_own_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 4 callee-saved pushes (%16 -> 8), `sub rsp, 0x28` -> %16 == 0 with
+    // 32 shadow bytes for the internal calls.
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 0x28
+
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (left)
+    code.extend_from_slice(&[0x48, 0x89, 0xD6]); // mov rsi, rdx (right)
+    code.extend_from_slice(&[0x44, 0x89, 0xC7]); // mov edi, r8d (mask)
+
+    // result = concat(left, right).
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    code.extend_from_slice(&[0x48, 0x89, 0xF2]); // mov rdx, rsi
+    emit_helper_call(&mut code, &mut relocations, STR_CONCAT_SYMBOL); // rax = result
+    code.extend_from_slice(&[0x49, 0x89, 0xC4]); // mov r12, rax (result)
+
+    // if mask & 1: rc_dec(left).
+    code.extend_from_slice(&[0xF7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // test edi, 1
+    code.extend_from_slice(&[0x74, 0x08]); // jz +8 (skip mov+call)
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx (left)
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
+    // if mask & 2: rc_dec(right).
+    code.extend_from_slice(&[0xF7, 0xC7, 0x02, 0x00, 0x00, 0x00]); // test edi, 2
+    code.extend_from_slice(&[0x74, 0x08]); // jz +8
+    code.extend_from_slice(&[0x48, 0x89, 0xF1]); // mov rcx, rsi (right)
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
+
+    code.extend_from_slice(&[0x4C, 0x89, 0xE0]); // mov rax, r12 (result)
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]); // add rsp, 0x28
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_CONCAT_OWN_SYMBOL.to_string(),
         code,
         relocations,
     }
@@ -13822,6 +13902,7 @@ fn write_object_with_data(
     for str_helper in [
         emit_str_lit_helper(),
         emit_str_concat_helper(),
+        emit_str_concat_own_helper(),
         emit_str_from_int_helper(),
         emit_str_from_bool_helper(),
         emit_str_from_char_helper(),
@@ -13899,6 +13980,7 @@ fn write_object_with_data(
         MAP_FIND_SYMBOL,
         STR_LIT_SYMBOL,
         STR_CONCAT_SYMBOL,
+        STR_CONCAT_OWN_SYMBOL,
         STR_FROM_INT_SYMBOL,
         STR_FROM_BOOL_SYMBOL,
         STR_FROM_CHAR_SYMBOL,
@@ -14572,50 +14654,6 @@ mod native_program_tests {
     /// Parse the little-endian u32 at `offset` in `bytes`.
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
-    }
-
-    /// Whether the `.text` section has any relocation targeting the symbol `name`
-    /// (i.e. some emitted instruction references it — a `call`/`lea`). Distinct from
-    /// [`coff_symbol`], which only reports that the symbol is DEFINED (helpers are
-    /// always defined even when unreferenced). Used to assert a call was emitted.
-    fn coff_text_relocates_to(bytes: &[u8], name: &str) -> bool {
-        let sym_table = read_u32(bytes, 8) as usize;
-        let count = read_u32(bytes, 12) as usize;
-        let string_table = sym_table + count * 18;
-        // Find the symbol's index in the symbol table.
-        let mut target: Option<u32> = None;
-        for i in 0..count {
-            let rec = sym_table + i * 18;
-            let matches = if name.len() <= 8 {
-                let mut padded = [0u8; 8];
-                padded[..name.len()].copy_from_slice(name.as_bytes());
-                bytes[rec..rec + 8] == padded
-            } else if bytes[rec..rec + 4] == [0, 0, 0, 0] {
-                let str_offset = read_u32(bytes, rec + 4) as usize;
-                let start = string_table + str_offset;
-                let end = start + name.len();
-                end <= bytes.len()
-                    && bytes[start..end] == *name.as_bytes()
-                    && bytes.get(end) == Some(&0)
-            } else {
-                false
-            };
-            if matches {
-                target = Some(i as u32);
-                break;
-            }
-        }
-        let Some(target) = target else {
-            return false;
-        };
-        // `.text` is section 1 (first section header, right after the COFF header).
-        let text_hdr = COFF_HEADER_SIZE as usize;
-        let ptr_relocs = read_u32(bytes, text_hdr + 24) as usize;
-        let num_relocs = read_u16(bytes, text_hdr + 32) as usize;
-        (0..num_relocs).any(|i| {
-            let rec = ptr_relocs + i * 10;
-            read_u32(bytes, rec + 4) == target
-        })
     }
 
     /// Parse the little-endian u16 at `offset` in `bytes`.
@@ -17199,8 +17237,19 @@ mod native_program_tests {
             "    total\n",
         )))
         .expect("emit dropped program");
+        // The drop SITE is `mov rcx, [rbp - slot]` (48 8B 8D disp32) immediately
+        // followed by a `call` (E8) — a shape the runtime helpers never emit (they
+        // have no `rbp` frame), so it uniquely marks a drop in a user function. The
+        // `rc_dec` relocation alone is ambiguous: the always-emitted `concat_own`
+        // helper references `rc_dec` too.
+        let has_drop_site = |program: &NativeProgram| {
+            program
+                .bytes
+                .windows(8)
+                .any(|w| w[0..3] == [0x48, 0x8B, 0x8D] && w[7] == 0xE8)
+        };
         assert!(
-            coff_text_relocates_to(&dropped.bytes, RC_DEC_SYMBOL),
+            has_drop_site(&dropped),
             "a uniquely-owned borrow-only loop string must be dropped"
         );
 
@@ -17216,8 +17265,36 @@ mod native_program_tests {
         )))
         .expect("emit escaping program");
         assert!(
-            !coff_text_relocates_to(&escapes.bytes, RC_DEC_SYMBOL),
+            !has_drop_site(&escapes),
             "a string whose ownership escapes into an accumulator must NOT be dropped"
+        );
+    }
+
+    #[test]
+    fn concat_of_fresh_temps_uses_ownership_aware_helper() {
+        // `to_string(i) + "…"` has two fresh-temp operands, so the concat lowers to
+        // the ownership-aware helper (which `rc_dec`s the intermediates); a plain
+        // `param + param` (both borrowed) keeps the bare concat with no operand drop.
+        let owned = emit_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let s string = to_string(7) + \"!\"\n",
+            "    len(s)\n",
+        )))
+        .expect("emit owned-concat program");
+        assert!(
+            coff_symbol(&owned.bytes, STR_CONCAT_OWN_SYMBOL).is_some_and(|(sec, _)| sec == 1),
+            "concat of fresh temps must reference the ownership-aware helper"
+        );
+        // The concat_own helper itself must chain concat and rc_dec the marked
+        // operands.
+        let helper = emit_str_concat_own_helper();
+        assert!(
+            helper
+                .relocations
+                .iter()
+                .any(|r| r.symbol == STR_CONCAT_SYMBOL)
+                && helper.relocations.iter().any(|r| r.symbol == RC_DEC_SYMBOL),
+            "concat_own must call concat then rc_dec the owned operands"
         );
     }
 
