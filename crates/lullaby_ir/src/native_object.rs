@@ -1259,6 +1259,12 @@ const STR_SUBSTRING_SYMBOL: &str = "__lullaby_str_substring";
 /// Implements `s[i]`.
 const STR_CHAR_AT_SYMBOL: &str = "__lullaby_str_char_at";
 
+/// The substring-count helper emitted in `.text`. Signature: the haystack record
+/// pointer in `rcx`, the needle record pointer in `rdx`; returns in `rax` the count
+/// of NON-overlapping byte-level occurrences of the needle (matching the
+/// interpreters' `text.matches(sub).count()`). An empty needle yields `0`.
+const STR_COUNT_SYMBOL: &str = "__lullaby_str_count";
+
 /// The `find` helper emitted in `.text`. Signature: the haystack record pointer
 /// in `rcx`, the needle record pointer in `rdx`; returns in `rax` the CHAR index
 /// (i64) of the first byte-level occurrence of the needle, or `-1` if absent. An
@@ -6718,6 +6724,15 @@ fn lower_native_expr(
             {
                 return lower_string_binary_op(ctx, &args[0], &args[1], STR_FIND_SYMBOL, code);
             }
+            // `count(text, sub)`: non-overlapping occurrence count (i64). Guarded on
+            // two string operands so a user-defined `count` still resolves as a call.
+            if name == "count"
+                && args.len() == 2
+                && is_string_type(&args[0].ty)
+                && is_string_type(&args[1].ty)
+            {
+                return lower_string_binary_op(ctx, &args[0], &args[1], STR_COUNT_SYMBOL, code);
+            }
             if name == "contains"
                 && args.len() == 2
                 && is_string_type(&args[0].ty)
@@ -9821,6 +9836,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_str_from_char_helper(),
         emit_str_substring_helper(),
         emit_str_char_at_helper(),
+        emit_str_count_helper(),
         emit_str_find_helper(),
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
@@ -9853,6 +9869,7 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_FROM_CHAR_SYMBOL
                     | STR_SUBSTRING_SYMBOL
                     | STR_CHAR_AT_SYMBOL
+                    | STR_COUNT_SYMBOL
                     | STR_FIND_SYMBOL
                     | STR_CONTAINS_SYMBOL
                     | STR_STARTS_WITH_SYMBOL
@@ -11631,6 +11648,79 @@ fn emit_str_contains_helper() -> HelperFunction {
     }
 }
 
+/// `__lullaby_str_count(rcx = haystack, rdx = needle) -> rax = i64 count`.
+///
+/// Counts NON-overlapping byte-level needle occurrences (matches
+/// `text.matches(sub).count()`): scans each start `pos`, and on a match at `pos`
+/// increments the count and advances `pos` by `needle_len` (non-overlapping),
+/// else advances by 1. An empty needle yields `0`. A leaf function; preserves the
+/// callee-saved `rsi`/`rdi`/`r12`/`r13` it uses. `count` lives in the volatile
+/// `r8`, `pos` in `r10` — neither is clobbered by `emit_str_match_at_into_rax`
+/// (which only touches rax/rcx/rdx/r9 and reads r11/r12/rdi).
+fn emit_str_count_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x41, 0x54]); // push r12
+    code.extend_from_slice(&[0x41, 0x55]); // push r13
+    emit_load_two_string_operands(&mut code); // rsi=hay, rdi=needle, r13=hay_len, r12=needle_len
+
+    // Empty needle -> 0.
+    code.extend_from_slice(&[0x4D, 0x85, 0xE4]); // test r12, r12
+    code.extend_from_slice(&[0x0F, 0x85]); // jnz nonempty
+    let nonempty_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0x31, 0xC0]); // xor rax, rax (count = 0)
+    code.extend_from_slice(&[0xE9]); // jmp epilogue
+    let empty_done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    patch_rel32(&mut code, nonempty_site);
+    code.extend_from_slice(&[0x4D, 0x31, 0xC0]); // xor r8, r8 (count = 0)
+    code.extend_from_slice(&[0x4D, 0x31, 0xD2]); // xor r10, r10 (pos = 0)
+    let loop_top = code.len();
+    // limit = hay_len - needle_len; if pos > limit -> done.
+    code.extend_from_slice(&[0x4C, 0x89, 0xE8]); // mov rax, r13 (hay_len)
+    code.extend_from_slice(&[0x4C, 0x29, 0xE0]); // sub rax, r12 (needle_len)
+    code.extend_from_slice(&[0x49, 0x39, 0xC2]); // cmp r10, rax
+    code.extend_from_slice(&[0x0F, 0x8F]); // jg done
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // hay_cur = hay_data + pos.
+    code.extend_from_slice(&[0x49, 0x89, 0xF3]); // mov r11, rsi
+    code.extend_from_slice(&[0x4D, 0x01, 0xD3]); // add r11, r10
+    emit_str_match_at_into_rax(&mut code); // rax = match_at(pos)
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x0F, 0x84]); // jz nomatch
+    let nomatch_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // matched: count += 1; pos += needle_len.
+    code.extend_from_slice(&[0x49, 0xFF, 0xC0]); // inc r8
+    code.extend_from_slice(&[0x4D, 0x01, 0xE2]); // add r10, r12
+    emit_jmp_to(&mut code, loop_top);
+    // nomatch: pos += 1.
+    patch_rel32(&mut code, nomatch_site);
+    code.extend_from_slice(&[0x49, 0xFF, 0xC2]); // inc r10
+    emit_jmp_to(&mut code, loop_top);
+    // done: rax = count.
+    patch_rel32(&mut code, done_site);
+    code.extend_from_slice(&[0x4C, 0x89, 0xC0]); // mov rax, r8
+
+    // epilogue:
+    patch_rel32(&mut code, empty_done_site);
+    code.extend_from_slice(&[0x41, 0x5D]); // pop r13
+    code.extend_from_slice(&[0x41, 0x5C]); // pop r12
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: STR_COUNT_SYMBOL.to_string(),
+        code,
+        relocations: Vec::new(),
+    }
+}
+
 /// `__lullaby_str_starts_with(rcx = s, rdx = prefix) -> rax = 0/1`.
 ///
 /// If `prefix_len > s_len` the result is `0`; otherwise it is whether the prefix
@@ -12110,6 +12200,7 @@ fn write_object_with_data(
         emit_str_from_char_helper(),
         emit_str_substring_helper(),
         emit_str_char_at_helper(),
+        emit_str_count_helper(),
         emit_str_find_helper(),
         emit_str_contains_helper(),
         emit_str_starts_with_helper(),
@@ -12179,6 +12270,7 @@ fn write_object_with_data(
         STR_FROM_CHAR_SYMBOL,
         STR_SUBSTRING_SYMBOL,
         STR_CHAR_AT_SYMBOL,
+        STR_COUNT_SYMBOL,
         STR_FIND_SYMBOL,
         STR_CONTAINS_SYMBOL,
         STR_STARTS_WITH_SYMBOL,
@@ -13141,6 +13233,30 @@ mod native_program_tests {
                 .windows(STR_CHAR_AT_SYMBOL.len())
                 .any(|w| w == STR_CHAR_AT_SYMBOL.as_bytes()),
             "expected the char-at helper `{STR_CHAR_AT_SYMBOL}` in the object"
+        );
+    }
+
+    #[test]
+    fn compiles_string_count_builtin() {
+        // `count(text, sub)` compiles natively (non-overlapping occurrence count).
+        let program = emit_native_program(&module_for(concat!(
+            "fn cc s string t string -> i64\n",
+            "    count(s, t)\n\n",
+            "fn main -> i64\n",
+            "    cc(\"a,b,c\", \",\")\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"cc".to_string()),
+            "string count should compile natively: {:?}",
+            program.skipped
+        );
+        assert!(
+            program
+                .bytes
+                .windows(STR_COUNT_SYMBOL.len())
+                .any(|w| w == STR_COUNT_SYMBOL.as_bytes()),
+            "expected the count helper `{STR_COUNT_SYMBOL}` in the object"
         );
     }
 
@@ -15427,6 +15543,7 @@ mod native_program_tests {
             STR_FROM_CHAR_SYMBOL,
             STR_SUBSTRING_SYMBOL,
             STR_CHAR_AT_SYMBOL,
+            STR_COUNT_SYMBOL,
             STR_FIND_SYMBOL,
             STR_CONTAINS_SYMBOL,
             STR_STARTS_WITH_SYMBOL,
@@ -15500,6 +15617,7 @@ mod native_program_tests {
         for symbol in [
             STR_SUBSTRING_SYMBOL,
             STR_CHAR_AT_SYMBOL,
+            STR_COUNT_SYMBOL,
             STR_FIND_SYMBOL,
             STR_CONTAINS_SYMBOL,
             STR_STARTS_WITH_SYMBOL,
