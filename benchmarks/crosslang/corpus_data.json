@@ -9696,8 +9696,8 @@
    "category": "sorting",
    "langs": {
     "Lullaby": {
-     "tokens": 22,
-     "source": "fn is_even x i64\n    x - (x / 2) * 2 == 0"
+     "tokens": 15,
+     "source": "fn is_even x i64\n    x % 2 == 0"
     }
    },
    "present": 1
@@ -13133,8 +13133,8 @@
    "category": "numeric_basics",
    "langs": {
     "Lullaby": {
-     "tokens": 26,
-     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return 0 - n\n    n"
+     "tokens": 24,
+     "source": "fn abs_val n i64 -> i64\n    if n < 0\n        return -n\n    n"
     },
     "C": {
      "tokens": 22,
@@ -13258,7 +13258,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 69,
-     "source": "fn collatz_len n i64 -> i64\n    let steps i64 = 0\n    while n != 1\n        if rem(n, 2) == 0\n            n = n / 2\n        else\n            n = 3 * n + 1\n        steps += 1\n    steps"
+     "source": "fn collatz_len n i64 -> i64\n    let steps i64 = 0\n    while n != 1\n        if (n % 2) == 0\n            n = n / 2\n        else\n            n = 3 * n + 1\n        steps += 1\n    steps"
     },
     "C": {
      "tokens": 70,
@@ -13319,8 +13319,8 @@
    "category": "numeric_basics",
    "langs": {
     "Lullaby": {
-     "tokens": 60,
-     "source": "fn digit_sum n i64 -> i64\n    if n < 0\n        n = 0 - n\n    let s i64 = 0\n    while n > 0\n        s += rem(n, 10)\n        n = n / 10\n    s"
+     "tokens": 58,
+     "source": "fn digit_sum n i64 -> i64\n    if n < 0\n        n = -n\n    let s i64 = 0\n    while n > 0\n        s += (n % 10)\n        n = n / 10\n    s"
     },
     "C": {
      "tokens": 60,
@@ -13413,7 +13413,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 42,
-     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t i64 = rem(a, b)\n        a = b\n        b = t\n    a"
+     "source": "fn gcd a i64 b i64 -> i64\n    while b != 0\n        let t i64 = (a % b)\n        a = b\n        b = t\n    a"
     },
     "C": {
      "tokens": 47,
@@ -13474,8 +13474,8 @@
    "category": "numeric_basics",
    "langs": {
     "Lullaby": {
-     "tokens": 32,
-     "source": "fn is_even n i64 -> i64\n    if rem(n, 2) == 0\n        1\n    else\n        0"
+     "tokens": 24,
+     "source": "fn is_even n i64 -> i64\n    1 if n % 2 == 0 else 0"
     },
     "C": {
      "tokens": 26,
@@ -13506,7 +13506,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 64,
-     "source": "fn is_prime n i64 -> i64\n    if n < 2\n        return 0\n    let d i64 = 2\n    while d * d <= n\n        if rem(n, d) == 0\n            return 0\n        d += 1\n    1"
+     "source": "fn is_prime n i64 -> i64\n    if n < 2\n        return 0\n    let d i64 = 2\n    while d * d <= n\n        if (n % d) == 0\n            return 0\n        d += 1\n    1"
     },
     "C": {
      "tokens": 59,
@@ -13536,8 +13536,8 @@
    "category": "numeric_basics",
    "langs": {
     "Lullaby": {
-     "tokens": 27,
-     "source": "fn max2 a i64 b i64 -> i64\n    if a > b\n        a\n    else\n        b"
+     "tokens": 21,
+     "source": "fn max2 a i64 b i64 -> i64\n    a if a > b else b"
     },
     "C": {
      "tokens": 24,
@@ -13568,7 +13568,7 @@
    "langs": {
     "Lullaby": {
      "tokens": 82,
-     "source": "fn power_mod base i64 exp i64 m i64 -> i64\n    let r i64 = 1\n    base = rem(base, m)\n    while exp > 0\n        if rem(exp, 2) == 1\n            r = rem(r * base, m)\n        exp = exp / 2\n        base = rem(base * base, m)\n    r"
+     "source": "fn power_mod base i64 exp i64 m i64 -> i64\n    let r i64 = 1\n    base = (base % m)\n    while exp > 0\n        if (exp % 2) == 1\n            r = (r * base % m)\n        exp = exp / 2\n        base = (base * base % m)\n    r"
     },
     "C": {
      "tokens": 87,
@@ -13594,23 +13594,12 @@
    "present": 6
   },
   {
-   "name": "rem",
-   "category": "numeric_basics",
-   "langs": {
-    "Lullaby": {
-     "tokens": 22,
-     "source": "fn rem a i64 b i64 -> i64\n    a - (a / b) * b"
-    }
-   },
-   "present": 1
-  },
-  {
    "name": "sign",
    "category": "numeric_basics",
    "langs": {
     "Lullaby": {
-     "tokens": 39,
-     "source": "fn sign n i64 -> i64\n    if n < 0\n        return 0 - 1\n    if n > 0\n        return 1\n    0"
+     "tokens": 36,
+     "source": "fn sign n i64 -> i64\n    if n < 0\n        return -1\n    if n > 0\n        return 1\n    0"
     },
     "C": {
      "tokens": 38,
@@ -13637,7 +13626,7 @@
   }
  ],
  "totals": {
-  "Lullaby": 21044,
+  "Lullaby": 21023,
   "C": 27472,
   "C++": 28423,
   "Rust": 26329,
@@ -13846,7 +13835,7 @@
    "JavaScript": 911
   },
   "numeric_basics": {
-   "Lullaby": 744,
+   "Lullaby": 723,
    "C": 772,
    "C++": 769,
    "Rust": 944,

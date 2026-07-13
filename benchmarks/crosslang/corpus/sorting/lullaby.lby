@@ -5,7 +5,7 @@
 # disturbing the caller.
 
 fn is_even x i64
-    x - (x / 2) * 2 == 0
+    x % 2 == 0
 
 fn checksum a array<i64> n i64
     let sum = 0

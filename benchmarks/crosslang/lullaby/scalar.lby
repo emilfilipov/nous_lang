@@ -2,28 +2,20 @@
 # register-promotable, so the "close to C" story holds. See ../SPEC.md.
 # Lullaby has no `%` operator; `rem` is truncating remainder (matches C's `%`).
 
-fn rem a i64 b i64 -> i64
-    a - (a / b) * b
 
 fn add a i64 b i64 -> i64
     a + b
 
 fn max2 a i64 b i64 -> i64
-    if a > b
-        a
-    else
-        b
+    a if a > b else b
 
 fn abs_val n i64 -> i64
     if n < 0
-        return 0 - n
+        return -n
     n
 
 fn is_even n i64 -> i64
-    if rem(n, 2) == 0
-        1
-    else
-        0
+    1 if n % 2 == 0 else 0
 
 fn clamp x i64 lo i64 hi i64 -> i64
     if x < lo
@@ -34,7 +26,7 @@ fn clamp x i64 lo i64 hi i64 -> i64
 
 fn sign n i64 -> i64
     if n < 0
-        return 0 - 1
+        return -1
     if n > 0
         return 1
     0
@@ -47,7 +39,7 @@ fn factorial n i64 -> i64
 
 fn gcd a i64 b i64 -> i64
     while b != 0
-        let t i64 = rem(a, b)
+        let t i64 = (a % b)
         a = b
         b = t
     a
@@ -66,7 +58,7 @@ fn is_prime n i64 -> i64
         return 0
     let d i64 = 2
     while d * d <= n
-        if rem(n, d) == 0
+        if (n % d) == 0
             return 0
         d += 1
     1
@@ -80,7 +72,7 @@ fn int_pow base i64 exp i64 -> i64
 fn collatz_len n i64 -> i64
     let steps i64 = 0
     while n != 1
-        if rem(n, 2) == 0
+        if (n % 2) == 0
             n = n / 2
         else
             n = 3 * n + 1
@@ -89,10 +81,10 @@ fn collatz_len n i64 -> i64
 
 fn digit_sum n i64 -> i64
     if n < 0
-        n = 0 - n
+        n = -n
     let s i64 = 0
     while n > 0
-        s += rem(n, 10)
+        s += (n % 10)
         n = n / 10
     s
 
@@ -105,12 +97,12 @@ fn count_primes_below n i64 -> i64
 
 fn power_mod base i64 exp i64 m i64 -> i64
     let r i64 = 1
-    base = rem(base, m)
+    base = (base % m)
     while exp > 0
-        if rem(exp, 2) == 1
-            r = rem(r * base, m)
+        if (exp % 2) == 1
+            r = (r * base % m)
         exp = exp / 2
-        base = rem(base * base, m)
+        base = (base * base % m)
     r
 
 fn ackermann m i64 n i64 -> i64
