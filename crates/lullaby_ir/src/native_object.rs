@@ -2301,13 +2301,15 @@ fn resolve_native_type(
                 let native = resolve_native_type(field_ty, structs, enums).map_err(|_| {
                     format!("struct `{name}` field `{field_name}` is not an all-i64 native type")
                 })?;
-                // Float fields inside aggregates are out of scope: the aggregate
-                // load/store paths move whole 8-byte words through a GPR, which
-                // would not keep an f32 field rounded. Reject so the function
-                // skips gracefully rather than miscompiling.
-                if matches!(native, NativeType::F64 | NativeType::F32) {
+                // An `f32` field is out of scope: the aggregate copy/pass paths move
+                // whole 8-byte words through a GPR, which would not keep a 4-byte
+                // f32 rounded. An `f64` is a full 8-byte word, so a GPR round-trip is
+                // bit-lossless — f64 fields ARE supported (read/store route through
+                // the float lowerer via `resolve_*_typed` + `float_width_of_expr`'s
+                // Field arm; init/copy move the word unchanged). Reject only f32.
+                if matches!(native, NativeType::F32) {
                     return Err(format!(
-                        "struct `{name}` field `{field_name}` is a float; float struct fields are not in the native subset"
+                        "struct `{name}` field `{field_name}` is an f32; f32 struct fields are not in the native subset (an f64 field is fine)"
                     ));
                 }
                 // A heap-value field (`string`/`list`/`map`) inside an aggregate is
@@ -13759,6 +13761,34 @@ mod native_program_tests {
                 .windows(STR_CHAR_AT_SYMBOL.len())
                 .any(|w| w == STR_CHAR_AT_SYMBOL.as_bytes()),
             "expected the char-at helper `{STR_CHAR_AT_SYMBOL}` in the object"
+        );
+    }
+
+    #[test]
+    fn compiles_f64_struct_fields() {
+        // An f64 struct field (init, read, arithmetic, by-value copy) compiles
+        // natively — a full 8-byte word is bit-lossless through the GPR copy path,
+        // and reads/stores route through the float lowerer. (f32 fields stay out.)
+        let program = emit_native_program(&module_for(concat!(
+            "struct Point\n",
+            "    x f64\n",
+            "    y f64\n\n",
+            "fn norm2 p Point -> i64\n",
+            "    let q Point = p\n",
+            "    q.x = 6.0\n",
+            "    let d f64 = p.x * p.x + q.y * q.y\n",
+            "    let ok i64 = 0\n",
+            "    if d > 24.5\n",
+            "        ok = 1\n",
+            "    ok\n\n",
+            "fn main -> i64\n",
+            "    norm2(Point(3.0, 4.0))\n",
+        )))
+        .expect("emit native program");
+        assert!(
+            program.compiled.contains(&"norm2".to_string()),
+            "f64 struct fields should compile natively: {:?}",
+            program.skipped
         );
     }
 
