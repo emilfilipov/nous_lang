@@ -808,8 +808,25 @@ const HEAP_STRLEN_SYMBOL: &str = "__lullaby_strlen_copy";
 /// the base of the heap region on first use.
 const HEAP_NEXT_SYMBOL: &str = "__lullaby_heap_next";
 
+/// The free-list head cell symbol in `.bss` (an 8-byte pointer, zero-initialized).
+/// Reference-counted blocks freed by `__lullaby_rc_free` are pushed onto this LIFO
+/// free list and reused by `__lullaby_alloc` (first-fit). `0` means the list is
+/// empty. Until scope-based drop insertion (RC stage 2) emits `rc_dec`/`rc_free`
+/// calls, nothing frees, so the list stays empty and the allocator behaves exactly
+/// like the old bump allocator (plus a per-block RC header).
+const HEAP_FREE_HEAD_SYMBOL: &str = "__lullaby_free_head";
+
 /// The heap region base symbol in `.bss` — a fixed reserved bump region.
 const HEAP_BASE_SYMBOL: &str = "__lullaby_heap_base";
+
+/// Size of the per-allocation reference-counting header, in bytes: `[size i64]
+/// [refcount i64]` sitting immediately BEFORE the payload the allocator returns.
+/// The returned pointer names the payload (offset 0 = the first payload word), so
+/// every existing record offset (string/list/map/struct/enum) is unchanged; the
+/// header is addressed at negative offsets (`refcount` at `[ptr - 8]`, `size` at
+/// `[ptr - 16]`). Storing the block size lets `rc_free` return a block to the
+/// free list and `alloc` first-fit-reuse it.
+const RC_HEADER_SIZE: i32 = 16;
 
 /// Size in bytes of the fixed reserved native heap region. Growable lists
 /// capacity-double and orphan their old backing blocks in this no-reclaim bump
@@ -10406,7 +10423,7 @@ fn build_object_model(
         sections.push(ObjectSection {
             kind: ObjectSectionKind::Bss,
             data: Vec::new(),
-            size: u64::from(8 + HEAP_REGION_SIZE),
+            size: u64::from(16 + HEAP_REGION_SIZE),
             relocations: Vec::new(),
         });
         (Some(1usize), Some(2usize))
@@ -10456,9 +10473,15 @@ fn build_object_model(
             kind: ObjectSymbolKind::Data,
         });
         symbols.push(ObjectSymbol {
-            name: HEAP_BASE_SYMBOL.to_string(),
+            name: HEAP_FREE_HEAD_SYMBOL.to_string(),
             section: bss_section,
             value: 8,
+            kind: ObjectSymbolKind::Data,
+        });
+        symbols.push(ObjectSymbol {
+            name: HEAP_BASE_SYMBOL.to_string(),
+            section: bss_section,
+            value: 16,
             kind: ObjectSymbolKind::Data,
         });
     }
@@ -10891,51 +10914,89 @@ struct HelperFunction {
     relocations: Vec<CodeRelocation>,
 }
 
-/// Emit the bump allocator `__lullaby_alloc(size in rcx) -> ptr in rax`.
+/// Emit the free-list allocator `__lullaby_alloc(payload size in rcx) -> payload
+/// ptr in rax`.
 ///
-/// Reads the bump pointer from `.bss`; if it is still zero (first call) it seeds
-/// it to the base of the reserved heap region. Returns the current pointer and
-/// advances it past an 8-byte-rounded allocation.
+/// Each block carries a 16-byte RC header `[size i64][refcount i64]` before the
+/// payload; the returned pointer names the payload (`base + 16`), so every record
+/// offset is unchanged and the refcount is at `[ptr - 8]`. The allocator first
+/// scans the LIFO free list (`__lullaby_free_head`) for a first-fit block (stored
+/// size ≥ needed); on a hit it unlinks the block, re-seeds its refcount to 1, and
+/// returns it. Otherwise it bump-allocates from the reserved `.bss` region
+/// (seeding the bump pointer to the region base on first use), writing the size
+/// and a refcount of 1, and advancing the bump pointer 8-byte-rounded. A leaf (no
+/// internal calls); uses only volatile registers.
 fn emit_heap_alloc_helper() -> HelperFunction {
     let mut code: Vec<u8> = Vec::new();
     let mut relocations: Vec<CodeRelocation> = Vec::new();
 
-    // mov rax, [rip + __lullaby_heap_next]
-    code.extend_from_slice(&[0x48, 0x8B, 0x05]);
+    // r8 = need = payload size (rcx) + RC header.
+    code.extend_from_slice(&[0x4C, 0x8D, 0x41, RC_HEADER_SIZE as u8]); // lea r8, [rcx + 16]
+
+    // Free-list first-fit scan. r10 = &(prev's next slot) (starts at &free_head),
+    // r11 = cur block base.
+    code.extend_from_slice(&[0x4C, 0x8D, 0x15]); // lea r10, [rip + free_head]
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_FREE_HEAD_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x4D, 0x8B, 0x1A]); // mov r11, [r10]
+
+    let scan = code.len();
+    code.extend_from_slice(&[0x4D, 0x85, 0xDB]); // test r11, r11
+    code.extend_from_slice(&[0x0F, 0x84]); // jz bump
+    let bump_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x49, 0x8B, 0x03]); // mov rax, [r11] (block size)
+    code.extend_from_slice(&[0x4C, 0x39, 0xC0]); // cmp rax, r8
+    code.extend_from_slice(&[0x0F, 0x82]); // jb advance (block too small)
+    let advance_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // Reuse: unlink ([prev.next] = cur.next), reset refcount, return payload.
+    code.extend_from_slice(&[0x49, 0x8B, 0x53, 0x08]); // mov rdx, [r11 + 8] (cur.next)
+    code.extend_from_slice(&[0x49, 0x89, 0x12]); // mov [r10], rdx
+    code.extend_from_slice(&[0x49, 0xC7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00]); // mov qword [r11+8], 1
+    code.extend_from_slice(&[0x49, 0x8D, 0x43, RC_HEADER_SIZE as u8]); // lea rax, [r11 + 16]
+    code.push(0xC3); // ret
+    // advance: prev = &cur.next; cur = cur.next; loop.
+    patch_rel32(&mut code, advance_site);
+    code.extend_from_slice(&[0x4D, 0x8D, 0x53, 0x08]); // lea r10, [r11 + 8]
+    code.extend_from_slice(&[0x4D, 0x8B, 0x5B, 0x08]); // mov r11, [r11 + 8]
+    emit_jmp_to(&mut code, scan);
+
+    // bump: seed the bump pointer if zero, then carve `need` bytes.
+    patch_rel32(&mut code, bump_site);
+    code.extend_from_slice(&[0x48, 0x8B, 0x05]); // mov rax, [rip + heap_next]
     relocations.push(CodeRelocation {
         offset: code.len() as u32,
         symbol: HEAP_NEXT_SYMBOL.to_string(),
     });
     code.extend_from_slice(&[0, 0, 0, 0]);
-    // test rax, rax
-    code.extend_from_slice(&[0x48, 0x85, 0xC0]);
-    // jnz +7 (skip the lea that seeds the pointer)
-    code.extend_from_slice(&[0x75, 0x07]);
-    // lea rax, [rip + __lullaby_heap_base]  (7 bytes)
-    code.extend_from_slice(&[0x48, 0x8D, 0x05]);
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x75, 0x07]); // jnz have (skip the 7-byte lea)
+    code.extend_from_slice(&[0x48, 0x8D, 0x05]); // lea rax, [rip + heap_base]
     relocations.push(CodeRelocation {
         offset: code.len() as u32,
         symbol: HEAP_BASE_SYMBOL.to_string(),
     });
     code.extend_from_slice(&[0, 0, 0, 0]);
-    // rdx = rax (the pointer we will return)
-    code.extend_from_slice(&[0x48, 0x89, 0xC2]);
-    // rax = rax + rcx (advance past the requested size)
-    code.extend_from_slice(&[0x48, 0x01, 0xC8]);
-    // rax = (rax + 7) & ~7  (round the new next up to 8 bytes)
-    code.extend_from_slice(&[0x48, 0x83, 0xC0, 0x07]);
-    code.extend_from_slice(&[0x48, 0x83, 0xE0, 0xF8]);
-    // mov [rip + __lullaby_heap_next], rax
-    code.extend_from_slice(&[0x48, 0x89, 0x05]);
+    // have: write the header (size = r8, refcount = 1).
+    code.extend_from_slice(&[0x4C, 0x89, 0x00]); // mov [rax], r8
+    code.extend_from_slice(&[0x48, 0xC7, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00]); // mov qword [rax+8], 1
+    // heap_next = (rax + need + 7) & ~7.
+    code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax
+    code.extend_from_slice(&[0x4C, 0x01, 0xC2]); // add rdx, r8
+    code.extend_from_slice(&[0x48, 0x83, 0xC2, 0x07]); // add rdx, 7
+    code.extend_from_slice(&[0x48, 0x83, 0xE2, 0xF8]); // and rdx, ~7
+    code.extend_from_slice(&[0x48, 0x89, 0x15]); // mov [rip + heap_next], rdx
     relocations.push(CodeRelocation {
         offset: code.len() as u32,
         symbol: HEAP_NEXT_SYMBOL.to_string(),
     });
     code.extend_from_slice(&[0, 0, 0, 0]);
-    // rax = rdx (return the pre-advance pointer)
-    code.extend_from_slice(&[0x48, 0x89, 0xD0]);
-    // ret
-    code.push(0xC3);
+    code.extend_from_slice(&[0x48, 0x83, 0xC0, RC_HEADER_SIZE as u8]); // add rax, 16 (payload)
+    code.push(0xC3); // ret
 
     HelperFunction {
         name: HEAP_ALLOC_SYMBOL.to_string(),
@@ -13583,7 +13644,8 @@ fn write_object_with_data(
             is_function: false,
         });
     }
-    // .bss: the bump pointer cell at offset 0, the heap region at offset 8.
+    // .bss: the bump pointer at offset 0, the free-list head at offset 8, the heap
+    // region at offset 16.
     symbols.push(SymbolDef {
         name: HEAP_NEXT_SYMBOL.to_string(),
         section_number: 3,
@@ -13591,9 +13653,15 @@ fn write_object_with_data(
         is_function: false,
     });
     symbols.push(SymbolDef {
-        name: HEAP_BASE_SYMBOL.to_string(),
+        name: HEAP_FREE_HEAD_SYMBOL.to_string(),
         section_number: 3,
         value: 8,
+        is_function: false,
+    });
+    symbols.push(SymbolDef {
+        name: HEAP_BASE_SYMBOL.to_string(),
+        section_number: 3,
+        value: 16,
         is_function: false,
     });
     // Undefined external symbols for any unresolved relocation target — the
@@ -13635,7 +13703,7 @@ fn write_object_with_data(
     // -- Section layout ------------------------------------------------------
     // Sections: .text, .rdata, .bss, and (with --debug) .debug$S.
     let num_sections: u32 = if debug_built.is_some() { 4 } else { 3 };
-    let bss_size = 8 + HEAP_REGION_SIZE;
+    let bss_size = 16 + HEAP_REGION_SIZE;
     let num_relocs = relocations.len() as u32;
 
     let headers_end = COFF_HEADER_SIZE + num_sections * SECTION_HEADER_SIZE;
@@ -15386,8 +15454,8 @@ mod native_program_tests {
         let bss_size = read_u32(&program.bytes, sec3 + 16);
         assert_eq!(
             bss_size,
-            8 + HEAP_REGION_SIZE,
-            "bss reserves heap + pointer"
+            16 + HEAP_REGION_SIZE,
+            "bss reserves heap + bump pointer + free-list head"
         );
         assert_eq!(
             read_u32(&program.bytes, sec3 + 20),
@@ -16775,6 +16843,34 @@ mod native_program_tests {
             program.skipped
         );
         assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+    }
+
+    #[test]
+    fn alloc_helper_carries_rc_header_and_free_list() {
+        // The allocator is a free-list allocator with a 16-byte RC header: its body
+        // references the `.bss` free-list head symbol (the reuse scan) and seeds a
+        // fresh block's refcount to 1 (`mov qword [rax+8], 1` / `[r11+8], 1`).
+        let helper = emit_heap_alloc_helper();
+        assert!(
+            helper
+                .relocations
+                .iter()
+                .any(|r| r.symbol == HEAP_FREE_HEAD_SYMBOL),
+            "the allocator must scan the free list for reuse"
+        );
+        // Both the bump path and the reuse path write an immediate refcount of 1
+        // into the block header (the `01 00 00 00` of a `mov qword [reg+8], 1`).
+        assert!(
+            helper
+                .code
+                .windows(8)
+                .any(|w| w == [0x48, 0xC7, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00])
+                && helper
+                    .code
+                    .windows(8)
+                    .any(|w| w == [0x49, 0xC7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00]),
+            "the allocator must seed refcount = 1 on both the bump and reuse paths"
+        );
     }
 
     #[test]
