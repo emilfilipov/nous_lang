@@ -964,6 +964,58 @@ fn native_rc_string_reclaim_execution_parity_when_linkable() {
     );
 }
 
+/// RC recursive drop reclaims a uniquely-owned `array<string>` loop temporary (a
+/// `split` result): each iteration allocates a `list<string>` block plus its string
+/// elements plus `split`'s internal `rest` slices, all reclaimed (elements+block by
+/// `__lullaby_drop_string_array`, the internal temps by `split` itself). Over 100k
+/// iterations that far exceeds the 1 MiB heap, so a correct exit code proves the
+/// recursive drop works (a crash would mean a leak or a double-free). The separator
+/// and text are loop-invariant borrowed locals, so the only allocations are the
+/// reclaimed per-iteration split records.
+#[test]
+fn native_rc_array_string_reclaim_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_rc_array_string_reclaim.lby");
+    let out = std::env::temp_dir().join("lullaby_native_rc_array_reclaim.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 1_600_016, "(4 + 4*3) * 100001 iterations");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib not available; skipping native array reclaim parity"
+        );
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "native array<string> recursive drop must reclaim block + elements each iteration"
+    );
+}
+
 /// An inline-conditional condition must be `bool` (`L0305`, shared with `if`).
 #[test]
 fn rejects_conditional_non_bool_condition() {

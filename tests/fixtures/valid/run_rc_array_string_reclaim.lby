@@ -1,0 +1,10 @@
+fn main -> i64
+    let text string = "aaa,bbb,ccc,ddd"
+    let sep string = ","
+    let total i64 = 0
+    for i from 0 to 100000
+        let parts array<string> = split(text, sep)
+        total = total + len(parts)
+        for j from 0 to len(parts) - 1
+            total = total + len(parts[j])
+    total

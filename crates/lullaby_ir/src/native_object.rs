@@ -831,6 +831,13 @@ const RC_DEC_SYMBOL: &str = "__lullaby_rc_dec";
 /// first-fit-reuses it on a later allocation.
 const RC_FREE_SYMBOL: &str = "__lullaby_rc_free";
 
+/// `__lullaby_drop_string_array(block ptr in rcx)`: a RECURSIVE drop for a
+/// `list<string>`-layout block (an `array<string>` / `list<string>`): `rc_dec` each
+/// of the `len` shared string element pointers, then `rc_dec` the block itself.
+/// Used to reclaim a uniquely-owned `array<string>` loop temporary (a `split`
+/// result) whose string elements are owned solely by the block.
+const DROP_STRING_ARRAY_SYMBOL: &str = "__lullaby_drop_string_array";
+
 /// Size of the per-allocation reference-counting header, in bytes: `[size i64]
 /// [refcount i64]` sitting immediately BEFORE the payload the allocator returns.
 /// The returned pointer names the payload (offset 0 = the first payload word), so
@@ -6026,12 +6033,21 @@ fn is_owning_string_alloc(value: &BytecodeExpr) -> bool {
     }
 }
 
-/// Whether every use of the string local `name` within `expr` is a pure borrow —
-/// concretely, the sole argument of a `len(name)` call (which reads a header word
-/// and does not retain the record). A bare mention anywhere else (a return value,
-/// any other call argument, an aggregate store, a concat operand, an alias) lets
-/// ownership escape, so `name` is not droppable.
-fn string_local_borrow_only_expr(name: &str, expr: &BytecodeExpr) -> bool {
+/// Whether `value` is a freshly-allocated `array<string>` (`list<string>`-layout)
+/// this scope uniquely owns: the result of `split`/`words`. (A user-function call
+/// or a bare variable is not — ownership is unknown / borrowed.)
+fn is_owning_string_array(value: &BytecodeExpr) -> bool {
+    heap_string_array_element(&value.ty).is_some()
+        && matches!(&value.kind, BytecodeExprKind::Call { name, .. } if name == "split" || name == "words")
+}
+
+/// Whether every use of the heap local `name` within `expr` is a pure borrow. For a
+/// `string` local (`allow_index == false`) the only borrow is the sole argument of
+/// `len(name)`. For an `array<string>` local (`allow_index == true`) `len(name[i])`
+/// — reading an element's length — is additionally allowed; a bare `name[i]` (which
+/// would alias an element the block owns) is NOT, since the block-drop frees the
+/// elements. Any other mention lets ownership escape, so `name` is not droppable.
+fn string_local_borrow_only_expr(name: &str, expr: &BytecodeExpr, allow_index: bool) -> bool {
     match &expr.kind {
         BytecodeExprKind::Variable(v) => v != name,
         BytecodeExprKind::Integer(_)
@@ -6041,43 +6057,64 @@ fn string_local_borrow_only_expr(name: &str, expr: &BytecodeExpr) -> bool {
         | BytecodeExprKind::Char(_)
         | BytecodeExprKind::Closure { .. } => true,
         BytecodeExprKind::Call { name: fname, args } => {
-            if fname == "len"
-                && args.len() == 1
-                && matches!(&args[0].kind, BytecodeExprKind::Variable(v) if v == name)
-            {
-                true
+            if fname == "len" && args.len() == 1 {
+                match &args[0].kind {
+                    BytecodeExprKind::Variable(v) if v == name => true,
+                    BytecodeExprKind::Index { target, index }
+                        if allow_index
+                            && matches!(&target.kind, BytecodeExprKind::Variable(v) if v == name) =>
+                    {
+                        // `len(name[i])`: the element is read for its length, not kept.
+                        string_local_borrow_only_expr(name, index, allow_index)
+                    }
+                    _ => string_local_borrow_only_expr(name, &args[0], allow_index),
+                }
             } else {
-                args.iter().all(|a| string_local_borrow_only_expr(name, a))
+                args.iter()
+                    .all(|a| string_local_borrow_only_expr(name, a, allow_index))
             }
         }
         BytecodeExprKind::Binary { left, right, .. } => {
-            string_local_borrow_only_expr(name, left) && string_local_borrow_only_expr(name, right)
+            string_local_borrow_only_expr(name, left, allow_index)
+                && string_local_borrow_only_expr(name, right, allow_index)
         }
         BytecodeExprKind::Unary { expr, .. } | BytecodeExprKind::Await { expr } => {
-            string_local_borrow_only_expr(name, expr)
+            string_local_borrow_only_expr(name, expr, allow_index)
         }
         BytecodeExprKind::Index { target, index } => {
-            string_local_borrow_only_expr(name, target)
-                && string_local_borrow_only_expr(name, index)
+            string_local_borrow_only_expr(name, target, allow_index)
+                && string_local_borrow_only_expr(name, index, allow_index)
         }
-        BytecodeExprKind::Field { target, .. } => string_local_borrow_only_expr(name, target),
-        BytecodeExprKind::Array(elems) => {
-            elems.iter().all(|e| string_local_borrow_only_expr(name, e))
+        BytecodeExprKind::Field { target, .. } => {
+            string_local_borrow_only_expr(name, target, allow_index)
         }
+        BytecodeExprKind::Array(elems) => elems
+            .iter()
+            .all(|e| string_local_borrow_only_expr(name, e, allow_index)),
     }
 }
 
 /// Whether every use of `name` across `stmts` (recursing into nested blocks) is a
 /// pure borrow, and `name` is never reassigned, shadowed, or rebound. Any
 /// violation disqualifies the local from dropping.
-fn string_local_borrow_only_stmts(name: &str, stmts: &[BytecodeInstruction]) -> bool {
-    stmts.iter().all(|s| string_local_borrow_only_stmt(name, s))
+fn string_local_borrow_only_stmts(
+    name: &str,
+    stmts: &[BytecodeInstruction],
+    allow_index: bool,
+) -> bool {
+    stmts
+        .iter()
+        .all(|s| string_local_borrow_only_stmt(name, s, allow_index))
 }
 
-fn string_local_borrow_only_stmt(name: &str, stmt: &BytecodeInstruction) -> bool {
+fn string_local_borrow_only_stmt(
+    name: &str,
+    stmt: &BytecodeInstruction,
+    allow_index: bool,
+) -> bool {
     match stmt {
         BytecodeInstruction::Let { name: n, value, .. } => {
-            n != name && string_local_borrow_only_expr(name, value)
+            n != name && string_local_borrow_only_expr(name, value, allow_index)
         }
         BytecodeInstruction::Assign {
             name: n,
@@ -6089,13 +6126,13 @@ fn string_local_borrow_only_stmt(name: &str, stmt: &BytecodeInstruction) -> bool
             // `name`) breaks the unique-ownership assumption.
             n != name
                 && path.iter().all(|p| match p {
-                    BytecodePlace::Index(e) => string_local_borrow_only_expr(name, e),
+                    BytecodePlace::Index(e) => string_local_borrow_only_expr(name, e, allow_index),
                     BytecodePlace::Field(_) => true,
                 })
-                && string_local_borrow_only_expr(name, value)
+                && string_local_borrow_only_expr(name, value, allow_index)
         }
         BytecodeInstruction::Return(Some(e)) | BytecodeInstruction::Expr(e) => {
-            string_local_borrow_only_expr(name, e)
+            string_local_borrow_only_expr(name, e, allow_index)
         }
         BytecodeInstruction::Return(None)
         | BytecodeInstruction::Break(_)
@@ -6107,15 +6144,15 @@ fn string_local_borrow_only_stmt(name: &str, stmt: &BytecodeInstruction) -> bool
             ..
         } => {
             branches.iter().all(|b| {
-                string_local_borrow_only_expr(name, &b.condition)
-                    && string_local_borrow_only_stmts(name, &b.body)
-            }) && string_local_borrow_only_stmts(name, else_body)
+                string_local_borrow_only_expr(name, &b.condition, allow_index)
+                    && string_local_borrow_only_stmts(name, &b.body, allow_index)
+            }) && string_local_borrow_only_stmts(name, else_body, allow_index)
         }
         BytecodeInstruction::While {
             condition, body, ..
         } => {
-            string_local_borrow_only_expr(name, condition)
-                && string_local_borrow_only_stmts(name, body)
+            string_local_borrow_only_expr(name, condition, allow_index)
+                && string_local_borrow_only_stmts(name, body, allow_index)
         }
         BytecodeInstruction::For {
             name: v,
@@ -6126,25 +6163,29 @@ fn string_local_borrow_only_stmt(name: &str, stmt: &BytecodeInstruction) -> bool
             ..
         } => {
             v != name
-                && string_local_borrow_only_expr(name, start)
-                && string_local_borrow_only_expr(name, end)
+                && string_local_borrow_only_expr(name, start, allow_index)
+                && string_local_borrow_only_expr(name, end, allow_index)
                 && step
                     .as_ref()
-                    .is_none_or(|s| string_local_borrow_only_expr(name, s))
-                && string_local_borrow_only_stmts(name, body)
+                    .is_none_or(|s| string_local_borrow_only_expr(name, s, allow_index))
+                && string_local_borrow_only_stmts(name, body, allow_index)
         }
-        BytecodeInstruction::Loop { body, .. } => string_local_borrow_only_stmts(name, body),
+        BytecodeInstruction::Loop { body, .. } => {
+            string_local_borrow_only_stmts(name, body, allow_index)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {
-            string_local_borrow_only_expr(name, scrutinee)
+            string_local_borrow_only_expr(name, scrutinee, allow_index)
                 && arms.iter().all(|a| {
                     let binds = matches!(&a.pattern, BytecodeMatchPattern::Variant { bindings, .. }
                         if bindings.iter().any(|b| b == name));
-                    !binds && string_local_borrow_only_stmts(name, &a.body)
+                    !binds && string_local_borrow_only_stmts(name, &a.body, allow_index)
                 })
         }
-        BytecodeInstruction::Throw { value, .. } => string_local_borrow_only_expr(name, value),
+        BytecodeInstruction::Throw { value, .. } => {
+            string_local_borrow_only_expr(name, value, allow_index)
+        }
         BytecodeInstruction::Try {
             body,
             catch_name,
@@ -6152,17 +6193,19 @@ fn string_local_borrow_only_stmt(name: &str, stmt: &BytecodeInstruction) -> bool
             ..
         } => {
             catch_name != name
-                && string_local_borrow_only_stmts(name, body)
-                && string_local_borrow_only_stmts(name, catch_body)
+                && string_local_borrow_only_stmts(name, body, allow_index)
+                && string_local_borrow_only_stmts(name, catch_body, allow_index)
         }
     }
 }
 
-/// After lowering a loop `body`, emit an `rc_dec` (free-at-zero) for each string
-/// local declared directly in `body` that is uniquely owned and only borrowed —
-/// reclaiming the per-iteration allocation on the fallthrough back-edge. Emitted
-/// only for `string` stack locals (a string-using function is never
-/// register-promoted, so the pointer is always in a stack slot).
+/// After lowering a loop `body`, emit a drop (free-at-zero) for each heap local
+/// declared directly in `body` that is uniquely owned and only borrowed —
+/// reclaiming the per-iteration allocation on the fallthrough back-edge. Handles
+/// two cases: a `string` local (dropped by `rc_dec`), and an `array<string>` local
+/// (a `split`/`words` result, dropped recursively by `__lullaby_drop_string_array`
+/// — each element then the block). All are stack locals (a heap-using function is
+/// never register-promoted, so the pointer is always in a stack slot).
 fn emit_loop_body_string_drops(
     ctx: &mut NativeCtx,
     body: &[BytecodeInstruction],
@@ -6175,22 +6218,40 @@ fn emit_loop_body_string_drops(
         let Ok(local) = ctx.local(name) else {
             continue;
         };
-        if !matches!(local.ty, NativeType::String) {
-            continue;
-        }
         let slot = local.slot;
-        if !is_owning_string_alloc(value) {
+        // A plain `string` local: fresh alloc, borrow-only (only `len(name)`).
+        let is_string = matches!(local.ty, NativeType::String);
+        // An `array<string>` local: a `split`/`words` result, borrow-only
+        // (`len(name)` / `len(name[i])`; a bare `name[i]` would alias an element).
+        let is_string_array = matches!(&local.ty, NativeType::List { elem } if matches!(**elem, NativeType::String))
+            && heap_string_array_element(&stmt_let_ty(stmt)).is_some();
+        let drop_symbol = if is_string && is_owning_string_alloc(value) {
+            RC_DEC_SYMBOL
+        } else if is_string_array && is_owning_string_array(value) {
+            DROP_STRING_ARRAY_SYMBOL
+        } else {
+            continue;
+        };
+        let allow_index = is_string_array;
+        if !string_local_borrow_only_stmts(name, &body[idx + 1..], allow_index) {
             continue;
         }
-        if !string_local_borrow_only_stmts(name, &body[idx + 1..]) {
-            continue;
-        }
-        // mov rcx, [rbp - slot] ; call __lullaby_rc_dec
+        // mov rcx, [rbp - slot] ; call <drop_symbol>
         code.extend_from_slice(&[0x48, 0x8B, 0x8D]);
         code.extend_from_slice(&(-slot).to_le_bytes());
-        emit_call_symbol(ctx, RC_DEC_SYMBOL, code);
+        emit_call_symbol(ctx, drop_symbol, code);
     }
     Ok(())
+}
+
+/// The declared type of a `Let` instruction (its `ty` field). Used to distinguish a
+/// heap `array<string>` local (which resolves to a `list<string>` NativeType) from a
+/// genuine `list<string>` by the source spelling.
+fn stmt_let_ty(stmt: &BytecodeInstruction) -> TypeRef {
+    match stmt {
+        BytecodeInstruction::Let { ty, .. } => ty.clone(),
+        _ => TypeRef::new(""),
+    }
 }
 
 /// Lower a range `for i = start..=end step s` to an `i64` counter loop mirroring
@@ -10793,6 +10854,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
         emit_heap_alloc_helper(),
         emit_rc_free_helper(),
         emit_rc_dec_helper(),
+        emit_drop_string_array_helper(),
         emit_heap_strlen_helper(),
         emit_list_new_helper(),
         emit_list_copy_helper(),
@@ -10859,6 +10921,7 @@ fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
                     | STR_JOIN_SYMBOL
                     | PARSE_I64_SYMBOL
                     | RC_DEC_SYMBOL
+                    | DROP_STRING_ARRAY_SYMBOL
                     | TO_CSTR_SYMBOL
             )
         })
@@ -11308,6 +11371,54 @@ fn emit_rc_dec_helper() -> HelperFunction {
 
     HelperFunction {
         name: RC_DEC_SYMBOL.to_string(),
+        code,
+        relocations,
+    }
+}
+
+/// `__lullaby_drop_string_array(block ptr in rcx)`: recursively drop a
+/// `list<string>`-layout block — `rc_dec` each of its `len` shared string element
+/// pointers, then `rc_dec` the block. Uses callee-saved `rbx` (block), `rdi` (len),
+/// `rsi` (index) so they survive the internal `rc_dec` calls.
+fn emit_drop_string_array_helper() -> HelperFunction {
+    let mut code: Vec<u8> = Vec::new();
+    let mut relocations: Vec<CodeRelocation> = Vec::new();
+
+    // Prologue: 3 callee-saved pushes (%16 -> 0), `sub rsp, 0x20` (shadow) keeps %16.
+    code.push(0x53); // push rbx
+    code.push(0x56); // push rsi
+    code.push(0x57); // push rdi
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 0x20
+
+    code.extend_from_slice(&[0x48, 0x89, 0xCB]); // mov rbx, rcx (block)
+    code.extend_from_slice(&[0x48, 0x8B, 0x7B, 0x00]); // mov rdi, [rbx + LIST_LEN_OFF] (len)
+    code.extend_from_slice(&[0x31, 0xF6]); // xor esi, esi (i = 0)
+
+    let loop_top = code.len();
+    code.extend_from_slice(&[0x48, 0x39, 0xFE]); // cmp rsi, rdi
+    code.extend_from_slice(&[0x0F, 0x83]); // jae done
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // rc_dec(block[LIST_DATA_OFF + i*8]) — the i-th string element pointer.
+    code.extend_from_slice(&[0x48, 0x8B, 0x8C, 0xF3]); // mov rcx, [rbx + rsi*8 + disp32]
+    code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
+    code.extend_from_slice(&[0x48, 0xFF, 0xC6]); // inc rsi
+    emit_jmp_to(&mut code, loop_top);
+
+    // done: rc_dec the block itself.
+    patch_rel32(&mut code, done_site);
+    code.extend_from_slice(&[0x48, 0x89, 0xD9]); // mov rcx, rbx
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
+
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 0x20
+    code.push(0x5F); // pop rdi
+    code.push(0x5E); // pop rsi
+    code.push(0x5B); // pop rbx
+    code.push(0xC3); // ret
+
+    HelperFunction {
+        name: DROP_STRING_ARRAY_SYMBOL.to_string(),
         code,
         relocations,
     }
@@ -13392,6 +13503,11 @@ fn emit_str_split_helper() -> HelperFunction {
     code.extend_from_slice(&[0x48, 0x89, 0x84, 0xFB]); // mov [rbx + rdi*8 + disp32], rax
     code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());
     code.extend_from_slice(&[0x48, 0xFF, 0xC7]); // inc rdi
+    // The `rest` slice (r14) was only needed to locate/extract this field; on the
+    // non-last path it is a dead intermediate, so reclaim it (`rc_dec`) — otherwise
+    // a `split` in a loop would orphan one `rest` record per field each iteration.
+    code.extend_from_slice(&[0x4C, 0x89, 0xF1]); // mov rcx, r14 (rest)
+    emit_helper_call(&mut code, &mut relocations, RC_DEC_SYMBOL);
     // pos += idx + sep.char_len.
     code.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, 0x20]); // mov rax, [rsp+0x20] (idx)
     code.extend_from_slice(&[0x48, 0x01, 0xC6]); // add rsi, rax
@@ -13838,7 +13954,11 @@ fn write_object_with_data(
         &alloc.code,
         &alloc.relocations,
     );
-    for rc_helper in [emit_rc_free_helper(), emit_rc_dec_helper()] {
+    for rc_helper in [
+        emit_rc_free_helper(),
+        emit_rc_dec_helper(),
+        emit_drop_string_array_helper(),
+    ] {
         append_code(
             &mut text,
             &mut relocations,
@@ -13969,6 +14089,7 @@ fn write_object_with_data(
         HEAP_ALLOC_SYMBOL,
         RC_FREE_SYMBOL,
         RC_DEC_SYMBOL,
+        DROP_STRING_ARRAY_SYMBOL,
         HEAP_STRLEN_SYMBOL,
         LIST_NEW_SYMBOL,
         LIST_COPY_SYMBOL,
@@ -17295,6 +17416,41 @@ mod native_program_tests {
                 .any(|r| r.symbol == STR_CONCAT_SYMBOL)
                 && helper.relocations.iter().any(|r| r.symbol == RC_DEC_SYMBOL),
             "concat_own must call concat then rc_dec the owned operands"
+        );
+    }
+
+    #[test]
+    fn array_string_loop_temp_uses_recursive_drop() {
+        // A uniquely-owned `array<string>` loop temp (a `split` result) used only via
+        // `len` gets the recursive `__lullaby_drop_string_array`; the helper itself
+        // must `rc_dec` (elements + block) — its recursive element loop then block
+        // drop.
+        let program = emit_native_program(&module_for(concat!(
+            "fn main -> i64\n",
+            "    let text string = \"a,b,c\"\n",
+            "    let sep string = \",\"\n",
+            "    let total i64 = 0\n",
+            "    for i from 0 to 10\n",
+            "        let parts array<string> = split(text, sep)\n",
+            "        total = total + len(parts)\n",
+            "        for j from 0 to len(parts) - 1\n",
+            "            total = total + len(parts[j])\n",
+            "    total\n",
+        )))
+        .expect("emit array-string program");
+        assert!(
+            coff_symbol(&program.bytes, DROP_STRING_ARRAY_SYMBOL).is_some_and(|(s, _)| s == 1),
+            "an owned borrow-only array<string> loop temp must be recursively dropped"
+        );
+        let helper = emit_drop_string_array_helper();
+        assert!(
+            helper
+                .relocations
+                .iter()
+                .filter(|r| r.symbol == RC_DEC_SYMBOL)
+                .count()
+                >= 2,
+            "drop_string_array must rc_dec both each element and the block"
         );
     }
 
