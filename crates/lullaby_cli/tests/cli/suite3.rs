@@ -1221,6 +1221,55 @@ pub(crate) fn native_min_max_execution_parity_when_linkable() {
     );
 }
 
+/// Native inline `gcd(a, b)` on `i64` execution parity: several cases (negative
+/// operands, a zero operand, coprime inputs) and a `reduce_num` helper built on
+/// `gcd` must agree with the interpreters' `gcd_i64` (Euclid on the unsigned
+/// magnitudes). Exercises i64 parameters across a function boundary too.
+#[test]
+pub(crate) fn native_gcd_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_gcd.lby");
+    let out = std::env::temp_dir().join("lullaby_native_gcd_parity.exe");
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("compiled main") && stdout(&emit).contains("compiled reduce_num"),
+        "gcd-using main and reduce_num must compile natively: {}",
+        stdout(&emit)
+    );
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 135, "gcd fixture main computes 135");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld/kernel32.lib unavailable; skipping native gcd parity");
+        return;
+    }
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        interp.rem_euclid(256) as i32,
+        "native gcd must match the interpreters' gcd_i64"
+    );
+}
+
 /// Best-effort execution parity for first-class native heap `string` values:
 /// native-compile a program that builds strings by concatenation (`+`), converts
 /// integers/bools with `to_string`, passes a string to a helper that returns its

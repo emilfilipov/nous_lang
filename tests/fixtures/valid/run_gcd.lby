@@ -1,0 +1,12 @@
+fn reduce_num n i64 d i64 -> i64
+    let g i64 = gcd(n, d)
+    n / g
+
+fn main -> i64
+    let a i64 = gcd(48, 36)
+    let b i64 = gcd(0 - 54, 24)
+    let c i64 = gcd(17, 5)
+    let d i64 = gcd(0, 13)
+    let e i64 = gcd(100, 0)
+    let f i64 = reduce_num(42, 56)
+    a + b + c + d + e + f

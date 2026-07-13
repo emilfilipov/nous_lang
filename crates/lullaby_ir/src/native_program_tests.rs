@@ -927,6 +927,36 @@ fn compiles_min_max_i64_as_cmp_cmov() {
 }
 
 #[test]
+fn compiles_gcd_i64_inline() {
+    // `gcd(a, b)` on i64 lowers inline: two's-complement `abs` (sar rdx,63 =
+    // 48 C1 FA 3F) of each operand into an unsigned magnitude, then an unsigned
+    // Euclid loop whose remainder step is `div r8` (49 F7 F0). No helper, no heap.
+    let program = emit_native_program(&module_for(concat!(
+        "fn g a i64 b i64 -> i64\n",
+        "    gcd(a, b)\n\n",
+        "fn main -> i64\n",
+        "    g(48, 36)\n",
+    )))
+    .expect("emit gcd program");
+    assert!(
+        program.compiled.contains(&"g".to_string()),
+        "a gcd-using function must compile natively: {:?}",
+        program.skipped
+    );
+    assert!(
+        program
+            .bytes
+            .windows(4)
+            .any(|w| w == [0x48, 0xC1, 0xFA, 0x3F]),
+        "gcd must emit the two's-complement abs (`sar rdx, 63`)"
+    );
+    assert!(
+        program.bytes.windows(3).any(|w| w == [0x49, 0xF7, 0xF0]),
+        "gcd must emit the unsigned Euclid remainder (`div r8`)"
+    );
+}
+
+#[test]
 fn min_max_f64_defers_gracefully() {
     // Only the `i64` case of `min`/`max` is lowered natively; an `f64` `min`/`max`
     // (whose SSE `minsd`/`maxsd` NaN/±0.0 rules diverge from `f64::min`) skips the

@@ -445,6 +445,46 @@ pub(crate) fn lower_native_expr(
                 code.extend_from_slice(&[0x48, 0x0F, cmov, 0xC1]); // cmov(l|g) rax, rcx
                 return Ok(());
             }
+            // `gcd(a, b)` on `i64`: inlined as a branchless two's-complement `abs`
+            // of each operand into an *unsigned* magnitude, then Euclid's
+            // algorithm with an unsigned `div`. The interpreter computes on i128
+            // magnitudes, but every magnitude is bounded by 2^63, which fits a
+            // u64 — so a u64 computation is bit-identical, including the sole
+            // overflow case `gcd(i64::MIN, 0)`: |i64::MIN| = 2^63 stays in the u64
+            // and reinterprets back to `i64::MIN`, exactly as `gcd_i64` wraps it.
+            // Self-contained (no helper, no heap); `gcd` accepts only i64 (the
+            // type checker forbids other kinds), so no width handling is needed.
+            if name == "gcd" && args.len() == 2 && args[0].ty.name == "i64" {
+                lower_native_expr(ctx, &args[0], code)?; // a in rax
+                code.push(0x50); // push rax (a)
+                lower_native_expr(ctx, &args[1], code)?; // b in rax
+                code.push(0x59); // pop rcx (a); b stays in rax
+                code.extend_from_slice(&[
+                    // x = |a| (unsigned magnitude, two's-complement abs of rcx)
+                    0x48, 0x89, 0xCA, // mov rdx, rcx
+                    0x48, 0xC1, 0xFA, 0x3F, // sar rdx, 63   (sign mask)
+                    0x48, 0x31, 0xD1, // xor rcx, rdx
+                    0x48, 0x29, 0xD1, // sub rcx, rdx  -> rcx = |a|
+                    // y = |b| (abs of rax)
+                    0x48, 0x89, 0xC2, // mov rdx, rax
+                    0x48, 0xC1, 0xFA, 0x3F, // sar rdx, 63
+                    0x48, 0x31, 0xD0, // xor rax, rdx
+                    0x48, 0x29, 0xD0, // sub rax, rdx  -> rax = |b|
+                    // loop: while y(rax) != 0 { r = x % y; x = y; y = r }
+                    0x48, 0x85, 0xC0, // test rax, rax
+                    0x0F, 0x84, 0x17, 0x00, 0x00, 0x00, // jz done (+23)
+                    0x49, 0x89, 0xC0, // mov r8, rax   (divisor = y)
+                    0x48, 0x89, 0xC8, // mov rax, rcx  (dividend = x)
+                    0x48, 0x31, 0xD2, // xor rdx, rdx  (clear high half)
+                    0x49, 0xF7, 0xF0, // div r8        (unsigned; rdx = x % y)
+                    0x4C, 0x89, 0xC1, // mov rcx, r8   (x = y)
+                    0x48, 0x89, 0xD0, // mov rax, rdx  (y = r)
+                    0xE9, 0xE0, 0xFF, 0xFF, 0xFF, // jmp loop (-32)
+                    // done: result = x
+                    0x48, 0x89, 0xC8, // mov rax, rcx
+                ]);
+                return Ok(());
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"
