@@ -63,7 +63,7 @@ Lullaby rejects traditional design patterns that prioritize compiler convenience
 - **No Semicolons**: Line-based statements without terminator requirements
 - **Flat Structure**: Single-level control flow instead of deep nesting
 - **Type Inference**: Automatic type detection reducing explicit annotations
-- **Reference Counting**: Automatic memory management without garbage collection pauses
+- **Arena-First Memory**: Deterministic region allocation as the default, with opt-in reference counting for escaping data and no garbage collector
 
 ## Core Language Components
 
@@ -92,12 +92,12 @@ fn log message string -> void
 
 ### 2. Memory Management (See: `lullaby_memory_management.md`)
 
-Reference-counted memory with automatic lifetime management:
+Arena-first memory with deterministic reclamation and no garbage collector. Arena / region allocation is the primary, default model; reference counting (`ref`/RC) is an opt-in secondary tool for data that escapes its region into dynamic or shared ownership; raw pointers are an `unsafe` escape hatch. This spans two tiers — a safe default tier for apps and services, and a freestanding `no-runtime`/kernel tier (no host allocator, no RC, raw pointers first-class). See [execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md), the canonical source of truth for the memory model, for the full framing.
 
-- No garbage collection pauses
-- Deterministic object cleanup
-- Region-based organization
-- Type-safe operations
+- Deterministic reclamation without garbage-collector pauses
+- Arena/region bulk-free as the primary reclamation path
+- Opt-in reference counting for escaping/shared data
+- Type-safe operations across both tiers
 
 **Key Types** (current):
 - `i64`, `f64` - Integer and floating-point numbers

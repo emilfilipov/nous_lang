@@ -438,7 +438,7 @@ pid = km.create("shell")
 
 After establishing the syntax foundation, subsequent documents should cover:
 
-1. **Memory Management System**: Heap allocator with garbage collection or manual memory tracking
+1. **Memory Management System**: Arena-first region allocation (the default model) with opt-in reference counting for escaping data and raw pointers in the freestanding `no-runtime`/kernel tier — no garbage collector (see `execution_tiers_and_1_0_scope.md`)
 2. **Compilation Architecture**: Lexer/parser design optimized for LLM-assisted generation
 3. **Type System Implementation**: Type checker and inference engine
 4. **Control Flow Translation**: AST construction and optimization

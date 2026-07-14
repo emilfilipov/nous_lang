@@ -264,7 +264,7 @@ Produces the final executable and performs final validation.
 ### Memory Efficiency
 - Minimal runtime overhead (< 5% vs interpreted languages)
 - Efficient memory representation in IR
-- Optimized garbage collection (generation-based, incremental)
+- Deterministic reclamation, no tracing collector: arena/region bulk-free (primary) plus scope-based reference-count drops (secondary), so the native backend reclaims memory at region reset and scope exit rather than through a garbage collector
 
 ## LLM Integration Considerations
 
