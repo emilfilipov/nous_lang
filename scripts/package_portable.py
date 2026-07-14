@@ -17,8 +17,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIR = REPO_ROOT / "dist"
-DOCS_GENERATOR = REPO_ROOT / "offline_docs" / "generate_offline_docs.py"
-DOCS_VERIFIER = REPO_ROOT / "offline_docs" / "verify_offline_docs.py"
 
 
 def run(command: list[str | Path], *, cwd: Path = REPO_ROOT, expect_success: bool = True) -> subprocess.CompletedProcess[str]:
@@ -145,7 +143,6 @@ Commit: {commit}
 
 Layout:
 - bin/{exe}: command-line tool
-- docs/index.html: generated offline documentation
 - examples/: executable and invalid diagnostic .lby examples
 - RELEASE_NOTES.md: release notes, verification evidence, and known limitations
 - MANIFEST.json: package metadata
@@ -218,17 +215,12 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         shutil.rmtree(package_root)
     package_root.mkdir(parents=True)
     (package_root / "bin").mkdir()
-    (package_root / "docs").mkdir()
     (package_root / "examples").mkdir()
 
     packaged_binary = package_root / "bin" / binary_name(target_tag)
     shutil.copy2(binary, packaged_binary)
     if "windows" not in target_tag:
         packaged_binary.chmod(packaged_binary.stat().st_mode | 0o755)
-
-    generated_docs = package_root / "docs" / "index.html"
-    run([sys.executable, DOCS_GENERATOR, generated_docs])
-    run([sys.executable, DOCS_VERIFIER, generated_docs, "--profile", "generated"])
 
     shutil.copy2(REPO_ROOT / "examples" / "README.md", package_root / "examples" / "README.md")
     copy_tree(REPO_ROOT / "examples" / "valid", package_root / "examples" / "valid")
@@ -262,8 +254,6 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         "target": target_tag,
         "commit": commit,
         "binary": f"bin/{binary_name(target_tag)}",
-        "docs": "docs/index.html",
-        "docs_source": "generated",
         "examples": "examples",
         "release_notes": "RELEASE_NOTES.md",
         "archive": archive_path.name,
@@ -288,14 +278,12 @@ def build_package(args: argparse.Namespace) -> tuple[Path, Path, Path]:
 
 def verify_package(package_root: Path, archive_path: Path, checksum_path: Path, target_tag: str) -> None:
     executable = package_root / "bin" / binary_name(target_tag)
-    docs = package_root / "docs" / "index.html"
     example = package_root / "examples" / "valid" / "calculator.lby"
     invalid_example = package_root / "examples" / "invalid" / "type_mismatch.lby"
     artifact = package_root / "examples" / "valid" / "calculator.lbc"
 
     for path in (
         executable,
-        docs,
         example,
         invalid_example,
         package_root / "RELEASE_NOTES.md",

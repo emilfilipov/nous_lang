@@ -414,7 +414,7 @@ defined here are unaffected.
 
 Within each subsystem the delivery order is: semantic signatures + `L####`
 registry entries -> runtime intrinsic (all interpreters) with structural parity
-fixtures -> native lowering -> CLI round-trip test -> offline docs + registry +
+fixtures -> native lowering -> CLI round-trip test -> registry +
 this doc + [[repository_map.md]] updated together, per the contributor guide.
 
 ## Why these choices

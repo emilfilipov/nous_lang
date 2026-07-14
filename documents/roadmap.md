@@ -27,36 +27,16 @@ Remaining work:
 - Emit `region_resize` once dynamic-region growth has a source form (the kind and its safety metadata are already reserved).
 - Use this metadata as a prerequisite for native backend lowering and alias analysis.
 
-## 2. Static Offline Documentation Generator
-
-Goal: replace the hand-authored-only offline docs process with a deterministic generator that can build a self-contained HTML bundle from canonical Markdown and repository examples.
-
-Current increment:
-
-- `offline_docs/generate_offline_docs.py` builds a standalone HTML file from canonical Markdown using only the Python standard library.
-- The first generated source set includes the project overview, core language rules, language surface, diagnostic registry, release notes, and this roadmap.
-- The default output is `target/offline_docs/index.html`, keeping generated artifacts out of source control.
-- The generated output includes fixture-backed examples and is verified with `python offline_docs/verify_offline_docs.py target/offline_docs/index.html --profile generated`.
-- The generated output now includes package-ready user sections for quick start, CLI command reference, portable package layout, diagnostics behavior, and current limitations.
-- The generated verification profile now requires the same user-facing section and phrase coverage as the shipped-doc profile, plus generated-source metadata.
-- `scripts/verify_release.ps1` now builds and verifies generated docs before packaging.
-- `scripts/package_windows_portable.ps1` now generates and verifies `docs\index.html` during Windows portable packaging instead of copying the checked-in hand-authored HTML.
-
-Acceptance path:
-
-- Keep the checked-in hand-authored entry page synchronized until it is intentionally retired or replaced by committed generated output.
-- Continue improving generated layout and source organization as more language features leave the planned state.
-
-## 3. Platform-Agnostic Build Orchestration
+## 2. Platform-Agnostic Build Orchestration
 
 Goal: define one release orchestration path that can build and verify the toolchain on Windows, Linux, and macOS without replacing Cargo as the Rust build driver.
 
 Recommended sequence:
 
 - Keep Cargo as the compiler/runtime build engine.
-- Use `scripts/package_portable.py` as the initial cross-platform release driver for target tags, output layout, generated docs, examples, checksums, manifests, archives, and host-compatible smoke tests.
+- Use `scripts/package_portable.py` as the initial cross-platform release driver for target tags, output layout, examples, checksums, manifests, archives, and host-compatible smoke tests.
 - Preserve `scripts/package_windows_portable.ps1` as the Windows implementation while `scripts/package_portable.py` reaches parity across non-Windows hosts.
-- `documents/portable_package_ci_workflow.yml` provides the GitHub Actions workflow to run formatting, tests, clippy, offline-doc verification, generated-doc verification, and explicit target-triple `scripts/package_portable.py --target <triple> --target-tag <os-arch> --verify` package jobs on Windows, Linux, and macOS hosts. It must be copied to `.github/workflows/portable-package.yml` from a session or token with GitHub `workflow` scope.
+- `documents/portable_package_ci_workflow.yml` provides the GitHub Actions workflow to run formatting, tests, clippy, and explicit target-triple `scripts/package_portable.py --target <triple> --target-tag <os-arch> --verify` package jobs on Windows, Linux, and macOS hosts. It must be copied to `.github/workflows/portable-package.yml` from a session or token with GitHub `workflow` scope.
 
 Minimum target matrix:
 
@@ -70,14 +50,14 @@ Remaining work:
 - Activate the GitHub Actions workflow under `.github/workflows/portable-package.yml` once the GitHub token/session has `workflow` scope.
 - Promote the portable package archives to release assets after target-triple package verification is proven on Windows, Linux, and macOS.
 
-## 4. Installer Packaging
+## 3. Installer Packaging
 
 Goal: move from a Windows-first portable archive to a packaging plan that can produce predictable user-facing artifacts for all supported platforms.
 
 Recommended sequence:
 
 - Keep portable archives as the first cross-platform package type.
-- Put the CLI under `bin/`, generated offline docs under `docs/`, examples under `examples/`, release notes and `MANIFEST.json` at package root, optional user PATH helpers at package root, and checksums next to archives on every platform.
+- Put the CLI under `bin/`, examples under `examples/`, release notes and `MANIFEST.json` at package root, optional user PATH helpers at package root, and checksums next to archives on every platform.
 - Ship reversible, user-scoped PATH helpers in portable archives: `install.cmd`/`install.ps1` plus `uninstall.cmd`/`uninstall.ps1` on Windows, and `install.sh` plus `uninstall.sh` on Linux/macOS.
 - Add platform-specific installers only after portable archive verification is stable.
 - Treat PATH setup as optional and user-scoped unless the installer format has an explicit consent step.
@@ -88,7 +68,7 @@ Planned package types:
 - Linux: tarball first, Debian/RPM packages later.
 - macOS: tarball first, signed package or app bundle later if the distribution model requires it.
 
-## 5. Native Code Generation Roadmap
+## 4. Native Code Generation Roadmap
 
 Goal: reach native code generation only after the typed IR, bytecode contract, memory effects, diagnostics, and release verification are strong enough to make backend failures actionable.
 

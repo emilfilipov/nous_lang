@@ -28,7 +28,7 @@ function Resolve-LocalTarget {
         return $null
     }
 
-    if ($WithoutAnchor -match '^(documents|scripts|offline_docs|tests|examples|crates|README\.md|AGENTS\.md)[\\/]') {
+    if ($WithoutAnchor -match '^(documents|scripts|tests|examples|crates|README\.md|AGENTS\.md)[\\/]') {
         return Join-Path $RepositoryRoot $WithoutAnchor
     }
 

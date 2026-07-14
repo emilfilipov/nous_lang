@@ -1,8 +1,8 @@
 # Lullaby Brand Guidelines
 
 The visual identity for **Lullaby**, the compiled systems language. One system,
-applied at the fidelity each surface allows: full-colour in the offline docs and
-web, ANSI-approximated in the CLI, and a filled icon for OS/app/installer contexts.
+applied at the fidelity each surface allows: full-colour on the web, ANSI-approximated
+in the CLI, and a filled icon for OS/app/installer contexts.
 
 > Personality: **warm & friendly**. Lullaby is a serious, fast, memory-safe systems
 > language with a calm, gentle surface. The brand leans into that contrast — soft to
@@ -53,8 +53,8 @@ mode grounds on dusk plum (`#161020`–`#221a31`); the pastels stay luminous on 
 
 - **Nunito** — one rounded humanist family for everything a person reads (display,
   UI, body). Weights: 400 / 600 / 700 / 800. Bundled with the toolchain
-  ([`nunito.woff2`](../assets/brand/nunito.woff2), OFL) and embedded in the offline
-  docs so they render identically offline, on any machine.
+  ([`nunito.woff2`](../assets/brand/nunito.woff2), OFL) and used by the online docs
+  website so they render identically on any machine.
 - **Monospace** for code: Cascadia Code / JetBrains Mono / system mono fallback.
 
 ## Voice & tagline

@@ -585,7 +585,7 @@ equality, unlike the concurrency harness (see [[concurrency_design.md]]).
   requested but no function is exported (nothing to call), emit a warning rather
   than an error.
 - Runtime traps (OOM, OOB) are not compile-time diagnostics; they surface at run
-  time as WASM `RuntimeError`, documented in the offline docs' limitations
+  time as WASM `RuntimeError`, documented in the online docs' limitations
   section and reported by the JS loader (§4.3).
 
 ## 8. Scope and sequencing

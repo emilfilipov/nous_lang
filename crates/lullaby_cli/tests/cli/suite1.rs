@@ -98,13 +98,13 @@ pub(crate) fn checks_valid_fixture_as_json() {
 }
 
 #[test]
-pub(crate) fn prints_offline_docs_path() {
+pub(crate) fn prints_online_docs_url() {
     let output = lullaby().args(["docs"]).output().expect("run cli");
 
     assert!(output.status.success(), "{output:?}");
     let stdout = stdout(&output);
     assert!(stdout.contains("docs:"), "{stdout}");
-    assert!(stdout.contains("index.html"), "{stdout}");
+    assert!(stdout.contains("https://lullaby-lang.org"), "{stdout}");
 }
 
 #[test]

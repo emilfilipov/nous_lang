@@ -4,19 +4,19 @@
 Reproducibly stages the toolchain payload and packages it:
 
   1. cargo build --release (the `lullaby` binary)
-  2. regenerate + verify the offline docs bundle (embedded, branded)
-  3. regenerate the installer wizard bitmaps
-  4. wix build installer/lullaby.wxs -> dist/lullaby-<version>-x64.msi
+  2. regenerate the installer wizard bitmaps
+  3. wix build installer/lullaby.wxs -> dist/lullaby-<version>-x64.msi
 
 The install layout matches what the CLI expects at runtime
-(`Program Files\\Lullaby\\{bin,docs,examples}`): the installer adds `bin` to the
-system PATH and creates Start Menu shortcuts.
+(`Program Files\\Lullaby\\{bin,examples}`): the installer adds `bin` to the
+system PATH and creates Start Menu shortcuts. User-facing documentation is the
+hosted online website, not bundled with the installer.
 
 Prerequisites: a Rust toolchain, Python with Pillow (for the bitmaps), and the
 WiX v7 CLI with the UI extension (`wix extension add -g WixToolset.UI.wixext`).
 
 Usage:
-    python scripts/build_windows_installer.py [--skip-build] [--skip-docs]
+    python scripts/build_windows_installer.py [--skip-build]
 """
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_MANIFEST = REPO_ROOT / "crates" / "lullaby_cli" / "Cargo.toml"
 WXS = REPO_ROOT / "installer" / "lullaby.wxs"
-DOCS_OUTPUT = REPO_ROOT / "target" / "offline_docs" / "index.html"
 DIST = REPO_ROOT / "dist"
 
 
@@ -102,7 +101,6 @@ def find_wix() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true", help="reuse the existing release binary")
-    parser.add_argument("--skip-docs", action="store_true", help="reuse the existing generated docs")
     args = parser.parse_args()
 
     full_version = workspace_version()
@@ -116,12 +114,6 @@ def main() -> int:
     exe = REPO_ROOT / "target" / "release" / "lullaby.exe"
     if not exe.exists():
         sys.exit(f"release binary not found: {exe} (drop --skip-build)")
-
-    if not args.skip_docs:
-        run([py, "offline_docs/generate_offline_docs.py"])
-        run([py, "offline_docs/verify_offline_docs.py", str(DOCS_OUTPUT), "--profile", "generated"])
-    if not DOCS_OUTPUT.exists():
-        sys.exit(f"generated docs not found: {DOCS_OUTPUT} (drop --skip-docs)")
 
     # Wizard bitmaps (deterministic; committed, but refreshed here so a change to
     # the mark geometry flows through without a manual step).

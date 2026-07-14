@@ -78,4 +78,4 @@ Work is driven in continuous waves of parallel agents with **disjoint file footp
 conflicts; hot-file compiler features (semantics/runtime/IR) are sequenced one at a time while
 design docs, examples, packaging, and the WASM/native files proceed in parallel. Every increment
 runs the full gate (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --all`, markdown
-refs, shipped + generated offline docs) and lands production-complete.
+refs) and lands production-complete.

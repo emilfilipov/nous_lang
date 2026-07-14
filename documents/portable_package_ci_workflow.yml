@@ -51,14 +51,5 @@ jobs:
       - name: Lint workspace
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Verify shipped offline docs
-        run: python offline_docs/verify_offline_docs.py
-
-      - name: Build generated offline docs
-        run: python offline_docs/generate_offline_docs.py
-
-      - name: Verify generated offline docs
-        run: python offline_docs/verify_offline_docs.py target/offline_docs/index.html --profile generated
-
       - name: Verify portable package
         run: python scripts/package_portable.py --target ${{ matrix.target }} --target-tag ${{ matrix.target_tag }} --verify

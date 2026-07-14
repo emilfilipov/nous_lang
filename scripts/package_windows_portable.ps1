@@ -28,19 +28,9 @@ try {
 
     Remove-Item -LiteralPath $PackageRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "bin") | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "docs") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "examples") | Out-Null
 
     Copy-Item -LiteralPath $Binary -Destination (Join-Path $PackageRoot "bin\lullaby.exe")
-    $PackageDocs = Join-Path $PackageRoot "docs\index.html"
-    python (Join-Path $RepoRoot "offline_docs\generate_offline_docs.py") $PackageDocs
-    if ($LASTEXITCODE -ne 0) {
-        throw "offline docs generation failed"
-    }
-    python (Join-Path $RepoRoot "offline_docs\verify_offline_docs.py") $PackageDocs --profile generated
-    if ($LASTEXITCODE -ne 0) {
-        throw "offline docs verification failed"
-    }
     Copy-Item -LiteralPath (Join-Path $RepoRoot "examples\README.md") -Destination (Join-Path $PackageRoot "examples\README.md")
     Copy-Item -LiteralPath (Join-Path $RepoRoot "examples\valid") -Destination (Join-Path $PackageRoot "examples\valid") -Recurse
     Copy-Item -LiteralPath (Join-Path $RepoRoot "examples\invalid") -Destination (Join-Path $PackageRoot "examples\invalid") -Recurse
@@ -74,7 +64,6 @@ $LicenseStatus
 
 Layout:
 - bin\lullaby.exe: command-line tool
-- docs\index.html: offline documentation
 - examples\: executable and invalid diagnostic .lby examples
 - RELEASE_NOTES.md: release notes, verification evidence, and known limitations
 - install.cmd / install.ps1: optional user PATH setup
@@ -106,7 +95,6 @@ Checksum:
 package=$PackageName
 commit=$Commit
 binary=bin\lullaby.exe
-docs=docs\index.html
 release_notes=RELEASE_NOTES.md
 installer=install.cmd
 uninstaller=uninstall.cmd

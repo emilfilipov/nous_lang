@@ -17,13 +17,13 @@ This repository defines and will implement Lullaby, a compiled systems programmi
 - Canonical source extension: `.lby` until the language specification is intentionally changed.
 - Keep the syntax indentation-only. Curly braces are not block delimiters, and semicolons are not statement terminators.
 - The frontend and semantic pipeline came first; native code generation, the WASM backend, and the full 1.0 primitive set are now in active development. Target 1.0 as defined in `documents/roadmap_1_0.md` and the ClickUp `Lullaby` folder: technically capable of expressing any program (a spanning set of primitives) plus an easy-to-install, branded toolchain, with specialized modules layered on after 1.0.
-- Maintain offline browser-based documentation from the start. The project must eventually ship a self-contained HTML documentation bundle that users can open locally without a server or internet access, and that bundle should be suitable for inclusion in the language toolchain installer.
+- Documentation is the hosted online website, maintained separately; there is no offline/bundled HTML doc artifact.
 
 ## Production Quality Standard
 
 - Everything is written to production quality. No aspect of the language — lexer, parser, semantics, runtime, IR, optimizer, backends (AST/IR/bytecode/native/WASM), CLI, installers, packaging, or documentation — may be committed in a "good enough for now", placeholder, stubbed, mocked, or temporary form.
 - No `todo!()`/`unimplemented!()`, no `unreachable!()` used to dodge a real case, no silent partial handling, no hardcoded/fake results standing in for real logic, no "TODO: handle later" left in committed code. If a case can occur, it is handled correctly or rejected with a clear `L####` diagnostic.
-- Every feature ships complete: correct edge-case and error handling, full parity across every backend it touches, deterministic tests (including negative/failure cases), and updated Markdown + offline documentation. A feature that is 90% done is not done.
+- Every feature ships complete: correct edge-case and error handling, full parity across every backend it touches, deterministic tests (including negative/failure cases), and updated Markdown documentation. A feature that is 90% done is not done.
 - Placeholder scaffolding is acceptable only transiently inside unmerged work-in-progress and must be replaced with the real implementation before the change is committed. Prefer correctness and completeness over speed of landing.
 - When a task is genuinely large, split it into smaller production-complete increments — never land a shallow version of the whole.
 
@@ -34,9 +34,9 @@ This is a hard rule for the primary agent, effective now. The primary agent oper
 - **Delegate implementation by default.** Decompose work into small, well-scoped tasks with explicit acceptance criteria and dispatch each to a sub-agent (use an isolated `worktree` for any task that edits code). Do not write substantial feature or implementation code directly. Reserve direct edits for orchestration, reviewing and merging agent output, small integration glue, and trivial fixes not worth spinning up an agent for.
 - **Run many agents in parallel, without collisions.** Keep several agents working concurrently (target ~5–10 when enough disjoint work exists), partitioned so no two concurrent agents edit the same file. Sequence tasks that would touch the same files — queue the later one until the earlier merges. Append-only shared docs are acceptable low-risk overlap. Be mindful of local build contention; ~4–6 heavy Rust-building agents at once is a practical ceiling.
 - **Review every result before accepting it.** A sub-agent's "done" is a claim to verify, not a fact. Check each result against the Production Quality Standard and Definition of Done (correct-or-unchanged codegen, `cargo test --all` and `cargo clippy --all-targets --all-features -- -D warnings` green, deterministic tests including negative cases, docs updated, no placeholders/stubs). Actually build/run the branch — don't trust the claim. If it falls short, push back with specific, actionable feedback and have it redone. Never merge subpar work.
-- **Always confirm documentation was updated as part of review.** Every accepted result must include the doc updates its change requires: the relevant Markdown under `documents/`, the offline docs bundle (`offline_docs/index.html`, re-verified with `python offline_docs/verify_offline_docs.py`), and `documents/repository_map.md`. If a sub-agent skipped or under-did the docs, do NOT default to hand-fixing it inline — **dispatch a dedicated documentation sub-agent for the doc work AND hand the original agent its next task**, so documentation runs in parallel and never serializes feature work. Only trivial one-line doc touch-ups are worth doing yourself.
+- **Always confirm documentation was updated as part of review.** Every accepted result must include the doc updates its change requires: the relevant Markdown under `documents/` and `documents/repository_map.md`. If a sub-agent skipped or under-did the docs, do NOT default to hand-fixing it inline — **dispatch a dedicated documentation sub-agent for the doc work AND hand the original agent its next task**, so documentation runs in parallel and never serializes feature work. Only trivial one-line doc touch-ups are worth doing yourself.
 - **Drive the pipeline autonomously.** As agents complete successfully, independently dispatch the next queued or derived tasks without waiting for owner sign-off. Escalate to the owner only for genuinely architectural decisions or real forks — not for per-task approval.
-- **Own integration and correctness.** The primary agent remains responsible for task decomposition, dependency ordering, conflict-free partitioning, merging and reviewing branches, keeping Markdown + offline docs and `documents/repository_map.md` current, and running the required verification.
+- **Own integration and correctness.** The primary agent remains responsible for task decomposition, dependency ordering, conflict-free partitioning, merging and reviewing branches, keeping the Markdown docs and `documents/repository_map.md` current, and running the required verification.
 - **Exceptions.** Pure investigation/measurement, answering the owner's questions, and one-line trivial fixes may be done directly. When work is too small or too tightly coupled to hand off cleanly, use judgment — but the default is to delegate.
 
 ## Core Documentation Map
@@ -59,7 +59,7 @@ This is a hard rule for the primary agent, effective now. The primary agent oper
 - Keep ClickUp current as implementation work progresses. When tasks are started, completed, materially changed, or blocked, update the relevant ClickUp ticket status when the tool supports it; otherwise add a concise task comment with the commit, verification, and remaining work.
 - Work in small, reviewable increments. Each commit should describe one coherent change.
 - Keep source, tests, and docs moving together. If implementation changes behavior, update the relevant core document and `documents/repository_map.md` in the same commit.
-- Use sub agents for parallel development, documentation cleanup, and maintenance tasks when work can be split into clear, non-overlapping ownership areas. The primary agent is allowed to use multiple sub-agents, and to use multiple rounds of sub-agents at any moment, whenever that helps move the work forward safely. Keep ownership clear: the primary agent remains responsible for integrating sub-agent output, checking accuracy, keeping both Markdown documentation and offline browser documentation current, and running the required verification.
+- Use sub agents for parallel development, documentation cleanup, and maintenance tasks when work can be split into clear, non-overlapping ownership areas. The primary agent is allowed to use multiple sub-agents, and to use multiple rounds of sub-agents at any moment, whenever that helps move the work forward safely. Keep ownership clear: the primary agent remains responsible for integrating sub-agent output, checking accuracy, keeping the Markdown documentation current, and running the required verification.
 - Avoid broad rewrites unless they remove real duplication, resolve contradictions, or unblock implementation.
 - Preserve user work. If the tree is dirty, inspect changes before editing and do not revert unrelated files.
 - Prefer local repo patterns once code exists. Do not introduce new frameworks or build systems without recording the decision in docs.
@@ -93,7 +93,6 @@ Once Rust code exists:
 - Keep fixture-based tests for lexer/parser/type-checker/diagnostics deterministic.
 - Add integration tests for end-to-end `.lby` source through parse, semantic validation, runtime/backend execution, stdout/stderr capture, and exit code.
 - Do not call work complete until relevant tests and documentation checks have run or the reason they could not run is documented.
-- Run `python offline_docs/verify_offline_docs.py` when the offline browser docs exist and user-facing language behavior, examples, CLI usage, diagnostics, installer docs, or the offline docs artifact changes.
 
 ## Git And GitHub Rules
 
@@ -110,9 +109,7 @@ Once Rust code exists:
 
 - Documentation is part of the product. Keep it current with every implementation update, concept change, command change, test change, or layout change.
 - If code changes syntax, typing, memory behavior, diagnostics, CLI behavior, runtime semantics, or build/test commands, update the matching document under `documents/`.
-- Offline browser documentation is a required product artifact. When the offline docs source or generated HTML bundle exists, update it alongside the Markdown source docs for every syntax, semantic, runtime, CLI, quick-start, example, diagnostic, or installer-facing change.
-- The offline documentation must be usable by opening a local HTML file directly in a browser. Do not require a development server, CDN, remote assets, or internet access for the basic documentation experience.
-- Keep offline docs organized for users, not only implementers: language overview, installation/setup, quick start, syntax reference, type system, memory model, control flow, examples, CLI usage, diagnostics, and current limitations should all be discoverable from the local entry page.
+- User-facing documentation is the hosted online website, maintained separately from this repository; there is no offline/bundled HTML doc artifact to update or verify here.
 - Treat docs examples as executable fixtures when practical. If an example is not yet supported by the current compiler/runtime, mark it clearly as planned or future syntax.
 - Keep `documents/core_language_rules.md` as the single source for repeated canonical rules. Do not copy that block into every subsystem document.
 - Keep `documents/repository_map.md` current and use it as the first navigation aid.
@@ -123,7 +120,6 @@ Once Rust code exists:
 
 - The requested change is implemented or the blocker is explicit.
 - Relevant docs are updated.
-- Offline browser documentation is updated when the change affects user-facing language behavior, examples, CLI usage, diagnostics, installation, or toolchain packaging, once the offline docs artifact exists.
 - `documents/repository_map.md` is still accurate.
 - Duplicate Markdown content has not been reintroduced.
 - Tests/checks relevant to the change have run.

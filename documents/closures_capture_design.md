@@ -510,8 +510,8 @@ concurrency paths. Invalid fixtures cover `L0441` (write to a captured name) and
   `L0440`/`L0441`/`L0442`.
 - `parallel_map` and `spawn` accept a `Value::Closure`.
 - Native/WASM: closures are a **skipped** subset (interpreter-only), documented.
-- Docs: this file, the offline docs closure section, `documents/repository_map.md`,
-  the diagnostic registry rows, and a `run_closures.lby` fixture.
+- Docs: this file, `documents/repository_map.md`, the diagnostic registry rows,
+  and a `run_closures.lby` fixture.
 
 **Deferred (explicit follow-ups):**
 

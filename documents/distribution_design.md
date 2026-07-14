@@ -76,7 +76,7 @@ Clearance) before first public publish:
   LLM-native."* The chosen tagline appears on the docs landing page, the web
   installer banner, and release notes; it must not overstate the current surface.
 - **Color:** one accent (deep indigo `#3B3B7A`) plus ink/paper neutrals, reused
-  by the offline docs bundle so branding is consistent between installer and docs.
+  by the online docs website so branding is consistent between installer and docs.
 - All brand assets live under a new `branding/` directory in the repo (SVG
   sources + generated raster/ico/icns) so every packager reads from one source of
   truth. Generation and layout of that directory is a list-07 implementation
@@ -115,7 +115,6 @@ Every channel installs the same logical bundle. The unit of distribution is the
 | `lullaby` CLI/compiler | the single binary: `check`/`compile`/`build`/`run`/`test`/`wasm`/`native`/`inspect`/`fmt`/`lsp`/`docs`/`examples`/`new` | `crates/lullaby_cli` release build |
 | Formatter | `lullaby fmt` (canonical source formatter) — same binary, no separate tool | `crates/lullaby_parser` `format.rs` |
 | Language server | `lullaby lsp` (JSON-RPC over stdio) — same binary | `crates/lullaby_lsp` |
-| Offline docs | self-contained `index.html` bundle, openable with no server/CDN | `offline_docs/generate_offline_docs.py` |
 | Examples | the curated `examples/valid` + `examples/invalid` tree | `examples/` |
 | Standard library / prelude | compiler-provided prelude (built into the binary today); a future on-disk `std/` module tree when stdlib modules move out of core (Phase 7) | `documents/standard_library.md` |
 | Native runtime support | the linker glue the `native` command drives (`rust-lld` discovery + `kernel32.lib`/`ucrt.lib` resolution); documented as a host-toolchain dependency, not re-shipped | `crates/lullaby_ir` native path |
@@ -149,7 +148,6 @@ $PREFIX/
     std/                       # on-disk stdlib modules (Phase 7+; absent until then)
     runtime/                   # native runtime support files, if any
   share/lullaby/
-    docs/index.html            # offline docs bundle (+ assets)
     examples/                  # valid/ and invalid/ trees
     branding/                  # icons used by desktop/MIME integration
   share/doc/lullaby/
@@ -494,7 +492,6 @@ A tag-triggered `release` workflow that extends the existing verification templa
 Every job runs the **full existing gate before packaging**, exactly as the
 template and `scripts/verify_release.ps1` do: `cargo fmt --check`,
 `cargo test --all`, `cargo clippy --all-targets --all-features -- -D warnings`,
-shipped offline-docs verification, generated offline-docs build + verification,
 markdown-reference verification, and the portable-package `--verify` smoke test
 (build → check → run → compile → inspect → run artifact → checksum). No artifact
 is produced from a job whose gate is red.
@@ -577,11 +574,12 @@ lullaby run hello        # -> Hello from Lullaby!
 
 # 3. explore
 lullaby examples         # list bundled examples
-lullaby docs             # open the offline docs bundle
+lullaby docs             # print the online docs website URL
 ```
 
-Every command here already exists except `lullaby new`; the bundled `docs`/
-`examples` commands already open the shipped offline docs and example tree. The
+Every command here already exists except `lullaby new`; `lullaby docs` prints the
+online documentation website URL and `lullaby examples` lists the bundled example
+tree. The
 success criterion for 1.0 is that a fresh machine goes from the install one-liner
 to `Hello from Lullaby!` in under a minute with no extra downloads (native compile
 being the only feature that documents a host-linker prerequisite).

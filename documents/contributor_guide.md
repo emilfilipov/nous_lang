@@ -38,7 +38,6 @@ Add focused coverage at the first layer that owns the behavior, then add an end-
 - Semantic rules: add valid and invalid semantic tests, using stable diagnostic codes from [diagnostic_registry.md](diagnostic_registry.md).
 - Runtime or backend behavior: add fixtures under `tests/fixtures/valid/` or `tests/fixtures/invalid/` and cover AST, IR, and bytecode paths when the feature reaches all backends.
 - CLI behavior: add `crates/lullaby_cli/tests/` coverage when command output, diagnostics, artifact generation, or backend selection is affected.
-- Offline docs examples: use `tests/fixtures/valid/docs_*.lby` or another checked-in fixture and make the HTML snippet match the file exactly.
 
 Prefer small fixtures that prove one behavior. If a fixture is intentionally invalid, name it after the diagnostic or failure mode.
 
@@ -51,8 +50,9 @@ Update docs in the same change as the implementation:
 - [language_specification.md](language_specification.md) for the current implementation summary.
 - The subsystem design document listed in [repository_map.md](repository_map.md).
 - [diagnostic_registry.md](diagnostic_registry.md) when adding or changing diagnostic codes, root causes, or suggested fixes.
-- `offline_docs/index.html` and `offline_docs/verify_offline_docs.py` when user-facing syntax, CLI usage, diagnostics, examples, installation, or package behavior changes.
 - [repository_map.md](repository_map.md) for new files, commands, fixtures, tests, responsibilities, or changed document ownership.
+
+User-facing documentation is the hosted online website, maintained separately from this repository; there is no offline/bundled HTML doc artifact in this repo to update.
 
 Keep planned design material clearly separated from implemented behavior.
 
@@ -64,7 +64,6 @@ For implementation changes, run:
 cargo fmt --check
 cargo test --all
 cargo clippy --all-targets --all-features -- -D warnings
-python offline_docs\verify_offline_docs.py
 powershell -ExecutionPolicy Bypass -File scripts\verify_markdown_refs.ps1
 git diff --check -- .
 ```
@@ -82,7 +81,7 @@ If a required check cannot run, record the command, the blocker, and the residua
 Before closing a task:
 
 1. Confirm the implementation matches the current feature surface or explicitly records future-surface exclusions.
-2. Confirm docs and offline docs are current.
+2. Confirm the Markdown docs are current.
 3. Confirm [repository_map.md](repository_map.md) is accurate.
 4. Commit with a focused message, for example `compiler: infer local binding types`.
 5. Push the commit.

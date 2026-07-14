@@ -13,7 +13,6 @@ This release is the first installable Lullaby toolchain checkpoint. It is a mini
 ## Package Contents
 
 - `bin\lullaby.exe`: release CLI binary.
-- `docs\index.html`: self-contained offline documentation.
 - `examples\`: executable `.lby` examples plus invalid diagnostic examples.
 - `install.cmd` / `install.ps1`: optional user PATH setup helper.
 - `uninstall.cmd` / `uninstall.ps1`: optional user PATH cleanup helper.
@@ -123,7 +122,6 @@ The release gate is:
 cargo fmt --check
 cargo test --all
 cargo clippy --all-targets --all-features -- -D warnings
-python offline_docs\verify_offline_docs.py
 powershell -ExecutionPolicy Bypass -File scripts\verify_release.ps1
 ```
 
@@ -163,7 +161,7 @@ powershell -ExecutionPolicy Bypass -File scripts\publish_github_release.ps1
 - No modules, packages, imports, structs, unions, traits, interfaces, classes, pattern matching, or user-defined generics beyond `array<T>`.
 - No region memory, ARC/reference counting, lifetime analysis, or GC hooks yet.
 - I/O is limited to text file builtins and direct program-plus-argv command calls.
-- Offline docs have both a checked-in hand-authored entry page and a generated package entry page; release packages now generate and verify their offline docs during packaging.
+- User-facing documentation is the hosted online website (https://lullaby-lang.org), maintained separately; the package ships no offline/bundled HTML docs.
 - This distribution is a Windows portable archive with optional user PATH helper scripts, not a full MSI/NSIS-style installer. The cross-platform portable package driver also prepares Unix `install.sh`/`uninstall.sh` helpers for Linux and macOS archives once those release assets are validated.
 - Optimizer support is intentionally conservative: leaf-helper inlining (a call to a small non-recursive function whose body is one pure scalar expression is replaced inline when the arguments are simple), constant folding, block-local CSE for repeated pure bindings, conservative loop-invariant motion for safe loop-body bindings, block-local copy propagation for simple aliases, and block-local dead-code elimination are implemented. The native and WASM backends run the inlining pass before codegen, so a helper like `rem` called in a hot loop compiles to inline arithmetic instead of a `call` (about 29% faster on the prime-counting benchmark).
 

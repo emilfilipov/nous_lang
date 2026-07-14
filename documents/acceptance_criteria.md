@@ -2,7 +2,7 @@
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
-This checklist defines when an installable Lullaby toolchain release is acceptable. It proves the frontend, semantic checks, diagnostics, runtime subset, bytecode artifact path, fixture discipline, offline documentation workflow, and Windows-first packaging are coherent.
+This checklist defines when an installable Lullaby toolchain release is acceptable. It proves the frontend, semantic checks, diagnostics, runtime subset, bytecode artifact path, fixture discipline, and Windows-first packaging are coherent.
 
 ## Required Toolchain Surface
 
@@ -24,7 +24,7 @@ A release is acceptable when the repository provides:
 - `lullaby check`, `lullaby compile`, `lullaby build`, `lullaby inspect`, `lullaby run`, `lullaby docs`, and `lullaby examples`, with `cargo run -p lullaby_cli -- ...` equivalents during development. `build` is the build-oriented alias for the `.lbc` artifact-generation path, `run --backend ast|ir|bytecode` supports source execution, `inspect file.lbc` summarizes compiled bytecode artifacts, and `run file.lbc` executes compiled bytecode artifacts.
 - A versioned `.lbc` bytecode artifact with a format marker, version, metadata, entry point, function table, compatibility checks, and bytecode module.
 - A release `lullaby` binary usable outside Cargo.
-- A Windows-first installer or portable archive containing the CLI, offline docs, examples, readme/license, setup instructions, optional PATH setup/cleanup helpers, and a checksum artifact.
+- A Windows-first installer or portable archive containing the CLI, examples, readme/license, setup instructions, optional PATH setup/cleanup helpers, and a checksum artifact.
 - Concise, verbose, and deterministic JSON diagnostics for representative source, lexer, parser, semantic, IR, bytecode artifact, runtime, and resource failures.
 
 ## Required Documentation Surface
@@ -36,9 +36,7 @@ Documentation is acceptable when:
 - `documents/diagnostic_registry.md` lists every stable `L####` code emitted by the compiler.
 - `documents/implementation_plan.md` records which epics are complete, partially complete, or pending.
 - `documents/repository_map.md` accurately maps source layout, docs, fixtures, commands, and verification responsibilities.
-- `offline_docs/index.html` is self-contained and opens directly from disk without a server, CDN, remote font, or internet dependency.
-- Offline documentation is bundled with the release package and discoverable from the installed or unpacked toolchain.
-- Offline documentation examples that claim to work are backed by `.lby` fixtures and verified by `offline_docs/verify_offline_docs.py`.
+- User-facing documentation is served by the hosted online website, maintained separately from this repository.
 - Planned syntax in design documents is clearly distinguishable from implemented syntax.
 
 ## Required Verification Gate
@@ -49,7 +47,6 @@ A release cannot be called done unless all of these commands pass from the repos
 cargo fmt --check
 cargo test --all
 cargo clippy --all-targets --all-features -- -D warnings
-python offline_docs/verify_offline_docs.py
 git diff --check -- .
 ```
 
@@ -58,7 +55,7 @@ git diff --check -- .
 `scripts/verify_release.ps1` should be the release proof command. It must also prove the packaged or release-built `lullaby` binary can:
 
 - report `lullaby --version`;
-- report the local offline documentation path through `lullaby docs`;
+- report the online documentation website URL through `lullaby docs`;
 - report the local examples path through `lullaby examples`;
 - check a valid `.lby` fixture;
 - run a valid `.lby` fixture;
@@ -66,8 +63,7 @@ git diff --check -- .
 - inspect the compiled `.lbc` artifact;
 - run the compiled `.lbc` artifact;
 - run dry-run PATH setup/cleanup helpers;
-- verify the generated archive checksum;
-- locate or include the offline docs bundle.
+- verify the generated archive checksum.
 
 ## Release Evidence
 
@@ -90,7 +86,6 @@ A release does not require:
 - Modules, packages, structs, traits, interfaces, pattern matching, or user-defined generics beyond current `array<T>` spelling.
 - Full region memory, ARC/reference counting, lifetime analysis, or GC hooks.
 - Streams, binary I/O, memory mapping, async, sockets, IPC, or OS syscall abstractions beyond the current safe system command builtins.
-- A generated offline-docs pipeline from Markdown. The current hand-authored self-contained HTML bundle is acceptable if verification passes.
 
 ## Suggested Next Phase
 

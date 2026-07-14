@@ -16,8 +16,7 @@ The compiler runs Lullaby on five parity-checked backends — an AST interpreter
 a typed-IR interpreter, an instruction-bytecode VM (with an optimizer), a
 WebAssembly emitter, and a native x86-64 code generator (with linking,
 freestanding / no-std builds, and inline assembly) — plus a versioned `.lbc`
-bytecode artifact path, an editor language server, a test runner, and a
-self-contained offline documentation bundle.
+bytecode artifact path, an editor language server, and a test runner.
 
 ## Benchmarks
 
@@ -207,7 +206,7 @@ Invoke the CLI during development with `cargo run -p lullaby_cli -- <command>`
 - `lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [-o out.exe] <file.lby>` — emit an x86-64 COFF object and best-effort link a native `.exe`.
 - `lullaby test [--verbose] <file.lby>` — run `test_*` functions and report pass/fail.
 - `lullaby lsp` — run the editor language server over stdio.
-- `lullaby docs` — open / locate the offline documentation.
+- `lullaby docs` — print the online documentation website URL (https://lullaby-lang.org).
 - `lullaby examples` — list bundled examples.
 - `lullaby help`, `lullaby --version`.
 
@@ -234,9 +233,8 @@ the default object bytes are unchanged.
 - [Contributor guide for language features](documents/contributor_guide.md)
 - [Repository map](documents/repository_map.md)
 
-Runnable example programs live under [`examples/`](examples/); the offline
-browser documentation is a self-contained HTML bundle that can be generated and
-opened directly from disk (no server or internet access required).
+Runnable example programs live under [`examples/`](examples/). Full user
+documentation is the hosted online website at <https://lullaby-lang.org>.
 
 ## License
 

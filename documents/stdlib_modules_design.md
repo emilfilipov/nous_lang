@@ -262,8 +262,7 @@ The move is staged so no existing program breaks at any step:
   source to `import http` and run through the project/loader path. During the
   deprecation window, add one test that the un-imported call still runs and emits
   the `L0345` warning; after the flip, replace it with a test that the un-imported
-  call is `L0309`. The offline-docs example verifier must move the HTTP example
-  under the `http`-importing form.
+  call is `L0309`.
 - **Manifest option.** Programs that already use a `lullaby.json`
   ([modules_design.md](modules_design.md)) need no change — the stdlib root is a
   compiler-level search root appended after project/dependency `src` dirs, so
@@ -350,12 +349,12 @@ exactly one battery, end to end:
 3. **Move `http` (the proof).** Author `stdlib/http.lby` as `pub`
    `http_get`/`http_post` over the TCP primitives; run the deprecation window with
    `L0345`; update the parity harness, `http_server_round_trip_on_all_backends`,
-   the full-stack HTTP round-trip test, and the offline-docs HTTP example to the
-   `import http` form; then flip to module-owned and delete the runtime builtins.
+   and the full-stack HTTP round-trip test to the `import http` form; then flip to
+   module-owned and delete the runtime builtins.
 4. **Docs.** Update [standard_library.md](standard_library.md) to mark HTTP as a
    module (moving it out of the always-in-scope catalog), add a "stdlib modules"
-   section pointing here, and update `documents/repository_map.md` and the offline
-   docs. Register `L0345`/`L0346` in
+   section pointing here, and update `documents/repository_map.md`. Register
+   `L0345`/`L0346` in
    [diagnostic_registry.md](diagnostic_registry.md).
 
 **Deferred** (recorded so the increment does not over-reach): moving `strings` and

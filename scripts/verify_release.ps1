@@ -26,12 +26,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo test --all failed" }
     cargo clippy --all-targets --all-features -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed" }
-    python offline_docs\verify_offline_docs.py
-    if ($LASTEXITCODE -ne 0) { throw "offline docs verification failed" }
-    python offline_docs\generate_offline_docs.py
-    if ($LASTEXITCODE -ne 0) { throw "generated offline docs build failed" }
-    python offline_docs\verify_offline_docs.py target\offline_docs\index.html --profile generated
-    if ($LASTEXITCODE -ne 0) { throw "generated offline docs verification failed" }
     & (Join-Path $ScriptDir "verify_markdown_refs.ps1")
     if ($LASTEXITCODE -ne 0) { throw "markdown reference verification failed" }
 
@@ -41,9 +35,6 @@ try {
 
     if (-not (Test-Path -LiteralPath $Lullaby)) {
         throw "packaged lullaby.exe not found: $Lullaby"
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot "docs\index.html"))) {
-        throw "packaged offline docs not found"
     }
     if (-not (Test-Path -LiteralPath $Example)) {
         throw "packaged example not found: $Example"

@@ -242,29 +242,14 @@ fn lsp() -> Result<(), String> {
     lullaby_lsp::run_stdio().map_err(|error| format!("lsp server error: {error}"))
 }
 
+/// The canonical hosted documentation website. Lullaby's documentation lives
+/// online only (maintained separately); there is no bundled offline HTML doc
+/// artifact.
+const DOCS_URL: &str = "https://lullaby-lang.org";
+
 fn docs() -> Result<(), String> {
-    let path = locate_docs().ok_or_else(|| {
-        "offline docs not found; expected docs/index.html near the lullaby binary or offline_docs/index.html in the repository".to_string()
-    })?;
-    println!("docs: {}", path.display());
+    println!("docs: {DOCS_URL}");
     Ok(())
-}
-
-fn locate_docs() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Ok(exe) = env::current_exe()
-        && let Some(bin_dir) = exe.parent()
-    {
-        candidates.push(bin_dir.join("docs/index.html"));
-        candidates.push(bin_dir.join("../docs/index.html"));
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidates.push(manifest_dir.join("../../offline_docs/index.html"));
-    candidates.push(PathBuf::from("offline_docs/index.html"));
-
-    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn compile_file(
