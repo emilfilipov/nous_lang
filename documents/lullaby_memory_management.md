@@ -6,11 +6,23 @@ Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
 This document covers the memory management architecture for **Lullaby** (lullaby), a compiled systems programming language. The memory system is designed to balance performance, safety, and LLM-understandability while maintaining explicit control suitable for OS development.
 
+> **Model direction (canonical):** Lullaby is **arena-first** — arena / region
+> allocation is the primary, default memory model. Reference counting (`ref`/RC)
+> is a **secondary, opt-in tool** for dynamic-lifetime or shared data that escapes
+> its region, and raw pointers + manual memory are an `unsafe` escape hatch. The
+> model is presented in **two tiers** (a safe tier that assumes a minimal runtime,
+> and a freestanding `no-runtime`/kernel tier with no host allocator and no RC).
+> This document covers the *mechanics and behavior*; the memory-model decision and
+> the 1.0 identity are owned by
+> [execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md), which is
+> canonical. Implementation staging lives in
+> [memory_model_decision.md](memory_model_decision.md).
+
 ---
 
 ## Current Runtime Slice
 
-The first executable runtime implements a deliberately small memory model so the language can be tested end to end before the full region/ARC design lands:
+The first executable runtime implements a deliberately small memory model so the language can be tested end to end before the full arena + RC design lands:
 
 - `alloc(value)` stores a runtime value in an internal heap slot and returns an interim pointer value.
 - `load(ptr)` reads a cloned value from a valid heap slot.
@@ -18,7 +30,7 @@ The first executable runtime implements a deliberately small memory model so the
 - `dealloc(ptr)` clears a heap slot and reports a runtime error on invalid or double deallocation.
 - Static semantic checking models pointer types with concrete names such as `ptr_i64`.
 - Typed IR analysis reports memory operations with artifact-order sequence metadata and safety metadata for live-resource requirements, bounds checks, memory mutation, cleanup role, and unsafe-boundary handling. Current reported operations are `alloc`, `load`, `store`, `dealloc`, and array-index bounds checks. Region create, region resize, copy, and compiler cleanup operation kinds now have safety metadata reserved for future lowering. Version 5 `.lbc` bytecode artifacts preserve this metadata in `memory_operations`, and artifact decoding validates that the metadata still matches the module instructions.
-- Reference counting is the heap model (see [memory_model_decision.md](memory_model_decision.md)). The native backend now ships a free-list allocator with a per-block RC header plus `rc_dec`/`rc_free` helpers and scope-based drop insertion for uniquely-owned, borrow-only `string`/`array<string>` loop temporaries. Region (arena) allocation, broader RC drop coverage, and Perceus-style reuse remain planned work. There is no tracing garbage collector.
+- Arena / region allocation is the primary, default heap model; reference counting is the secondary, opt-in tool for escaping data (see [memory_model_decision.md](memory_model_decision.md) for the implementation staging). The native backend already ships the RC substrate — a free-list allocator with a per-block RC header plus `rc_dec`/`rc_free` helpers and scope-based drop insertion for uniquely-owned, borrow-only `string`/`array<string>` loop temporaries. Arena-first allocation, broader RC drop coverage, and the freestanding `unsafe`/raw-pointer tier remain planned work; Perceus-style reuse is deferred (with arenas as the default, most allocation never touches RC). There is no tracing garbage collector.
 
 Example:
 ```lullaby
@@ -34,29 +46,55 @@ fn main -> i64
 
 ## Design Philosophy
 
-> **Model decision (supersedes any tracing-GC framing below):** Lullaby's heap is
-> **reference-counted**, layered with **arenas** (regions) for scope-local data —
-> **not** garbage-collected. This matches `language_specification.md` and the shipped
-> `rc<T>`/`ref<T>` surface. The rationale, options analysis, and staged plan are in
-> [memory_model_decision.md](memory_model_decision.md); where the sections below
-> describe tracing GC they are historical/rejected and are being rewritten.
+> **Model decision (supersedes any tracing-GC framing below):** Lullaby is
+> **arena-first** — arena / region allocation is the primary, default model.
+> **Reference counting** (`ref`/RC) is a **secondary, opt-in tool** for
+> dynamic-lifetime or shared data that escapes its region, and raw pointers +
+> manual memory are an `unsafe` escape hatch. The heap is **not** garbage-collected.
+> This matches `language_specification.md` and the shipped `rc<T>`/`ref<T>` surface.
+> The high-level decision and 1.0 identity are canonical in
+> [execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md); the
+> implementation staging is in
+> [memory_model_decision.md](memory_model_decision.md). Where the sections below
+> describe tracing GC they are historical/rejected.
 
 ### Core Principles
 
-1. **Reference-counted heap + regions**: reference counting frees deterministically
-   at scope exit (no GC pauses); arenas (regions) bulk-allocate scope-local data
-2. **Region-Based Allocation**: Primary allocation mechanism optimized for predictable memory layout (critical for OS kernels)
-3. **Lifetime Tracking**: Automatic scope-based lifetime management through AST analysis
-4. **Minimal Runtime Overhead**: Syntax-directed `inc`/`dec`/`drop` insertion — no collector, no stop-the-world, no compile-time cost that erodes the fast build
-5. **Deterministic Behavior**: Memory operations explicitly trackable and verifiable by the compiler
+1. **Arena / region allocation (primary)**: scope-local data bump-allocates into a
+   region and bulk-frees at scope exit — faster than `malloc`/`free`, zero
+   per-object refcount traffic, optimized for predictable memory layout (critical
+   for OS kernels)
+2. **Reference counting (secondary, opt-in)**: for data whose lifetime is dynamic or
+   shared across a graph, RC frees deterministically when the last owner drops (no
+   GC pauses); it never runs in the freestanding tier
+3. **Raw pointers + manual memory (escape hatch)**: available inside `unsafe` /
+   freestanding for the hardware edge, not the default that infects every program
+4. **Lifetime Tracking**: Automatic scope-based lifetime management through AST analysis
+5. **Minimal Runtime Overhead**: Syntax-directed `inc`/`dec`/`drop` insertion on the
+   RC path — no collector, no stop-the-world, no compile-time cost that erodes the fast build
+6. **Deterministic Behavior**: Memory operations explicitly trackable and verifiable by the compiler
+
+### Two Tiers
+
+Lullaby presents one syntax and one type system in **two tiers** that differ only in
+what runtime they assume (canonical detail:
+[execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md)):
+
+- **Safe tier (default)** — apps & services. Arena-first, bounds-checked, actor
+  concurrency, RC opt-in. Assumes a minimal runtime (allocator backing arenas, RC
+  helpers, panic→abort, actor scheduler).
+- **Freestanding tier (`no-runtime` / kernel)** — kernels, boot, embedded, FFI. No
+  CRT, no host allocator, **no RC**, and no hidden allocation or control flow. Arenas
+  still work, backed by a **caller-provided static buffer**; raw pointers + `unsafe`
+  are first-class; bounds-check failure calls a user-provided panic handler.
 
 ### Key Differentiators from Existing Languages
 
 | Traditional Language | Lullaby Approach |
 |---------------------|--------------------|
-| Global heap GC (Java, C#, Go) | **Reference counting** + **region-based allocation** (no GC pauses) |
-| Manual memory management (C, C++) | **Explicit regions** + **automatic RC cleanup** for local scopes |
-| Refcount without reuse (Python, Swift) | **RC + arenas**, architected toward Perceus-style in-place reuse |
+| Global heap GC (Java, C#, Go) | **Arena-first allocation** + opt-in **reference counting** (no GC pauses) |
+| Manual memory management (C, C++) | **Arena-first safe defaults** + `unsafe` raw pointers only at the hardware edge |
+| Borrow checker (Rust) | **Arenas + runtime-enforced safety** — memory-safe without borrow-check fights |
 | Garbage collector as afterthought | **Integrated into compilation pipeline** as core optimization phase |
 
 ---
@@ -190,10 +228,12 @@ function_frame:
         result: string
 ```
 
-### Heap Allocation (Reference-Counted)
+### Heap Allocation (Reference-Counted, Secondary)
 
-For objects that cannot be region-bound or have indeterminate lifetime, the heap
-is **reference-counted**. Each heap block carries a 16-byte header
+For objects that cannot be region-bound — data whose lifetime is dynamic or shared
+across a graph, i.e. that escapes its region — the heap is **reference-counted**.
+This is the *secondary* allocation tool: arenas handle the common, scope-local case;
+RC handles the escaping minority. Each heap block carries a 16-byte header
 `[size][refcount]` before its payload; the allocator is a free-list allocator that
 first-fit-reuses freed blocks. A block is freed **deterministically** the moment
 its refcount reaches zero (typically at scope exit) — there is no tracing garbage
@@ -288,12 +328,16 @@ clear ref obj  # Drops this owner; block frees if it was the last reference
 
 ## Reference-Counting System
 
-Lullaby's heap is **reference-counted**, not garbage-collected. Tracing GC was
+Reference counting is Lullaby's **secondary, opt-in** heap tool — for escaping
+data that arenas cannot bound — **not** a garbage collector. Tracing GC was
 evaluated and rejected (it needs precise stack maps — a poor fit for the
 hand-written, no-SSA native emitter — introduces stop-the-world pauses that are
 wrong for a systems language, and contradicts the shipped reference-counting
-commitment). The rationale, options analysis, and staged plan are in
-[memory_model_decision.md](memory_model_decision.md).
+commitment). The high-level model decision is canonical in
+[execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md); the options
+analysis and staged plan are in
+[memory_model_decision.md](memory_model_decision.md). RC is **never present in the
+freestanding tier**, which has no host allocator and no runtime.
 
 ### RC Design Goals
 1. **Deterministic reclamation**: a block frees the instant its last owner drops
@@ -533,15 +577,18 @@ func multi_param(a, b, c) -> result
 ### RC Performance Tuning
 
 Reference counting has no collection frequency to tune — a block frees the instant
-its last owner drops. The performance levers are instead about reducing refcount
-*traffic*, and are layered in as independently-shippable increments:
+its last owner drops. The performance story is dominated by keeping most allocation
+*off* the RC path entirely:
 
-- **Arenas (regions)**: scope-local, provably-non-escaping allocations bump-allocate
-  into a scope arena and bulk-free at scope exit, skipping refcounting entirely.
-- **Perceus-style reuse**: when a refcount is provably 1 and the object dies, its
-  memory is reused in place (turning a functional-style update into in-place
-  mutation), eliding redundant `inc`/`dec` pairs — approaching ownership-level
-  performance without a borrow checker.
+- **Arenas (regions)** — the primary, default model: scope-local, provably-non-escaping
+  allocations bump-allocate into a scope arena and bulk-free at scope exit, skipping
+  refcounting entirely. Because arenas are the default, the RC path carries only the
+  escaping minority of allocations.
+- **Perceus-style reuse (deferred, lower priority)**: when a refcount is provably 1
+  and the object dies, its memory is reused in place (turning a functional-style
+  update into in-place mutation), eliding redundant `inc`/`dec` pairs. This optimizes
+  the RC path only; with arenas as the default it is no longer a headline perf lever,
+  so it is deferred.
 
 See [memory_model_decision.md](memory_model_decision.md) for the staging of these
 layers.
@@ -638,20 +685,22 @@ free process_region
 
 The Lullaby memory management system provides:
 
-1. **Region-based allocation** for deterministic, efficient systems programming
+1. **Arena / region allocation (primary)** for deterministic, efficient systems programming
 2. **Stack allocation** with automatic lifetime tracking via scopes
-3. **Reference-counted heap** for objects when region binding is impractical — freed
-   deterministically at scope exit, with no tracing collector and no pauses
-4. **Comprehensive safety guarantees** through bounds checking and null validation
-5. **Explicit memory operations** visible to the compiler for optimization
-6. **Integrated compilation pipeline** that analyzes and optimizes memory usage
+3. **Reference-counted heap (secondary, opt-in)** for objects that escape their region —
+   freed deterministically when the last owner drops, with no tracing collector and no pauses
+4. **Raw pointers + manual memory (`unsafe` escape hatch)** for the hardware edge and FFI
+5. **Comprehensive safety guarantees** through bounds checking and null validation
+6. **Explicit memory operations** visible to the compiler for optimization
+7. **Integrated compilation pipeline** that analyzes and optimizes memory usage
 
 This model offers the performance and determinism of manual memory management
 (C/Rust) with the safety of automatic reclamation, while maintaining LLM-friendly
-syntax through explicit region declarations and scope-based reference-counting
-rules. Reference counting is the heap foundation; arenas and Perceus-style reuse
-layer on top as performance stages (see
-[memory_model_decision.md](memory_model_decision.md)).
+syntax. Arenas are the default foundation; reference counting is the secondary tool
+for escaping data, and Perceus-style reuse is a deferred RC-path optimization (see
+[memory_model_decision.md](memory_model_decision.md) for staging, and
+[execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md) for the
+canonical model decision).
 
 ---
 

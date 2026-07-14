@@ -1,9 +1,21 @@
-# Native Memory Model — Decision Record
+# Native Memory Model — Implementation Staging
 
-This document records the memory-management model for Lullaby's **native backend**
-and the reasoning behind it. It is the decision reference; the mechanics live in
-[`lullaby_memory_management.md`](lullaby_memory_management.md), which this record
-supersedes wherever the two disagree (see [Doc-conflict resolution](#doc-conflict-resolution)).
+> **Superseded for the high-level decision by
+> [execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md)** (owner
+> decision, 2026-07-14), which is canonical for the memory model and 1.0 identity.
+> That decision is **arena-first**: arena / region allocation is the primary,
+> default model; reference counting (`ref`/RC) is a **secondary, opt-in** tool for
+> escaping data; raw pointers + manual memory are an `unsafe` escape hatch; and
+> **Perceus is deferred / lower priority** (with arenas as the default, most
+> allocation never touches RC). This document no longer sets the high-level model —
+> it now details the **implementation staging under the arena-first model**: how the
+> already-in-flight RC substrate lands as the secondary tool and how the arena-first
+> default is built on top. Where the historical text below reads "RC-first", treat
+> it as the *sequencing of the RC substrate*, not a claim that RC is the default.
+
+This document records the implementation staging for Lullaby's **native backend**
+memory model and the reasoning behind it. The mechanics and runtime behavior live in
+[`lullaby_memory_management.md`](lullaby_memory_management.md).
 
 ## Context
 
@@ -28,8 +40,11 @@ Four constraints shape the choice, in priority order:
 
 ## The decision
 
-**Reference counting is the native heap model.** It is not a green-field choice —
-the language already committed to it:
+**Arenas are the primary, default native heap model; reference counting is the
+secondary, opt-in tool for escaping data** (canonical:
+[execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md)). Neither is a
+green-field choice — the RC substrate is already in flight and the language already
+committed to reference counting as its *safe automatic* model:
 
 - `language_specification.md` lists **"Reference Counting: automatic memory
   management without garbage-collection pauses"** as a core principle and sets the
@@ -41,22 +56,29 @@ the language already committed to it:
 - The safety diagnostics already assume an RC/ownership model: `L0350`
   (use-after-free / double-free) and `L0351` (a borrowed `ref<T>` may not escape
   its owner). The "a function may return an owning value or `rc<T>`, never a
-  borrowed `ref<T>`" rule is exactly the cheap, *local* lifetime rule RC needs.
+  borrowed `ref<T>`" rule is exactly the cheap, *local* lifetime rule both arenas
+  (escape reasoning) and RC need.
 
-So the real question is not *which* model but *what native must emit* to honor the
-model the language already promises.
+The arena-first decision demotes RC from the default to the escaping-data tool: most
+allocation is scope-local and bump-allocates into an arena that bulk-frees at scope
+exit, so it never touches a refcount. RC catches only the dynamic-lifetime / shared
+minority. So the real question is not *which* model but *what native must emit* to
+honor arena-first defaults with RC underneath as the safe escape for data that
+outlives its region.
 
-**Recommended composition** (each ingredient is battle-tested; the combination is
-tuned to Lullaby's constraints):
+**Composition** (each ingredient is battle-tested; the combination is tuned to
+Lullaby's constraints):
 
-> **Reference counting** as the semantic foundation **+ Perceus-style reuse** to
-> make it fast without a borrow checker **+ arenas** as the scope-local
-> zero-overhead fast path **+ non-owning `ref<T>` borrows** to keep owning cycles
-> from forming.
+> **Arenas** as the primary, default scope-local zero-overhead model **+ reference
+> counting** as the secondary semantic foundation for escaping data **+ non-owning
+> `ref<T>` borrows** to keep owning cycles from forming **+ raw pointers / `unsafe`**
+> as the freestanding escape hatch. **Perceus-style reuse is deferred** — an RC-path
+> optimization only, no longer a headline lever now that arenas are the default.
 
-Ship **plain scope-based RC first** (small, syntax-directed, low-risk), then layer
-arenas and reuse as separate, independently-shippable increments once real programs
-show where the traffic actually is.
+Practically, the RC substrate ships **first** because it is already in flight (small,
+syntax-directed, low-risk), then the arena-first default is built on top and becomes
+the path most allocations take; RC remains for the escaping minority. This staging is
+the *sequencing of the substrate*, not a statement that RC is the default model.
 
 ## Options weighed against Lullaby's constraints
 
@@ -127,7 +149,12 @@ composition** (§the decision), not new primitives.
 ## Staged implementation plan
 
 Each stage is independently shippable and test-gated (native == interpreter parity;
-deterministic refcount assertions).
+deterministic refcount assertions). The staging reflects **build order, not model
+priority**: the RC substrate (stages 1–3) is already in flight and ships first, but
+under the arena-first decision the **arena layer (stage 4) is the primary, default
+model** — most allocation takes that path, with RC serving the escaping minority.
+The freestanding/`unsafe` tier (stage 5) is the big 1.0 leap, and Perceus (stage 6)
+is deferred.
 
 1. **A real allocator + RC runtime helpers.** ✅ **LANDED** (native, behavior-neutral).
    The bump allocator is now a **free-list allocator** with a 16-byte per-block RC
@@ -160,13 +187,27 @@ deterministic refcount assertions).
    "native-ineligible → demote" to emitted — each behind parity tests. Error
    unwinding (`?`/`throw`) reuses the same scope-exit drop sequence, so it needs no
    separate machinery.
-4. **Arena layer.** Scope-local, provably-non-escaping allocations bump-allocate
-   into a scope arena and bulk-free at scope exit, skipping refcounting entirely.
-   Needs a cheap, *local* "does this binding escape its scope?" heuristic (the same
-   escape reasoning `L0351` already implies). Do arenas **before** any cycle
-   collector — they cut refcount traffic and shrink where cycles even matter.
-5. **Perceus reuse + (only if needed) a cycle collector.** Add drop-specialization
-   /reuse once the traffic is measured; add a trial-deletion cycle collector only if
+4. **Arena layer — the primary, default model.** Scope-local, provably-non-escaping
+   allocations bump-allocate into a scope arena and bulk-free at scope exit, skipping
+   refcounting entirely. This is *not* merely a fast path bolted onto RC — it is the
+   default path most allocation takes; RC (stages 1–3) becomes the secondary tool for
+   the escaping minority. Needs a cheap, *local* "does this binding escape its scope?"
+   heuristic (the same escape reasoning `L0351` already implies), **not**
+   Tofte-Talpin/MLKit region *inference* (compile-time expensive; would threaten the
+   fast-compile edge). Do arenas **before** any cycle collector — they cut refcount
+   traffic and shrink where cycles even matter.
+5. **Freestanding / `unsafe` / kernel tier — the big 1.0 leap.** Static-buffer-backed
+   arenas (allocation with no host allocator), raw pointers + pointer arithmetic +
+   `unsafe`, a pluggable panic handler for bounds/safety failures, and `no-runtime`
+   output. **No RC in this tier** and no hidden allocation or control flow. See the
+   10-item kernel checklist in
+   [execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md) (canonical);
+   do not restate it here.
+6. **Perceus reuse (deferred, lower priority) + (only if needed) a cycle collector.**
+   Perceus optimizes refcount *traffic*, but with arenas as the default most
+   allocation never touches RC, so it is deferred and no longer the headline perf
+   lever it was under the RC-first plan. Add drop-specialization/reuse only once the
+   RC-path traffic is measured to matter; add a trial-deletion cycle collector only if
    real programs demonstrably leak owning cycles.
 
 ## Biggest risks / unknowns
@@ -183,11 +224,12 @@ deterministic refcount assertions).
 
 ## Doc-conflict resolution
 
-`lullaby_memory_management.md` currently pitches a *"Hybrid Memory Model: combine
-automatic garbage collection with explicit memory regions"* with generational/
-conservative-GC sections. That predates and **contradicts** the landed
-reference-counting decision (`language_specification.md`) and
-`acceptance_criteria.md` (which lists ARC/reference counting / region memory as
-*not-yet-built*). Realign that document to **RC-primary + arenas**, and drop the
-tracing-GC framing — regions stay (as the arena layer), GC goes. This record is the
-source of truth until that edit lands.
+The high-level model decision is owned by
+[execution_tiers_and_1_0_scope.md](execution_tiers_and_1_0_scope.md) (canonical):
+**arena-first primary, RC secondary/opt-in, raw pointers as the `unsafe` escape
+hatch, Perceus deferred, no tracing GC.** This document details the *implementation
+staging* under that decision. [`lullaby_memory_management.md`](lullaby_memory_management.md)
+covers the *mechanics and runtime behavior* and has been realigned to the same
+arena-first framing (its historical tracing-GC sections are marked superseded).
+`acceptance_criteria.md` lists arena/RC/region memory as *not-yet-built*. If any of
+these disagree with the canonical doc, the canonical doc wins.
