@@ -2451,6 +2451,48 @@ fn rejects_map_keys_on_non_map() {
 }
 
 #[test]
+fn rejects_map_values_on_non_map() {
+    let diagnostics =
+        validate_source("fn main -> i64\n    len(map_values(\"x\"))\n").expect_err("semantic");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0388"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_map_keys_wrong_arity() {
+    // `map_keys` takes exactly one argument; a second is an arity error (L0312).
+    let source = concat!(
+        "fn main -> i64\n",
+        "    let m map<string, i64> = map_new()\n",
+        "    len(map_keys(m, m))\n",
+    );
+    let diagnostics = validate_source(source).expect_err("semantic");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0312"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_map_values_result_type_mismatch() {
+    // `map_values` on a `map<string, i64>` yields `list<i64>`; binding it to a
+    // `list<string>` is a type mismatch (L0303), pinning the value element type.
+    let source = concat!(
+        "fn main -> i64\n",
+        "    let m map<string, i64> = map_new()\n",
+        "    let vs list<string> = map_values(m)\n",
+        "    len(vs)\n",
+    );
+    let diagnostics = validate_source(source).expect_err("semantic");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0303"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn rejects_map_new_without_expected_type() {
     let source = concat!("fn main -> i64\n", "    let m = map_new()\n", "    0\n");
     let diagnostics = validate_source(source).expect_err("semantic");

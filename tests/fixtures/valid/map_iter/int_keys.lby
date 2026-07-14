@@ -1,0 +1,12 @@
+fn main -> i64
+    let m map<i64, string> = map_new()
+    m = map_set(m, 30, "thirty")
+    m = map_set(m, 10, "ten")
+    m = map_set(m, 20, "twenty")
+    let keys list<i64> = map_keys(m)
+    for i from 0 to len(keys) - 1
+        println(to_string(get(keys, i)))
+    let vals list<string> = map_values(m)
+    for i from 0 to len(vals) - 1
+        println(get(vals, i))
+    len(keys)

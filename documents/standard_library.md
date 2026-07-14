@@ -164,6 +164,18 @@ argument is a compile-time `L0389` type error.
 | `map_keys` | `map_keys(m map<K, V>) -> list<K>` | keys in insertion order |
 | `map_values` | `map_values(m map<K, V>) -> list<V>` | values in insertion order |
 
+`map_keys` and `map_values` return their results in the map's **insertion
+order** — Lullaby's `map` is insertion-ordered (the `OrderedMap` model), and a
+re-`map_set` of an existing key updates its value in place without changing its
+position — so the two lists line up index-for-index and are deterministic across
+the AST, IR, and bytecode backends. Together they cover map iteration: walk
+`map_keys(m)` and pull each value with `map_get`, e.g.
+`for k in map_keys(m) { ... map_get(m, k) ... }`. A single `map_entries` that
+pairs each key with its value awaits a first-class tuple/pair type (none exists
+today); until then `map_keys` + `map_values`/`map_get` are the iteration surface.
+A function that iterates a `map` is interpreter-tier — the native i64-scalar
+backend cleanly skips it (`L0339`), like every other heap builtin.
+
 ## Strings
 
 `substring(s, start, end)`, `find(s, needle) -> i64` (`-1` if absent),

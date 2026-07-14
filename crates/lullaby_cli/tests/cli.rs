@@ -1360,6 +1360,10 @@ mod fuzz;
 #[path = "cli/suite4.rs"]
 mod suite4;
 
+// -- Map iteration builtins (`map_keys` / `map_values`) ----------------------
+#[path = "cli/suite5.rs"]
+mod suite5;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

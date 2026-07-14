@@ -1,0 +1,14 @@
+fn main -> i64
+    let m map<string, i64> = map_new()
+    m = map_set(m, "banana", 2)
+    m = map_set(m, "apple", 1)
+    m = map_set(m, "cherry", 3)
+    # Updating an existing key keeps its original insertion position.
+    m = map_set(m, "apple", 10)
+    let keys list<string> = map_keys(m)
+    for i from 0 to len(keys) - 1
+        println(get(keys, i))
+    let vals list<i64> = map_values(m)
+    for i from 0 to len(vals) - 1
+        println(to_string(get(vals, i)))
+    len(keys)
