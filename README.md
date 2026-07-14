@@ -57,6 +57,10 @@ Lullaby already beats Python.
 - Tight counting-`sum` loop: **0.52× C — faster than C** — the backend
   ILP-unrolls `while i < N: acc = acc + i; i = i + 1`, folding four iterations
   per step into one dependent add and breaking the serial `acc` chain.
+- Euclid `gcd` accumulation loop: **~1.00× C — at parity** (10.9 vs 11.0 ns/gcd)
+  — `sqrt`/`abs`/`min`/`max`/`gcd`/`sign`/`clamp` now lower to inline machine code
+  (`gcd` is a branchless magnitude `abs` + unsigned `div` Euclid), matching C's
+  optimized `gcd`. Measure with `benchmarks/run_gcd.ps1`.
 
 **Interpreter performance**: the AST / IR / bytecode tiers are development tools
 (~200–1200× C). Range `for`-loops run **~2× faster** across all three after
