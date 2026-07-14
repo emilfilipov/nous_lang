@@ -1,0 +1,53 @@
+# Program 2: a request-handler / service core.
+# Exercises: structs, map<string, string> as a tiny key-value store, request
+# routing/dispatch, string building, option/match. No real sockets are opened
+# (the socket builtins exist -- tcp_listen/accept/read/write -- but this models
+# just the pure request->response core so it runs on every interpreter).
+
+struct Request
+    method string
+    path string
+    body string
+
+struct Response
+    status i64
+    body string
+
+fn resp_line r Response -> string
+    "HTTP " + to_string(r.status) + " " + r.body
+
+# A tiny in-memory store threaded through the router (functional map updates).
+fn handle_get store map<string, string> path string -> Response
+    let key string = path
+    match map_get(store, key)
+        some(v) -> Response(200, v)
+        none -> Response(404, "not found: " + key)
+
+fn route store map<string, string> req Request -> Response
+    if req.method == "GET"
+        return handle_get(store, req.path)
+    if req.method == "PUT"
+        # PUT mutates the store; but map updates are functional, so the caller
+        # must thread the returned store. We only echo here.
+        return Response(200, "stored " + req.path + "=" + req.body)
+    if req.method == "DELETE"
+        return Response(200, "deleted " + req.path)
+    Response(405, "method not allowed: " + req.method)
+
+fn main -> void
+    let store map<string, string> = map_new()
+    store = map_set(store, "/hello", "world")
+    store = map_set(store, "/lang", "lullaby")
+
+    let reqs list<Request> = list_new()
+    reqs = push(reqs, Request("GET", "/hello", ""))
+    reqs = push(reqs, Request("GET", "/lang", ""))
+    reqs = push(reqs, Request("GET", "/missing", ""))
+    reqs = push(reqs, Request("PUT", "/x", "42"))
+    reqs = push(reqs, Request("POST", "/y", "z"))
+
+    let n i64 = len(reqs)
+    for i from 0 to n - 1
+        let req Request = get(reqs, i)
+        let r Response = route(store, req)
+        println(req.method + " " + req.path + "  ->  " + resp_line(r))

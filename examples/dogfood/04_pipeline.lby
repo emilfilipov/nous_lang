@@ -1,0 +1,53 @@
+# Program 4: a data-processing pipeline.
+# Parse CSV-ish records, filter/aggregate with higher-order functions
+# (list_filter / list_map / list_reduce + closure literals), and report.
+# Exercises: iteration, closures (capture by value), list<T>, structs, strings.
+
+struct Rec
+    name string
+    age i64
+    dept string
+
+fn parse_int_or s string d i64 -> i64
+    match parse_i64(trim(s))
+        ok(n) -> n
+        err(m) -> d
+
+fn parse_line line string -> Rec
+    let f array<string> = split(line, ",")
+    Rec(trim(f[0]), parse_int_or(f[1], 0), trim(f[2]))
+
+fn age_of r Rec -> i64
+    r.age
+
+fn main -> void
+    let raw list<string> = list_new()
+    raw = push(raw, "Alice, 34, eng")
+    raw = push(raw, "Bob, 19, eng")
+    raw = push(raw, "Carol, 41, sales")
+    raw = push(raw, "Dave, 28, sales")
+    raw = push(raw, "Eve, 52, eng")
+
+    # parse: list<string> -> list<Rec>   (closure into list_map)
+    let recs list<Rec> = list_map(raw, fn line string -> parse_line(line))
+
+    # filter: keep the engineers (closure captures the dept name)
+    let dept string = "eng"
+    let eng list<Rec> = list_filter(recs, fn r Rec -> r.dept == dept)
+
+    # aggregate: sum ages via list_reduce, and via list_map + list_sum
+    let total_age i64 = list_reduce(eng, 0, fn acc i64 r Rec -> acc + r.age)
+    let ages list<i64> = list_map(eng, age_of)
+    let n i64 = len(eng)
+
+    println("total records: " + to_string(len(recs)))
+    println("engineers: " + to_string(n))
+    println("sum of eng ages: " + to_string(total_age))
+    println("sum via map+list_sum: " + to_string(list_sum(ages)))
+    if n > 0
+        println("avg eng age: " + to_string(total_age / n))
+    # min/max age across all records
+    let all_ages list<i64> = list_map(recs, age_of)
+    match list_max(all_ages)
+        some(m) -> println("oldest: " + to_string(m))
+        none -> println("no records")

@@ -1,0 +1,36 @@
+# Program 6b: low-level / freestanding-tier primitive probe (interpreter).
+# Exercises unsafe pointers, volatile MMIO-style access, raw ptr<->int casts,
+# and the compile-time layout queries (size_of/align_of/offset_of).
+# These run on the interpreters; the native/freestanding subset is scalar-only,
+# so a program that touches the heap/unsafe path stays on the interpreters.
+
+struct Regs
+    a i64
+    b i64
+    c i64
+
+fn layout -> i64
+    # size_of / align_of over a scalar and a struct; offset_of into fields.
+    let s i64 = size_of(0)                 # i64 scalar = 8
+    let al i64 = align_of(0)               # 8
+    let r Regs = Regs(1, 2, 3)
+    let sz i64 = size_of(r)                # 24
+    let off i64 = offset_of(r, "c")        # 16
+    s + al + sz + off                      # 8+8+24+16 = 56
+
+fn heap_roundtrip -> i64
+    let p ptr_i64 = alloc(0)
+    store(p, 100)
+    let v i64 = 0
+    unsafe
+        # raw read, raw ptr<->int cast round-trip, and volatile store/load
+        let h i64 = ptr_to_int(p)
+        let back ptr_i64 = int_to_ptr(h)
+        volatile_store(back, ptr_read(back) + 11)
+        v = volatile_load(back)
+    dealloc(p)
+    v                                       # 111
+
+fn main -> void
+    println("layout total = " + to_string(layout()))
+    println("heap roundtrip = " + to_string(heap_roundtrip()))

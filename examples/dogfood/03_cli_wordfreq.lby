@@ -1,0 +1,65 @@
+# Program 3: a CLI tool -- word-frequency counter.
+# Reads a file path from args(), tokenizes with words(), tallies counts in a
+# map<string, i64>, then sorts entries by descending count (sort_by + a
+# comparator function value) and prints the top results.
+# Exercises: args() + file I/O + strings + map + list + sort_by.
+#
+# NOTE (dogfood findings):
+#  * No stdin builtin (only args()/read_file/read_lines), so a real `cat | tool`
+#    pipe cannot be expressed; the tool takes a file path.
+#  * `match` arms cannot be assignments and `match` is not an expression, so the
+#    natural "look up, then update the accumulator" step is pushed into helper
+#    functions (`bump`, `entry_for`) that RETURN the new value.
+#  * map<K,V> has no entry iteration, so entries are rebuilt from map_keys.
+
+struct Entry
+    word string
+    count i64
+
+fn bump counts map<string, i64> w string -> map<string, i64>
+    match map_get(counts, w)
+        some(c) -> map_set(counts, w, c + 1)
+        none -> map_set(counts, w, 1)
+
+fn count_for counts map<string, i64> w string -> i64
+    match map_get(counts, w)
+        some(c) -> c
+        none -> 0
+
+fn cmp_desc a Entry b Entry -> i64
+    if a.count < b.count
+        return 1
+    if a.count > b.count
+        return 0 - 1
+    0
+
+fn main -> i64
+    let a list<string> = args()
+    if len(a) == 0
+        println("usage: 03_cli_wordfreq <file>")
+        return 0 - 1
+    let path string = get(a, 0)
+    if not file_exists(path)
+        println("no such file: " + path)
+        return 0 - 1
+    let text string = read_file(path)
+    let ws array<string> = words(lower(text))
+    let counts map<string, i64> = map_new()
+    let nw i64 = len(ws)
+    for i from 0 to nw - 1
+        counts = bump(counts, ws[i])
+    let keys list<string> = map_keys(counts)
+    let entries list<Entry> = list_new()
+    let nk i64 = len(keys)
+    for i from 0 to nk - 1
+        let k string = get(keys, i)
+        entries = push(entries, Entry(k, count_for(counts, k)))
+    let sorted list<Entry> = sort_by(entries, cmp_desc)
+    println("distinct words: " + to_string(nk))
+    let show i64 = 5
+    if nk < show
+        show = nk
+    for i from 0 to show - 1
+        let e Entry = get(sorted, i)
+        println(to_string(e.count) + "  " + e.word)
+    0

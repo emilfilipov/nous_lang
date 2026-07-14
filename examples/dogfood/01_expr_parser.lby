@@ -1,0 +1,171 @@
+# Program 1: a small arithmetic expression parser + evaluator.
+# Exercises: strings, recursion, enums with payloads, pattern matching,
+# error handling (result / ? / err), list<T>, structs to thread parser state.
+# Grammar:  expr := term (('+'|'-') term)*   term := factor (('*'|'/') factor)*
+#           factor := NUMBER | '(' expr ')'
+#
+# NOTE (dogfood finding): `match` is a tail statement whose arms are single
+# expressions; it is NOT an expression (`let x = match ...` is rejected) and an
+# arm body cannot be an assignment. So token dispatch is done with small helper
+# predicates that each return a value from a `match`, rather than a `match` that
+# sets flags. This works but is more verbose than a match-driven switch.
+
+enum Tok
+    TNum i64
+    TPlus
+    TMinus
+    TStar
+    TSlash
+    TLParen
+    TRParen
+
+fn is_plus t Tok -> bool
+    match t
+        TPlus -> true
+        _ -> false
+
+fn is_minus t Tok -> bool
+    match t
+        TMinus -> true
+        _ -> false
+
+fn is_star t Tok -> bool
+    match t
+        TStar -> true
+        _ -> false
+
+fn is_slash t Tok -> bool
+    match t
+        TSlash -> true
+        _ -> false
+
+fn is_rparen t Tok -> bool
+    match t
+        TRParen -> true
+        _ -> false
+
+# --- tokenizer ---
+fn tokenize src string -> result<list<Tok>, string>
+    let cs list<char> = chars(src)
+    let n i64 = len(cs)
+    let toks list<Tok> = list_new()
+    let i i64 = 0
+    while i < n
+        let c char = get(cs, i)
+        if is_whitespace(c)
+            i = i + 1
+        elif is_digit(c)
+            let v i64 = 0
+            while i < n and is_digit(get(cs, i))
+                v = v * 10 + (char_code(get(cs, i)) - char_code('0'))
+                i = i + 1
+            toks = push(toks, TNum(v))
+        elif c == '+'
+            toks = push(toks, TPlus)
+            i = i + 1
+        elif c == '-'
+            toks = push(toks, TMinus)
+            i = i + 1
+        elif c == '*'
+            toks = push(toks, TStar)
+            i = i + 1
+        elif c == '/'
+            toks = push(toks, TSlash)
+            i = i + 1
+        elif c == '('
+            toks = push(toks, TLParen)
+            i = i + 1
+        elif c == ')'
+            toks = push(toks, TRParen)
+            i = i + 1
+        else
+            return err("bad char in input")
+    ok(toks)
+
+# --- parser: parse+evaluate in one pass; thread (value, pos, err) via a struct ---
+struct PR
+    val i64
+    pos i64
+    err string
+
+fn num_or_paren toks list<Tok> pos i64 -> PR
+    let t Tok = get(toks, pos)
+    match t
+        TNum(v) -> PR(v, pos + 1, "")
+        TLParen -> paren_body(toks, pos)
+        _ -> PR(0, pos, "expected number or (")
+
+fn parse_factor toks list<Tok> pos i64 -> PR
+    if pos >= len(toks)
+        return PR(0, pos, "unexpected end")
+    num_or_paren(toks, pos)
+
+fn paren_body toks list<Tok> pos i64 -> PR
+    let inner PR = parse_expr(toks, pos + 1)
+    if len(inner.err) > 0
+        return inner
+    if inner.pos >= len(toks)
+        return PR(0, inner.pos, "missing )")
+    if is_rparen(get(toks, inner.pos))
+        return PR(inner.val, inner.pos + 1, "")
+    PR(0, inner.pos, "expected )")
+
+fn parse_term toks list<Tok> pos i64 -> PR
+    let left PR = parse_factor(toks, pos)
+    if len(left.err) > 0
+        return left
+    let acc i64 = left.val
+    let p i64 = left.pos
+    while p < len(toks) and (is_star(get(toks, p)) or is_slash(get(toks, p)))
+        let mul bool = is_star(get(toks, p))
+        let rhs PR = parse_factor(toks, p + 1)
+        if len(rhs.err) > 0
+            return rhs
+        if mul
+            acc = acc * rhs.val
+        else
+            if rhs.val == 0
+                return PR(0, p, "divide by zero")
+            acc = acc / rhs.val
+        p = rhs.pos
+    PR(acc, p, "")
+
+fn parse_expr toks list<Tok> pos i64 -> PR
+    let left PR = parse_term(toks, pos)
+    if len(left.err) > 0
+        return left
+    let acc i64 = left.val
+    let p i64 = left.pos
+    while p < len(toks) and (is_plus(get(toks, p)) or is_minus(get(toks, p)))
+        let add bool = is_plus(get(toks, p))
+        let rhs PR = parse_term(toks, p + 1)
+        if len(rhs.err) > 0
+            return rhs
+        if add
+            acc = acc + rhs.val
+        else
+            acc = acc - rhs.val
+        p = rhs.pos
+    PR(acc, p, "")
+
+fn evaluate src string -> result<i64, string>
+    let toks list<Tok> = tokenize(src)?
+    let r PR = parse_expr(toks, 0)
+    if len(r.err) > 0
+        return err(r.err)
+    if r.pos != len(toks)
+        return err("trailing tokens")
+    ok(r.val)
+
+fn show src string -> void
+    match evaluate(src)
+        ok(v) -> println(src + " = " + to_string(v))
+        err(m) -> println(src + " -> error: " + m)
+
+fn main -> void
+    show("2 + 3 * 4")
+    show("(2 + 3) * 4")
+    show("100 / (2 + 3) - 6")
+    show("7 + ")
+    show("1 / 0")
+    show("2 @ 3")

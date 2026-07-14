@@ -1,0 +1,40 @@
+# Program 6: a freestanding / low-level probe (scalar subset).
+# Bit manipulation written in the scalar-i64 subset so it ALSO compiles via
+# `lullaby native` and `lullaby native --freestanding` (direct PE, no linker) --
+# the kernel-tier output path. It reports 312.
+#
+# NOTE (dogfood findings) -- native/freestanding subset boundaries:
+#  * Bitwise OPERATORS (& | ^ ~ << >>) ARE in the native subset, but the bit
+#    INTRINSIC builtins (count_ones/rotate_left/leading_zeros/...) are NOT, so
+#    popcount is hand-rolled below.
+#  * The freestanding tier is a COMPILATION/OUTPUT mode (--freestanding: direct
+#    PE, no linker). There is no source-level `no-runtime`/panic-handler/entry
+#    attribute; `unsafe`, `asm`, `region`, volatile, size_of are separate.
+
+fn popcount x i64 -> i64
+    let v i64 = x
+    let c i64 = 0
+    while v != 0
+        c = c + (v & 1)
+        v = v >> 1
+    c
+
+fn set_bit reg i64 n i64 -> i64
+    reg | (1 << n)
+
+fn clear_bit reg i64 n i64 -> i64
+    reg & (~(1 << n))
+
+fn test_bit reg i64 n i64 -> i64
+    (reg >> n) & 1
+
+fn main -> i64
+    let reg i64 = 0
+    reg = set_bit(reg, 0)
+    reg = set_bit(reg, 3)
+    reg = set_bit(reg, 7)
+    let after_clear i64 = clear_bit(reg, 3)
+    let acc i64 = popcount(reg) * 100
+    acc = acc + test_bit(reg, 7) * 10
+    acc = acc + popcount(after_clear)
+    acc

@@ -1,0 +1,59 @@
+# Program 5: a fixed-step state machine / game loop.
+# A 1D "bouncing ball" in a box [0, width], plus a game phase enum. Each tick
+# advances position by velocity, bounces off walls, and counts bounces; after
+# a bounce budget the phase flips to Over and the loop stops.
+# Exercises: structs, enums, match, mutation via reassignment, while/for loops.
+#
+# NOTE (dogfood finding): structs are value types with no in-place field
+# mutation through a reference, so `update` returns a fresh World that the loop
+# reassigns (`w = step(w)`). Works cleanly, but there is no `&mut`-style update.
+
+enum Phase
+    Playing
+    Over
+
+struct World
+    pos i64
+    vel i64
+    width i64
+    bounces i64
+    budget i64
+    phase Phase
+
+fn is_over p Phase -> bool
+    match p
+        Over -> true
+        Playing -> false
+
+fn phase_name p Phase -> string
+    match p
+        Playing -> "playing"
+        Over -> "over"
+
+fn step w World -> World
+    if is_over(w.phase)
+        return w
+    let np i64 = w.pos + w.vel
+    let nv i64 = w.vel
+    let nb i64 = w.bounces
+    if np < 0
+        np = 0 - np
+        nv = 0 - nv
+        nb = nb + 1
+    if np > w.width
+        np = w.width - (np - w.width)
+        nv = 0 - nv
+        nb = nb + 1
+    let ph Phase = w.phase
+    if nb >= w.budget
+        ph = Over
+    World(np, nv, w.width, nb, w.budget, ph)
+
+fn main -> void
+    let w World = World(0, 3, 10, 0, 3, Playing)
+    let tick i64 = 0
+    while not is_over(w.phase) and tick < 100
+        println("t=" + to_string(tick) + " pos=" + to_string(w.pos) + " vel=" + to_string(w.vel) + " bounces=" + to_string(w.bounces) + " [" + phase_name(w.phase) + "]")
+        w = step(w)
+        tick = tick + 1
+    println("final: pos=" + to_string(w.pos) + " bounces=" + to_string(w.bounces) + " phase=" + phase_name(w.phase) + " after " + to_string(tick) + " ticks")
