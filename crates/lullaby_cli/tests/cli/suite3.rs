@@ -25,6 +25,119 @@ pub(crate) fn native_reports_no_eligible_functions() {
     );
 }
 
+/// Direct PE emission (freestanding, NO external linker): `lullaby native
+/// --freestanding` writes a runnable `.exe` in-house, skipping `rust-lld`
+/// entirely. This test needs neither `rust-lld` nor `kernel32.lib` — that is the
+/// whole point — so it runs unconditionally: emit the freestanding fixture, run
+/// the produced `.exe`, and assert its exit code equals the interpreter's `main`
+/// result (mod 256). Also asserts no object file is written on this path.
+#[test]
+pub(crate) fn native_freestanding_direct_pe_runs() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_direct_pe.exe");
+    let obj = out.with_extension("obj");
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&obj);
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--freestanding",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    let listing = stdout(&emit);
+    assert!(
+        listing.contains("direct PE, no linker"),
+        "expected the direct-PE notice: {listing}"
+    );
+    assert!(
+        out.is_file(),
+        "expected a direct-PE exe at {}",
+        out.display()
+    );
+    // The direct path writes no intermediate object file.
+    assert!(
+        !obj.is_file(),
+        "direct PE path must not write an object file"
+    );
+
+    // The produced `.exe` begins with the DOS `MZ` magic (a real PE image).
+    let bytes = std::fs::read(&out).expect("read direct pe");
+    assert_eq!(&bytes[0..2], b"MZ", "PE image DOS magic");
+
+    // Interpreter ground truth for `main`.
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 39, "fixture main computes 39");
+
+    // Run the in-house `.exe` (no linker was involved) and compare exit codes.
+    let exe = Command::new(&out).output().expect("run direct pe exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "direct-PE exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// Direct PE emission for a heap/string program (freestanding): a `.rdata`
+/// string constant plus the `.bss` bump heap must map and run correctly from the
+/// in-house PE image, with no linker. `native_strings.lby` computes 11
+/// (`len("hello") + len("native") + len("")`).
+#[test]
+pub(crate) fn native_freestanding_direct_pe_heap_runs() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_strings.lby");
+    let out = std::env::temp_dir().join("lullaby_direct_pe_heap.exe");
+    let _ = std::fs::remove_file(&out);
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--freestanding",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    assert!(
+        stdout(&emit).contains("direct PE, no linker"),
+        "expected the direct-PE notice: {}",
+        stdout(&emit)
+    );
+    assert!(
+        out.is_file(),
+        "expected a direct-PE exe at {}",
+        out.display()
+    );
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(interp, 11, "fixture main computes 11");
+
+    let exe = Command::new(&out).output().expect("run direct pe heap exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        (interp.rem_euclid(256)) as i32,
+        "direct-PE (heap) exit code must equal the interpreter result (mod 256)"
+    );
+}
+
 /// Best-effort execution parity: link the i64-scalar fixture into a real `.exe`
 /// and assert its exit code equals the interpreter's `main` result (mod 256).
 /// If `rust-lld` or `kernel32.lib` is unavailable, skip with a message.
