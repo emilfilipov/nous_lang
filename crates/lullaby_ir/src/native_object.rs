@@ -759,6 +759,14 @@ pub struct NativeProgram {
     /// Populated when the program calls `extern fn` C functions (e.g. `ucrt.lib`
     /// for the C runtime). Empty for a program with no extern calls.
     pub import_libs: Vec<String>,
+    /// A directly-emitted, runnable PE32+ executable, present only when the
+    /// program is **freestanding-eligible** (a COFF/Windows target with a `main`
+    /// and no C-runtime import): Lullaby lays the `.exe` image around the `.text`
+    /// bytes itself, so the CLI can write a runnable executable without invoking
+    /// the external linker (`rust-lld`). `None` for non-freestanding programs,
+    /// library objects, and the ELF/Mach-O/AArch64 targets, which keep the
+    /// object-file + linker path. See [`pe_image::write_pe_executable`].
+    pub pe_image: Option<Vec<u8>>,
 }
 
 /// The C runtime import library that provides the standard C library symbols
@@ -1717,6 +1725,19 @@ pub fn emit_native_program_for_target(
         } else {
             vec![C_RUNTIME_IMPORT_LIB.to_string()]
         };
+        // Freestanding-eligible programs (a Windows/COFF target with a `main` and
+        // no C-runtime import) also get a directly-emitted PE32+ executable, so the
+        // CLI can write a runnable `.exe` without the external linker. A program
+        // that needs the C runtime, a library object (no `main`), or a non-COFF
+        // target keeps the object-file + linker path (`pe_image` stays `None`).
+        let pe_image = if matches!(target.object_format, NativeObjectFormat::Coff)
+            && has_main
+            && import_libs.is_empty()
+        {
+            write_pe_executable(&lowered, &strings)
+        } else {
+            None
+        };
         return Ok(NativeProgram {
             target,
             bytes,
@@ -1724,6 +1745,7 @@ pub fn emit_native_program_for_target(
             compiled,
             skipped,
             import_libs,
+            pe_image,
         });
     }
 }
@@ -3605,3 +3627,7 @@ fn patch_rel32_to(code: &mut [u8], site: usize, target: usize) {
 #[path = "native_object_writers.rs"]
 mod object_writers;
 pub(crate) use object_writers::*;
+
+#[path = "pe_image.rs"]
+mod pe_image;
+pub(crate) use pe_image::*;

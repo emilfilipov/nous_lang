@@ -308,10 +308,10 @@ pub(crate) fn build_object_model(
 }
 
 /// The fixed set of heap/string runtime helper functions emitted (in this order)
-/// whenever a native program uses the heap. Shared by the COFF data path and the
-/// neutral (ELF/Mach-O) model so all three object formats carry the same helper
-/// symbol set.
-fn heap_runtime_helpers() -> Vec<HelperFunction> {
+/// whenever a native program uses the heap. Shared by the COFF data path, the
+/// neutral (ELF/Mach-O) model, and the direct-PE image writer so every container
+/// carries the same helper symbol set.
+pub(crate) fn heap_runtime_helpers() -> Vec<HelperFunction> {
     vec![
         emit_heap_alloc_helper(),
         emit_rc_free_helper(),
@@ -357,7 +357,7 @@ fn heap_runtime_helpers() -> Vec<HelperFunction> {
 /// or growable-map helper, or a string helper), which requires the heap sections +
 /// helper `.text` even when the program interns no `.rdata` string constants (e.g.
 /// a `to_string(i64)`-only program builds records without any literal).
-fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
+pub(crate) fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> bool {
     functions.iter().any(|f| {
         f.relocations.iter().any(|r| {
             matches!(

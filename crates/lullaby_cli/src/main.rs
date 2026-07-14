@@ -538,6 +538,57 @@ fn native_file(
         let obj = output.unwrap_or_else(|| compiled.path.with_extension("o"));
         (None, obj)
     };
+
+    // Direct PE fast path. For a freestanding COFF program (a `main`, imports only
+    // `kernel32!ExitProcess`, no C runtime), the native backend already laid a
+    // complete runnable PE32+ image around the `.text` bytes. Writing it directly
+    // skips both the object file and the external linker (`rust-lld`) — the single
+    // biggest compile-speed lever. `--debug` keeps the object + linker path so its
+    // CodeView `.debug$S`/PDB line info is still produced; a program without a
+    // direct PE image (a library object, or one needing the C runtime) also falls
+    // through to the existing path. See `documents/native_backend_contract.md`.
+    if freestanding
+        && is_coff
+        && !debug
+        && let Some(image) = program.pe_image.as_ref()
+    {
+        let exe = exe_output.as_ref().expect("COFF target has an exe path");
+        if let Err(error) = fs::write(exe, image) {
+            return Err(format_reports(
+                &[DiagnosticReport::new(
+                    "L0003",
+                    DiagnosticPhase::Resource,
+                    format!("failed to write `{}`: {error}", exe.display()),
+                )
+                .with_source_path(exe.display().to_string())],
+                mode,
+                None,
+            ));
+        }
+        if mode == OutputMode::Json {
+            println!("{{\"status\":\"ok\",\"diagnostics\":[]}}");
+            return Ok(());
+        }
+        println!(
+            "target: {} ({})",
+            target.triple,
+            object_format_label(&target)
+        );
+        println!(
+            "freestanding (no-std): no C runtime linked; only kernel32!ExitProcess for process exit"
+        );
+        println!("native exe: {} (direct PE, no linker)", exe.display());
+        if mode == OutputMode::Verbose {
+            for name in &program.compiled {
+                println!("compiled {name}");
+            }
+            for skip in &program.skipped {
+                println!("skipped {}: {}", skip.name, skip.reason);
+            }
+        }
+        return Ok(());
+    }
+
     if let Err(error) = fs::write(&obj_output, &program.bytes) {
         return Err(format_reports(
             &[DiagnosticReport::new(
