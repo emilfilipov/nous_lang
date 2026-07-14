@@ -35,30 +35,42 @@ you can write **apps, services, AND a kernel** in, across two tiers:
 | 6 | Freestanding bit-manip probe (scalar) | ran fully | **ran (exit 56)** | **ran (exit 56, no linker)** |
 | 6b | Low-level unsafe/volatile/layout probe | ran fully | ineligible | ineligible |
 
-**Five of six programs ran fully — on the interpreters only.** Every program
-that uses a struct, enum, `list`, `map`, `string`, closure, or the unsafe/heap
-path is rejected by the native backend with `L0339` ("no functions were eligible
-for the native i64-scalar subset"). The only thing that reaches compiled/
-freestanding code today is the pure scalar-`i64` subset (arithmetic, bitwise
-operators, `if`/`while`/`for`, recursion) — Program 6.
+**Five of six programs ran fully — on the interpreters only.** Programs 1–5 were
+rejected by `native` with `L0339`. **CORRECTION (verified by the coordinator
+after this audit):** the `L0339` diagnostic's note text — "the native backend
+compiles only i64-scalar functions" — is **stale and inaccurate**, and this audit
+initially trusted it. In reality native compiles a large surface to PE
+executables today: scalars, `string`, `list`, `map`, one-level structs/enums, and
+`result`/`option` over scalar/string payloads (e.g. `native_aggregate_enum.lby`,
+`native_list_struct.lby`, `native_map_string.lby`, `native_string_build.lby` all
+build direct-PE exes). Programs 1–5 hit `L0339` for **specific deferred shapes**,
+not a blanket lack of types — see the corrected highest-impact section below. The
+`L0339` note text is itself a diagnostics bug to fix.
 
-## Single highest-impact missing capability
+## Single highest-impact missing capability (CORRECTED)
 
-**The native / freestanding backend compiles only the scalar-`i64` subset.**
-Structs, enums, `list`, `map`, `string`, closures, and the `unsafe`/heap path all
-run *exclusively on the interpreters*. This one gap undercuts **both** halves of
-the 1.0 identity simultaneously:
+Native already compiles structs, enums, `list`, `map`, `string`, and one-level
+aggregates to PE. The real, verified native gaps that blocked Programs 1–5 are
+**three specific deferred shapes**, confirmed from the detailed per-function skip
+reasons (`native --verbose`):
 
-- The **safe tier** "apps & services" story: a service core, a parser, a data
-  pipeline (Programs 1–5) can be written and are correct, but cannot be produced
-  as a native executable — they fall back to the interpreter.
-- The **freestanding tier** "you can write a kernel" story: a kernel needs
-  structs, enums, and buffers in compiled, no-runtime code. Today
-  `--freestanding` accepts only scalar arithmetic, so no data-structure-bearing
-  kernel code compiles at all.
+1. **Nested aggregate payloads** — an aggregate *inside* an enum/`result`/`option`
+   payload, e.g. `result<list<Tok>, string>` ("deeper payloads are deferred";
+   one-level payloads compile).
+2. **Heap-typed struct/enum fields** — a struct/enum whose *field* is a
+   `string`/`list`/`map` (e.g. `struct PR` with an `err string` field): "heap-value
+   struct fields are not in the native subset". Scalar-field aggregates compile.
+3. **Void-returning `main` as native entry** — the native entry must return `i64`
+   (its exit code); a `void main` (println-demo style) leaves no eligible entry, so
+   the whole program reports `L0339`. Several audit programs used `void main`.
 
-Everything else below is secondary to closing this native-backend type-coverage
-gap.
+Closing #1 and #2 (native support for nested/heap-typed aggregate payloads and
+fields) is the highest-impact native-expansion work — it's what a real parser
+(`result<list<Tok>, string>`) or service struct (a record with `string` fields)
+needs. This is a **targeted expansion of an already-broad native backend**, not
+the wholesale "native only does i64" rewrite this audit first reported. Also fix
+the misleading `L0339` note text so the next reader (or user) isn't misled the
+same way.
 
 ## Per-program detail
 
@@ -230,7 +242,7 @@ Freestanding-tier blockers hit (these map directly onto the kernel checklist):
 
 | ID | Gap | Tier | Evidence |
 |----|-----|------|----------|
-| **G1** | **Native/freestanding backend covers only scalar `i64`** — no structs, enums, `list`, `map`, `string`, closures, or `unsafe`/heap in compiled code. | Both | `L0339` on Programs 1–5, 6b |
+| **G1** | **Native defers three aggregate shapes** (native already compiles scalars/`string`/`list`/`map`/one-level structs+enums): (a) nested aggregate payloads (`result<list<T>,…>`), (b) heap-typed struct/enum *fields* (a `string`/`list` field), (c) `void main` isn't a native entry. Plus the stale `L0339` note text to fix. | Both | `native --verbose` skip reasons on Programs 1–5 |
 | **G2** | **Arena/region memory model is a no-op stub** — no working `region` block, no implicit function/loop sub-regions, no reclamation. The decided default memory model does not run. | Safe | `L0207` on region-block; `Stmt::Region(_) => {}` |
 | **G3** | **Freestanding hardware surface absent** — no real pointer arithmetic (`L0406`), no `repr(C)`/packed/align, no MMIO-at-address / port I/O / control-register / interrupt-convention / panic-handler primitives; inline asm is raw bytes only. | Freestanding | Program 6b; checklist items #1,#3,#4,#5,#6,#7,#8 |
 | **G4** | **Static-buffer arenas for `no-runtime`** — depends on G2 + G1; no allocation discipline without a host allocator exists yet. | Freestanding | (not reachable to test; blocked by G1/G2) |
@@ -257,9 +269,12 @@ Freestanding-tier blockers hit (these map directly onto the kernel checklist):
 
 The **interpreters are broadly capable today** — five of six representative
 programs (parser, service core, CLI tool, data pipeline, state machine) were
-written and ran correctly with only ergonomic friction (chiefly G5). The gap to
-1.0 is not expressiveness on the interpreter; it is that **the compiled and
-freestanding tiers reach almost none of that surface (G1)**, and that **the
-arena memory model that defines the language's safety story is still an inert
-stub (G2)**. Those two, followed by the freestanding hardware surface (G3), are
-the load-bearing work for the "spanning set" claim.
+written and ran correctly with only ergonomic friction (chiefly G5). Native is
+also **broadly capable** (structs, enums, `list`, `map`, `string`, one-level
+aggregates all compile to PE) — corrected from this audit's first draft. The gap
+to 1.0 is: **(G1)** native must cover the three deferred aggregate shapes (nested
+payloads, heap-typed fields, void entry) so real parsers/services compile;
+**(G2)** the arena memory model that defines the safety story is still an inert
+stub (being implemented now); and **(G3)** the freestanding hardware surface. G2
+and the native-aggregate expansion (G1) are the load-bearing work for the
+"spanning set" claim; G5 (match-as-expression) is the top ergonomic fix.
