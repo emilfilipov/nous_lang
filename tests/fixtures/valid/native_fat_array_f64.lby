@@ -1,0 +1,31 @@
+fn count_above a array<f64> t f64 -> i64
+    let c i64 = 0
+    for x in a
+        if x > t
+            c = c + 1
+    c
+
+fn sum_first_over a array<f64> n i64 t f64 -> i64
+    let acc f64 = 0.0
+    for i from 0 to n - 1
+        acc = acc + a[i]
+    if acc > t
+        1
+    else
+        0
+
+fn max_index a array<f64> -> i64
+    let best f64 = a[0]
+    let at i64 = 0
+    for i from 0 to len(a) - 1
+        if a[i] > best
+            best = a[i]
+            at = i
+    at
+
+fn main -> i64
+    let xs array<f64> = [1.5, 2.5, 3.0, 4.0, 5.5]
+    let a i64 = count_above(xs, 3.0)
+    let b i64 = sum_first_over(xs, 3, 6.0)
+    let c i64 = max_index(xs)
+    a * 100 + b * 10 + c

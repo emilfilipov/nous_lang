@@ -294,6 +294,57 @@ fn gen_array_program(seed: u64) -> String {
     )
 }
 
+/// Generates one program that exercises **fat-pointer `array<f64>` parameters**:
+/// `main` builds an `array<f64>` literal and passes it to a read-only helper that
+/// reads each element through an XMM register (via `for x in a`, `a[i]`, `len(a)`)
+/// and returns an i64 (a comparison count or a summed-then-compared boolean —
+/// there is no `f64`→`i64` cast in the native subset, so the helper never returns a
+/// float).
+///
+/// Every literal is a `N.5` value (exact in IEEE-754 binary, no dtoa rounding), and
+/// native `f64` arithmetic/comparison is bit-exact with the interpreters (no
+/// `--fast-math`), so the comparisons are deterministic and the program is
+/// divergence-free.
+fn gen_array_f64_program(seed: u64) -> String {
+    let mut rng = Rng(seed | 1);
+    let len = rng.range(2, 8) as usize;
+    let elems: Vec<String> = (0..len)
+        .map(|_| format!("{}.5", rng.range(-20, 20)))
+        .collect();
+    let arr = format!("[{}]", elems.join(", "));
+    let shape = rng.below(3);
+    let t = format!("{}.5", rng.range(-20, 20));
+    let n = rng.range(1, len as i64);
+    let helper = match shape {
+        // for-each comparison count
+        0 => format!(
+            "fn helper a array<f64> -> i64\n    let c i64 = 0\n    for x in a\n        \
+             if x > {t}\n            c = c + 1\n    c\n"
+        ),
+        // indexed comparison count with a separate length
+        1 => format!(
+            "fn helper a array<f64> n i64 -> i64\n    let c i64 = 0\n    \
+             for i from 0 to n - 1\n        if a[i] > {t}\n            c = c + 1\n    c\n"
+        ),
+        // summed via len(a) then compared to a threshold
+        _ => format!(
+            "fn helper a array<f64> -> i64\n    let acc f64 = 0.0\n    \
+             for i from 0 to len(a) - 1\n        acc = acc + a[i]\n    \
+             if acc > {t}\n        1\n    else\n        0\n"
+        ),
+    };
+    let call = if shape == 1 {
+        format!("helper(xs, {n})")
+    } else {
+        "helper(xs)".to_string()
+    };
+    let bias = rng.range(-100, 100);
+    format!(
+        "{helper}\nfn main -> i64\n    let xs array<f64> = {arr}\n    \
+         let r i64 = {call}\n    r + {bias}\n"
+    )
+}
+
 /// The result of running a program on one backend, reduced to a comparable form.
 #[derive(PartialEq, Eq, Debug)]
 enum Outcome {
@@ -445,6 +496,27 @@ fn fuzz_array_interpreters_agree() {
 }
 
 #[test]
+fn fuzz_array_f64_interpreters_agree() {
+    // Cross-check the three engines on fat-pointer `array<f64>`-parameter programs.
+    const PROGRAMS: u64 = 2000;
+    let base_seed = 0xB5A9_7D3C_11E6_82F7u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_array_f64_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "array<f64> backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "array<f64> generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
 fn fuzz_array_native_matches_interpreter_when_linkable() {
     // Compile each fat-pointer `array<i64>`-parameter program to a real `.exe` and
     // check its exit code against the interpreter result — the high-value oracle for
@@ -464,7 +536,13 @@ fn fuzz_array_native_matches_interpreter_when_linkable() {
 
     for i in 0..PROGRAMS {
         let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
-        let source = gen_array_program(seed);
+        // Alternate `array<i64>` and `array<f64>` element types so the fat-pointer
+        // path is exercised for both the integer (GPR) and float (XMM) element read.
+        let source = if i % 2 == 0 {
+            gen_array_program(seed)
+        } else {
+            gen_array_f64_program(seed)
+        };
 
         let (ast, ir, bc) = run_interpreters(&source);
         assert!(

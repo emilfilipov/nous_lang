@@ -1996,13 +1996,17 @@ fn fat_array_param_elem(
 ) -> Option<NativeType> {
     let rest = param_ty.name.strip_prefix("array<")?;
     let elem_name = rest.strip_suffix('>').unwrap_or(rest);
-    // Only scalar integer-cell elements in this increment (`array<f64>` and other
-    // scalar element types are a follow-up; `array<string>` is a distinct heap
-    // representation handled by `heap_string_array_element`).
+    // Scalar element types only: integer cells (`i64`/fixed-width/`bool`/`char`/
+    // `byte`, stored as normalized `i64` words) and the floats `f64`/`f32` (an
+    // element read loads through an XMM register). `array<string>` is a distinct
+    // heap representation handled by `heap_string_array_element`; a nested aggregate
+    // element is not in the fat-pointer subset.
     let elem = match elem_name {
         "i64" => NativeType::I64,
         n if fixed_int_kind(n).is_some() => NativeType::I64,
         "bool" | "char" | "byte" => NativeType::I64,
+        "f64" => NativeType::F64,
+        "f32" => NativeType::F32,
         _ => return None,
     };
     if !param_is_read_only(&function.instructions, param_name) {

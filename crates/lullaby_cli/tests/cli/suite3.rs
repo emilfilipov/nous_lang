@@ -271,6 +271,79 @@ pub(crate) fn native_fat_array_execution_parity_when_linkable() {
     );
 }
 
+/// Best-effort execution parity for **fat-pointer `array<f64>` parameters**: the
+/// same fat-pointer path as the `array<i64>` test but with an `f64` element type,
+/// so `a[i]` / `for x in a` load each element through an XMM register. Helpers read
+/// a read-only runtime-length `array<f64>` (a for-each comparison count, an indexed
+/// sum with a separate length, and a running-max index scan) and return an i64;
+/// `main` returns 214. Asserts each helper compiles as a fat pointer and — when
+/// linkable — the `.exe` exit code equals the interpreter result.
+#[test]
+pub(crate) fn native_fat_array_f64_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_fat_array_f64.lby");
+    let out = std::env::temp_dir().join("lullaby_native_fat_array_f64_parity.exe");
+
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let emit_out = stdout(&emit);
+    for name in ["count_above", "sum_first_over", "max_index", "main"] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile natively (fat-pointer f64 array), got: {emit_out}"
+        );
+    }
+    assert!(
+        !emit_out.contains("has no call site to infer its length from"),
+        "no fat-pointer-array helper should demote for a missing call-site length: {emit_out}"
+    );
+
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(
+            interp, 214,
+            "{backend}: fat-array-f64 fixture main computes 214"
+        );
+    }
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native fat-array-f64 link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 214,
+        "native exit code must equal the interpreter result (mod 256)"
+    );
+}
+
 /// Best-effort execution parity for the native **stack-argument** ABI:
 /// native-compile a program whose functions take more than four scalar
 /// parameters (six and eight `i64`, plus a mixed int/float six-parameter
