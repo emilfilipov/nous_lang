@@ -283,6 +283,44 @@ fn affine_reduction_lowers_to_closed_form() {
 }
 
 #[test]
+fn for_loop_affine_reduction_lowers_to_closed_form() {
+    // `for i from a to b { acc += 3*i + 5 }` closes to O(1) — no loop — even
+    // though the `for` counter is stack-resident and could not be ILP-unrolled.
+    // `count = b-a+1` in r10, `S1 = (a+b)*count/2`, then `imul rax, rax, 3` (a*S1)
+    // and `imul rdx, r10, 5` (b*count) with no backward loop jump.
+    let program = emit_native_program(&module_for(concat!(
+        "fn f n i64 -> i64\n",
+        "    let acc i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        acc = acc + ((3 * i) + 5)\n",
+        "    acc\n\n",
+        "fn main -> i64\n",
+        "    f(1000)\n",
+    )))
+    .expect("emit native program");
+    let sec = COFF_HEADER_SIZE as usize;
+    let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+    let text_size = read_u32(&program.bytes, sec + 16) as usize;
+    let text = &program.bytes[text_offset..text_offset + text_size];
+    assert!(
+        text.windows(7)
+            .any(|w| w[0..3] == [0x48, 0x69, 0xC0] && w[3..7] == [0x03, 0x00, 0x00, 0x00]),
+        "expected `imul rax, rax, 3` (a*S1) in the for-loop closed form"
+    );
+    assert!(
+        text.windows(7)
+            .any(|w| w[0..3] == [0x49, 0x69, 0xD2] && w[3..7] == [0x05, 0x00, 0x00, 0x00]),
+        "expected `imul rdx, r10, 5` (b*count) in the for-loop closed form"
+    );
+    assert!(
+        !text
+            .windows(5)
+            .any(|w| w[0] == 0xE9 && i32::from_le_bytes([w[1], w[2], w[3], w[4]]) < 0),
+        "the for-loop affine reduction is closed-form (O(1)); no backward jump"
+    );
+}
+
+#[test]
 fn quadratic_reduction_uses_multi_accumulator() {
     // `acc += i*i` is not affine, so it uses the multi-accumulator unroll: the
     // three extra accumulators are zeroed (`xor r8,r8` = 4D 31 C0) and folded

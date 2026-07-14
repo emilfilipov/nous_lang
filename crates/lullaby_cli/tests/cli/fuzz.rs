@@ -161,15 +161,27 @@ impl Gen {
                     self.push_line(1, &format!("if {cond_l} {cmp} {cond_r}"));
                     self.push_line(2, &format!("{target} = {rhs}"));
                 }
-                // A bounded `for` accumulator into an existing variable.
+                // A bounded `for` accumulator into an existing variable. The
+                // addend is often affine in the counter (`c1*k + c0`), exercising
+                // the O(1) `for`-loop closed form; sometimes a non-affine `k*k`
+                // that must fall back to the scalar loop. The range low/high are
+                // constants or variables, and can be empty (hi < lo).
                 4 if !self.vars.is_empty() => {
                     let target = self.vars[self.rng.below(self.vars.len() as u64) as usize].clone();
-                    let hi = self.rng.range(0, 12);
-                    let step = self.expr(1);
-                    // Inclusive range (`for i from lo to hi`); every backend
-                    // iterates it identically.
-                    self.push_line(1, &format!("for k from 0 to {hi}"));
-                    self.push_line(2, &format!("{target} = ({target} + (k * {step}))"));
+                    let lo = self.rng.range(-3, 5);
+                    let hi = self.rng.range(-2, 12);
+                    let addend = match self.rng.below(4) {
+                        0 => "k".to_string(),
+                        1 => format!(
+                            "(({} * k) + {})",
+                            self.rng.range(-5, 5),
+                            self.rng.range(-8, 8)
+                        ),
+                        2 => "(k * k)".to_string(),
+                        _ => format!("(k - {})", self.rng.range(-4, 4)),
+                    };
+                    self.push_line(1, &format!("for k from {lo} to {hi}"));
+                    self.push_line(2, &format!("{target} = ({target} + {addend})"));
                 }
                 // A `while i < BOUND` counting-sum loop — the exact shape the
                 // native ILP unroll recognizes. The bound is a small constant or a

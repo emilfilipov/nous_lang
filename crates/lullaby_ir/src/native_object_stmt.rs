@@ -3443,6 +3443,134 @@ pub(crate) fn stmt_let_ty(stmt: &BytecodeInstruction) -> TypeRef {
 /// Lower a range `for i = start..=end step s` to an `i64` counter loop mirroring
 /// the interpreter's inclusive range: ascending stops when `i > end`, descending
 /// when `i < end`. `continue` jumps to the step, `break` exits.
+/// A `for i from a to b { acc += EXPR }` whose addend is **affine** in the
+/// (inclusive) counter — the O(1) closed form applies to `for` loops even though
+/// the ILP unroll could not (the `for` counter is stack-resident, but the closed
+/// form needs no counter at all, and the counter is not observable after the
+/// loop). `acc += a_coef*S1 + b_coef*count` where the run is `i = a..=b`,
+/// `count = b - a + 1`, and `S1 = (a+b)*count/2`.
+pub(crate) struct ForAffineReduction {
+    acc_reg: Option<PReg>,
+    acc_slot: i32,
+    start: BytecodeExpr,
+    end: BytecodeExpr,
+    a_coef: i32,
+    b_coef: i32,
+}
+
+pub(crate) fn detect_for_affine_reduction(
+    ctx: &NativeCtx,
+    name: &str,
+    start: &BytecodeExpr,
+    end: &BytecodeExpr,
+    step: Option<&BytecodeExpr>,
+    body: &[BytecodeInstruction],
+) -> Option<ForAffineReduction> {
+    // Default step of 1 only (a strided range needs a different closed form).
+    match step {
+        None => {}
+        Some(expr) => match &expr.kind {
+            BytecodeExprKind::Integer(1) => {}
+            _ => return None,
+        },
+    }
+    // Body: exactly `[ acc = acc + EXPR ]` (the `for` handles the increment).
+    let [acc_stmt] = body else {
+        return None;
+    };
+    let BytecodeInstruction::Assign { name: acc_name, .. } = acc_stmt else {
+        return None;
+    };
+    if acc_name == name {
+        return None;
+    }
+    let addend = reduction_addend(acc_stmt, acc_name)?;
+    let (a64, b64) = affine_form(&addend.kind, name)?;
+    let a_coef = i32::try_from(a64).ok()?;
+    let b_coef = i32::try_from(b64).ok()?;
+    let acc_local = ctx.local(acc_name).ok()?;
+    if !matches!(acc_local.ty, NativeType::I64) {
+        return None;
+    }
+    let acc_slot = acc_local.slot;
+    let acc_reg = ctx.promoted_reg(acc_slot);
+    Some(ForAffineReduction {
+        acc_reg,
+        acc_slot,
+        start: start.clone(),
+        end: end.clone(),
+        a_coef,
+        b_coef,
+    })
+}
+
+/// Emit the `for` affine reduction closed form. The inclusive range `a..=b` has
+/// `count = b - a + 1` and `S1 = (a+b)*count/2` (exact wrapping halve, as in the
+/// while-loop closed form); `acc += a_coef*S1 + b_coef*count`. `a`/`b`/`acc` are
+/// read at run time; `count <= 0` (i.e. `b < a`) leaves `acc` untouched.
+pub(crate) fn emit_for_affine_reduction(
+    ctx: &mut NativeCtx,
+    plan: &ForAffineReduction,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    // r8 = a, r9 = b (spill a across b's evaluation so both survive any expr).
+    lower_native_expr(ctx, &plan.start, code)?; // rax = a
+    code.push(0x50); // push rax
+    lower_native_expr(ctx, &plan.end, code)?; // rax = b
+    code.extend_from_slice(&[0x49, 0x89, 0xC1]); // mov r9, rax
+    code.extend_from_slice(&[0x41, 0x58]); // pop r8  (a)
+
+    // r10 = count = b - a + 1. Skip when count <= 0.
+    code.extend_from_slice(&[0x4D, 0x89, 0xCA]); // mov r10, r9
+    code.extend_from_slice(&[0x4D, 0x29, 0xC2]); // sub r10, r8
+    code.extend_from_slice(&[0x49, 0x83, 0xC2, 0x01]); // add r10, 1
+    code.extend_from_slice(&[0x4D, 0x85, 0xD2]); // test r10, r10
+    code.extend_from_slice(&[0x0F, 0x8E]); // jle done
+    let done_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+
+    // rax = A2 = a + b.
+    code.extend_from_slice(&[0x4C, 0x89, 0xC0]); // mov rax, r8
+    code.extend_from_slice(&[0x4C, 0x01, 0xC8]); // add rax, r9
+
+    // rax = S1 = A2 * count / 2 (halve whichever of A2/count is even).
+    code.extend_from_slice(&[0x4C, 0x89, 0xD2]); // mov rdx, r10  (count copy)
+    code.extend_from_slice(&[0xF6, 0xC2, 0x01]); // test dl, 1
+    code.extend_from_slice(&[0x0F, 0x84]); // jz count_even
+    let count_even_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0xD1, 0xF8]); // sar rax, 1
+    code.extend_from_slice(&[0xE9]); // jmp mul
+    let jmp_mul_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    let count_even = code.len();
+    patch_rel32_to(code, count_even_site, count_even);
+    code.extend_from_slice(&[0x48, 0xD1, 0xEA]); // shr rdx, 1
+    let mul = code.len();
+    patch_rel32_to(code, jmp_mul_site, mul);
+    code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC2]); // imul rax, rdx -> S1
+
+    // sum = a_coef*S1 + b_coef*count.
+    code.extend_from_slice(&[0x48, 0x69, 0xC0]); // imul rax, rax, a_coef
+    code.extend_from_slice(&plan.a_coef.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0x69, 0xD2]); // imul rdx, r10, b_coef
+    code.extend_from_slice(&plan.b_coef.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x01, 0xD0]); // add rax, rdx
+
+    // acc += sum.
+    match plan.acc_reg {
+        Some(reg) => reg.add_rax(code),
+        None => {
+            code.extend_from_slice(&[0x48, 0x01, 0x85]); // add [rbp + disp32], rax
+            code.extend_from_slice(&(-plan.acc_slot).to_le_bytes());
+        }
+    }
+
+    let done = code.len();
+    patch_rel32_to(code, done_site, done);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_native_for(
     ctx: &mut NativeCtx,
@@ -3454,6 +3582,13 @@ pub(crate) fn lower_native_for(
     code: &mut Vec<u8>,
     loops: &mut Vec<NativeLoop>,
 ) -> Result<(), String> {
+    // Close-form an affine `for` reduction (`for i from a to b { acc += a*i+b }`)
+    // to O(1) — no loop. A distinct shape from the array reductions below (an
+    // `a[i]` addend is not affine in the counter, so it is rejected here and
+    // falls through).
+    if let Some(plan) = detect_for_affine_reduction(ctx, name, start, end, step, body) {
+        return emit_for_affine_reduction(ctx, &plan, code);
+    }
     // Auto-vectorize a recognized `for i from S to E: acc += a[i]` sum reduction
     // over an `array<i64>` into an SSE2 packed loop. Anything that does not match
     // the exact shape falls through to the scalar lowering below, so correctness
