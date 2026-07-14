@@ -208,3 +208,28 @@ explicit/drop-to-metal when needed.
 3. **Explicit `region` block** — lexer/parser/AST/semantics + IR + native.
 4. **Escape/promotion** — auto-copy on escape; `ref` for shared/dynamic.
 5. **Freestanding static-buffer arenas** — folds into the `no-runtime` tier work.
+
+## Decided surface syntax (owner, 2026-07-14)
+
+The surface-syntax forks from the concurrency and freestanding design proposals
+are **decided** (each was the design's recommended option). Implementation must
+build these forms; the "OWNER DECISION NEEDED" markers in
+`concurrency_model_design.md` and `freestanding_tier_design.md` are now resolved
+(a follow-up doc pass should annotate them as decided).
+
+- **Actors:** dedicated `actor` block with a `state` section and `on` handlers;
+  `spawn Name(args)` returns `Actor<T>`; sends are `tell` (fire-and-forget) and
+  `ask` (request-reply → `Future<T>`, resolved by `await`). Avoids the reserved
+  `!` error-throw clash; makes the thread boundary explicit.
+- **Freestanding gating:** a **module-level `no-runtime` directive** is the
+  semantic gate (kernel-mode visible in source; compiler rejects hidden
+  allocation / hidden control flow / RC / actors with a hard diagnostic). The
+  existing `--freestanding` flag stays as the orthogonal *output* contract.
+- **Raw pointers / `unsafe`:** builtin functions (`ptr_read`/`ptr_write`/
+  `addr_of`/`ptr_offset`/`ptr_cast<U>`/`ptr_null`) inside `unsafe` blocks,
+  extending the shipped `ptr<T>`/`unsafe`/`volatile_*` set. No new operators
+  (`*`/`&` are operators, `#` is the comment char).
+- **Inline assembly:** an `asm "<text>"` template followed by an indented block
+  of `in`/`out`/`clobber` operand clauses (indentation, not `: : :`); instruction
+  text is forwarded to the assembler. The shipped raw-byte form is retained as
+  `asm_bytes`.
