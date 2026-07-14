@@ -131,3 +131,80 @@ versioned extended modules) is decided near the 1.0 finish line.
   freestanding tier.
 - Single-threaded-per-actor heaps mean the queued arena + RC work needs **no
   rework** for concurrency: each actor owns its heap; messages are values.
+
+## Region model — surface syntax + implementation contract (decided)
+
+Owner delegated the choice; decision is the **hybrid model**: implicit
+region management by default, explicit regions when you want control. This is the
+memory-model mirror of the two-tier identity — safe/terse by default,
+explicit/drop-to-metal when needed.
+
+### Surface syntax
+
+- **Implicit (default, no syntax).** Everyday code names no regions. The compiler
+  gives each function an arena and each loop a per-iteration sub-region; heap
+  allocations that provably don't escape their scope live there and are reclaimed
+  by a bulk reset when the scope exits. LLM-friendly: the model writes normal
+  code and arenas are invisible.
+- **Explicit `region` block (indentation-only — NO braces).** Introduces a nested
+  arena reclaimed at dedent. This is the arena-per-frame / arena-per-request
+  pattern for servers and games:
+
+  ```
+  region
+      scratch = build_report data
+      print scratch
+  # scratch's arena is bulk-freed here, at dedent
+  ```
+
+- **`ref` (RC)** — the opt-in secondary tool for values that escape to dynamic or
+  shared ownership (see memory model above).
+- **`unsafe` / freestanding** — raw pointers + manual memory for the hardware edge.
+
+### Semantics
+
+- **Implicit function region:** reset on *every* return/exit edge (reuses the
+  proven multi-edge drop-insertion machinery from the RC work).
+- **Implicit loop sub-region:** reset per iteration, so a hot loop inside a long
+  function reclaims its per-iteration intermediates each pass. This is exactly the
+  case per-object RC struggled with (collection grow/copy intermediates,
+  per-iteration temps) — arenas reclaim it for free.
+- **Explicit `region` block:** a nested arena; allocations inside are freed at
+  block exit.
+- **Escape → promotion policy:** when a value outlives its region, the compiler
+  **auto-copies** it into the enclosing region where value-semantically sound
+  (small/sized values already copy under value semantics); genuinely
+  shared/dynamic/cyclic ownership requires an explicit **`ref`** (RC is never
+  silently inserted). **Default-deny:** if the analysis cannot prove a value stays
+  local, it is treated as escaping and kept alive — never freed early. Correctness
+  never depends on the escape analysis being generous.
+- **Freestanding tier:** the same `region` surface, but arenas are backed by a
+  **caller-provided static buffer** (no host allocator); `ref`/RC is unavailable.
+  Most of a kernel can therefore stay arena-safe; only the raw hardware edge is
+  `unsafe`.
+
+### Implementation representation
+
+- **AST:** an explicit `region` block node (a scoped block like `if`/`while`);
+  implicit function/loop region markers are inserted during lowering, not written
+  by the user.
+- **IR:** region-enter / region-reset ops around the relevant scopes; an escape
+  annotation on allocating expressions produced by a conservative, **local**
+  escape pass (cheap — protects the fast-compile edge; never Tofte-Talpin
+  inference).
+- **Native:** shared `.text` helpers `__lullaby_arena_alloc` (aligned bump; grow a
+  new chunk on overflow in the safe tier, or fail to the panic handler on a fixed
+  freestanding buffer) and `__lullaby_arena_reset` (rewind the bump pointer to the
+  region base, release extra chunks). Arena allocation and the existing RC /
+  free-list path **coexist**: provably-local data uses the arena; escaping data
+  keeps the RC path.
+
+### Implementation staging (each increment production-complete, default-deny)
+
+1. **Arena allocator + function-scoped implicit region for the non-escaping case**
+   — the foundation. Value-neutral; verified by a bounded-heap reclaim fixture and
+   the differential fuzzer.
+2. **Loop sub-regions** — per-iteration reset.
+3. **Explicit `region` block** — lexer/parser/AST/semantics + IR + native.
+4. **Escape/promotion** — auto-copy on escape; `ref` for shared/dynamic.
+5. **Freestanding static-buffer arenas** — folds into the `no-runtime` tier work.
