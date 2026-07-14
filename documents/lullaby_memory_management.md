@@ -18,7 +18,7 @@ The first executable runtime implements a deliberately small memory model so the
 - `dealloc(ptr)` clears a heap slot and reports a runtime error on invalid or double deallocation.
 - Static semantic checking models pointer types with concrete names such as `ptr_i64`.
 - Typed IR analysis reports memory operations with artifact-order sequence metadata and safety metadata for live-resource requirements, bounds checks, memory mutation, cleanup role, and unsafe-boundary handling. Current reported operations are `alloc`, `load`, `store`, `dealloc`, and array-index bounds checks. Region create, region resize, copy, and compiler cleanup operation kinds now have safety metadata reserved for future lowering. Version 5 `.lbc` bytecode artifacts preserve this metadata in `memory_operations`, and artifact decoding validates that the metadata still matches the module instructions.
-- Region allocation, ARC/reference counting, GC policy, raw address access, and compile-time lifetime analysis remain planned work.
+- Reference counting is the heap model (see [memory_model_decision.md](memory_model_decision.md)). The native backend now ships a free-list allocator with a per-block RC header plus `rc_dec`/`rc_free` helpers and scope-based drop insertion for uniquely-owned, borrow-only `string`/`array<string>` loop temporaries. Region (arena) allocation, broader RC drop coverage, and Perceus-style reuse remain planned work. There is no tracing garbage collector.
 
 Example:
 ```lullaby
@@ -89,7 +89,8 @@ region [NAME]: size=SIZE, align=ALIGN [optional]
    region stack: size=4194304, align=16
    ```
 
-4. **Heap Region**: Dynamically allocated objects (GC-managed)
+4. **Heap Region**: Dynamically allocated, **reference-counted** objects (freed
+   deterministically at scope exit — no garbage collector)
    ```lullaby
    heap_objects: max_size=524288048
    heap_limit = 500 MB
@@ -129,7 +130,7 @@ Address Range        Region Name          Size (bytes)    Align
 0x00000 - 0x0FFFF    code_kernel           64 KB           4096 (page-aligned)
 0x10000 - 0x2FFFF    kernel_data           128 KB          8192 (cache-line aligned)
 0x30000 - 0x4FFFF    stack                256 KB          16 (call-stack aligned)
-0x50000 - 0x9FFFF    heap_objects          ~475 MB         8   (flexible, compacted)
+0x50000 - 0x9FFFF    heap_objects          ~475 MB         8   (reference-counted, free-list)
 ```
 
 ---
@@ -189,9 +190,14 @@ function_frame:
         result: string
 ```
 
-### Heap Allocation (Optional - GC-Managed)
+### Heap Allocation (Reference-Counted)
 
-For objects that cannot be region-bound or have indeterminate lifetime:
+For objects that cannot be region-bound or have indeterminate lifetime, the heap
+is **reference-counted**. Each heap block carries a 16-byte header
+`[size][refcount]` before its payload; the allocator is a free-list allocator that
+first-fit-reuses freed blocks. A block is freed **deterministically** the moment
+its refcount reaches zero (typically at scope exit) — there is no tracing garbage
+collector, no stop-the-world pause, and no compaction pass.
 
 #### Object Definition
 ```lullaby
@@ -200,19 +206,21 @@ type Node [id: int, data: array[byte]]
         read() -> bool
 end_type
 
-node = alloc(Node, id=5)  # Heap allocation (returns pointer)
+node = alloc(Node, id=5)  # Heap allocation (returns pointer, refcount 1)
 data_ptr = node.data      # Access via dereference
 ```
 
-#### GC-Triggered Allocation
-Automatic heap usage tracking with periodic compaction:
+#### Scope-Directed Reclamation
+Heap usage is tracked by refcount, not by a collector. Binding or copying a shared
+handle inserts an `inc`; each scope exit inserts a `dec`/`drop`, and the block is
+reclaimed when the last owner drops it:
 ```lullaby
-# Objects implicitly go to heap when declared without region scope
+# Objects go to the reference-counted heap when they escape stack/region scope
 
 user_profile [Profile]
     name: string
     age: int
-# Compiler marks this for automatic garbage collection
+# The compiler inserts inc/dec so the block frees when its last owner drops
 
 ```
 
@@ -251,7 +259,8 @@ func process() -> result
 #### Lifetime Categories
 1. **Stack Variables** (`let`, `var`): Auto-cleanup on scope exit
 2. **Global/Static Variables**: Persistent lifetime until explicit cleanup or program end
-3. **Heap Objects**: Collected by garbage collector when unreachable
+3. **Heap Objects**: Reference-counted — freed deterministically when the last owner
+   drops (refcount reaches zero), not by a tracing collector
 
 ### Memory Cleanup Mechanisms
 
@@ -272,75 +281,71 @@ end_for
 
 ref obj = alloc(MyObject)
 obj.process()
-clear ref obj  # Marks as unreachable for GC
+clear ref obj  # Drops this owner; block frees if it was the last reference
 ```
 
 ---
 
-## Garbage Collection System (Optional Module)
+## Reference-Counting System
 
-> **Superseded / historical.** Lullaby does not use tracing garbage collection.
-> The heap is reference-counted (with arenas for scope-local data); see
-> [memory_model_decision.md](memory_model_decision.md). Tracing GC was evaluated
-> and rejected — it needs precise stack maps (a poor fit for the hand-written,
-> no-SSA native emitter), introduces pauses (wrong for a systems language), and
-> contradicts the shipped reference-counting commitment. This section is retained
-> only as record of the rejected alternative and will be removed on the next
-> rewrite of this document.
+Lullaby's heap is **reference-counted**, not garbage-collected. Tracing GC was
+evaluated and rejected (it needs precise stack maps — a poor fit for the
+hand-written, no-SSA native emitter — introduces stop-the-world pauses that are
+wrong for a systems language, and contradicts the shipped reference-counting
+commitment). The rationale, options analysis, and staged plan are in
+[memory_model_decision.md](memory_model_decision.md).
 
-### GC Design Goals
-1. **Minimal Performance Impact**: Fast collection with low pause times
-2. **Deterministic Behavior**: Predictable memory availability for real-time requirements
-3. **Selective Collection**: Can disable GC for critical code sections
-4. **LLM-Trackable**: GC operations clearly visible in source code
+### RC Design Goals
+1. **Deterministic reclamation**: a block frees the instant its last owner drops
+   (refcount reaches zero) — a predictable point, no pauses, no collector runtime.
+2. **Syntax-directed codegen**: `inc`/`dec`/`drop` are inserted at binds, copies,
+   and scope exits — no global analysis and no precise stack maps, so the fast
+   compile is preserved.
+3. **Value semantics cut the cost**: copied (non-shared) aggregates need no
+   refcount at all; only genuinely-shared handles carry counting traffic.
+4. **LLM-trackable**: ownership follows the lexical scope, so reclamation points
+   are visible in source.
 
-### GC Types Supported
+### Runtime Mechanics (Native Backend)
 
-#### Incremental GC (Default)
-Background collection during program execution:
-```lullaby
-# Enable GC for modules marked with gc directive
+Each heap block carries a 16-byte RC header `[size][refcount]` before its payload;
+the returned pointer names the payload, so the refcount lives at `[ptr - 8]` and
+the size at `[ptr - 16]`. Two `.text` runtime helpers implement counting:
 
-@gc module data_processor
-    # Objects created here are automatically collected
-```
+- `__lullaby_rc_dec(ptr)` — decrements `[ptr - 8]`; if it reaches zero it
+  tail-calls `__lullaby_rc_free`, otherwise the block stays live.
+- `__lullaby_rc_free(ptr)` — pushes the block onto the LIFO free list
+  (`__lullaby_free_head`); the allocator first-fit-reuses freed blocks.
 
-#### Generational GC
-Separates objects by age for efficient collection:
-```lullaby
-gc_policy [generational]:
-    young_gen_size = 64 MB
-    old_gen_size = 256 MB
-    promotion_threshold = 10 collections
+Recursive drops (a `list<string>`, a struct with heap fields, an enum with a heap
+payload) `rc_dec` each owned child before freeing the block, mirroring the
+interpreters' recursive `Value::clone`/drop.
 
-@gc policy generational module large_processor
-    # Short-lived objects collected frequently
-    # Long-lived objects collected less often
-```
+### Scope-Based Drop Insertion
 
-#### Conservative GC
-Handles pointer inference automatically (important for languages without explicit typing):
-```lullaby
-# Compiler marks pointers, conservatively assumes object references
+Drops are inserted **default-deny**: a block is dropped only when the compiler can
+prove it is uniquely owned (a fresh allocation, never aliased/shared) *and* dead
+(no later use on that path). Whenever there is any doubt, no drop is emitted and
+the block simply leaks — safe — rather than risking a double-free. A double-free
+is memory corruption; a leak is not. Correctness never depends on the analysis
+being generous.
 
-@gc conservative module mixed_types:
-    # Can collect even if type information is incomplete
-```
+The current native increment reclaims uniquely-owned, borrow-only `string` and
+`array<string>` loop-body temporaries on the loop back-edge **and on the
+`break`/`continue` early-exit edges** of the loop that declares them, so each
+dynamic iteration drops each owned temporary exactly once. Early exits that span
+multiple scopes (`return`, `throw`, `?`) and additional heap types (per-iteration
+`list`/`map` values, heap-payload enums, cross-call fresh temporaries) are not yet
+dropped natively; those paths leak safely until their increments land. See
+[native_backend_contract.md](native_backend_contract.md) for the exact per-edge
+drop contract and its verification.
 
-### GC Operations Visibility
+### Cycles
 
-```lullaby
-# Force immediate garbage collection
-
-force_gc()
-
-# Query heap statistics
-
-heap_stats
-    total_allocated: 45 MB
-    live_objects: 12,345
-    fragmentation: 0.02 (2%)
-```
+Non-cycle-collecting RC leaks reference cycles (`a → b → a`). Lullaby mitigates
+this first with value semantics (most data does not alias) and non-owning `ref<T>`
+borrows (which do not raise a refcount), and defers a trial-deletion cycle
+collector until real programs demonstrate owning cycles.
 
 ---
 
@@ -454,9 +459,11 @@ value = deref(temp_data)  # Compiler flags this as unsafe after free
 During compilation, the analyzer performs:
 
 1. **Memory Region Mapping**: Identifies which regions are referenced by each function
-2. **Lifetime Analysis**: Tracks variable scopes to determine memory lifetimes
+2. **Lifetime Analysis**: Tracks variable scopes to determine memory lifetimes and
+   where `inc`/`dec`/`drop` must be inserted
 3. **Access Validation**: Checks all memory accesses for bounds and null safety
-4. **GC Root Identification**: Finds objects that must survive collection cycles
+4. **Ownership / Escape Analysis**: Determines which bindings are uniquely owned and
+   dead at scope exit (droppable) versus shared or escaping (left to their owner)
 
 ### IR Memory Representation
 
@@ -523,25 +530,21 @@ func multi_param(a, b, c) -> result
     # [c, b, a] (in declaration order for cache efficiency)
 ```
 
-### GC Performance Tuning
+### RC Performance Tuning
 
-#### Collection Frequency Control
-```lullaby
-gc_frequency = 100 operations   # Collect after 100 ops by default
-# Can be customized per module:
+Reference counting has no collection frequency to tune — a block frees the instant
+its last owner drops. The performance levers are instead about reducing refcount
+*traffic*, and are layered in as independently-shippable increments:
 
-@gc frequency high module real_time_task # Collect every operation
-    ...
-@gc frequency low_module data_processor # Collect every 100 operations
-    ...
-```
+- **Arenas (regions)**: scope-local, provably-non-escaping allocations bump-allocate
+  into a scope arena and bulk-free at scope exit, skipping refcounting entirely.
+- **Perceus-style reuse**: when a refcount is provably 1 and the object dies, its
+  memory is reused in place (turning a functional-style update into in-place
+  mutation), eliding redundant `inc`/`dec` pairs — approaching ownership-level
+  performance without a borrow checker.
 
-#### Collection Trigger Points
-```lullaby
-gc_on(alloc)        # Force GC on any heap allocation (safer, slower)
-gc_on(timeline)    # Periodic collection based on runtime ticks
-@gc lazy            # Background collection during idle periods
-```
+See [memory_model_decision.md](memory_model_decision.md) for the staging of these
+layers.
 
 ---
 
@@ -562,13 +565,13 @@ region_copy(src_region_ptr, dst_region_ptr) -> int  # Returns bytes copied
 alloc_stack(type_name: string) -> ptr
 dealloc_stack(ptr) -> void
 
-# Heap/GC operations
+# Heap / reference-counting operations
 
-alloc_heap(type: Type) -> ptr
+alloc_heap(type: Type) -> ptr    # Allocate a reference-counted block (refcount 1)
 realloc(ptr: ptr, new_size: int) -> ptr
-free(ptr: ptr) -> void
-gc_collect() -> bool  # Returns true if objects were collected
-gc_compact() -> int  # Returns bytes reclaimed
+rc_clone(ptr: ptr) -> ptr        # Add an owner (inc refcount), returns the handle
+rc_release(ptr: ptr) -> void     # Drop an owner (dec refcount; free at zero)
+free(ptr: ptr) -> void           # Explicit drop (equivalent to the last release)
 
 # Memory query functions
 
@@ -637,16 +640,22 @@ The Lullaby memory management system provides:
 
 1. **Region-based allocation** for deterministic, efficient systems programming
 2. **Stack allocation** with automatic lifetime tracking via scopes
-3. **Optional GC module** for heap objects when region binding impractical
+3. **Reference-counted heap** for objects when region binding is impractical — freed
+   deterministically at scope exit, with no tracing collector and no pauses
 4. **Comprehensive safety guarantees** through bounds checking and null validation
 5. **Explicit memory operations** visible to the compiler for optimization
 6. **Integrated compilation pipeline** that analyzes and optimizes memory usage
 
-This hybrid model offers the performance of manual memory management (C/Rust) with the safety of GC, while maintaining LLM-friendly syntax through explicit region declarations and scope-based cleanup rules.
+This model offers the performance and determinism of manual memory management
+(C/Rust) with the safety of automatic reclamation, while maintaining LLM-friendly
+syntax through explicit region declarations and scope-based reference-counting
+rules. Reference counting is the heap foundation; arenas and Perceus-style reuse
+layer on top as performance stages (see
+[memory_model_decision.md](memory_model_decision.md)).
 
 ---
 
 *Next Document: Compilation Architecture - Covers the lexer, parser, AST construction, IR generation, optimization phases, and code emission strategies.*
 
-**Version**: 1.0
-**Last Updated**: June 24, 2026
+**Version**: 1.1
+**Last Updated**: July 14, 2026
