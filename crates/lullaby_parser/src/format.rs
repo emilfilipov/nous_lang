@@ -5,75 +5,280 @@
 //!
 //! Top-level declarations are emitted in source order (by span line), so the
 //! formatter never reorders a file.
+//!
+//! # Comment preservation
+//!
+//! Comments are not part of the AST; the lexer captures them as trivia (see
+//! [`lullaby_lexer::Comment`]) and [`format_program_with_comments`] threads them
+//! back into the output so `lullaby fmt` never destroys them. Placement is driven
+//! entirely by source line: a full-line comment is emitted just before the first
+//! construct whose source line is greater than the comment's, taking that
+//! construct's indentation; a trailing (inline) comment is re-attached to the end
+//! of the line whose source line matches it. Because every emitted comment is
+//! re-lexed to the same trivia and re-emitted at the same relative position,
+//! formatting a commented file is idempotent.
 
 use crate::{
     AliasDecl, AssignOp, BinaryOp, EnumDecl, Expr, ExprKind, Function, IfBranch, ImplDecl,
     MatchArm, MatchPattern, MethodSig, Param, Place, Program, RegionDecl, Stmt, StructDecl,
     TraitDecl, TypeParam, UnaryOp,
 };
+use lullaby_lexer::Comment;
 
 const INDENT: &str = "    ";
 
-/// Render a whole program to canonical source.
+/// Render a whole program to canonical source. Any comments in the original
+/// source are lost (this is the comment-free entry point kept for callers that
+/// do not have the trivia, such as AST-only tooling). Prefer
+/// [`format_program_with_comments`] for `fmt`.
 pub fn format_program(program: &Program) -> String {
-    // Collect every top-level item with its source line so the original
-    // ordering is preserved regardless of how the AST buckets declarations.
-    let mut items: Vec<(usize, String)> = Vec::new();
+    format_program_with_comments(program, &[])
+}
+
+/// Render a whole program to canonical source, re-emitting `comments` at their
+/// source positions so the format round-trip is comment-preserving. `comments`
+/// must be in source order (as produced by [`lullaby_lexer::lex_with_comments`]).
+pub fn format_program_with_comments(program: &Program, comments: &[Comment]) -> String {
+    // Collect every top-level item with its source line so the original ordering
+    // is preserved regardless of how the AST buckets declarations.
+    let mut items: Vec<TopItem> = Vec::new();
     for alias in &program.aliases {
-        items.push((alias.span.line, render_alias(alias)));
+        items.push(TopItem::Alias(alias));
     }
     for decl in &program.structs {
-        items.push((decl.span.line, render_struct(decl)));
+        items.push(TopItem::Struct(decl));
     }
     for decl in &program.enums {
-        items.push((decl.span.line, render_enum(decl)));
+        items.push(TopItem::Enum(decl));
     }
     for decl in &program.traits {
-        items.push((decl.span.line, render_trait(decl)));
+        items.push(TopItem::Trait(decl));
     }
     for decl in &program.impls {
-        items.push((decl.span.line, render_impl(decl)));
+        items.push(TopItem::Impl(decl));
     }
     for function in &program.functions {
-        items.push((function.span.line, render_function(function)));
+        items.push(TopItem::Function(function));
     }
-    items.sort_by_key(|(line, _)| *line);
+    items.sort_by_key(TopItem::line);
 
-    let mut out = items
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    out.push('\n');
-    out
+    let mut emitter = Emitter::new(comments);
+    for index in 0..items.len() {
+        // A blank line separates consecutive top-level declarations; any leading
+        // comments for the next item are flushed after this separator (attached
+        // to the item, below the blank line).
+        if index > 0 {
+            emitter.out.push('\n');
+        }
+        let block_next = items
+            .get(index + 1)
+            .map(TopItem::line)
+            .unwrap_or(usize::MAX);
+        render_item(&mut emitter, &items[index], block_next);
+    }
+    // Any comments after the last construct (end-of-file trivia) are emitted at
+    // their own indentation so nothing is dropped.
+    emitter.flush_before(usize::MAX);
+    emitter.finish()
+}
+
+/// A top-level declaration, kept as a borrow so the formatter can sort the mixed
+/// declaration buckets by source line without cloning.
+enum TopItem<'a> {
+    Alias(&'a AliasDecl),
+    Struct(&'a StructDecl),
+    Enum(&'a EnumDecl),
+    Trait(&'a TraitDecl),
+    Impl(&'a ImplDecl),
+    Function(&'a Function),
+}
+
+impl TopItem<'_> {
+    fn line(&self) -> usize {
+        match self {
+            TopItem::Alias(alias) => alias.span.line,
+            TopItem::Struct(decl) => decl.span.line,
+            TopItem::Enum(decl) => decl.span.line,
+            TopItem::Trait(decl) => decl.span.line,
+            TopItem::Impl(decl) => decl.span.line,
+            TopItem::Function(function) => function.span.line,
+        }
+    }
+}
+
+/// Accumulates canonical source while interleaving comment trivia by source line.
+///
+/// `comments` is in source order and consumed strictly left-to-right via `idx`.
+/// Because every construct is emitted in increasing-source-line order (top-level
+/// items are sorted, statements are in source order, and nested blocks lie
+/// between their parent's line and the next sibling's line), a single monotonic
+/// cursor keeps comment placement consistent across arbitrary nesting.
+struct Emitter<'a> {
+    out: String,
+    comments: &'a [Comment],
+    idx: usize,
+}
+
+impl<'a> Emitter<'a> {
+    fn new(comments: &'a [Comment]) -> Self {
+        Self {
+            out: String::new(),
+            comments,
+            idx: 0,
+        }
+    }
+
+    /// Write a single full-line comment on its own line at the block depth implied
+    /// by the comment's own source indentation (four spaces per level), so a
+    /// comment keeps the nesting level it was written at rather than inheriting the
+    /// depth of whichever construct happens to flush it.
+    fn emit_comment(&mut self, comment: &Comment) {
+        self.out.push('\n');
+        self.out.push_str(&indent(comment.indent / INDENT.len()));
+        self.out.push_str(&comment.text);
+    }
+
+    /// Emit every not-yet-consumed comment whose source line is `< anchor`, each
+    /// at its own indentation. Used before a construct: all comments that
+    /// physically precede it are its leading comments.
+    fn flush_before(&mut self, anchor: usize) {
+        while self.idx < self.comments.len() && self.comments[self.idx].line < anchor {
+            let comment = self.comments[self.idx].clone();
+            self.emit_comment(&comment);
+            self.idx += 1;
+        }
+    }
+
+    /// Emit comments that belong to a block that is ending: those on a line
+    /// `< anchor` whose depth is at least `min_depth`. Stops at the first comment
+    /// shallower than the block (it belongs to an enclosing scope and is left for
+    /// the following construct to place at its own, shallower depth).
+    fn flush_block_end(&mut self, anchor: usize, min_depth: usize) {
+        while self.idx < self.comments.len() {
+            let comment = &self.comments[self.idx];
+            if comment.line >= anchor || comment.indent / INDENT.len() < min_depth {
+                break;
+            }
+            let comment = comment.clone();
+            self.emit_comment(&comment);
+            self.idx += 1;
+        }
+    }
+
+    /// Emit the full-line comments physically above a spanless keyword line
+    /// (`else`, `catch`, or a bare `return`) at depth `depth`: comments on a line
+    /// `< boundary` whose depth is at most `depth`. Stops at the first comment
+    /// deeper than the keyword (it belongs inside the keyword's body and is
+    /// emitted after the keyword instead).
+    fn flush_above_keyword(&mut self, boundary: usize, depth: usize) {
+        while self.idx < self.comments.len() {
+            let comment = &self.comments[self.idx];
+            if comment.line >= boundary || comment.indent / INDENT.len() > depth {
+                break;
+            }
+            let comment = comment.clone();
+            self.emit_comment(&comment);
+            self.idx += 1;
+        }
+    }
+
+    /// Emit a construct line at `depth` whose source line is `source_line`:
+    /// flush the full-line comments that precede it, write the line, then
+    /// re-attach a trailing comment sitting on the same source line.
+    fn emit_line(&mut self, depth: usize, source_line: usize, text: &str) {
+        self.flush_before(source_line);
+        self.out.push('\n');
+        self.out.push_str(&indent(depth));
+        self.out.push_str(text);
+        self.attach_trailing(source_line);
+    }
+
+    /// Attach a trailing comment whose source line is exactly `source_line` to the
+    /// end of the line just written (two spaces then the comment).
+    fn attach_trailing(&mut self, source_line: usize) {
+        if self.idx < self.comments.len()
+            && self.comments[self.idx].trailing
+            && self.comments[self.idx].line == source_line
+        {
+            self.out.push_str("  ");
+            self.out.push_str(&self.comments[self.idx].text);
+            self.idx += 1;
+        }
+    }
+
+    /// Emit a keyword line with no source span of its own (`else`, `catch`, or a
+    /// bare `return`). `boundary` is the source line of the first construct that
+    /// follows this line's block; full-line comments physically above the keyword
+    /// are flushed before it. See the module note on spanless placement.
+    fn emit_spanless(&mut self, depth: usize, text: &str, boundary: usize) {
+        self.flush_above_keyword(boundary, depth);
+        self.out.push('\n');
+        self.out.push_str(&indent(depth));
+        self.out.push_str(text);
+    }
+
+    /// Strip the leading newline produced by the first emitted line and guarantee
+    /// exactly one trailing newline, matching the canonical output shape.
+    fn finish(mut self) -> String {
+        while self.out.starts_with('\n') {
+            self.out.remove(0);
+        }
+        while self.out.ends_with('\n') {
+            self.out.pop();
+        }
+        self.out.push('\n');
+        self.out
+    }
+}
+
+fn render_item(emitter: &mut Emitter, item: &TopItem, block_next: usize) {
+    match item {
+        TopItem::Alias(alias) => emitter.emit_line(0, alias.span.line, &render_alias(alias)),
+        TopItem::Struct(decl) => render_struct(emitter, decl, block_next),
+        TopItem::Enum(decl) => render_enum(emitter, decl, block_next),
+        TopItem::Trait(decl) => render_trait(emitter, decl, block_next),
+        TopItem::Impl(decl) => render_impl(emitter, decl, block_next),
+        TopItem::Function(function) => render_function(emitter, function, block_next),
+    }
 }
 
 fn render_alias(alias: &AliasDecl) -> String {
     format!("alias {} = {}", alias.name, alias.target.name)
 }
 
-fn render_struct(decl: &StructDecl) -> String {
-    let mut out = format!("struct {}", decl.name);
-    for field in &decl.fields {
-        out.push('\n');
-        out.push_str(INDENT);
-        out.push_str(&format!("{} {}", field.name, field.ty.name));
+fn render_struct(emitter: &mut Emitter, decl: &StructDecl, block_next: usize) {
+    let mut header = String::new();
+    if decl.is_public {
+        header.push_str("pub ");
     }
-    out
+    header.push_str(&format!("struct {}", decl.name));
+    emitter.emit_line(0, decl.span.line, &header);
+    for field in &decl.fields {
+        // `StructField` carries no source span, so field-level comments cannot be
+        // line-anchored; they are flushed inside the struct body below.
+        emitter.push_field_line(1, &format!("{} {}", field.name, field.ty.name));
+    }
+    // Any comments inside the struct body are re-emitted within the body so they
+    // are preserved (never dropped) and the file stays idempotent.
+    emitter.flush_block_end(block_next, 1);
 }
 
-fn render_enum(decl: &EnumDecl) -> String {
-    let mut out = format!("enum {}", decl.name);
-    for variant in &decl.variants {
-        out.push('\n');
-        out.push_str(INDENT);
-        out.push_str(&variant.name);
-        for ty in &variant.payload {
-            out.push(' ');
-            out.push_str(&ty.name);
-        }
+fn render_enum(emitter: &mut Emitter, decl: &EnumDecl, block_next: usize) {
+    let mut header = String::new();
+    if decl.is_public {
+        header.push_str("pub ");
     }
-    out
+    header.push_str(&format!("enum {}", decl.name));
+    emitter.emit_line(0, decl.span.line, &header);
+    for variant in &decl.variants {
+        let mut text = variant.name.clone();
+        for ty in &variant.payload {
+            text.push(' ');
+            text.push_str(&ty.name);
+        }
+        emitter.push_field_line(1, &text);
+    }
+    emitter.flush_block_end(block_next, 1);
 }
 
 /// Render a type-parameter list `<T, U: Show + Ord>` (no surrounding `<>` when
@@ -96,18 +301,17 @@ fn render_type_params(type_params: &[TypeParam]) -> String {
     format!("<{rendered}>")
 }
 
-fn render_trait(decl: &TraitDecl) -> String {
-    let mut out = String::new();
+fn render_trait(emitter: &mut Emitter, decl: &TraitDecl, block_next: usize) {
+    let mut header = String::new();
     if decl.is_public {
-        out.push_str("pub ");
+        header.push_str("pub ");
     }
-    out.push_str(&format!("trait {}", decl.name));
+    header.push_str(&format!("trait {}", decl.name));
+    emitter.emit_line(0, decl.span.line, &header);
     for method in &decl.methods {
-        out.push('\n');
-        out.push_str(INDENT);
-        out.push_str(&render_method_sig(method));
+        emitter.emit_line(1, method.span.line, &render_method_sig(method));
     }
-    out
+    emitter.flush_block_end(block_next, 1);
 }
 
 fn render_method_sig(method: &MethodSig) -> String {
@@ -117,21 +321,21 @@ fn render_method_sig(method: &MethodSig) -> String {
     header
 }
 
-fn render_impl(decl: &ImplDecl) -> String {
-    let mut out = format!("impl {} for {}", decl.trait_name, decl.type_name);
-    for method in &decl.methods {
-        // Render each method with its `self` receiver untyped (source spelling)
-        // and its body indented one level under the impl block.
-        let rendered = render_impl_method(method);
-        let indented = rendered
-            .lines()
-            .map(|line| format!("{INDENT}{line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        out.push('\n');
-        out.push_str(&indented);
+fn render_impl(emitter: &mut Emitter, decl: &ImplDecl, block_next: usize) {
+    emitter.emit_line(
+        0,
+        decl.span.line,
+        &format!("impl {} for {}", decl.trait_name, decl.type_name),
+    );
+    for index in 0..decl.methods.len() {
+        let following = decl
+            .methods
+            .get(index + 1)
+            .map(|method| method.span.line)
+            .unwrap_or(block_next);
+        render_impl_method(emitter, &decl.methods[index], following);
     }
-    out
+    emitter.flush_block_end(block_next, 1);
 }
 
 /// Render a space-separated parameter list, grouping consecutive parameters that
@@ -159,16 +363,15 @@ fn render_params(params: &[Param]) -> String {
 /// Render an impl method as `fn name self [param Type ...] -> Ret` + body. The
 /// first parameter is the injected `self` receiver, which is rendered untyped to
 /// round-trip with the parser.
-fn render_impl_method(function: &Function) -> String {
+fn render_impl_method(emitter: &mut Emitter, function: &Function, block_next: usize) {
     let mut header = format!("fn {} self", function.name);
     header.push_str(&render_params(function.params.get(1..).unwrap_or(&[])));
     header.push_str(&format!(" -> {}", function.return_type.name));
-    let mut out = header;
-    render_block(&function.body, 1, &mut out);
-    out
+    emitter.emit_line(1, function.span.line, &header);
+    render_block(emitter, &function.body, 2, block_next);
 }
 
-fn render_function(function: &Function) -> String {
+fn render_function(emitter: &mut Emitter, function: &Function, block_next: usize) {
     let mut header = String::new();
     if function.is_public {
         header.push_str("pub ");
@@ -190,74 +393,140 @@ fn render_function(function: &Function) -> String {
     if function.return_type.name != crate::INFERRED_RETURN {
         header.push_str(&format!(" -> {}", function.return_type.name));
     }
-    let mut out = header;
+    emitter.emit_line(0, function.span.line, &header);
     // An extern declaration is body-less; render only the signature line.
     if !function.is_extern {
-        render_block(&function.body, 1, &mut out);
+        render_block(emitter, &function.body, 1, block_next);
     }
-    out
+}
+
+/// The 1-based source line a statement's header sits on, if it has one. Every
+/// statement kind carries a usable span except a bare `return` (no value), which
+/// keeps no span in the AST and is therefore placed by boundary (see
+/// [`Emitter::emit_spanless`]).
+fn stmt_line(stmt: &Stmt) -> Option<usize> {
+    match stmt {
+        Stmt::Let { span, .. } => Some(span.line),
+        Stmt::Assign { span, .. } => Some(span.line),
+        Stmt::Return(Some(expr)) => Some(expr.span.line),
+        Stmt::Return(None) => None,
+        Stmt::Break(span) => Some(span.line),
+        Stmt::Continue(span) => Some(span.line),
+        Stmt::Expr(expr) => Some(expr.span.line),
+        Stmt::If { span, .. } => Some(span.line),
+        Stmt::While { span, .. } => Some(span.line),
+        Stmt::For { span, .. } => Some(span.line),
+        Stmt::ForEach { span, .. } => Some(span.line),
+        Stmt::Loop { span, .. } => Some(span.line),
+        Stmt::Unsafe { span, .. } => Some(span.line),
+        Stmt::Asm { span, .. } => Some(span.line),
+        Stmt::Region(decl) => Some(decl.span.line),
+        Stmt::Throw { span, .. } => Some(span.line),
+        Stmt::Try { span, .. } => Some(span.line),
+    }
+}
+
+/// The source line of the first statement in `body` that has one, used as the
+/// boundary that bounds a preceding block's comment flushing.
+fn first_stmt_line(body: &[Stmt]) -> Option<usize> {
+    body.iter().find_map(stmt_line)
 }
 
 /// Append a block of statements, each on its own line at `depth` indentation.
-fn render_block(body: &[Stmt], depth: usize, out: &mut String) {
-    for stmt in body {
-        render_stmt(stmt, depth, out);
+/// `block_next` is the source line of the first construct that follows this whole
+/// block, so trailing end-of-block comments are flushed at the correct depth.
+fn render_block(emitter: &mut Emitter, body: &[Stmt], depth: usize, block_next: usize) {
+    for index in 0..body.len() {
+        // The next sibling with a known line bounds this statement's nested-block
+        // comment flushing (and a bare `return`'s placement).
+        let following = body[index + 1..]
+            .iter()
+            .find_map(stmt_line)
+            .unwrap_or(block_next);
+        render_stmt(emitter, &body[index], depth, following);
     }
+    // Comments after the last statement that are indented at least to this block's
+    // depth belong to it; shallower ones are left for an enclosing construct.
+    emitter.flush_block_end(block_next, depth);
 }
 
 fn indent(depth: usize) -> String {
     INDENT.repeat(depth)
 }
 
-fn render_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
-    let pad = indent(depth);
+fn render_stmt(emitter: &mut Emitter, stmt: &Stmt, depth: usize, following: usize) {
     match stmt {
         Stmt::Let {
-            name, ty, value, ..
+            name,
+            ty,
+            value,
+            span,
         } => {
             let annotation = match ty {
                 Some(ty) => format!(" {}", ty.name),
                 None => String::new(),
             };
-            line(out, &pad, &format!("let {name}{annotation} = "));
-            render_value_tail(value, depth, out);
+            render_value_stmt(
+                emitter,
+                depth,
+                span.line,
+                following,
+                &format!("let {name}{annotation} = "),
+                value,
+            );
         }
         Stmt::Assign {
             name,
             path,
             op,
             value,
-            ..
+            span,
         } => {
             let target = render_place_path(name, path);
-            line(out, &pad, &format!("{target} {} ", render_assign_op(op)));
-            render_value_tail(value, depth, out);
+            render_value_stmt(
+                emitter,
+                depth,
+                span.line,
+                following,
+                &format!("{target} {} ", render_assign_op(op)),
+                value,
+            );
         }
         Stmt::Return(Some(expr)) => {
-            line(out, &pad, "return ");
-            render_value_tail(expr, depth, out);
+            render_value_stmt(emitter, depth, expr.span.line, following, "return ", expr);
         }
-        Stmt::Return(None) => line(out, &pad, "return"),
-        Stmt::Break(_) => line(out, &pad, "break"),
-        Stmt::Continue(_) => line(out, &pad, "continue"),
+        Stmt::Return(None) => emitter.emit_spanless(depth, "return", following),
+        Stmt::Break(span) => emitter.emit_line(depth, span.line, "break"),
+        Stmt::Continue(span) => emitter.emit_line(depth, span.line, "continue"),
         Stmt::Expr(expr) => {
             // A bare expression statement; block-expressions render multi-line.
-            if is_block_expr(expr) {
-                render_block_expr(expr, &pad, depth, out);
+            if let ExprKind::Match { scrutinee, arms } = &expr.kind {
+                emitter.emit_line(
+                    depth,
+                    expr.span.line,
+                    &format!("match {}", render_expr(scrutinee)),
+                );
+                render_match_arms(emitter, arms, depth + 1, following);
             } else {
-                line(out, &pad, &render_expr(expr));
+                emitter.emit_line(depth, expr.span.line, &render_expr(expr));
             }
         }
         Stmt::If {
             branches,
             else_body,
             ..
-        } => render_if(branches, else_body, depth, out),
+        } => render_if(emitter, branches, else_body, depth, following),
         Stmt::While {
-            condition, body, ..
+            condition,
+            body,
+            span,
         } => {
-            line(out, &pad, &format!("while {}", render_expr(condition)));
-            render_block(body, depth + 1, out);
+            emitter.emit_line(
+                depth,
+                span.line,
+                &format!("while {}", render_expr(condition)),
+            );
+            render_block(emitter, body, depth + 1, following);
         }
         Stmt::For {
             name,
@@ -265,7 +534,7 @@ fn render_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
             end,
             step,
             body,
-            ..
+            span,
         } => {
             let mut head = format!(
                 "for {name} from {} to {}",
@@ -275,95 +544,121 @@ fn render_stmt(stmt: &Stmt, depth: usize, out: &mut String) {
             if let Some(step) = step {
                 head.push_str(&format!(" by {}", render_expr(step)));
             }
-            line(out, &pad, &head);
-            render_block(body, depth + 1, out);
+            emitter.emit_line(depth, span.line, &head);
+            render_block(emitter, body, depth + 1, following);
         }
         Stmt::ForEach {
             name,
             iterable,
             body,
-            ..
+            span,
         } => {
-            line(
-                out,
-                &pad,
+            emitter.emit_line(
+                depth,
+                span.line,
                 &format!("for {name} in {}", render_expr(iterable)),
             );
-            render_block(body, depth + 1, out);
+            render_block(emitter, body, depth + 1, following);
         }
-        Stmt::Loop { body, .. } => {
-            line(out, &pad, "loop");
-            render_block(body, depth + 1, out);
+        Stmt::Loop { body, span } => {
+            emitter.emit_line(depth, span.line, "loop");
+            render_block(emitter, body, depth + 1, following);
         }
-        Stmt::Unsafe { body, .. } => {
-            line(out, &pad, "unsafe");
-            render_block(body, depth + 1, out);
+        Stmt::Unsafe { body, span } => {
+            emitter.emit_line(depth, span.line, "unsafe");
+            render_block(emitter, body, depth + 1, following);
         }
-        Stmt::Asm { bytes, .. } => {
+        Stmt::Asm { bytes, span } => {
             let rendered = bytes
                 .iter()
                 .map(|byte| byte.to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            line(out, &pad, &format!("asm {rendered}"));
+            emitter.emit_line(depth, span.line, &format!("asm {rendered}"));
         }
-        Stmt::Region(decl) => line(out, &pad, &render_region(decl)),
-        Stmt::Throw { value, .. } => {
-            line(out, &pad, &format!("throw {}", render_expr(value)));
+        Stmt::Region(decl) => emitter.emit_line(depth, decl.span.line, &render_region(decl)),
+        Stmt::Throw { value, span } => {
+            emitter.emit_line(depth, span.line, &format!("throw {}", render_expr(value)));
         }
         Stmt::Try {
             body,
             catch_name,
             catch_body,
-            ..
+            span,
         } => {
-            line(out, &pad, "try");
-            render_block(body, depth + 1, out);
-            line(out, &pad, &format!("catch {catch_name}"));
-            render_block(catch_body, depth + 1, out);
+            emitter.emit_line(depth, span.line, "try");
+            let catch_boundary = first_stmt_line(catch_body).unwrap_or(following);
+            render_block(emitter, body, depth + 1, catch_boundary);
+            emitter.emit_spanless(depth, &format!("catch {catch_name}"), catch_boundary);
+            render_block(emitter, catch_body, depth + 1, following);
         }
     }
 }
 
-/// Render the right-hand side of a `let`/`return`/assignment. If the value is a
-/// block expression (`match`) it continues on following indented lines;
-/// otherwise it finishes the current line.
-fn render_value_tail(value: &Expr, depth: usize, out: &mut String) {
+/// Emit a `let`/`return`/assignment header plus its value. A `match` value
+/// continues on following indented lines; any other value finishes the header
+/// line. `line` is the header's source line, and `block_next` is the source line
+/// of the construct after this statement (bounding the match arms' comments).
+fn render_value_stmt(
+    emitter: &mut Emitter,
+    depth: usize,
+    line: usize,
+    block_next: usize,
+    prefix: &str,
+    value: &Expr,
+) {
     if let ExprKind::Match { scrutinee, arms } = &value.kind {
-        // Continue the current line with `match SCRUT`, then the arms follow on
-        // their own indented lines (each `line()` prepends its own newline).
-        out.push_str(&format!("match {}", render_expr(scrutinee)));
-        render_match_arms(arms, depth + 1, out);
+        emitter.emit_line(
+            depth,
+            line,
+            &format!("{prefix}match {}", render_expr(scrutinee)),
+        );
+        render_match_arms(emitter, arms, depth + 1, block_next);
     } else {
-        out.push_str(&render_expr(value));
+        emitter.emit_line(depth, line, &format!("{prefix}{}", render_expr(value)));
     }
+}
+
+/// The source line an inline match arm sits on, if determinable (an inline arm's
+/// single-expression body carries a span).
+fn arm_line(arm: &MatchArm) -> Option<usize> {
+    if let [Stmt::Expr(expr)] = arm.body.as_slice() {
+        Some(expr.span.line)
+    } else {
+        first_stmt_line(&arm.body)
+    }
+}
+
+fn render_match_arms(emitter: &mut Emitter, arms: &[MatchArm], depth: usize, block_next: usize) {
+    for index in 0..arms.len() {
+        let following = arms[index + 1..]
+            .iter()
+            .find_map(arm_line)
+            .unwrap_or(block_next);
+        let arm = &arms[index];
+        let pattern = render_pattern(&arm.pattern);
+        // Inline arm bodies are a single non-block expression statement.
+        if let [Stmt::Expr(expr)] = arm.body.as_slice()
+            && !is_block_expr(expr)
+        {
+            emitter.emit_line(
+                depth,
+                expr.span.line,
+                &format!("{pattern} -> {}", render_expr(expr)),
+            );
+            continue;
+        }
+        // A block-bodied arm: the `Pattern ->` line has no dedicated span, so use
+        // the first body statement's line as its boundary.
+        let boundary = first_stmt_line(&arm.body).unwrap_or(following);
+        emitter.emit_spanless(depth, &format!("{pattern} ->"), boundary);
+        render_block(emitter, &arm.body, depth + 1, following);
+    }
+    emitter.flush_block_end(block_next, depth);
 }
 
 fn is_block_expr(expr: &Expr) -> bool {
     matches!(expr.kind, ExprKind::Match { .. })
-}
-
-fn render_block_expr(expr: &Expr, pad: &str, depth: usize, out: &mut String) {
-    if let ExprKind::Match { scrutinee, arms } = &expr.kind {
-        line(out, pad, &format!("match {}", render_expr(scrutinee)));
-        render_match_arms(arms, depth + 1, out);
-    }
-}
-
-fn render_match_arms(arms: &[MatchArm], depth: usize, out: &mut String) {
-    let pad = indent(depth);
-    for arm in arms {
-        let pattern = render_pattern(&arm.pattern);
-        // Inline arm bodies are a single expression statement.
-        if let [Stmt::Expr(expr)] = arm.body.as_slice()
-            && !is_block_expr(expr)
-        {
-            line(out, &pad, &format!("{pattern} -> {}", render_expr(expr)));
-            continue;
-        }
-        line(out, &pad, &format!("{pattern} ->"));
-        render_block(&arm.body, depth + 1, out);
-    }
 }
 
 fn render_pattern(pattern: &MatchPattern) -> String {
@@ -379,20 +674,35 @@ fn render_pattern(pattern: &MatchPattern) -> String {
     }
 }
 
-fn render_if(branches: &[IfBranch], else_body: &[Stmt], depth: usize, out: &mut String) {
-    let pad = indent(depth);
+fn render_if(
+    emitter: &mut Emitter,
+    branches: &[IfBranch],
+    else_body: &[Stmt],
+    depth: usize,
+    following: usize,
+) {
     for (index, branch) in branches.iter().enumerate() {
         let keyword = if index == 0 { "if" } else { "elif" };
-        line(
-            out,
-            &pad,
+        emitter.emit_line(
+            depth,
+            branch.condition.span.line,
             &format!("{keyword} {}", render_expr(&branch.condition)),
         );
-        render_block(&branch.body, depth + 1, out);
+        // This branch body ends where the next branch's condition begins, or at
+        // the else body's first statement, or at the whole `if`'s follower.
+        let branch_next = branches
+            .get(index + 1)
+            .map(|next| next.condition.span.line)
+            .or_else(|| first_stmt_line(else_body))
+            .unwrap_or(following);
+        render_block(emitter, &branch.body, depth + 1, branch_next);
     }
     if !else_body.is_empty() {
-        line(out, &pad, "else");
-        render_block(else_body, depth + 1, out);
+        // The `else` keyword has no dedicated span; place it before the first
+        // else-body statement.
+        let else_boundary = first_stmt_line(else_body).unwrap_or(following);
+        emitter.emit_spanless(depth, "else", else_boundary);
+        render_block(emitter, else_body, depth + 1, following);
     }
 }
 
@@ -433,13 +743,6 @@ fn render_assign_op(op: &AssignOp) -> &'static str {
         AssignOp::Divide => "/=",
         AssignOp::Remainder => "%=",
     }
-}
-
-/// Append `text` at `pad` indentation as its own line.
-fn line(out: &mut String, pad: &str, text: &str) {
-    out.push('\n');
-    out.push_str(pad);
-    out.push_str(text);
 }
 
 fn render_expr(expr: &Expr) -> String {
@@ -685,16 +988,34 @@ fn format_float(value: f64) -> String {
     }
 }
 
+impl Emitter<'_> {
+    /// Emit a struct/enum body line (a field or variant) that has no source span
+    /// of its own. It cannot carry a trailing comment attachment, so it is written
+    /// plainly at `depth`; body comments are flushed separately by the caller.
+    fn push_field_line(&mut self, depth: usize, text: &str) {
+        self.out.push('\n');
+        self.out.push_str(&indent(depth));
+        self.out.push_str(text);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse;
-    use lullaby_lexer::lex;
+    use lullaby_lexer::{lex, lex_with_comments};
 
     fn fmt(source: &str) -> String {
         let tokens = lex(source).expect("lex");
         let program = parse(&tokens).expect("parse");
         format_program(&program)
+    }
+
+    /// Format `source` preserving its comments, exercising the `fmt` path.
+    fn fmt_commented(source: &str) -> String {
+        let (tokens, comments) = lex_with_comments(source).expect("lex");
+        let program = parse(&tokens).expect("parse");
+        format_program_with_comments(&program, &comments)
     }
 
     /// Read a named fixture from `tests/fixtures/valid/<name>.lby`.
@@ -1029,5 +1350,135 @@ mod tests {
     fn idempotent_showcase() {
         // broad showcase exercising many features together.
         assert_fixture_idempotent("run_showcase");
+    }
+
+    // --- Comment preservation -------------------------------------------------
+
+    /// Assert `fmt` preserves comments and is idempotent: formatting `source`
+    /// yields `expected`, and re-formatting `expected` is a fixed point.
+    fn assert_comment_roundtrip(source: &str, expected: &str) {
+        let once = fmt_commented(source);
+        assert_eq!(once, expected, "unexpected formatted output");
+        let twice = fmt_commented(&once);
+        assert_eq!(twice, expected, "comment formatting is not idempotent");
+    }
+
+    #[test]
+    fn preserves_full_line_and_trailing_comments_repro() {
+        // The exact reported repro: a full-line comment and a trailing comment,
+        // both of which the old formatter silently deleted.
+        let source = concat!(
+            "fn main -> i64\n",
+            "    # this is a comment\n",
+            "    let x i64 = 5  # trailing comment\n",
+            "    x\n",
+        );
+        assert_comment_roundtrip(source, source);
+    }
+
+    #[test]
+    fn preserves_leading_file_and_between_declaration_comments() {
+        let source = concat!(
+            "# file header\n",
+            "fn a -> i64\n",
+            "    1\n",
+            "\n",
+            "# describes b\n",
+            "fn b -> i64\n",
+            "    2\n",
+        );
+        assert_comment_roundtrip(source, source);
+    }
+
+    #[test]
+    fn preserves_comments_in_nested_control_flow() {
+        let source = concat!(
+            "fn classify n i64 -> i64\n",
+            "    # negative?\n",
+            "    if n < 0\n",
+            "        # yes\n",
+            "        return 0 - 1  # sentinel\n",
+            "    # otherwise\n",
+            "    0\n",
+        );
+        assert_comment_roundtrip(source, source);
+    }
+
+    #[test]
+    fn normalizes_trailing_comment_spacing_then_is_idempotent() {
+        // A single space before a trailing comment normalizes to two spaces, and
+        // the result is then a fixed point (idempotent).
+        let source = "fn main -> i64\n    let x i64 = 5 # note\n    x\n";
+        let expected = "fn main -> i64\n    let x i64 = 5  # note\n    x\n";
+        assert_comment_roundtrip(source, expected);
+    }
+
+    #[test]
+    fn comment_free_output_is_unchanged_by_the_comment_path() {
+        // With no comments, the comment-aware entry point produces byte-identical
+        // output to the plain formatter (guards the refactor).
+        let source = concat!(
+            "enum Shape\n    Circle i64\n    Empty\n\n",
+            "fn area s Shape -> i64\n    match s\n        Circle(r) -> r * r\n        Empty -> 0\n",
+        );
+        let plain = fmt(source);
+        assert_eq!(fmt_commented(source), plain);
+    }
+
+    #[test]
+    fn preserves_trailing_comment_on_function_header() {
+        let source = "fn main -> i64  # entry point\n    0\n";
+        assert_comment_roundtrip(source, source);
+    }
+
+    #[test]
+    fn preserves_comments_inside_struct_and_enum_bodies() {
+        // Comments inside a struct/enum body carry no per-field span, so they are
+        // re-emitted within the body (at the end of it) rather than dropped, and
+        // the result is idempotent. A trailing comment on the header line stays on
+        // the header.
+        let source = concat!(
+            "struct Point  # a 2D point\n",
+            "    x i64\n",
+            "    y i64\n",
+            "    # fields above\n",
+        );
+        let expected = source;
+        assert_comment_roundtrip(source, expected);
+    }
+
+    #[test]
+    fn preserves_end_of_body_comment_at_body_indentation() {
+        // A comment at the end of a function body (no following statement) stays at
+        // the body's indentation and is idempotent.
+        let source = "fn main -> i64\n    let x i64 = 1\n    # done here\n    x\n";
+        assert_comment_roundtrip(source, source);
+    }
+
+    #[test]
+    fn else_body_leading_comment_is_preserved_and_idempotent() {
+        // Documents the one known placement limitation: a full-line comment sitting
+        // between an `else` keyword and its body's first statement is preserved and
+        // idempotent, but attaches to the end of the preceding branch (it renders
+        // just above `else`) because the `else` keyword has no source span. Comments
+        // deeper inside the else body, and comments elsewhere, are placed exactly.
+        let source = concat!(
+            "fn f n i64 -> i64\n",
+            "    if n < 0\n",
+            "        0\n",
+            "    else\n",
+            "        # fall through\n",
+            "        1\n",
+        );
+        let expected = concat!(
+            "fn f n i64 -> i64\n",
+            "    if n < 0\n",
+            "        0\n",
+            "        # fall through\n",
+            "    else\n",
+            "        1\n",
+        );
+        // Preserved (not dropped) and a fixed point on the already-formatted form.
+        assert_comment_roundtrip(source, expected);
     }
 }

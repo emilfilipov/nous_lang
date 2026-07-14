@@ -278,13 +278,16 @@ user_data, MAX_BUFFER_SIZE
 
 # This is a comment
 
-# x = 5 + y * z     # Inline comment after code
-
-
-/*
- * Multi-line comment block
- */
+let x i64 = 5 + y  # trailing (inline) comment after code
 ```
+
+A comment runs from `#` to the end of the line. A `#` inside a string literal is
+part of the string, not a comment. Comments are **preserved** by the canonical
+formatter: `lullaby fmt` keeps full-line comments (attached to the following
+statement, at that statement's indentation) and trailing comments (on the same
+line as their code), and formatting an already-formatted commented file is
+idempotent. Multi-line `/* ... */` comment blocks are not part of the current
+language.
 
 ---
 
