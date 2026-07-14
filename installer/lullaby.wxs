@@ -3,14 +3,14 @@
   WiX v7 authoring for the Lullaby Windows installer (.msi).
 
   Installs the toolchain to Program Files\Lullaby in the portable layout the CLI
-  expects (bin\ , docs\ , examples\ ), adds bin to the system PATH, creates Start
+  expects (bin\ , examples\ ), adds bin to the system PATH, creates Start
   Menu shortcuts, and brands the wizard + Add/Remove Programs entry.
 
   Build (from the repo root):
     wix build installer/lullaby.wxs -arch x64 \
       -ext WixToolset.UI.wixext -d Version=1.0.0 -o dist/lullaby-1.0-preview-x64.msi
   The build is normally driven by scripts/build_windows_installer.py, which stages
-  the payload (release exe, generated docs, examples) and passes the version.
+  the payload (release exe, examples) and passes the version.
   MSI ProductVersion is numeric only (MAJOR.MINOR.PATCH, no status suffix).
 -->
 <?ifndef Version ?>
@@ -44,11 +44,10 @@
     <WixVariable Id="WixUIBannerBmp" Value="installer/banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="installer/dialog.bmp" />
 
-    <!-- Install layout: [ProgramFiles64]\Lullaby\{bin,docs,examples} -->
+    <!-- Install layout: [ProgramFiles64]\Lullaby\{bin,examples} -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Lullaby">
         <Directory Id="BinDir" Name="bin" />
-        <Directory Id="DocsDir" Name="docs" />
         <Directory Id="ExamplesDir" Name="examples" />
       </Directory>
     </StandardDirectory>
@@ -74,9 +73,6 @@
         <Environment Id="AddToPath" Name="PATH" Value="[BinDir]"
                      Action="set" Part="last" System="yes" Permanent="no" />
       </Component>
-      <Component Directory="DocsDir">
-        <File Id="DocsIndex" Source="target/offline_docs/index.html" KeyPath="yes" />
-      </Component>
     </ComponentGroup>
 
     <!-- Packaged example programs (valid + invalid diagnostic .lby), harvested.
@@ -88,11 +84,6 @@
 
     <!-- Start Menu shortcuts -->
     <Component Directory="AppMenuDir" Id="Shortcuts" Guid="B2A4C6E8-3D5F-4A7B-9C1E-6F8A0B2D4C60">
-      <Shortcut Id="DocsShortcut"
-                Name="Lullaby Documentation"
-                Description="Open the offline Lullaby documentation"
-                Target="[#DocsIndex]"
-                Icon="lullaby.ico" />
       <Shortcut Id="PromptShortcut"
                 Name="Lullaby Command Prompt"
                 Description="A command prompt with lullaby on the PATH"
