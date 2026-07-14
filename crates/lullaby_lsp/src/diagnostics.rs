@@ -8,8 +8,8 @@
 //! convert them to 0-based LSP ranges and widen the end to cover the identifier
 //! or token that starts at that position when there is one.
 
-use lullaby_lexer::{Span, lex};
-use lullaby_parser::{format_program, parse};
+use lullaby_lexer::{Span, lex, lex_with_comments};
+use lullaby_parser::{format_program_with_comments, parse};
 use lullaby_semantics::validate;
 use serde_json::{Value, json};
 
@@ -56,10 +56,11 @@ pub fn compute(text: &str) -> Vec<Value> {
 }
 
 /// Canonically format a document's source, or `None` if it does not lex/parse.
+/// Comments are preserved through the format round-trip.
 pub fn format_source(text: &str) -> Option<String> {
-    let tokens = lex(text).ok()?;
+    let (tokens, comments) = lex_with_comments(text).ok()?;
     let program = parse(&tokens).ok()?;
-    Some(format_program(&program))
+    Some(format_program_with_comments(&program, &comments))
 }
 
 /// Build one LSP `Diagnostic` JSON value from a Lullaby code, message, and span.

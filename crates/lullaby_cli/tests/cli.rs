@@ -34,6 +34,9 @@ pub(crate) fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 #[path = "cli/suite1.rs"]
 mod suite1;
 
+#[path = "cli/fmt_comments.rs"]
+mod fmt_comments;
+
 /// A fresh temp directory for a file-system test, using forward slashes so the
 /// path can be embedded in a `.lby` string literal on every platform (Windows
 /// accepts `/` in `std::fs` paths). The directory is recreated empty.

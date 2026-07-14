@@ -2,7 +2,7 @@ use lullaby_lexer::{Diagnostic, Keyword, Span, Token, TokenKind, lex};
 use serde::{Deserialize, Serialize};
 
 mod format;
-pub use format::format_program;
+pub use format::{format_program, format_program_with_comments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {

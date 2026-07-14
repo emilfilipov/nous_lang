@@ -98,6 +98,27 @@ impl Token {
     }
 }
 
+/// A source comment captured as trivia during lexing. Comments are not tokens
+/// (they never reach the parser), but the formatter re-emits them so that
+/// `lullaby fmt` is comment-preserving.
+///
+/// `line` is the 1-based source line the comment sits on. `trailing` is `true`
+/// when code precedes the `#` on that line (an inline comment such as
+/// `let x i64 = 5  # note`) and `false` for a comment that occupies its own line
+/// (a full-line comment attached to the statement that follows it). `indent` is
+/// the leading indentation width (spaces, with a tab counted as four) of a
+/// full-line comment, so the formatter can place it at the matching block depth;
+/// it is `0` for a trailing comment. `text` is the comment verbatim from `#` to
+/// the end of the line, with trailing whitespace stripped; it is re-emitted
+/// exactly, so the formatter never rewrites a comment's contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub line: usize,
+    pub trailing: bool,
+    pub indent: usize,
+    pub text: String,
+}
+
 pub fn validate_source_path(path: &Path) -> Result<(), Diagnostic> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(CANONICAL_EXTENSION) => Ok(()),
@@ -115,10 +136,18 @@ pub fn validate_source_path(path: &Path) -> Result<(), Diagnostic> {
 }
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
+    lex_with_comments(source).map(|(tokens, _comments)| tokens)
+}
+
+/// Lex `source` and additionally return the comment trivia (full-line and
+/// trailing `#` comments), in source order. The token stream is identical to
+/// [`lex`]; comments are collected on the side so a comment-preserving consumer
+/// (the formatter) can re-emit them while every other stage keeps ignoring them.
+pub fn lex_with_comments(source: &str) -> Result<(Vec<Token>, Vec<Comment>), Vec<Diagnostic>> {
     let mut lexer = Lexer::new(source);
     lexer.lex();
     if lexer.diagnostics.is_empty() {
-        Ok(lexer.tokens)
+        Ok((lexer.tokens, lexer.comments))
     } else {
         Err(lexer.diagnostics)
     }
@@ -127,6 +156,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
 struct Lexer<'a> {
     source: &'a str,
     tokens: Vec<Token>,
+    comments: Vec<Comment>,
     diagnostics: Vec<Diagnostic>,
     indent_stack: Vec<usize>,
 }
@@ -136,6 +166,7 @@ impl<'a> Lexer<'a> {
         Self {
             source,
             tokens: Vec::new(),
+            comments: Vec::new(),
             diagnostics: Vec::new(),
             indent_stack: vec![0],
         }
@@ -146,7 +177,20 @@ impl<'a> Lexer<'a> {
             let line_number = line_index + 1;
             let line = raw_line.trim_end_matches('\r');
 
-            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                // A full-line comment: it occupies its own line and attaches to
+                // the statement that follows it. Store it verbatim (right-trimmed)
+                // so the formatter re-emits it unchanged.
+                self.comments.push(Comment {
+                    line: line_number,
+                    trailing: false,
+                    indent: count_indent(line),
+                    text: trimmed.trim_end().to_string(),
+                });
                 continue;
             }
 
@@ -224,6 +268,21 @@ impl<'a> Lexer<'a> {
             }
 
             if ch == '#' {
+                // A trailing (inline) comment: code precedes the `#` on this
+                // line, so it stays attached to that line. Everything from `#` to
+                // end of line is the comment (right-trimmed); `#` inside a string
+                // literal was already consumed by `lex_string`, so this is always
+                // a real comment.
+                self.comments.push(Comment {
+                    line: line_number,
+                    trailing: true,
+                    indent: 0,
+                    text: chars[index..]
+                        .iter()
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string(),
+                });
                 break;
             }
 
@@ -572,6 +631,27 @@ mod tests {
     fn rejects_malformed_char_literal() {
         let diagnostics = lex("fn main -> char\n    'ab'\n").expect_err("invalid source");
         assert_eq!(diagnostics[0].code, "L0105");
+    }
+
+    #[test]
+    fn captures_full_line_and_trailing_comments() {
+        let source = "# header\nfn main -> i64\n    let x i64 = 5  # trailing\n    x\n";
+        let (_tokens, comments) = lex_with_comments(source).expect("lex");
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].line, 1);
+        assert!(!comments[0].trailing);
+        assert_eq!(comments[0].text, "# header");
+        assert_eq!(comments[1].line, 3);
+        assert!(comments[1].trailing);
+        assert_eq!(comments[1].text, "# trailing");
+    }
+
+    #[test]
+    fn does_not_capture_hash_inside_string_literal() {
+        // A `#` inside a string is part of the string, not a comment.
+        let source = "fn main -> string\n    \"a # b\"\n";
+        let (_tokens, comments) = lex_with_comments(source).expect("lex");
+        assert!(comments.is_empty(), "unexpected comments: {comments:?}");
     }
 
     #[test]

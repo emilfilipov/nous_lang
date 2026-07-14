@@ -15,8 +15,8 @@ use lullaby_ir::{
     encode_bytecode_artifact, lower, lower_to_bytecode, optimize, run_bytecode_main,
     run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
 };
-use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex, validate_source_path};
-use lullaby_parser::{Program, format_program, parse};
+use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex_with_comments, validate_source_path};
+use lullaby_parser::{Program, format_program_with_comments, parse};
 use lullaby_runtime::{ErrorCategory, RuntimeError, Value, run_main_with_args, run_named_function};
 use lullaby_semantics::{CheckedProgram, validate, validate_executable};
 
@@ -100,7 +100,9 @@ fn fmt_file(path: PathBuf, fmt_mode: FmtMode) -> Result<(), String> {
     }
     let source = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read `{}`: {error}", path.display()))?;
-    let tokens = lex(&source).map_err(|diagnostics| {
+    // Capture comment trivia alongside the tokens so the formatter can re-emit
+    // comments; `lullaby fmt` must never destroy them.
+    let (tokens, comments) = lex_with_comments(&source).map_err(|diagnostics| {
         format_reports(
             &diagnostics
                 .into_iter()
@@ -120,7 +122,7 @@ fn fmt_file(path: PathBuf, fmt_mode: FmtMode) -> Result<(), String> {
             Some(&source),
         )
     })?;
-    let formatted = format_program(&program);
+    let formatted = format_program_with_comments(&program, &comments);
     match fmt_mode {
         FmtMode::Print => print!("{formatted}"),
         FmtMode::Write => {
