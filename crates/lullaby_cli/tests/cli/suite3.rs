@@ -548,6 +548,83 @@ pub(crate) fn wasm_overflow_arith_execution_parity_with_node() {
     );
 }
 
+/// The scalar math builtins compiled to WASM: `--verbose` proves every function
+/// compiles (none deferred), and — when `node` is available — the module's `main`
+/// export returns the interpreter's exact `i64` result. Exercises `sqrt`/`abs` on
+/// `f64` (`f64.sqrt`/`f64.abs`), `abs` on `i64` (incl. `i64::MIN` wrap), the `i64`
+/// suite `min`/`max`/`gcd`/`sign`/`clamp` (incl. `gcd(i64::MIN, 0)` and `lo > hi`),
+/// all bit-for-bit with the interpreters.
+#[test]
+pub(crate) fn wasm_math_builtins_execution_parity_with_node() {
+    let fixture = workspace_root().join("tests/fixtures/valid/wasm_math_builtins.lby");
+    let out = std::env::temp_dir().join("lullaby_wasm_math_builtins.wasm");
+
+    let emit = lullaby()
+        .args([
+            "wasm",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    for func in ["imin", "f64_checks", "edge_checks", "main"] {
+        assert!(
+            stdout(&emit).contains(&format!("compiled {func}")),
+            "expected `{func}` compiled on WASM: {}",
+            stdout(&emit)
+        );
+    }
+    assert!(
+        !stdout(&emit).contains("skipped"),
+        "no scalar-math function should be skipped: {}",
+        stdout(&emit)
+    );
+
+    // Interpreter ground truth for `main` (identical on AST/IR/bytecode).
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp_main = stdout(&run).trim().to_string();
+    assert_eq!(interp_main, "70");
+
+    if !node_available() {
+        eprintln!("node not found on PATH; skipping WASM math-builtins execution parity");
+        return;
+    }
+
+    let runner = std::env::temp_dir().join("lullaby_wasm_math_builtins_runner.js");
+    let js = format!(
+        "const fs=require('fs');\
+         const bytes=fs.readFileSync({wasm:?});\
+         const imports={{env:{{log_i64:()=>{{}},console_log:()=>{{}},dom_set_text:()=>{{}}}}}};\
+         WebAssembly.instantiate(bytes,imports).then(r=>{{\
+           process.stdout.write('main='+r.instance.exports.main().toString());\
+         }}).catch(err=>{{console.error('FAIL:'+err.message);process.exit(1)}});",
+        wasm = out.to_str().expect("out path")
+    );
+    std::fs::write(&runner, js).expect("write runner");
+
+    let node = Command::new("node")
+        .arg(runner.to_str().expect("runner path"))
+        .output()
+        .expect("run node");
+    assert!(
+        node.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    let out_text = String::from_utf8_lossy(&node.stdout);
+    assert!(
+        out_text.contains(&format!("main={interp_main}")),
+        "WASM `main` must equal the interpreter result: {out_text}"
+    );
+}
+
 /// Best-effort execution parity for the native `string`-carrying growable
 /// collections and enums: native-compile a `list<string>` (literal/concat/
 /// `to_string` elements, `get`/`len`/`set`/`pop`, a value-semantics probe across a

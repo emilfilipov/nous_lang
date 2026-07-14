@@ -1204,21 +1204,24 @@ fn f32_parameter_and_return_compile_like_f64() {
 }
 
 #[test]
-fn float_math_builtin_skips_gracefully() {
-    // A float math builtin (`sqrt`) is out of scope for the WASM backend (as on
-    // native): the function is demoted to skipped and still runs on the
-    // interpreters, while an f32-arithmetic companion compiles.
+fn transcendental_math_builtin_skips_gracefully() {
+    // A transcendental float math builtin (`sin`, needing a library or a
+    // polynomial not bit-matchable to Rust's `f64::sin`) stays out of scope for
+    // the WASM backend (as on native): the function is demoted to skipped and
+    // still runs on the interpreters, while an f32-arithmetic companion compiles.
+    // (`sqrt`/`abs`, which DO have exact WASM opcodes, now compile — see
+    // `f64_sqrt_and_abs_emit_their_opcodes`.)
     let source = concat!(
-        "fn root x f64 -> f64\n",
-        "    sqrt(x)\n\n",
+        "fn wave x f64 -> f64\n",
+        "    sin(x)\n\n",
         "fn plain a f32 b f32 -> f32\n",
         "    a + b\n",
     );
     let artifact = emit_wasm_module(&module_for(source)).expect("emit");
     assert_eq!(artifact.compiled, vec!["plain".to_string()]);
     assert!(
-        artifact.skipped.iter().any(|s| s.name == "root"),
-        "the `sqrt` math builtin must skip gracefully"
+        artifact.skipped.iter().any(|s| s.name == "wave"),
+        "the `sin` math builtin must skip gracefully"
     );
 }
 
@@ -1548,4 +1551,102 @@ fn enum_layout_orders_builtin_and_user_variants() {
         .is_none(),
         "a payload nested past one mutable level is deferred"
     );
+}
+
+#[test]
+fn f64_sqrt_and_abs_emit_their_opcodes() {
+    // `sqrt`/`abs` on `f64` lower to the single-opcode `f64.sqrt` (0x9F) /
+    // `f64.abs` (0x99) rather than being skipped to the interpreters.
+    let source = concat!(
+        "fn root x f64 -> f64\n    sqrt(x)\n\n",
+        "fn magnitude x f64 -> f64\n    abs(x)\n",
+    );
+    let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+    assert_eq!(
+        artifact.compiled,
+        vec!["root".to_string(), "magnitude".to_string()],
+        "both f64 math functions compile (none skipped)"
+    );
+    assert!(artifact.skipped.is_empty());
+    let code = section_body(&artifact.bytes, 10).expect("code section");
+    assert!(
+        find_subslice(&code, &[0x9f]).is_some(),
+        "sqrt(f64) emits f64.sqrt (0x9F)"
+    );
+    assert!(
+        find_subslice(&code, &[0x99]).is_some(),
+        "abs(f64) emits f64.abs (0x99)"
+    );
+}
+
+#[test]
+fn i64_math_builtins_compile_with_expected_opcodes() {
+    // The `i64` suite (`abs`/`min`/`max`/`gcd`/`sign`/`clamp`) compiles inline.
+    // `abs(i64)` uses the branchless `sar 63` sign mask (`i64.shr_s`, 0x87) then
+    // `xor`/`sub`; `min`/`max`/`sign`/`clamp` use `select` (0x1B); `gcd` uses
+    // `i64.rem_u` (0x82) inside a `block`/`loop`.
+    let source = concat!(
+        "fn a x i64 -> i64\n    abs(x)\n\n",
+        "fn mn x i64 y i64 -> i64\n    min(x, y)\n\n",
+        "fn mx x i64 y i64 -> i64\n    max(x, y)\n\n",
+        "fn g x i64 y i64 -> i64\n    gcd(x, y)\n\n",
+        "fn s x i64 -> i64\n    sign(x)\n\n",
+        "fn c x i64 lo i64 hi i64 -> i64\n    clamp(x, lo, hi)\n",
+    );
+    let artifact = emit_wasm_module(&module_for(source)).expect("emit");
+    assert_eq!(
+        artifact.compiled,
+        vec![
+            "a".to_string(),
+            "mn".to_string(),
+            "mx".to_string(),
+            "g".to_string(),
+            "s".to_string(),
+            "c".to_string(),
+        ],
+        "every i64 math builtin compiles (none skipped)"
+    );
+    assert!(artifact.skipped.is_empty());
+    let code = section_body(&artifact.bytes, 10).expect("code section");
+    // `abs(i64)`: the arithmetic sign mask via i64.shr_s (0x87).
+    assert!(
+        find_subslice(&code, &[0x87]).is_some(),
+        "abs(i64) uses i64.shr_s for the sign mask"
+    );
+    // `min`/`max`/`sign`/`clamp`: at least one `select` (0x1B).
+    assert!(
+        find_subslice(&code, &[0x1b]).is_some(),
+        "min/max/sign/clamp use select (0x1B)"
+    );
+    // `gcd`: the unsigned remainder (0x82) inside the Euclid loop.
+    assert!(
+        find_subslice(&code, &[0x82]).is_some(),
+        "gcd uses i64.rem_u (0x82)"
+    );
+}
+
+#[test]
+fn f64_min_max_sign_clamp_are_deferred() {
+    // The `f64` cases of `min`/`max`/`sign`/`clamp` are DEFERRED (skipped to the
+    // interpreters), matching the native backend — `f64.min`/`f64.max` NaN/`±0.0`
+    // tie-breaking diverges from Rust and the branch forms need float compares.
+    for (name, body) in [("fmin", "min(x, y)"), ("fmax", "max(x, y)")] {
+        let source = format!("fn {name} x f64 y f64 -> f64\n    {body}\n");
+        let artifact = emit_wasm_module(&module_for(&source));
+        // The only function is deferred, so the module has no eligible function
+        // (diagnostic L0338), proving the f64 case is not compiled.
+        let err = artifact.expect_err("f64 min/max must be deferred");
+        assert_eq!(err.code, "L0338");
+        assert!(
+            err.skipped.iter().any(|s| s.name == name),
+            "{name} recorded as skipped"
+        );
+    }
+    // `sign(f64) -> i64` and `clamp(f64) -> f64` likewise defer.
+    let sign_src = "fn fsign x f64 -> i64\n    sign(x)\n";
+    let err = emit_wasm_module(&module_for(sign_src)).expect_err("f64 sign deferred");
+    assert_eq!(err.code, "L0338");
+    let clamp_src = "fn fclamp x f64 lo f64 hi f64 -> f64\n    clamp(x, lo, hi)\n";
+    let err = emit_wasm_module(&module_for(clamp_src)).expect_err("f64 clamp deferred");
+    assert_eq!(err.code, "L0338");
 }

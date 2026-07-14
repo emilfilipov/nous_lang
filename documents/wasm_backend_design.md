@@ -553,6 +553,63 @@ sign; node-parity-tested by
 `crates/lullaby_cli/tests/cli.rs::wasm_overflow_arith_execution_parity_with_node`
 (shared fixture `tests/fixtures/valid/run_overflow_codegen.lby`, `main` = 233).
 
+### Scalar math builtins (landed)
+
+The scalar math builtins lower to inline WASM opcode sequences (recognized by
+name + arg count + operand type in the call lowerer, never emitted as real calls),
+bit-for-bit with the interpreters (`builtin_sqrt`/`builtin_abs`/`builtin_min`/…
+and `gcd_i64`) and matching the native backend's defer decisions:
+
+- **`sqrt(x f64) -> f64`** is the single opcode `f64.sqrt` (0x9F) — correctly
+  rounded IEEE-754, identical to the interpreters' `f64::sqrt` (a negative operand
+  yields NaN). A `sqrt` node is reliably `f64`, so it is registered in
+  `float_val_type_of` (like `to_f64`), keeping `sqrt(x) + y` on the float path.
+- **`abs(x f64) -> f64`** is `f64.abs` (0x99) — the IEEE sign-bit clear
+  (`|-0.0| = +0.0`, a NaN keeps its payload). **`abs(x i64) -> i64`** is the
+  branchless two's-complement idiom `(x ^ (x >> 63)) - (x >> 63)` (`i64.shr_s` sign
+  mask, `i64.xor`, `i64.sub`), matching release `i64::abs` — `abs(i64::MIN)` wraps
+  to `i64::MIN` (the `i64.sub` wraps), consistent with the wrapping-arithmetic
+  contract. `abs` follows its argument's width in `float_val_type_of` (f64 → float,
+  i64 → integer), so both dispatch correctly.
+- **`min(a, b)` / `max(a, b)` on `i64`** lower with `i64.lt_s` / `i64.gt_s` +
+  `select` (0x1B): `min` is `a < b ? a : b`, `max` is `a > b ? a : b` — matching
+  `i64::min` / `i64::max` (equal operands yield the equal value either way). The
+  **`f64` case is DEFERRED** (it falls through to the interpreters): WASM's
+  `f64.min` / `f64.max` NaN/`±0.0` tie-breaking diverges from Rust's
+  `f64::min` / `f64::max`, so shipping it would not be bit-exact.
+- **`gcd(a, b)` on `i64`** reduces each operand to its `u64` magnitude (the `abs`
+  idiom, whose `i64::MIN` result reinterprets to the unsigned `2^63`) and runs
+  unsigned-magnitude Euclid with `i64.rem_u` inside a `block`/`loop`, matching
+  `gcd_i64` — including `gcd(i64::MIN, 0) = i64::MIN` (the loop exits immediately
+  with `x = 2^63`, whose bits are `i64::MIN`).
+- **`sign(x) -> i64`** (`-1`/`0`/`1`) on `i64` is two nested `select`s over
+  `i64.lt_s` / `i64.gt_s` — `x < 0 ? -1 : (x > 0 ? 1 : 0)` — matching
+  `i64::signum`. The **`f64` case is DEFERRED**.
+- **`clamp(x, lo, hi) -> i64`** on `i64` is two nested `select`s comparing the
+  ORIGINAL `x` — `x < lo ? lo : (x > hi ? hi : x)` — matching the interpreters'
+  `if x < lo { lo } else if x > hi { hi } else { x }` for every ordering of
+  `lo`/`hi` (including `lo > hi`, which yields `lo`). The **`f64` case is
+  DEFERRED**.
+
+The `i64`-only `min`/`max`/`sign`/`clamp` gates also reject a float-arithmetic
+operand (which the IR annotates `i64`) via `float_val_type_of`, so a float value
+never slips into the integer path. Default-deny: any operand shape not proven
+bit-exact (the deferred `f64` cases, an `f32`/fixed-width operand) is skipped and
+the enclosing function runs on the interpreters. The transcendental/rounding math
+builtins (`sin`/`cos`/`floor`/`ceil`/`round`/`exp`/`ln`/…) stay deferred — they need
+a library or a polynomial not bit-matchable to Rust — as does `pow`.
+
+Verified by the structural encoder tests
+`crates/lullaby_ir/src/wasm.rs::f64_sqrt_and_abs_emit_their_opcodes`,
+`i64_math_builtins_compile_with_expected_opcodes`, and
+`f64_min_max_sign_clamp_are_deferred`, and — under node — by
+`crates/lullaby_cli/tests/cli.rs::wasm_math_builtins_execution_parity_with_node`
+(fixture `tests/fixtures/valid/wasm_math_builtins.lby`, `main` = 70; it exercises
+`sqrt`/`abs` on `f64`, `abs`/`min`/`max`/`gcd`/`sign`/`clamp` on `i64`, and
+`gcd(i64::MIN, 0)`). `abs(i64::MIN)` also wraps correctly on WASM (proven by direct
+node runs), but is not folded through the interpreter ground truth because
+`i64::abs` panics on that single input under a debug/overflow-checked build.
+
 ## First increment — the scalar subset
 
 WASM has a clean core (functions, `i32`/`i64`/`f32`/`f64`, structured control
@@ -592,10 +649,14 @@ second phase. So the first increment compiles the **scalar subset** only:
   `map_new`/`map_set`/`map_get`/`map_has`/`map_len`, `to_string` (non-float
   arguments), the index-based string operations
   `substring`/`find`/`contains`/`starts_with`/`ends_with` (see **Heap types
-  (landed)** above), and the overflow-aware arithmetic builtins
+  (landed)** above), the overflow-aware arithmetic builtins
   `checked_<op>`/`saturating_<op>`/`wrapping_<op>` for `add`/`sub`/`mul` on the
-  fixed-width kinds (see **Overflow-aware arithmetic (landed)** below); every other
-  builtin is still rejected. Strings, structs, fixed
+  fixed-width kinds (see **Overflow-aware arithmetic (landed)** below), and the
+  scalar math builtins `sqrt`/`abs` on `f64`, `abs` on `i64`, and
+  `min`/`max`/`gcd`/`sign`/`clamp` on `i64` (the `f64` cases of
+  `min`/`max`/`sign`/`clamp` are deferred — see **Scalar math builtins (landed)**
+  above); every other builtin (transcendental math `sin`/`cos`/`floor`/…, `pow`,
+  …) is still rejected. Strings, structs, fixed
   arrays, lists of scalar/`string`/`struct`/nested-list elements, and maps with a
   scalar or `string` key and a scalar, `string`, or `struct` value are now supported
   — see **Heap types (landed)**, **Growable `list<T>` (landed)**, **Growable

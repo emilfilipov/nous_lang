@@ -318,6 +318,19 @@ pub(crate) fn lower_expr(
                     ctx, ovf_op, mode, kind, &expr.ty, &args[0], &args[1], out,
                 );
             }
+            // Scalar math builtins that lower to inline opcode sequences (not real
+            // calls), matching the interpreters bit-for-bit and mirroring the
+            // native backend's decisions: `sqrt`/`abs` on `f64`, `abs` on `i64`,
+            // and the `i64` suite `min`/`max`/`gcd`/`sign`/`clamp`. The `f64` cases
+            // of `min`/`max`/`sign`/`clamp` are DEFERRED (they fall through to the
+            // generic-call path, which errors, so the function runs on the
+            // interpreters) — matching native, where `f64.min`/`f64.max`
+            // NaN/`±0.0` tie-breaking diverges from Rust and the branch forms need
+            // float compares. Each is gated on argument count and type so a name
+            // cannot shadow a user function of the same spelling.
+            if let Some(()) = try_lower_scalar_math(ctx, name, args, out)? {
+                return Ok(());
+            }
             // A call whose name is a declared struct is a struct construction: the
             // IR lowerer emits struct literals as positional `Call`s.
             if ctx.structs.contains_key(name) {
@@ -362,6 +375,262 @@ pub(crate) fn lower_expr(
             Err("closures are not supported by the WASM backend".to_string())
         }
     }
+}
+
+/// Whether an argument evaluates to an `f64`. A leaf is reliably typed by its
+/// `TypeRef` (`f64`), but a float ARITHMETIC node is IR-annotated `i64`, so
+/// [`float_val_type_of`] is consulted too (it looks through arithmetic to the
+/// float leaves). Used to route `abs` to the f64 path and to keep the `i64`-only
+/// `min`/`max`/`sign`/`clamp` from matching a float-arithmetic operand (which
+/// would otherwise carry an `i64`-annotated node into the integer path).
+fn is_f64_operand(ctx: &LowerCtx, e: &IrExpr) -> bool {
+    e.ty.name == "f64" || float_val_type_of(ctx, e) == Some(WasmValType::F64)
+}
+
+/// Try to lower a scalar math builtin to an inline opcode sequence. Returns
+/// `Ok(Some(()))` when it emitted the builtin, `Ok(None)` when the name/arity/type
+/// is not a supported scalar-math call (the caller continues its dispatch), or
+/// `Err` when a matched builtin cannot be compiled (the function is demoted to the
+/// interpreters).
+///
+/// Ground truth is the interpreters (`builtin_sqrt`/`builtin_abs`/`builtin_min`/…
+/// and `gcd_i64`); every sequence is bit-for-bit with them, and with the native
+/// backend. The `f64` cases of `min`/`max`/`sign`/`clamp` are intentionally NOT
+/// matched (they return `Ok(None)` and defer to the interpreters), exactly like
+/// native — `f64.min`/`f64.max` NaN/`±0.0` tie-breaking diverges from Rust's
+/// `f64::min`/`f64::max`, and the branch forms need float compares.
+pub(crate) fn try_lower_scalar_math(
+    ctx: &mut LowerCtx,
+    name: &str,
+    args: &[IrExpr],
+    out: &mut Vec<u8>,
+) -> Result<Option<()>, String> {
+    match name {
+        // `sqrt(x f64) -> f64`: a single `f64.sqrt`, bit-for-bit `f64::sqrt`
+        // (a negative operand yields NaN, matching the interpreters and IEEE-754).
+        // f64-only, like the interpreter builtin.
+        "sqrt" if args.len() == 1 && is_f64_operand(ctx, &args[0]) => {
+            lower_expr(ctx, &args[0], out)?;
+            out.push(0x9f); // f64.sqrt
+            Ok(Some(()))
+        }
+        // `abs(x f64) -> f64`: `f64.abs` clears the IEEE sign bit (|-0.0| = +0.0;
+        // a NaN keeps its payload with the sign cleared), matching `f64::abs` /
+        // the interpreters' `n.abs()`.
+        "abs" if args.len() == 1 && is_f64_operand(ctx, &args[0]) => {
+            lower_expr(ctx, &args[0], out)?;
+            out.push(0x99); // f64.abs
+            Ok(Some(()))
+        }
+        // `abs(x i64) -> i64`: the branchless two's-complement idiom
+        // `(x ^ (x >> 63)) - (x >> 63)`, matching release `i64::abs` — which wraps
+        // `abs(i64::MIN)` back to `i64::MIN` (the `i64.sub` wraps), consistent with
+        // the interpreters and the native backend.
+        "abs" if args.len() == 1 && args[0].ty.name == "i64" => {
+            emit_i64_abs(ctx, &args[0], out)?;
+            Ok(Some(()))
+        }
+        // `min(a, b)` / `max(a, b)` on plain `i64`: `i64.lt_s`/`i64.gt_s` +
+        // `select`, matching `i64::min`/`i64::max`. For equal operands both
+        // formulas yield the (equal) value, so the tie direction is irrelevant.
+        "min" | "max"
+            if args.len() == 2
+                && args[0].ty.name == "i64"
+                && args[1].ty.name == "i64"
+                && !is_f64_operand(ctx, &args[0])
+                && !is_f64_operand(ctx, &args[1]) =>
+        {
+            emit_i64_min_max(ctx, name == "min", &args[0], &args[1], out)?;
+            Ok(Some(()))
+        }
+        // `gcd(a, b)` on `i64`: unsigned-magnitude Euclid over `u64` magnitudes with
+        // `i64.rem_u`, matching `gcd_i64` — including `gcd(i64::MIN, 0) = i64::MIN`
+        // (the magnitude `2^63` reinterprets back to `i64::MIN`).
+        "gcd" if args.len() == 2 && args[0].ty.name == "i64" && args[1].ty.name == "i64" => {
+            emit_i64_gcd(ctx, &args[0], &args[1], out)?;
+            Ok(Some(()))
+        }
+        // `sign(x) -> i64` (`-1`/`0`/`1`) on `i64`: two nested `select`s over
+        // `i64.lt_s`/`i64.gt_s`, matching `i64::signum`. The `f64` case is deferred.
+        "sign" if args.len() == 1 && args[0].ty.name == "i64" && !is_f64_operand(ctx, &args[0]) => {
+            emit_i64_sign(ctx, &args[0], out)?;
+            Ok(Some(()))
+        }
+        // `clamp(x, lo, hi) -> i64` on `i64`: `x < lo ? lo : (x > hi ? hi : x)` via
+        // two nested `select`s comparing the ORIGINAL `x`, matching the
+        // interpreters' `if x < lo { lo } else if x > hi { hi } else { x }` for every
+        // ordering of `lo`/`hi` (including `lo > hi`). The `f64` case is deferred.
+        "clamp"
+            if args.len() == 3
+                && args[0].ty.name == "i64"
+                && args[1].ty.name == "i64"
+                && args[2].ty.name == "i64"
+                && !is_f64_operand(ctx, &args[0]) =>
+        {
+            emit_i64_clamp(ctx, &args[0], &args[1], &args[2], out)?;
+            Ok(Some(()))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Emit `|x|` for an `i64` argument via the branchless two's-complement idiom,
+/// leaving the magnitude on the stack. `mask = x >> 63` (arithmetic) is all-ones
+/// for a negative `x` and zero otherwise, so `(x ^ mask) - mask` is `-x` when
+/// negative and `x` when non-negative. `abs(i64::MIN)` wraps to `i64::MIN`
+/// (the `i64.sub` wraps), matching release `i64::abs`.
+pub(crate) fn emit_i64_abs(
+    ctx: &mut LowerCtx,
+    x: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let t = ctx.add_local(WasmValType::I64);
+    let m = ctx.add_local(WasmValType::I64);
+    lower_expr(ctx, x, out)?; // [x]
+    set_local(out, t); // t = x
+    get_local(out, t); // [x]
+    out.push(0x42); // i64.const 63
+    write_sleb(out, 63);
+    out.push(0x87); // i64.shr_s -> mask
+    set_local(out, m); // m = mask
+    get_local(out, t); // [x]
+    get_local(out, m); // [x, mask]
+    out.push(0x85); // i64.xor -> x ^ mask
+    get_local(out, m); // [x^mask, mask]
+    out.push(0x7d); // i64.sub -> |x|
+    Ok(())
+}
+
+/// Emit `min`/`max` for two `i64` operands with `i64.lt_s`/`i64.gt_s` + `select`.
+/// For `min`: `a < b ? a : b`; for `max`: `a > b ? a : b`. Matches
+/// `i64::min`/`i64::max` bit-for-bit (equal operands yield the equal value either
+/// way). Operands are spilled to locals so each is evaluated once.
+pub(crate) fn emit_i64_min_max(
+    ctx: &mut LowerCtx,
+    is_min: bool,
+    a: &IrExpr,
+    b: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let la = ctx.add_local(WasmValType::I64);
+    let lb = ctx.add_local(WasmValType::I64);
+    lower_expr(ctx, a, out)?;
+    set_local(out, la);
+    lower_expr(ctx, b, out)?;
+    set_local(out, lb);
+    get_local(out, la); // val1 = a
+    get_local(out, lb); // val2 = b
+    get_local(out, la);
+    get_local(out, lb);
+    out.push(if is_min { 0x53 } else { 0x55 }); // i64.lt_s (min) / i64.gt_s (max)
+    out.push(0x1b); // select -> cond ? a : b
+    Ok(())
+}
+
+/// Emit `gcd(a, b)` for two `i64` operands: reduce each to its `u64` magnitude
+/// (the branchless `abs` idiom, whose `i64::MIN` result reinterprets to the
+/// unsigned `2^63`), then run Euclid's algorithm with `i64.rem_u` in a
+/// `block`/`loop`. Matches `gcd_i64` — including `gcd(i64::MIN, 0) = i64::MIN`,
+/// since the loop exits immediately with `x = 2^63` whose bits are `i64::MIN`.
+pub(crate) fn emit_i64_gcd(
+    ctx: &mut LowerCtx,
+    a: &IrExpr,
+    b: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let x = ctx.add_local(WasmValType::I64);
+    let y = ctx.add_local(WasmValType::I64);
+    let r = ctx.add_local(WasmValType::I64);
+    emit_i64_abs(ctx, a, out)?; // |a| magnitude
+    set_local(out, x);
+    emit_i64_abs(ctx, b, out)?; // |b| magnitude
+    set_local(out, y);
+    // block { loop { if y == 0 break; r = x %u y; x = y; y = r; continue } }
+    out.push(0x02); // block
+    out.push(0x40); // void blocktype
+    out.push(0x03); // loop
+    out.push(0x40); // void blocktype
+    get_local(out, y);
+    out.push(0x50); // i64.eqz
+    out.push(0x0d); // br_if
+    write_uleb(out, 1); // -> end of block (exit the loop)
+    get_local(out, x);
+    get_local(out, y);
+    out.push(0x82); // i64.rem_u -> x %u y
+    set_local(out, r);
+    get_local(out, y);
+    set_local(out, x); // x = y
+    get_local(out, r);
+    set_local(out, y); // y = r
+    out.push(0x0c); // br
+    write_uleb(out, 0); // -> loop top (continue)
+    out.push(0x0b); // end loop
+    out.push(0x0b); // end block
+    get_local(out, x); // result = x
+    Ok(())
+}
+
+/// Emit `sign(x) -> i64` (`-1`/`0`/`1`) for an `i64` operand as two nested
+/// `select`s: `x < 0 ? -1 : (x > 0 ? 1 : 0)`, matching `i64::signum`.
+pub(crate) fn emit_i64_sign(
+    ctx: &mut LowerCtx,
+    x: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let lx = ctx.add_local(WasmValType::I64);
+    lower_expr(ctx, x, out)?;
+    set_local(out, lx);
+    out.push(0x42); // i64.const -1  (outer val1)
+    write_sleb(out, -1);
+    out.push(0x42); // i64.const 1   (inner val1)
+    write_sleb(out, 1);
+    out.push(0x42); // i64.const 0   (inner val2)
+    write_sleb(out, 0);
+    get_local(out, lx);
+    out.push(0x42); // i64.const 0
+    write_sleb(out, 0);
+    out.push(0x55); // i64.gt_s -> x > 0
+    out.push(0x1b); // select -> x > 0 ? 1 : 0
+    get_local(out, lx);
+    out.push(0x42); // i64.const 0
+    write_sleb(out, 0);
+    out.push(0x53); // i64.lt_s -> x < 0
+    out.push(0x1b); // select -> x < 0 ? -1 : (x > 0 ? 1 : 0)
+    Ok(())
+}
+
+/// Emit `clamp(x, lo, hi) -> i64` for `i64` operands as two nested `select`s:
+/// `x < lo ? lo : (x > hi ? hi : x)`, both comparing the ORIGINAL `x` — matching
+/// the interpreters' `if x < lo { lo } else if x > hi { hi } else { x }` for every
+/// ordering of `lo`/`hi` (including `lo > hi`, which yields `lo`).
+pub(crate) fn emit_i64_clamp(
+    ctx: &mut LowerCtx,
+    x: &IrExpr,
+    lo: &IrExpr,
+    hi: &IrExpr,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let lx = ctx.add_local(WasmValType::I64);
+    let llo = ctx.add_local(WasmValType::I64);
+    let lhi = ctx.add_local(WasmValType::I64);
+    lower_expr(ctx, x, out)?;
+    set_local(out, lx);
+    lower_expr(ctx, lo, out)?;
+    set_local(out, llo);
+    lower_expr(ctx, hi, out)?;
+    set_local(out, lhi);
+    get_local(out, llo); // outer val1 = lo
+    get_local(out, lhi); // inner val1 = hi
+    get_local(out, lx); // inner val2 = x
+    get_local(out, lx);
+    get_local(out, lhi);
+    out.push(0x55); // i64.gt_s -> x > hi
+    out.push(0x1b); // select -> x > hi ? hi : x
+    get_local(out, lx);
+    get_local(out, llo);
+    out.push(0x53); // i64.lt_s -> x < lo
+    out.push(0x1b); // select -> x < lo ? lo : (x > hi ? hi : x)
+    Ok(())
 }
 
 /// Lower a `string` argument to the two host-import operands `[ptr, len]`: push a
@@ -1872,9 +2141,19 @@ pub(crate) fn float_val_type_of(ctx: &LowerCtx, expr: &IrExpr) -> Option<WasmVal
             ft @ (WasmValType::F32 | WasmValType::F64) => Some(ft),
             _ => None,
         },
-        IrExprKind::Call { name, .. } => match name.as_str() {
+        IrExprKind::Call { name, args } => match name.as_str() {
             "to_f32" => Some(WasmValType::F32),
-            "to_f64" => Some(WasmValType::F64),
+            // `to_f64(x)` widens to f64; `sqrt(x f64) -> f64` is f64-only (its
+            // argument is always f64), so a `sqrt` node is reliably f64 — matching
+            // the native backend's `float_width_of_expr`.
+            "to_f64" | "sqrt" => Some(WasmValType::F64),
+            // `abs` follows its argument's width, but only the f64 case is a float
+            // result; an `abs(i64)` is an integer (`None`), so `abs` reports a
+            // float type only when its argument is f64 — mirroring native.
+            "abs" if args.len() == 1 => match float_val_type_of(ctx, &args[0]) {
+                Some(WasmValType::F64) => Some(WasmValType::F64),
+                _ => None,
+            },
             _ => None,
         },
         IrExprKind::Binary {
