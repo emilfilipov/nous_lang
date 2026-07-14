@@ -56,7 +56,11 @@ Lullaby already beats Python.
   recursive args `fib(n-1)`/`fib(n-2)` form with one `lea rcx,[rbx-k]`, as C does.
 - Tight counting-`sum` loop: **0.52× C — faster than C** — the backend
   ILP-unrolls `while i < N: acc = acc + i; i = i + 1`, folding four iterations
-  per step into one dependent add and breaking the serial `acc` chain.
+  per step into one dependent add and breaking the serial `acc` chain. This now
+  fires for a **runtime bound** too (`while i < n`): loop-weighted register
+  promotion keeps the counter and accumulator in registers ahead of the
+  invariant `n`, taking that loop from **5× slower than C to ~C parity** (and
+  the constant-bound form stays 2× faster).
 - Euclid `gcd` accumulation loop: **~1.00× C — at parity** (10.9 vs 11.0 ns/gcd)
   — `sqrt`/`abs`/`min`/`max`/`gcd`/`sign`/`clamp` now lower to inline machine code
   (`gcd` is a branchless magnitude `abs` + unsigned `div` Euclid), matching C's

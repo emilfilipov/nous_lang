@@ -150,13 +150,7 @@ impl Gen {
     fn program(&mut self) -> String {
         let stmt_count = self.rng.range(2, 7);
         for _ in 0..stmt_count {
-            match self.rng.below(5) {
-                // A new binding.
-                0..=2 => {
-                    let expr = self.expr(3);
-                    let name = self.fresh_var();
-                    self.push_line(1, &format!("let {name} i64 = {expr}"));
-                }
+            match self.rng.below(8) {
                 // A single-level `if` that reassigns an existing variable.
                 3 if !self.vars.is_empty() => {
                     let cond_l = self.leaf();
@@ -177,6 +171,29 @@ impl Gen {
                     self.push_line(1, &format!("for k from 0 to {hi}"));
                     self.push_line(2, &format!("{target} = ({target} + (k * {step}))"));
                 }
+                // A `while i < BOUND` counting-sum loop — the exact shape the
+                // native ILP unroll recognizes. The bound is a small constant or a
+                // small non-negative runtime variable (exercising both the const
+                // and the runtime-bound fast paths, and boundary/`n <= 0` cases).
+                5..=6 => {
+                    let acc = self.fresh_var();
+                    self.push_line(1, &format!("let {acc} i64 = 0"));
+                    let ctr = self.fresh_var();
+                    self.push_line(1, &format!("let {ctr} i64 = 0"));
+                    let bound = if self.rng.chance(2) {
+                        let b = self.fresh_var();
+                        let v = self.rng.range(0, 40);
+                        self.push_line(1, &format!("let {b} i64 = {v}"));
+                        b
+                    } else {
+                        self.rng.range(0, 40).to_string()
+                    };
+                    self.push_line(1, &format!("while {ctr} < {bound}"));
+                    self.push_line(2, &format!("{acc} = {acc} + {ctr}"));
+                    self.push_line(2, &format!("{ctr} = {ctr} + 1"));
+                }
+                // Otherwise a new binding (also the fallback when `if`/`for` guards
+                // fail with no variables yet).
                 _ => {
                     let expr = self.expr(3);
                     let name = self.fresh_var();

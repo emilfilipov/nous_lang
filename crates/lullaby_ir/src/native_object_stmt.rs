@@ -295,24 +295,140 @@ pub(crate) fn plan_register_promotion(
     // stack (`lower_native_for` addresses them as memory), so exclude them.
     let mut excluded = std::collections::HashSet::new();
     for_counter_slots(&function.instructions, locals, &mut excluded);
-    // Every remaining local is a single-word `i64`. Keep the first couple (lowest
-    // slots — parameters precede body locals) in registers; the rest stay on the
-    // stack.
-    let mut slots: Vec<i32> = locals
-        .values()
-        .filter(|l| matches!(l.ty, NativeType::I64))
-        .map(|l| l.slot)
-        .filter(|slot| !excluded.contains(slot))
+    // Rank the promotable `i64` locals by loop-weighted usage and keep the two
+    // busiest in registers. A use inside a loop counts far more than a
+    // straight-line one, so a hot loop counter/accumulator wins over a
+    // loop-invariant parameter — which is what makes patterns like the
+    // runtime-bound counting-sum reduction (`while i < n`) fire. Correctness does
+    // not depend on the choice (any local is correct promoted or on the stack);
+    // this only picks the fastest two.
+    let mut scores: HashMap<String, u64> = HashMap::new();
+    score_instr_usage(&function.instructions, 0, &mut scores);
+    let mut candidates: Vec<(u64, i32)> = locals
+        .iter()
+        .filter(|(_, l)| matches!(l.ty, NativeType::I64))
+        .filter(|(_, l)| !excluded.contains(&l.slot))
+        .map(|(name, l)| (scores.get(name).copied().unwrap_or(0), l.slot))
         .collect();
-    slots.sort_unstable();
+    // Most-used first; ties broken by slot ascending so the choice is
+    // deterministic regardless of the locals map's iteration order.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     let regs = [PReg::Rbx, PReg::Rsi];
     let mut promoted = HashMap::new();
     let mut saved = Vec::new();
-    for (slot, reg) in slots.into_iter().zip(regs) {
+    for ((_, slot), reg) in candidates.into_iter().zip(regs) {
         promoted.insert(slot, reg);
         saved.push(reg);
     }
     (promoted, saved)
+}
+
+/// Add each `i64`-local occurrence in `expr` to `scores`, weighted by `weight`
+/// (the enclosing loop-nesting frequency estimate). Reads of a `Variable` count;
+/// literals and other leaves do not.
+fn score_expr_usage(expr: &BytecodeExpr, weight: u64, scores: &mut HashMap<String, u64>) {
+    match &expr.kind {
+        BytecodeExprKind::Variable(name) => {
+            *scores.entry(name.clone()).or_default() += weight;
+        }
+        BytecodeExprKind::Index { target, index } => {
+            score_expr_usage(target, weight, scores);
+            score_expr_usage(index, weight, scores);
+        }
+        BytecodeExprKind::Unary { expr, .. } | BytecodeExprKind::Await { expr } => {
+            score_expr_usage(expr, weight, scores);
+        }
+        BytecodeExprKind::Binary { left, right, .. } => {
+            score_expr_usage(left, weight, scores);
+            score_expr_usage(right, weight, scores);
+        }
+        BytecodeExprKind::Call { args, .. } | BytecodeExprKind::Array(args) => {
+            for arg in args {
+                score_expr_usage(arg, weight, scores);
+            }
+        }
+        BytecodeExprKind::Field { target, .. } => score_expr_usage(target, weight, scores),
+        _ => {}
+    }
+}
+
+/// Accumulate loop-weighted usage counts for every local across `instrs`. Each
+/// loop level multiplies a use's weight (`8^depth`, capped), so loop-carried
+/// locals dominate. Both reads and assignment/binding targets count.
+fn score_instr_usage(
+    instrs: &[BytecodeInstruction],
+    depth: u32,
+    scores: &mut HashMap<String, u64>,
+) {
+    let weight = 8u64.saturating_pow(depth.min(8));
+    // A loop's condition and body run at the inner (per-iteration) frequency.
+    let inner = weight.saturating_mul(8);
+    for instr in instrs {
+        match instr {
+            BytecodeInstruction::Let { name, value, .. } => {
+                *scores.entry(name.clone()).or_default() += weight;
+                score_expr_usage(value, weight, scores);
+            }
+            BytecodeInstruction::Assign { name, value, .. } => {
+                *scores.entry(name.clone()).or_default() += weight;
+                score_expr_usage(value, weight, scores);
+            }
+            BytecodeInstruction::Return(Some(expr))
+            | BytecodeInstruction::Expr(expr)
+            | BytecodeInstruction::Throw { value: expr, .. } => {
+                score_expr_usage(expr, weight, scores);
+            }
+            BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    score_expr_usage(&branch.condition, weight, scores);
+                    score_instr_usage(&branch.body, depth, scores);
+                }
+                score_instr_usage(else_body, depth, scores);
+            }
+            BytecodeInstruction::While {
+                condition, body, ..
+            } => {
+                score_expr_usage(condition, inner, scores);
+                score_instr_usage(body, depth + 1, scores);
+            }
+            BytecodeInstruction::For {
+                name,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                *scores.entry(name.clone()).or_default() += inner;
+                score_expr_usage(start, weight, scores);
+                score_expr_usage(end, weight, scores);
+                if let Some(step) = step {
+                    score_expr_usage(step, weight, scores);
+                }
+                score_instr_usage(body, depth + 1, scores);
+            }
+            BytecodeInstruction::Loop { body, .. } => score_instr_usage(body, depth + 1, scores),
+            BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } => {
+                score_expr_usage(scrutinee, weight, scores);
+                for arm in arms {
+                    score_instr_usage(&arm.body, depth, scores);
+                }
+            }
+            BytecodeInstruction::Try {
+                body, catch_body, ..
+            } => {
+                score_instr_usage(body, depth, scores);
+                score_instr_usage(catch_body, depth, scores);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2260,7 +2376,18 @@ pub(crate) fn lower_native_if(
 pub(crate) struct SumReductionLoop {
     acc: PReg,
     counter: PReg,
-    bound: i64,
+    bound: SumBound,
+}
+
+/// The loop bound of a counting-sum reduction: either a compile-time constant
+/// (`while i < 1000`) or a loop-invariant runtime `i64` value (`while i < n`).
+/// The runtime case is the common one in real code and, without this, stays a
+/// latency-bound scalar loop; folding it the same way makes it beat C too.
+pub(crate) enum SumBound {
+    Const(i64),
+    /// A loop-invariant bound expression (a bare `i64` variable, distinct from
+    /// the accumulator and counter, so the body never mutates it).
+    Runtime(BytecodeExpr),
 }
 
 /// The promoted register a bare `i64` local occupies, by name, or `None`.
@@ -2372,12 +2499,6 @@ pub(crate) fn detect_sum_reduction(
     let BytecodeExprKind::Variable(counter_name) = &left.kind else {
         return None;
     };
-    let BytecodeExprKind::Integer(bound) = &right.kind else {
-        return None;
-    };
-    if *bound < 8 || i32::try_from(*bound).is_err() {
-        return None;
-    }
     if left.ty.name != "i64" {
         return None;
     }
@@ -2399,6 +2520,25 @@ pub(crate) fn detect_sum_reduction(
         return None;
     }
 
+    // Bound: a constant `≥ 8` (so the blocked loop is worthwhile and its
+    // `bound - (K-1)` guard cannot underflow), or a loop-invariant `i64`
+    // variable distinct from the accumulator and counter (so the body never
+    // mutates it). The runtime case guards `n < K` at run time instead.
+    let bound = match &right.kind {
+        BytecodeExprKind::Integer(value) => {
+            if *value < 8 || i32::try_from(*value).is_err() {
+                return None;
+            }
+            SumBound::Const(*value)
+        }
+        BytecodeExprKind::Variable(bound_name)
+            if right.ty.name == "i64" && bound_name != counter_name && bound_name != acc_name =>
+        {
+            SumBound::Runtime(right.as_ref().clone())
+        }
+        _ => return None,
+    };
+
     let acc = promoted_reg_of_name(ctx, acc_name)?;
     let counter = promoted_reg_of_name(ctx, counter_name)?;
     if acc == counter {
@@ -2407,7 +2547,7 @@ pub(crate) fn detect_sum_reduction(
     Some(SumReductionLoop {
         acc,
         counter,
-        bound: *bound,
+        bound,
     })
 }
 
@@ -2422,22 +2562,59 @@ pub(crate) fn emit_lea_rax_index4_plus(code: &mut Vec<u8>, index: PReg, disp: i3
 /// Emit the ILP-unrolled counting-sum loop: a blocked main loop summing `K`
 /// consecutive counter values per iteration into `acc` (one dependent add per
 /// block), then a scalar remainder loop for the final `< K` iterations.
-pub(crate) fn emit_sum_reduction(plan: &SumReductionLoop, code: &mut Vec<u8>) {
+/// `cmp <counter>, <reg>` where `reg` is `rcx` or `rdx` — a promoted-register
+/// counter compared directly against a scratch register (`cmp r/m64, r64`,
+/// REX.W 39 /r; ModRM = 11 <reg> <counter>).
+fn emit_cmp_counter_scratch(code: &mut Vec<u8>, counter: PReg, scratch3: u8) {
+    code.extend_from_slice(&[0x48, 0x39, 0xC0 | (scratch3 << 3) | counter.code3()]);
+}
+
+pub(crate) fn emit_sum_reduction(
+    ctx: &mut NativeCtx,
+    plan: &SumReductionLoop,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
     const K: i64 = 4;
     const BLOCK_ADD: i64 = K * (K - 1) / 2; // 0+1+2+3 = 6
-    let SumReductionLoop {
-        acc,
-        counter,
-        bound,
-    } = *plan;
+    let SumReductionLoop { acc, counter, .. } = *plan;
+    const RCX: u8 = 1;
+    const RDX: u8 = 2;
+
+    // Materialize the two loop bounds into scratch registers:
+    //   rcx = `bound`         (the remainder-loop limit, `cmp i, bound`)
+    //   rdx = `bound - (K-1)` (the blocked main-loop limit, `cmp i, bound-3`)
+    // The counting-sum body touches only rax and the promoted acc/counter, so
+    // rcx/rdx stay live across the whole loop with no reload. For a constant
+    // bound the values are immediates; for a runtime bound they are computed
+    // once, up front, from the (loop-invariant) bound value in rax.
+    let skip_main_site = match &plan.bound {
+        SumBound::Const(bound) => {
+            // mov rcx, bound ; mov rdx, bound-(K-1)  (both known i32-range).
+            emit_mov_scratch_imm(code, RCX, *bound as i32);
+            emit_mov_scratch_imm(code, RDX, (bound - (K - 1)) as i32);
+            None
+        }
+        SumBound::Runtime(bound_expr) => {
+            lower_native_expr(ctx, bound_expr, code)?; // rax = n
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax  (bound)
+            // If n < K the blocked loop cannot run a full block, and `n-(K-1)`
+            // could underflow — so skip straight to the scalar remainder, which
+            // is correct for every n (including n <= 0: it runs zero times).
+            code.extend_from_slice(&[0x48, 0x83, 0xF9, K as u8]); // cmp rcx, K
+            code.extend_from_slice(&[0x0F, 0x8C]); // jl skip_main (n < K)
+            let site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            // rdx = rcx - (K-1)  (n >= K here, so no underflow).
+            code.extend_from_slice(&[0x48, 0x89, 0xCA]); // mov rdx, rcx
+            code.extend_from_slice(&[0x48, 0x83, 0xEA, (K - 1) as u8]); // sub rdx, K-1
+            Some(site)
+        }
+    };
 
     // Main loop: while i < bound-(K-1), fold the whole block `i..i+K-1` in one
-    // `acc` add. `bound-(K-1)` fits i32 (bound does and is ≥ 8), and the guard
-    // never `lea`s before testing, so the counter cannot overflow into the block
-    // computation. `4*i + 6` wrapping equals four wrapping `+= i` steps.
-    let main_bound = (bound - (K - 1)) as i32;
+    // `acc` add. `4*i + 6` wrapping equals four wrapping `+= i` steps.
     let main_top = code.len();
-    counter.cmp_imm(code, main_bound); // cmp i, bound-3
+    emit_cmp_counter_scratch(code, counter, RDX); // cmp i, rdx (bound-3)
     code.extend_from_slice(&[0x0F, 0x8D]); // jge main_end
     let main_exit = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
@@ -2448,9 +2625,15 @@ pub(crate) fn emit_sum_reduction(plan: &SumReductionLoop, code: &mut Vec<u8>) {
     let main_end = code.len();
     patch_rel32_to(code, main_exit, main_end);
 
+    // `n < K` jumps here, past the blocked loop, into the scalar remainder.
+    if let Some(site) = skip_main_site {
+        let here = code.len();
+        patch_rel32_to(code, site, here);
+    }
+
     // Remainder: the ordinary scalar loop for the final < K iterations.
     let rem_top = code.len();
-    counter.cmp_imm(code, bound as i32); // cmp i, bound
+    emit_cmp_counter_scratch(code, counter, RCX); // cmp i, rcx (bound)
     code.extend_from_slice(&[0x0F, 0x8D]); // jge rem_end
     let rem_exit = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
@@ -2459,6 +2642,13 @@ pub(crate) fn emit_sum_reduction(plan: &SumReductionLoop, code: &mut Vec<u8>) {
     emit_jmp_to(code, rem_top);
     let rem_end = code.len();
     patch_rel32_to(code, rem_exit, rem_end);
+    Ok(())
+}
+
+/// `mov <scratch>, imm32` (sign-extended) for rcx/rdx (`REX.W C7 /0 id`).
+fn emit_mov_scratch_imm(code: &mut Vec<u8>, scratch3: u8, imm: i32) {
+    code.extend_from_slice(&[0x48, 0xC7, 0xC0 | scratch3]);
+    code.extend_from_slice(&imm.to_le_bytes());
 }
 
 pub(crate) fn lower_native_while(
@@ -2472,7 +2662,7 @@ pub(crate) fn lower_native_while(
     // step, breaking the serial `acc += i` dependency chain. Any deviation from
     // the exact shape falls through to the general loop lowering below.
     if let Some(plan) = detect_sum_reduction(ctx, condition, body) {
-        emit_sum_reduction(&plan, code);
+        emit_sum_reduction(ctx, &plan, code)?;
         return Ok(());
     }
 

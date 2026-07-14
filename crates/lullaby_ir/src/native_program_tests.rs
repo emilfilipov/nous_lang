@@ -225,6 +225,48 @@ fn ilp_unrolls_counting_sum_loop() {
     );
 }
 
+#[test]
+fn ilp_unrolls_runtime_bound_counting_sum() {
+    // `while i < n` (a *runtime* i64 bound) also lowers to the blocked ILP loop:
+    // the block-sum `lea rax, [i*4 + 6]` must appear, and — because the counter
+    // and accumulator now win register promotion over the loop-invariant
+    // parameter `n` — both operate in the promoted registers. Without this, the
+    // runtime-bound counting sum was 5x slower than C; with it, it beats C.
+    let program = emit_native_program(&module_for(concat!(
+        "fn sum_to n i64 -> i64\n",
+        "    let acc i64 = 0\n",
+        "    let i i64 = 0\n",
+        "    while i < n\n",
+        "        acc = acc + i\n",
+        "        i = i + 1\n",
+        "    return acc\n\n",
+        "fn main -> i64\n",
+        "    sum_to(1000)\n",
+    )))
+    .expect("emit native program");
+    let sec = COFF_HEADER_SIZE as usize;
+    let text_offset = read_u32(&program.bytes, sec + 20) as usize;
+    let text_size = read_u32(&program.bytes, sec + 16) as usize;
+    let text = &program.bytes[text_offset..text_offset + text_size];
+    // `lea rax, [<i>*4 + 6]` with the index register being rbx (0x9D) or rsi
+    // (0xB5) — proving the counter promoted despite the runtime bound.
+    let has_block_sum = text.windows(8).any(|w| {
+        w[0..3] == [0x48, 0x8D, 0x04]
+            && (w[3] == 0x9D || w[3] == 0xB5)
+            && w[4..8] == [0x06, 0x00, 0x00, 0x00]
+    });
+    assert!(
+        has_block_sum,
+        "expected the block-sum `lea rax, [i*4 + 6]` of the ILP unroll on a runtime bound"
+    );
+    // The runtime guard `cmp rcx, 4` (48 83 F9 04) gates the blocked loop so tiny
+    // `n` falls to the scalar remainder.
+    assert!(
+        text.windows(4).any(|w| w == [0x48, 0x83, 0xF9, 0x04]),
+        "expected the runtime `n < K` guard before the blocked loop"
+    );
+}
+
 /// Whether `code` contains a near `jmp rel32` (opcode `0xE9`) whose signed
 /// 32-bit displacement is negative — i.e. a backward branch, as a loop's
 /// closing jump must be. Scans every `0xE9` and decodes the following four
