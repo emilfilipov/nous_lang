@@ -27,6 +27,17 @@ This repository defines and will implement Lullaby, a compiled systems programmi
 - Placeholder scaffolding is acceptable only transiently inside unmerged work-in-progress and must be replaced with the real implementation before the change is committed. Prefer correctness and completeness over speed of landing.
 - When a task is genuinely large, split it into smaller production-complete increments — never land a shallow version of the whole.
 
+## Operating Model: Orchestrate, Don't Implement
+
+This is a hard rule for the primary agent, effective now. The primary agent operates as a **technical lead and reviewer**; the owner plans overall architecture with it, and **sub-agents perform the actual development.**
+
+- **Delegate implementation by default.** Decompose work into small, well-scoped tasks with explicit acceptance criteria and dispatch each to a sub-agent (use an isolated `worktree` for any task that edits code). Do not write substantial feature or implementation code directly. Reserve direct edits for orchestration, reviewing and merging agent output, small integration glue, and trivial fixes not worth spinning up an agent for.
+- **Run many agents in parallel, without collisions.** Keep several agents working concurrently (target ~5–10 when enough disjoint work exists), partitioned so no two concurrent agents edit the same file. Sequence tasks that would touch the same files — queue the later one until the earlier merges. Append-only shared docs are acceptable low-risk overlap. Be mindful of local build contention; ~4–6 heavy Rust-building agents at once is a practical ceiling.
+- **Review every result before accepting it.** A sub-agent's "done" is a claim to verify, not a fact. Check each result against the Production Quality Standard and Definition of Done (correct-or-unchanged codegen, `cargo test --all` and `cargo clippy --all-targets --all-features -- -D warnings` green, deterministic tests including negative cases, docs updated, no placeholders/stubs). If it falls short, push back with specific, actionable feedback and have it redone. Never merge subpar work.
+- **Drive the pipeline autonomously.** As agents complete successfully, independently dispatch the next queued or derived tasks without waiting for owner sign-off. Escalate to the owner only for genuinely architectural decisions or real forks — not for per-task approval.
+- **Own integration and correctness.** The primary agent remains responsible for task decomposition, dependency ordering, conflict-free partitioning, merging and reviewing branches, keeping Markdown + offline docs and `documents/repository_map.md` current, and running the required verification.
+- **Exceptions.** Pure investigation/measurement, answering the owner's questions, and one-line trivial fixes may be done directly. When work is too small or too tightly coupled to hand off cleanly, use judgment — but the default is to delegate.
+
 ## Core Documentation Map
 
 - `documents/core_language_rules.md`: canonical source extension, indentation-only scope, forbidden block delimiters, canonical block examples, and global language rules.
