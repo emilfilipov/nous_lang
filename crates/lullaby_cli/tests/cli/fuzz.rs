@@ -418,46 +418,83 @@ fn gen_string_loop_program(seed: u64) -> String {
     )
 }
 
-/// Generates one program that exercises **arena-first memory (stage 1)**: an
-/// arena-eligible LEAF helper `h a i64 -> i64` (scalar return, no user calls, no
-/// loop, allocates strings that stay local) called from `main`'s bounded loop.
-/// `h` routes its per-call heap allocations through the function-scoped arena and
-/// rewinds the bump pointer on return; the arena is behavior-neutral to the
-/// computed value (it only changes WHEN memory is reclaimed), so ANY native/
-/// interpreter divergence here is an arena-induced miscompile (a clobbered return
-/// value across the reset, or an unsound rewind that corrupts a still-live value).
+/// Generates one program that exercises **arena-first memory**: an arena-eligible
+/// LEAF helper `h a i64 -> i64` (scalar return, no user calls, allocates strings
+/// that stay local) called from `main`'s bounded loop. `h` routes its heap through
+/// the function-scoped arena and rewinds the bump pointer on return; the arena is
+/// behavior-neutral to the computed value (it only changes WHEN memory is
+/// reclaimed), so ANY native/interpreter divergence here is an arena-induced
+/// miscompile (a clobbered return value across the reset, or an unsound rewind that
+/// corrupts a still-live value).
+///
+/// Two shapes, chosen per seed:
+/// * **straight-line** (stage 1): `h` builds a couple of local strings and returns
+///   a scalar derived from them — a function-scoped region reclaimed at return.
+/// * **confined loop** (stage 2): `h` ITSELF loops, allocating per-iteration scratch
+///   that stays local (a fresh `string` read only by `len`, accumulating a SCALAR),
+///   so the loop gets a per-iteration bump-pointer **sub-region**. This is the
+///   stage-2 oracle: a mis-scoped rewind (freeing a still-live accumulator, or
+///   leaking so the fixed heap exhausts) surfaces as an exit-code divergence.
+///
 /// Every string op is one the native subset supports and all backends agree on
 /// (ASCII, so `len` counts identically), and the bounds are always valid, so the
 /// program is divergence-free like the other generators.
 fn gen_arena_program(seed: u64) -> String {
     let mut rng = Rng(seed ^ 0xA5A5_1234_DEAD_BEEFu64);
     let hi = rng.range(5, 40);
-    // `s`: a fresh, uniquely-owned string built straight-line from the parameter.
+    let bias = rng.range(-50, 50);
+    let main = format!(
+        "\n\nfn main -> i64\n    let total i64 = 0\n    for i from 0 to {hi}\n        \
+         total = total + h(i)\n    total + {bias}\n"
+    );
+
+    // Confined-loop shape: `h` allocates non-escaping per-iteration scratch. Half
+    // the batch, so both the stage-1 (function region) and stage-2 (loop sub-region)
+    // paths are covered.
+    if rng.below(2) == 0 {
+        // A few iterations; the per-iteration string is uniquely owned and read only
+        // by `len` (borrow-only), so the loop is confined and gets a sub-region.
+        let k = rng.range(2, 12);
+        let scratch = match rng.below(4) {
+            0 => "to_string(a + j) + \"__x__\"".to_string(),
+            1 => "trim(to_string(a * 2 + j))".to_string(),
+            2 => "upper(to_string(a + j * 3))".to_string(),
+            _ => "repeat(\"ab\", 2) + to_string(j)".to_string(),
+        };
+        let acc = match rng.below(3) {
+            0 => "total = total + len(s)".to_string(),
+            1 => "total = total + len(s) * 2".to_string(),
+            _ => "total = total + len(s) - 1".to_string(),
+        };
+        let h = format!(
+            "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
+             let s string = {scratch}\n        {acc}\n    total\n"
+        );
+        return format!("{h}{main}");
+    }
+
+    // Straight-line shape (stage 1): `s`, then `t` derived from `s`, then a scalar.
     let s_expr = match rng.below(4) {
         0 => "to_string(a) + \"__suffix__\"".to_string(),
         1 => "trim(to_string(a * 3))".to_string(),
         2 => "substring(to_string(a * 7 + 1), 0, 1)".to_string(),
         _ => "repeat(\"ab\", 3)".to_string(),
     };
-    // `t`: a second allocation derived from `s` (also reclaimed by the arena).
     let t_expr = match rng.below(3) {
         0 => "upper(s)".to_string(),
         1 => "lower(s)".to_string(),
         _ => "s + \"?\"".to_string(),
     };
-    // A scalar result derived from both (never returns a heap value — required for
-    // arena eligibility).
     let result = match rng.below(3) {
         0 => "len(s) + len(t)".to_string(),
         1 => "len(t) - len(s)".to_string(),
         _ => "len(s) * 2 + len(t)".to_string(),
     };
-    let bias = rng.range(-50, 50);
-    format!(
+    let h = format!(
         "fn h a i64 -> i64\n    let s string = {s_expr}\n    let t string = {t_expr}\n    \
-         {result}\n\nfn main -> i64\n    let total i64 = 0\n    for i from 0 to {hi}\n        \
-         total = total + h(i)\n    total + {bias}\n"
-    )
+         {result}\n"
+    );
+    format!("{h}{main}")
 }
 
 /// The result of running a program on one backend, reduced to a comparable form.

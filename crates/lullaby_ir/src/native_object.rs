@@ -3079,6 +3079,13 @@ pub(crate) struct NativeCtx<'a> {
     /// The frame slot (`[rbp - arena_mark_slot]`) holding the saved bump pointer
     /// when `is_arena`; `0` otherwise (unused).
     arena_mark_slot: i32,
+    /// Arena-first memory (stage 2): base frame slot of a region of per-loop-depth
+    /// "sub-region mark" words. A loop nested `d` levels deep (0 = outermost) saves
+    /// its entry bump pointer into `[rbp - (arena_loop_mark_base + 8*d)]`; sibling
+    /// loops at the same depth reuse the word (never live simultaneously), nested
+    /// loops at different depths use distinct words. `0` when `is_arena` is false or
+    /// the function has no loops. See `arena_loop_mark_slot`.
+    arena_loop_mark_base: i32,
 }
 
 /// The native signature of a compiled function: the layout of each parameter and
@@ -3219,6 +3226,25 @@ impl<'a> NativeCtx<'a> {
             0
         };
 
+        // Arena-first memory (stage 2): reserve one bump-pointer "sub-region mark"
+        // word per level of loop nesting, so each loop that gets a per-iteration
+        // sub-region can save/restore its own mark. A loop at nesting depth `d`
+        // (0-based) uses word `d`; the region is sized to the deepest loop nest. Only
+        // arena functions rewind loops, so non-arena functions reserve nothing and
+        // stay byte-identical.
+        let arena_loop_mark_base = if is_arena {
+            let depth = max_loop_nesting(&function.instructions);
+            if depth > 0 {
+                let base = next_slot + 8;
+                next_slot += depth as i32 * 8;
+                base
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         let has_call = body_has_call(&function.instructions);
         // Reserve local slots plus (if calling) 32 bytes of shadow space, plus an
         // outgoing stack-argument area for any call passing more than four
@@ -3251,7 +3277,15 @@ impl<'a> NativeCtx<'a> {
             fast_math: false,
             is_arena,
             arena_mark_slot,
+            arena_loop_mark_base,
         })
+    }
+
+    /// The frame slot of the arena sub-region mark for a loop at nesting depth
+    /// `depth` (0 = outermost). Words are laid out contiguously from
+    /// `arena_loop_mark_base`; `plan` reserves one per level of loop nesting.
+    fn arena_loop_mark_slot(&self, depth: usize) -> i32 {
+        self.arena_loop_mark_base + depth as i32 * 8
     }
 
     /// The register a local slot is promoted into, if any.
@@ -3999,48 +4033,174 @@ fn instruction_calls_user(
     }
 }
 
-/// Whether a body contains a loop whose header or body touches the heap. Such a
-/// loop allocates once per iteration, which a function-scoped arena (reclaimed only
-/// at return) cannot bound — so it disqualifies arena eligibility. Per-iteration
-/// (loop) sub-regions are a later staging step.
-fn body_has_allocating_loop(body: &[BytecodeInstruction]) -> bool {
-    body.iter().any(instruction_has_allocating_loop)
+/// Maximum loop-nesting depth on any path through a body: `0` when there is no
+/// loop, `1` for an unnested loop, `2` for a loop inside a loop, etc. Used to
+/// reserve one arena sub-region "mark" word per level so nested loops that each
+/// get a per-iteration reset never share a mark slot.
+fn max_loop_nesting(body: &[BytecodeInstruction]) -> usize {
+    body.iter().map(instruction_loop_nesting).max().unwrap_or(0)
 }
 
-fn instruction_has_allocating_loop(instruction: &BytecodeInstruction) -> bool {
+fn instruction_loop_nesting(instruction: &BytecodeInstruction) -> usize {
     match instruction {
+        BytecodeInstruction::While { body, .. }
+        | BytecodeInstruction::For { body, .. }
+        | BytecodeInstruction::Loop { body, .. } => 1 + max_loop_nesting(body),
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => branches
+            .iter()
+            .map(|b| max_loop_nesting(&b.body))
+            .chain(std::iter::once(max_loop_nesting(else_body)))
+            .max()
+            .unwrap_or(0),
+        BytecodeInstruction::Match { arms, .. } => arms
+            .iter()
+            .map(|arm| max_loop_nesting(&arm.body))
+            .max()
+            .unwrap_or(0),
+        BytecodeInstruction::Try {
+            body, catch_body, ..
+        } => max_loop_nesting(body).max(max_loop_nesting(catch_body)),
+        _ => 0,
+    }
+}
+
+/// Whether a loop's body **confines** its heap allocations to the iteration —
+/// i.e. no heap value it produces can survive past the iteration. This is the
+/// stage-2 escape analysis, and it is DEFAULT-DENY: a loop is confined only when
+/// we can prove nothing escapes; anything unclear counts as an escape.
+///
+/// In an arena function (a leaf w.r.t. user code — no user/`extern` calls, so no
+/// builtin retains a pointer) the ONLY way a heap value produced in an iteration
+/// becomes reachable after the iteration is by being **stored into a named
+/// location that outlives the iteration**. Lullaby has value semantics, so the
+/// only stores are `Assign` (a rebind or a container mutation) and `Throw` (into
+/// the exception channel); a `Let` binds a fresh iteration-local that dies at the
+/// iteration's end. Therefore a loop body confines its heap iff no `Assign` and no
+/// `Throw` anywhere in it (recursing through nested control flow, including nested
+/// loops) carries a heap-typed value. A `Return` of a heap value cannot occur (an
+/// arena function returns a scalar) but is treated as an escape for safety.
+///
+/// This conservatively rejects some reclaimable shapes — e.g. rebinding a
+/// loop-local `string` with a fresh allocation, or a nested loop accumulating into
+/// an outer-loop-local — treating the whole enclosing loop as non-confined. That
+/// is sound (default-deny) and keeps the rule locally checkable without tracking
+/// which exact variable a store targets. The common per-iteration-scratch shape
+/// (`let s = <alloc>` used only by `len`, accumulating a SCALAR like
+/// `total += len(s)`) is confined and gets a sub-region.
+fn loop_body_confines_heap(body: &[BytecodeInstruction]) -> bool {
+    !body.iter().any(instruction_heap_escapes)
+}
+
+fn instruction_heap_escapes(instruction: &BytecodeInstruction) -> bool {
+    match instruction {
+        // A store of a heap value into a named location (a rebind or a container
+        // mutation) can outlive the iteration — an escape. What matters is whether a
+        // HEAP VALUE is being stored, i.e. the assigned value's own type is a heap
+        // type — NOT whether the expression merely READS heap. `total = total +
+        // len(s)` stores an `i64` (scalar) even though it reads the heap string `s`,
+        // so it does not escape; `acc = acc + "x"` stores a `string`, so it does.
+        BytecodeInstruction::Assign { value, .. }
+        | BytecodeInstruction::Throw { value, .. }
+        | BytecodeInstruction::Return(Some(value)) => arena_type_is_heap(&value.ty),
+        // A `Let` binds a fresh iteration-local (dies each iteration); its value
+        // does not escape. Break/Continue/Return(None)/Asm carry no heap value.
+        BytecodeInstruction::Let { .. }
+        | BytecodeInstruction::Return(None)
+        | BytecodeInstruction::Break(_)
+        | BytecodeInstruction::Continue(_)
+        | BytecodeInstruction::Expr(_)
+        | BytecodeInstruction::Asm { .. } => false,
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => branches.iter().any(|b| body_heap_escapes(&b.body)) || body_heap_escapes(else_body),
+        BytecodeInstruction::While { body, .. }
+        | BytecodeInstruction::For { body, .. }
+        | BytecodeInstruction::Loop { body, .. } => body_heap_escapes(body),
+        BytecodeInstruction::Match { arms, .. } => {
+            arms.iter().any(|arm| body_heap_escapes(&arm.body))
+        }
+        BytecodeInstruction::Try {
+            body, catch_body, ..
+        } => body_heap_escapes(body) || body_heap_escapes(catch_body),
+    }
+}
+
+fn body_heap_escapes(body: &[BytecodeInstruction]) -> bool {
+    body.iter().any(instruction_heap_escapes)
+}
+
+/// Whether an instruction is a loop (`while`/`for`/`loop`) whose header or body
+/// touches the heap AND whose body does NOT confine that heap to the iteration —
+/// i.e. an allocating loop with no bounding sub-region. Such a loop would grow the
+/// arena region unboundedly within one call, so its presence disqualifies the
+/// function from arena routing (it stays on the RC / free-list path). A heap loop
+/// that IS confined gets a per-iteration sub-region (stage 2) and is fine.
+fn instruction_is_unbounded_heap_loop(instruction: &BytecodeInstruction) -> bool {
+    let (touches, confined) = match instruction {
         BytecodeInstruction::While {
             condition, body, ..
-        } => expr_touches_heap(condition) || body_touches_heap(body),
+        } => (
+            expr_touches_heap(condition) || body_touches_heap(body),
+            loop_body_confines_heap(body),
+        ),
         BytecodeInstruction::For {
             start,
             end,
             step,
             body,
             ..
-        } => {
+        } => (
             expr_touches_heap(start)
                 || expr_touches_heap(end)
                 || step.as_ref().is_some_and(expr_touches_heap)
-                || body_touches_heap(body)
+                || body_touches_heap(body),
+            loop_body_confines_heap(body),
+        ),
+        BytecodeInstruction::Loop { body, .. } => {
+            (body_touches_heap(body), loop_body_confines_heap(body))
         }
-        BytecodeInstruction::Loop { body, .. } => body_touches_heap(body),
+        // Non-loop statements: recurse into nested bodies below.
+        _ => (false, true),
+    };
+    if touches && !confined {
+        return true;
+    }
+    // Recurse into nested control flow; a nested unbounded heap loop anywhere
+    // disqualifies the function too.
+    match instruction {
+        BytecodeInstruction::While { body, .. }
+        | BytecodeInstruction::For { body, .. }
+        | BytecodeInstruction::Loop { body, .. } => body_has_unbounded_heap_loop(body),
         BytecodeInstruction::If {
             branches,
             else_body,
             ..
         } => {
-            branches.iter().any(|b| body_has_allocating_loop(&b.body))
-                || body_has_allocating_loop(else_body)
+            branches
+                .iter()
+                .any(|b| body_has_unbounded_heap_loop(&b.body))
+                || body_has_unbounded_heap_loop(else_body)
         }
-        BytecodeInstruction::Match { arms, .. } => {
-            arms.iter().any(|arm| body_has_allocating_loop(&arm.body))
-        }
+        BytecodeInstruction::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| body_has_unbounded_heap_loop(&arm.body)),
         BytecodeInstruction::Try {
             body, catch_body, ..
-        } => body_has_allocating_loop(body) || body_has_allocating_loop(catch_body),
+        } => body_has_unbounded_heap_loop(body) || body_has_unbounded_heap_loop(catch_body),
         _ => false,
     }
+}
+
+/// Whether a body contains any loop that touches the heap but does not confine it
+/// to the iteration (see [`instruction_is_unbounded_heap_loop`]).
+fn body_has_unbounded_heap_loop(body: &[BytecodeInstruction]) -> bool {
+    body.iter().any(instruction_is_unbounded_heap_loop)
 }
 
 /// Compute the set of arena-eligible function names for a module. Default-deny:
@@ -4050,10 +4210,13 @@ fn instruction_has_allocating_loop(instruction: &BytecodeInstruction) -> bool {
 /// heap (else the arena is a no-op), (3) it calls no user-defined / `extern`
 /// function (a leaf w.r.t. user code, so no heap pointer can be passed to and
 /// retained by code that outlives it, and arena mode never leaks into RC-freeing
-/// code), and (4) it has no loop that touches the heap (a function-scoped arena is
-/// reclaimed only at return, so an allocating loop would grow the region
-/// unboundedly). All heap allocations of a qualifying function are dead at every
-/// return edge, so rewinding the bump pointer there reclaims them soundly.
+/// code), and (4) it has no **unbounded** heap loop — every heap-touching loop
+/// **confines** its allocations to the iteration (stage 2), so each such loop gets
+/// a per-iteration sub-region that bounds it; a loop whose heap escapes the
+/// iteration would grow the region unboundedly and keeps the function on the RC
+/// path. All heap allocations of a qualifying function are dead at every return
+/// edge (and, for a confined loop, at every iteration edge), so rewinding the bump
+/// pointer there reclaims them soundly.
 fn arena_eligible_functions(
     module: &BytecodeModule,
     eligible_names: &[String],
@@ -4086,8 +4249,10 @@ fn arena_eligible_functions(
         if body_calls_user(&function.instructions, &user_names) {
             continue;
         }
-        // (4) No loop that touches the heap.
-        if body_has_allocating_loop(&function.instructions) {
+        // (4) No UNBOUNDED heap loop — every heap-touching loop confines its
+        // allocations to the iteration (stage 2 gives it a per-iteration
+        // sub-region); a loop whose heap escapes stays on the RC path.
+        if body_has_unbounded_heap_loop(&function.instructions) {
             continue;
         }
         arena.insert(name.clone());
@@ -4119,6 +4284,17 @@ pub(crate) struct NativeLoop {
     /// ever drops locals whose declaration textually precedes it — never a slot whose
     /// `let` has not run. Each entry is `(frame slot, drop-helper symbol)`.
     live_drops: Vec<(i32, &'static str)>,
+    /// Arena-first memory (stage 2): the frame slot holding this loop's saved bump
+    /// pointer when the loop gets a per-iteration **sub-region**. `Some(mark)` means
+    /// every heap value the loop body allocates is confined to the iteration (it
+    /// provably does not escape), so the bump pointer is rewound to `mark` at each
+    /// iteration boundary — the fallthrough back-edge and the `break`/`continue`
+    /// early-exit edges — reclaiming the iteration's scratch in bounded heap. The
+    /// rewind is idempotent (restoring the same saved value), so an iteration taking
+    /// more than one edge cannot double-free, and confinement guarantees it never
+    /// rewinds past a value that survives the iteration. `None` for a loop with no
+    /// sub-region (a non-arena function, a scalar loop, or a loop whose heap escapes).
+    arena_reset_mark: Option<i32>,
 }
 
 #[path = "native_object_stmt.rs"]

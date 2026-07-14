@@ -793,6 +793,68 @@ fn emit_arena_reset(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
     });
 }
 
+/// Arena-first memory (stage 2): decide whether a loop gets a per-iteration
+/// **sub-region**. Returns `Some(mark_slot)` when the enclosing function is an
+/// arena region (`ctx.is_arena`), the loop touches the heap, AND its body confines
+/// that heap to the iteration (nothing escapes — see `loop_body_confines_heap`), so
+/// its allocations are dead at each iteration edge and a bump-pointer rewind
+/// reclaims them soundly. `depth` is the loop's nesting depth (`loops.len()` before
+/// the loop is pushed), selecting its dedicated mark word. `None` = no sub-region
+/// (non-arena function, a scalar loop, or a loop whose heap escapes — the latter
+/// two never occur inside an arena function, since eligibility forbids an unbounded
+/// heap loop, but the check keeps this self-contained and default-deny).
+fn arena_loop_reset_mark(
+    ctx: &NativeCtx,
+    touches_heap: bool,
+    body: &[BytecodeInstruction],
+    depth: usize,
+) -> Option<i32> {
+    if ctx.is_arena && touches_heap && loop_body_confines_heap(body) {
+        Some(ctx.arena_loop_mark_slot(depth))
+    } else {
+        None
+    }
+}
+
+/// Arena stage-2: save the current bump pointer (`__lullaby_heap_next`) into a
+/// loop's sub-region mark slot at loop entry. Uses `rax` as scratch (free before a
+/// loop top). Paired with [`emit_arena_loop_rewind`] at each iteration edge.
+fn emit_arena_loop_save(ctx: &mut NativeCtx, mark: i32, code: &mut Vec<u8>) {
+    // mov rax, [rip + heap_next]
+    code.extend_from_slice(&[0x48, 0x8B, 0x05]);
+    let site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    ctx.relocations.push(CodeRelocation {
+        offset: site as u32,
+        symbol: HEAP_NEXT_SYMBOL.to_string(),
+    });
+    // mov [rbp - mark], rax
+    code.extend_from_slice(&[0x48, 0x89, 0x85]);
+    code.extend_from_slice(&(-mark).to_le_bytes());
+}
+
+/// Arena stage-2: rewind the bump pointer to a loop's sub-region mark, reclaiming
+/// (in one bulk rewind) every heap block the iteration allocated. Emitted at each
+/// iteration edge — the fallthrough back-edge and the `break`/`continue` edges.
+/// Uses `r10` as scratch so it never clobbers a value in `rax`/`xmm0`. The rewind
+/// is idempotent (it restores the same saved value), so an iteration that reaches
+/// it more than once cannot corrupt the heap; confinement guarantees it never
+/// rewinds past a value that survives the iteration. Does NOT touch the arena-mode
+/// flag — the function stays in arena mode across the whole loop.
+fn emit_arena_loop_rewind(ctx: &mut NativeCtx, mark: i32, code: &mut Vec<u8>) {
+    // mov r10, [rbp - mark]
+    code.extend_from_slice(&[0x4C, 0x8B, 0x95]);
+    code.extend_from_slice(&(-mark).to_le_bytes());
+    // mov [rip + heap_next], r10
+    code.extend_from_slice(&[0x4C, 0x89, 0x15]);
+    let site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    ctx.relocations.push(CodeRelocation {
+        offset: site as u32,
+        symbol: HEAP_NEXT_SYMBOL.to_string(),
+    });
+}
+
 pub(crate) fn lower_native_stmts(
     ctx: &mut NativeCtx,
     body: &[BytecodeInstruction],
@@ -1149,12 +1211,20 @@ pub(crate) fn lower_native_stmt(
             // value is dropped on more than one edge. `live_drops` holds only locals
             // whose `let` textually precedes this `break`, so each dropped slot is a
             // live, uniquely-owned value.
-            let drops = loops
-                .last()
-                .ok_or("`break` outside a loop")?
-                .live_drops
-                .clone();
+            let (drops, arena_mark) = {
+                let l = loops.last().ok_or("`break` outside a loop")?;
+                (l.live_drops.clone(), l.arena_reset_mark)
+            };
             emit_owned_local_drops(ctx, &drops, code);
+            // Arena stage-2: rewind this loop's sub-region on the break edge too, so
+            // the breaking iteration's confined scratch is reclaimed (and the heap
+            // stays bounded for any code after the loop). Idempotent with the
+            // fallthrough rewind — a `break` jumps past the back-edge, so at most one
+            // fires per dynamic iteration, and even a double rewind restores the same
+            // mark.
+            if let Some(mark) = arena_mark {
+                emit_arena_loop_rewind(ctx, mark, code);
+            }
             let loop_ctx = loops.last_mut().expect("loop present (checked above)");
             // jmp rel32 (target patched at loop end).
             code.push(0xE9);
@@ -1170,12 +1240,18 @@ pub(crate) fn lower_native_stmt(
             // value is dropped twice. This is the reclamation-critical early-exit case:
             // a `continue` recurs every iteration, so leaking here exhausts the heap,
             // whereas a `break` fires at most once.
-            let drops = loops
-                .last()
-                .ok_or("`continue` outside a loop")?
-                .live_drops
-                .clone();
+            let (drops, arena_mark) = {
+                let l = loops.last().ok_or("`continue` outside a loop")?;
+                (l.live_drops.clone(), l.arena_reset_mark)
+            };
             emit_owned_local_drops(ctx, &drops, code);
+            // Arena stage-2: rewind this loop's sub-region on the continue edge —
+            // THE reclamation-critical case, since a `continue` recurs every
+            // iteration. The continue jump skips the fallthrough rewind, so this is
+            // the iteration's single rewind on that path.
+            if let Some(mark) = arena_mark {
+                emit_arena_loop_rewind(ctx, mark, code);
+            }
             let loop_ctx = loops.last_mut().expect("loop present (checked above)");
             match loop_ctx.continue_target {
                 Some(target) => emit_jmp_to(code, target),
@@ -3534,6 +3610,19 @@ pub(crate) fn lower_native_while(
         return Ok(());
     }
 
+    // Arena stage-2 sub-region: if this loop confines its heap to the iteration,
+    // save the entry bump pointer now (before `top:`) so each iteration edge can
+    // rewind to it. Saved once; the mark is invariant because nothing escapes.
+    let arena_reset_mark = arena_loop_reset_mark(
+        ctx,
+        expr_touches_heap(condition) || body_touches_heap(body),
+        body,
+        loops.len(),
+    );
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_save(ctx, mark, code);
+    }
+
     let top = code.len();
     // Fused `cmp`+conditional-jump for an i64 comparison; else the generic
     // "evaluate to 0/1 in rax, `test rax,rax`, `jz`" path. Both jump to `end`
@@ -3555,6 +3644,7 @@ pub(crate) fn lower_native_while(
         continue_sites: Vec::new(),
         break_sites: Vec::new(),
         live_drops: Vec::new(),
+        arena_reset_mark,
     });
     lower_loop_body_with_drops(ctx, body, code, loops)?;
     // Reclaim per-iteration owned string temporaries on the fallthrough back-edge
@@ -3562,6 +3652,10 @@ pub(crate) fn lower_native_while(
     // own edges (see `lower_loop_body_with_drops`); each dynamic iteration takes
     // exactly one of {fallthrough, break, continue}, so no value is dropped twice.
     emit_loop_body_string_drops(ctx, body, code)?;
+    // Arena stage-2: rewind the sub-region on the fallthrough back-edge.
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_rewind(ctx, mark, code);
+    }
     let loop_ctx = loops.pop().expect("loop pushed");
 
     emit_jmp_to(code, top); // jmp top
@@ -3581,15 +3675,27 @@ pub(crate) fn lower_native_loop(
     code: &mut Vec<u8>,
     loops: &mut Vec<NativeLoop>,
 ) -> Result<(), String> {
+    // Arena stage-2 sub-region: save the entry bump pointer before `top:` when the
+    // loop confines its heap to the iteration.
+    let arena_reset_mark = arena_loop_reset_mark(ctx, body_touches_heap(body), body, loops.len());
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_save(ctx, mark, code);
+    }
+
     let top = code.len();
     loops.push(NativeLoop {
         continue_target: Some(top),
         continue_sites: Vec::new(),
         break_sites: Vec::new(),
         live_drops: Vec::new(),
+        arena_reset_mark,
     });
     lower_loop_body_with_drops(ctx, body, code, loops)?;
     emit_loop_body_string_drops(ctx, body, code)?;
+    // Arena stage-2: rewind the sub-region on the fallthrough back-edge.
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_rewind(ctx, mark, code);
+    }
     let loop_ctx = loops.pop().expect("loop pushed");
 
     emit_jmp_to(code, top);
@@ -4284,6 +4390,21 @@ pub(crate) fn lower_native_for(
     }
     store_local(code, step_slot);
 
+    // Arena stage-2 sub-region: save the entry bump pointer once the bounds are
+    // seated (so the mark excludes only their one-time temps), before `top:`.
+    let arena_reset_mark = arena_loop_reset_mark(
+        ctx,
+        expr_touches_heap(start)
+            || expr_touches_heap(end)
+            || step.is_some_and(expr_touches_heap)
+            || body_touches_heap(body),
+        body,
+        loops.len(),
+    );
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_save(ctx, mark, code);
+    }
+
     let top = code.len();
     // Loop guard: decide whether to run another iteration.
     // cond = (step >= 0) ? (i <= end) : (i >= end), placed in al.
@@ -4319,6 +4440,7 @@ pub(crate) fn lower_native_for(
         continue_sites: Vec::new(),
         break_sites: Vec::new(),
         live_drops: Vec::new(),
+        arena_reset_mark,
     });
     lower_loop_body_with_drops(ctx, body, code, loops)?;
     // Reclaim uniquely-owned per-iteration string temporaries on the fallthrough
@@ -4328,6 +4450,12 @@ pub(crate) fn lower_native_for(
     // path frees each owned temporary exactly once — the fallthrough here, or the
     // early-exit edge, never both.
     emit_loop_body_string_drops(ctx, body, code)?;
+    // Arena stage-2: rewind the sub-region on the fallthrough back-edge, BEFORE the
+    // step block. A `continue` (which jumps to the step label) skips this and does
+    // its own rewind on its edge, so every path rewinds exactly once.
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_rewind(ctx, mark, code);
+    }
     let loop_ctx = loops.pop().expect("loop pushed");
 
     // Step block (target of `continue`): i += step.

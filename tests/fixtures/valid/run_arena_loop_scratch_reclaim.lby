@@ -1,0 +1,9 @@
+fn sum_scratch n i64 -> i64
+    let total i64 = 0
+    for i from 1 to n
+        let s string = to_string(i) + "!!!!!!!!!!"
+        total = total + len(s)
+    total
+
+fn main -> i64
+    sum_scratch(300000)

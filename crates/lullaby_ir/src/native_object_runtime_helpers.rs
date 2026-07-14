@@ -89,7 +89,31 @@ pub(crate) fn emit_heap_alloc_helper() -> HelperFunction {
         symbol: HEAP_BASE_SYMBOL.to_string(),
     });
     code.extend_from_slice(&[0, 0, 0, 0]);
-    // have: write the header (size = r8, refcount = 1).
+
+    // have: (rax = block base, r8 = need). Heap-exhaustion guard: if carving `need`
+    // bytes here would run the block past the end of the fixed heap region, TRAP
+    // with `ud2` rather than writing out of bounds (which would corrupt adjacent
+    // memory or segfault). This turns genuine exhaustion — an escaping allocation
+    // that can never be reclaimed — into a defined illegal-instruction abort
+    // (a distinct, non-zero exit status) instead of undefined behaviour. The guard
+    // is a pure bounds check on the bump: it never changes a successful allocation,
+    // and it is portable across every object container (COFF/PE/ELF/Mach-O) since
+    // it needs no import. `r9`/`r11` are volatile scratch (unused past this point).
+    code.extend_from_slice(&[0x49, 0x89, 0xC1]); // mov r9, rax (block base)
+    code.extend_from_slice(&[0x4D, 0x01, 0xC1]); // add r9, r8  (r9 = block end)
+    code.extend_from_slice(&[0x4C, 0x8D, 0x1D]); // lea r11, [rip + heap_base]
+    relocations.push(CodeRelocation {
+        offset: code.len() as u32,
+        symbol: HEAP_BASE_SYMBOL.to_string(),
+    });
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x49, 0x81, 0xC3]); // add r11, HEAP_REGION_SIZE
+    code.extend_from_slice(&HEAP_REGION_SIZE.to_le_bytes()); // imm32 (r11 = heap end)
+    code.extend_from_slice(&[0x4D, 0x39, 0xD9]); // cmp r9, r11
+    code.extend_from_slice(&[0x76, 0x02]); // jbe ok (block fits — skip the ud2)
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2 (heap exhausted -> defined trap)
+
+    // ok: write the header (size = r8, refcount = 1).
     code.extend_from_slice(&[0x4C, 0x89, 0x00]); // mov [rax], r8
     code.extend_from_slice(&[0x48, 0xC7, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00]); // mov qword [rax+8], 1
     // heap_next = (rax + need + 7) & ~7.

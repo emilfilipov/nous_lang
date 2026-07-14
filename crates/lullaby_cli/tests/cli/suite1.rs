@@ -995,6 +995,134 @@ pub(crate) fn native_arena_string_reclaim_execution_parity_when_linkable() {
     );
 }
 
+/// Arena-first memory (stage 2) LOOP sub-region reclamation. `sum_scratch` is a
+/// scalar-returning LEAF whose `for` loop allocates per-iteration scratch that
+/// stays LOCAL (a fresh `string` read only by `len`, accumulating a SCALAR
+/// `total`). Its heap is confined to the iteration, so the loop gets a
+/// per-iteration bump-pointer rewind (a sub-region), and `sum_scratch` routes
+/// through the arena. Over 300_000 iterations it allocates ~11 MB of records in
+/// aggregate — far more than the fixed 1 MiB heap — yet completes with the
+/// interpreter's exact result because each iteration's scratch is reclaimed at the
+/// back-edge. WITHOUT the per-iteration reset the loop would exhaust the heap and
+/// trap, so a correct exit code proves the sub-region reset. This is the loop
+/// analogue of `native_arena_string_reclaim_execution_parity_when_linkable`.
+#[test]
+pub(crate) fn native_arena_loop_reclaim_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_arena_loop_scratch_reclaim.lby");
+    let out = std::env::temp_dir().join("lullaby_native_arena_loop_reclaim.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(
+        interp, 4_688_895,
+        "sum of len(to_string(i)+\"!!!!!!!!!!\") for i in 1..=300000"
+    );
+
+    if !out.is_file() {
+        eprintln!("no native exe produced; skipping arena loop reclaim run");
+        return;
+    }
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "native arena loop-reclaimed run must complete with the interpreter's result \
+         (a crash here means the heap exhausted — the per-iteration sub-region reset regressed)"
+    );
+}
+
+/// Heap-overflow safety (Part B). `grow` is an escaping accumulator
+/// (`acc = acc + "0123456789"` where `acc` outlives the iteration): its heap can
+/// NEVER be reclaimed, so a long loop fills the fixed 1 MiB bump heap. Before the
+/// guard the allocator wrote past the region and the process access-violated
+/// (segfaulted). Now `__lullaby_alloc` bounds-checks the bump and traps with `ud2`
+/// on exhaustion — a DEFINED illegal-instruction abort (`STATUS_ILLEGAL_INSTRUCTION`
+/// = `0xC000001D`), a distinct, non-zero exit status — instead of corrupting
+/// memory. This asserts the clean, defined failure (the safety proof). Runs
+/// unconditionally: the direct-PE path needs no linker.
+#[test]
+pub(crate) fn native_heap_overflow_traps_cleanly() {
+    let dir = std::env::temp_dir().join("lullaby_native_overflow");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let src = dir.join("overflow.lby");
+    let out = dir.join("overflow.exe");
+    std::fs::write(
+        &src,
+        concat!(
+            "fn grow n i64 -> i64\n",
+            "    let acc string = \"\"\n",
+            "    for i from 0 to n\n",
+            "        acc = acc + \"0123456789\"\n",
+            "    len(acc)\n\n",
+            "fn main -> i64\n",
+            "    grow(1000000)\n",
+        ),
+    )
+    .expect("write overflow source");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            src.to_str().expect("src path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // `grow` must be native-compiled (it exercises the native allocator), not
+    // skipped to the interpreter — otherwise the heap guard would never run.
+    let emit_stdout = stdout(&emit) + &stderr(&emit);
+    assert!(
+        !emit_stdout.to_lowercase().contains("grow: "),
+        "grow must be native-compiled so the heap guard runs, not skipped: {emit_stdout}"
+    );
+
+    // The produced exe is a Windows PE, so only run+assert it on a Windows host
+    // (the default `x86_64-pc-windows-msvc` target is not runnable elsewhere).
+    if !cfg!(windows) {
+        eprintln!("non-Windows host; skipping heap-overflow native run");
+        return;
+    }
+    if !out.is_file() {
+        eprintln!("no native exe produced; skipping heap-overflow run");
+        return;
+    }
+    let exe = Command::new(&out).output().expect("run native exe");
+    // The `ud2` heap-exhaustion trap surfaces as STATUS_ILLEGAL_INSTRUCTION. The key
+    // property is a DEFINED trap: never a silent success (exit 0), and never an
+    // out-of-bounds write / access violation (0xC0000005).
+    let exit = exe
+        .status
+        .code()
+        .expect("native exit code (Windows returns NTSTATUS)");
+    assert_eq!(
+        exit, 0xC000_001Du32 as i32,
+        "heap exhaustion must trap cleanly with STATUS_ILLEGAL_INSTRUCTION (0xC000001D), \
+         not segfault / access-violate (0xC0000005) or write out of bounds; got {exit:#010x}"
+    );
+}
+
 /// RC call-argument reclamation: `len(<fresh temp>)` frees the temporary it reads.
 /// `len(to_string(i))` in a loop allocates a `to_string` record each iteration that
 /// `len` reads and (before this) leaked; over 300k iterations (~10 MB) in the fixed

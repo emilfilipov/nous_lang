@@ -3168,33 +3168,110 @@ fn arena_not_used_when_a_heap_value_escapes() {
     );
 }
 
+/// Arena stage-2: the per-iteration bump-pointer rewind shape emitted at a loop
+/// iteration edge — `mov r10, [rbp - mark]` (`4C 8B 95 disp32`) immediately
+/// followed by `mov [rip + heap_next], r10` (`4C 89 15`). Only
+/// `emit_arena_loop_rewind` emits this exact shape.
+fn count_arena_loop_rewinds(program: &NativeProgram) -> usize {
+    program
+        .bytes
+        .windows(10)
+        .filter(|w| w[0..3] == [0x4C, 0x8B, 0x95] && w[7..10] == [0x4C, 0x89, 0x15])
+        .count()
+}
+
 #[test]
-fn arena_not_used_for_function_with_an_allocating_loop() {
-    // A function-scoped arena is reclaimed only at return, so a loop that allocates
-    // each iteration would grow the region unboundedly within one call — such a
-    // function stays on the RC / free-list path (its loop-body drops reclaim per
-    // iteration). `sum_lens` is scalar-returning and leaf, but its `for` loop
-    // allocates, so it is NOT arena-eligible.
+fn arena_sub_region_used_for_confined_heap_loop() {
+    // Stage 2: a scalar-returning LEAF function whose loop allocates per-iteration
+    // scratch that stays LOCAL (a fresh `string` read only by `len`, accumulating a
+    // SCALAR `total`) now routes through the arena AND gives the loop a per-iteration
+    // sub-region. `sum_lens` therefore takes the arena path (function prologue) and
+    // emits the loop rewind on the fallthrough back-edge.
     let program = emit_native_program(&module_for(concat!(
-        "fn sum_lens -> i64\n",
+        "fn sum_lens n i64 -> i64\n",
         "    let total i64 = 0\n",
-        "    for i from 0 to 10\n",
+        "    for i from 0 to n\n",
         "        let s string = to_string(i) + \"!\"\n",
         "        total = total + len(s)\n",
         "    total\n\n",
         "fn main -> i64\n",
-        "    sum_lens()\n",
+        "    sum_lens(10)\n",
     )))
-    .expect("emit allocating-loop program");
+    .expect("emit confined-loop program");
     assert!(
         program.compiled.contains(&"sum_lens".to_string()),
-        "sum_lens must still compile natively (on the RC path): {:?} / {:?}",
+        "sum_lens must compile natively: {:?} / {:?}",
+        program.compiled,
+        program.skipped
+    );
+    assert!(
+        has_arena_prologue(&program),
+        "a scalar-returning leaf whose only heap loop is confined must take the arena path"
+    );
+    assert!(
+        count_arena_loop_rewinds(&program) >= 1,
+        "the confined heap loop must emit a per-iteration bump-pointer rewind"
+    );
+}
+
+#[test]
+fn arena_sub_region_not_used_when_loop_accumulator_escapes() {
+    // Stage 2 default-deny: a loop that ACCUMULATES a heap value into a variable
+    // living OUTSIDE the iteration (`acc = acc + "x"`) lets the heap escape the
+    // iteration, so the loop cannot get a per-iteration rewind — and, because the
+    // loop is then an UNBOUNDED heap loop, the whole function is not arena-routed
+    // (it stays on the RC / free-list path). No arena prologue, no loop rewind.
+    let program = emit_native_program(&module_for(concat!(
+        "fn grow n i64 -> i64\n",
+        "    let acc string = \"\"\n",
+        "    for i from 0 to n\n",
+        "        acc = acc + \"x\"\n",
+        "    len(acc)\n\n",
+        "fn main -> i64\n",
+        "    grow(10)\n",
+    )))
+    .expect("emit escaping-accumulator program");
+    assert!(
+        program.compiled.contains(&"grow".to_string()),
+        "grow must still compile natively (on the RC path): {:?} / {:?}",
         program.compiled,
         program.skipped
     );
     assert!(
         !has_arena_prologue(&program),
-        "a function with an allocating loop must NOT take the arena path"
+        "a function whose loop accumulator escapes must NOT take the arena path"
+    );
+    assert_eq!(
+        count_arena_loop_rewinds(&program),
+        0,
+        "an escaping-accumulator loop must NOT emit a per-iteration rewind"
+    );
+}
+
+#[test]
+fn arena_sub_region_not_used_when_loop_value_stored_outside() {
+    // Stage 2 default-deny: storing a loop-allocated heap value into a variable
+    // declared OUTSIDE the loop (`last = to_string(i) + "!"`) escapes the iteration,
+    // so the loop is not confined and the function is not arena-routed. Returns the
+    // outer value's length so the store is observable/kept.
+    let program = emit_native_program(&module_for(concat!(
+        "fn keep_last n i64 -> i64\n",
+        "    let last string = \"\"\n",
+        "    for i from 0 to n\n",
+        "        last = to_string(i) + \"!\"\n",
+        "    len(last)\n\n",
+        "fn main -> i64\n",
+        "    keep_last(10)\n",
+    )))
+    .expect("emit stored-outside program");
+    assert!(
+        !has_arena_prologue(&program),
+        "a function that stores a loop-allocated value outside the loop must NOT be arena"
+    );
+    assert_eq!(
+        count_arena_loop_rewinds(&program),
+        0,
+        "a loop whose value is stored outside must NOT emit a per-iteration rewind"
     );
 }
 
@@ -3543,6 +3620,29 @@ fn alloc_helper_carries_rc_header_and_free_list() {
                 .windows(8)
                 .any(|w| w == [0x49, 0xC7, 0x43, 0x08, 0x01, 0x00, 0x00, 0x00]),
         "the allocator must seed refcount = 1 on both the bump and reuse paths"
+    );
+}
+
+#[test]
+fn alloc_helper_has_heap_overflow_guard() {
+    // Part B (safety): the bump path must bounds-check against the end of the fixed
+    // heap region and trap (`ud2`) on exhaustion instead of writing out of bounds.
+    // The guard forms `r11 = heap_base + HEAP_REGION_SIZE` via `add r11, imm32`
+    // (`49 81 C3 <region>`) then `cmp r9, r11` (`4D 39 D9`) + `jbe +2` (`76 02`) +
+    // `ud2` (`0F 0B`).
+    let helper = emit_heap_alloc_helper();
+    let region = HEAP_REGION_SIZE.to_le_bytes();
+    let add_r11 = [0x49, 0x81, 0xC3, region[0], region[1], region[2], region[3]];
+    assert!(
+        helper.code.windows(7).any(|w| w == add_r11),
+        "the guard must compute heap_end = heap_base + HEAP_REGION_SIZE"
+    );
+    assert!(
+        helper
+            .code
+            .windows(7)
+            .any(|w| w == [0x4D, 0x39, 0xD9, 0x76, 0x02, 0x0F, 0x0B]),
+        "the allocator must carry a `cmp r9,r11; jbe +2; ud2` heap-exhaustion guard"
     );
 }
 
