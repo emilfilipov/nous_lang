@@ -1,0 +1,20 @@
+# stdin_line_count.lby — a line-count filter (wc -l) written in Lullaby.
+# Reads standard input line by line with read_line() and prints the number of
+# lines, then returns that count.
+# Run: cat file | lullaby run tests/fixtures/valid/stdin/line_count.lby
+#
+# A blank input line still counts (read_line() returns some("") for it, distinct
+# from none at end-of-input), so this matches `wc -l` semantics for line counts.
+
+fn has_next -> bool
+    let line option<string> = read_line()
+    match line
+        some(text) -> true
+        none -> false
+
+fn main -> i64
+    let count i64 = 0
+    while has_next()
+        count += 1
+    println(to_string(count))
+    count

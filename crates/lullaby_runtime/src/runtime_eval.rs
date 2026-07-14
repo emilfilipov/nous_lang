@@ -736,6 +736,28 @@ impl<'a> Runtime<'a> {
             })
     }
 
+    /// `read_line() -> option<string>`: read one line from standard input with
+    /// the trailing newline (`\n`, and a preceding `\r` on Windows CRLF input)
+    /// stripped. `none` at end-of-input; a blank input line is `some("")`, so EOF
+    /// and an empty line stay distinct. Reads through the shared, buffered global
+    /// `Stdin`, so repeated calls consume consecutive lines without losing
+    /// buffered bytes.
+    pub(crate) fn builtin_read_line(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("read_line", 0, args.len()))?;
+        read_stdin_line()
+    }
+
+    /// `read_all() -> string`: read the whole of standard input to EOF into a
+    /// single `string`. Empty string when stdin is empty or already closed.
+    pub(crate) fn builtin_read_all(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("read_all", 0, args.len()))?;
+        read_stdin_all()
+    }
+
     pub(crate) fn builtin_write_file(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let [path, contents]: [Value; 2] = args
             .try_into()

@@ -1,0 +1,27 @@
+# stdin_echo.lby — a cat-like filter written in Lullaby.
+# Reads standard input one line at a time with read_line() and echoes each line
+# back to standard output, then returns the number of lines echoed.
+# Run: cat file | lullaby run tests/fixtures/valid/stdin/echo.lby
+#
+# read_line() yields option<string>: some(line) per line (trailing newline
+# stripped) and none at end-of-input. The none arm stops the loop; the some arm
+# echoes the line through a helper so each match arm stays a single expression.
+
+fn echo_next -> i64
+    let line option<string> = read_line()
+    match line
+        some(text) -> emit(text)
+        none -> 0 - 1
+
+fn emit text string -> i64
+    println(text)
+    1
+
+fn main -> i64
+    let count i64 = 0
+    loop
+        let more i64 = echo_next()
+        if more < 0
+            break
+        count += more
+    count

@@ -651,9 +651,9 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
     DiagnosticEntry {
         code: "L0419",
         phase: DiagnosticPhase::Resource,
-        explanation: "The runtime could not write to or flush a standard stream.",
-        root_cause: "Writing to stdout/stderr failed, usually because the stream was closed or the pipe was broken.",
-        suggested_fix: "Ensure the output stream stays open, or redirect it to a writable destination.",
+        explanation: "The runtime could not read from, write to, or flush a standard stream.",
+        root_cause: "Reading stdin or writing stdout/stderr failed — usually because the stream was closed or the pipe was broken, or stdin carried non-UTF-8 bytes.",
+        suggested_fix: "Ensure the stream stays open, redirect output to a writable destination, or feed valid UTF-8 on stdin.",
     },
     DiagnosticEntry {
         code: "L0420",

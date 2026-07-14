@@ -1,0 +1,8 @@
+# stdin_read_all.lby — slurp all of standard input and report its size.
+# Reads the whole of standard input to EOF with read_all() and returns the
+# number of characters read (0 when stdin is empty or closed).
+# Run: cat file | lullaby run tests/fixtures/valid/stdin/read_all.lby
+
+fn main -> i64
+    let text string = read_all()
+    len(text)

@@ -162,6 +162,19 @@ impl<'a> Checker<'a> {
                 self.expect_arg_type(name, 1, &args[0], "string", scope, function)?;
                 Some(TypeRef::new("void"))
             }
+            "read_line" => {
+                // `read_line() -> option<string>`: read one line from stdin with
+                // the trailing newline removed. `none` marks end-of-input; an empty
+                // input line is `some("")`, so EOF and a blank line stay distinct.
+                self.expect_arg_count(name, args, 0, function)?;
+                Some(option_type(&TypeRef::new("string")))
+            }
+            "read_all" => {
+                // `read_all() -> string`: read the whole of stdin to EOF into a
+                // single `string` (empty string when stdin is empty/closed).
+                self.expect_arg_count(name, args, 0, function)?;
+                Some(TypeRef::new("string"))
+            }
             "wasm_log" => {
                 // `wasm_log(x i64) -> void`: a host log call. On the interpreters
                 // it prints the value as a stdout line so cross-backend parity

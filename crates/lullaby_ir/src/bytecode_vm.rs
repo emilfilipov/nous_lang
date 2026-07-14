@@ -2551,8 +2551,8 @@ impl<'a> Lowerer<'a> {
             "proc_spawn" => {
                 generic_type("result", &[TypeRef::new("process"), TypeRef::new("string")])
             }
-            "read_file" | "sys_output" | "to_string" | "substring" | "join" | "trim"
-            | "replace" | "upper" | "lower" | "repeat" => TypeRef::new("string"),
+            "read_file" | "read_all" | "sys_output" | "to_string" | "substring" | "join"
+            | "trim" | "replace" | "upper" | "lower" | "repeat" => TypeRef::new("string"),
             "read_lines" | "list_dir" => {
                 generic_type("list", std::slice::from_ref(&TypeRef::new("string")))
             }
@@ -2712,6 +2712,8 @@ impl<'a> Lowerer<'a> {
             "mutex_new" => TypeRef::new("Mutex"),
             "recv" | "mutex_get" | "mutex_add" => TypeRef::new("i64"),
             "try_recv" => generic_type("option", std::slice::from_ref(&TypeRef::new("i64"))),
+            // `read_line() -> option<string>`: `none` at end-of-input.
+            "read_line" => generic_type("option", std::slice::from_ref(&TypeRef::new("string"))),
             "send" | "task_join" | "mutex_set" => TypeRef::new("void"),
             // Atomic (`atomic_i64`) builtins: the constructor yields the handle,
             // `atomic_store` is `void`, and every access/RMW yields `i64`.

@@ -40,13 +40,16 @@ in terms of existing intrinsics, it belongs in the **runtime stdlib**.
 | `println(text)` / `print(text)` | `string -> void` | intrinsic | implemented | `L0419` if stdout write fails |
 | `warn(text)` | `string -> void` | intrinsic | implemented | `L0419` if stderr write fails |
 | `flush()` | `-> void` | intrinsic | implemented | `L0419` if stdout flush fails |
-| `read_line()` (stdin) | `-> string` | intrinsic | planned | `L0419`-class on read failure; empty string at EOF |
+| `read_line()` (stdin) | `-> option<string>` | intrinsic | implemented | `L0419` on read failure; `none` at EOF, `some(line)` (trailing newline stripped) otherwise, `some("")` for a blank line |
+| `read_all()` (stdin) | `-> string` | intrinsic | implemented | `L0419` on read failure; empty string when stdin is empty/closed |
 | `open(path, mode)` | `string, string -> file` | intrinsic | planned | opens a handle; resource error on failure |
 | `stat(path)` | `string -> filemeta` | intrinsic | planned | resource error if the path cannot be stat-ed |
 | `list_dir(path)` | `string -> array<string>` | intrinsic | planned | resource error if not a readable directory |
 
 `stdin`, `stdout`, and `stderr` are modeled today as the fixed intrinsics
-`read_line`/`print`/`println`/`warn` rather than first-class stream handles. A
+`read_line`/`read_all`/`print`/`println`/`warn` rather than first-class stream
+handles. `read_line` returns `option<string>` (rather than a sentinel empty
+string) so end-of-input is distinct from a genuine blank line. A
 `file` handle type and `open`/`close`/read-write-on-handle are introduced only
 when buffered and binary I/O land; until then the whole-file and standard-stream
 intrinsics cover the current use cases.

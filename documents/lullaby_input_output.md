@@ -18,6 +18,33 @@ The compiler implements a small, flat builtin surface. These names are available
 | `file_exists(path)` | `string -> bool` | Returns whether the host can read metadata for the path. |
 | `sys_status(program, args)` | `string, array<string> -> i64` | Runs `program` directly with an argv array and returns its exit status, or `-1` if the process terminates without a status code. |
 | `sys_output(program, args)` | `string, array<string> -> string` | Runs `program` directly with an argv array and returns stdout as a string. |
+| `read_line()` | `-> option<string>` | Reads one line from standard input with the trailing newline removed (a preceding `\r` from Windows CRLF input is removed too). Returns `none` at end-of-input; a blank input line is `some("")`, so EOF and an empty line stay distinct. Reads through the shared buffered stdin handle, so successive calls consume successive lines. |
+| `read_all()` | `-> string` | Reads the whole of standard input to EOF into a single `string` (empty string when stdin is empty or already closed). |
+
+`read_line`/`read_all` make Unix-style filter tools (`cat file \| tool`) expressible in Lullaby. They are interpreter-tier builtins (AST, IR, and bytecode); a function that calls one is not part of the native i64-scalar subset, so — like `read_file` and the other non-scalar builtins — it is cleanly skipped by `lullaby native`'s eligibility gate and runs on the interpreter, never crashing or producing a wrong result.
+
+A cat-like echo filter that reads stdin line by line until end-of-input:
+
+```lullaby
+fn echo_next -> i64
+    let line option<string> = read_line()
+    match line
+        some(text) -> emit(text)
+        none -> 0 - 1
+
+fn emit text string -> i64
+    println(text)
+    1
+
+fn main -> i64
+    let count i64 = 0
+    loop
+        let more i64 = echo_next()
+        if more < 0
+            break
+        count += more
+    count
+```
 
 System command builtins intentionally do not invoke a shell. Pass the executable name and arguments separately:
 
@@ -107,8 +134,16 @@ for file in files:
 
 ### Standard I/O Streams
 
+**Delivered.** Standard input line/whole-stream reading is implemented as the flat
+builtins `read_line() -> option<string>` and `read_all() -> string` (see the
+current-subset table above), and standard output/error are the flat builtins
+`print`/`println`/`warn`/`flush`. First-class stream handles with token-level
+scanning and `has_more`-style iteration (the `input_stream.readline()` /
+`read_token()` sketch below) remain planned design material layered on the same
+streams.
+
 ```lullaby
-# Input stream (keyboard/stdin)
+# Input stream (keyboard/stdin) — planned handle-based surface
 
 input_stream = io.stdin
 while input_stream.has_more():

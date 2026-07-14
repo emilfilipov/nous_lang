@@ -307,6 +307,15 @@ backends. A wrong argument type or arity reports `L0374` (semantic) or `L0417`
   buffered streams are deferred. Wrong argument types or arities report `L0333`;
   a failed read/metadata query reports `L0414`; a failed write/create/remove
   reports `L0415`.
+- Standard input: `read_line() -> option<string>` reads one line from stdin with
+  the trailing newline (and a preceding CRLF `\r`) removed — `none` at
+  end-of-input, `some(line)` otherwise, and `some("")` for a blank line so EOF
+  and an empty line stay distinct. `read_all() -> string` reads the whole of
+  stdin to EOF (empty string when stdin is empty/closed). Both read through the
+  shared buffered stdin handle, so successive `read_line` calls consume
+  successive lines; a read failure reports `L0419`. They make `cat file | tool`
+  filters expressible; a function using either is interpreter-tier (cleanly
+  skipped by the native i64-scalar backend, like `read_file`).
 - System commands: `sys_status(program, args array<string>) -> i64`,
   `sys_output(program, args array<string>) -> string` (no shell).
 - Time and clocks:

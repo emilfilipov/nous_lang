@@ -437,6 +437,8 @@ impl<'a> IrRuntime<'a> {
             "print" => self.builtin_print("print", args, false),
             "println" => self.builtin_print("println", args, true),
             "warn" => self.builtin_warn(args),
+            "read_line" => Self::builtin_read_line(args),
+            "read_all" => Self::builtin_read_all(args),
             "wasm_log" => self.builtin_wasm_log(args),
             "console_log" => self.builtin_console_log(args),
             "dom_set_text" => self.builtin_dom_set_text(args),
@@ -1671,6 +1673,26 @@ impl<'a> IrRuntime<'a> {
             .map_err(|error| {
                 RuntimeError::resource("L0414", format!("failed to read `{path}`: {error}"))
             })
+    }
+
+    /// `read_line() -> option<string>`: read one line from standard input with
+    /// the trailing newline (and a preceding CRLF `\r`) stripped. `none` at EOF; a
+    /// blank line is `some("")`. Delegates to the shared runtime implementation so
+    /// line-reading matches the AST interpreter byte-for-byte.
+    fn builtin_read_line(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("read_line", 0, args.len()))?;
+        read_stdin_line()
+    }
+
+    /// `read_all() -> string`: read the whole of standard input to EOF into a
+    /// single `string`. Empty string when stdin is empty or already closed.
+    fn builtin_read_all(args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let []: [Value; 0] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("read_all", 0, args.len()))?;
+        read_stdin_all()
     }
 
     fn builtin_write_file(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {

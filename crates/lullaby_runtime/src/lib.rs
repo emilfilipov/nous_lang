@@ -1260,6 +1260,62 @@ pub fn expect_map(name: &str, value: Value) -> Result<OrderedMap, RuntimeError> 
     }
 }
 
+/// Backing implementation of the `read_line() -> option<string>` stdin builtin,
+/// shared verbatim by the AST and IR/bytecode interpreters so line-reading is
+/// byte-for-byte identical across backends. Reads one line from the process's
+/// standard input through the shared, buffered global `Stdin` handle (so
+/// consecutive calls consume consecutive lines without dropping buffered bytes),
+/// strips the trailing line terminator, and distinguishes end-of-input from a
+/// blank line:
+///
+/// - End of input (no bytes read) yields `none`.
+/// - A line yields `some(text)` with the trailing `\n` removed, and a preceding
+///   `\r` also removed so Windows CRLF input round-trips like LF input.
+/// - A blank input line yields `some("")`, keeping EOF and an empty line
+///   distinct.
+///
+/// A genuine read failure (for example, non-UTF-8 bytes on stdin) is the
+/// resource error `L0419`, the standard-stream I/O family.
+pub fn read_stdin_line() -> Result<Value, RuntimeError> {
+    use std::io::BufRead;
+    let mut buffer = String::new();
+    let read = std::io::stdin()
+        .lock()
+        .read_line(&mut buffer)
+        .map_err(|error| {
+            RuntimeError::resource(
+                "L0419",
+                format!("failed to read a line from stdin: {error}"),
+            )
+        })?;
+    if read == 0 {
+        return Ok(option_value(None));
+    }
+    if buffer.ends_with('\n') {
+        buffer.pop();
+        if buffer.ends_with('\r') {
+            buffer.pop();
+        }
+    }
+    Ok(option_value(Some(Value::String(buffer.into()))))
+}
+
+/// Backing implementation of the `read_all() -> string` stdin builtin, shared by
+/// both interpreters. Reads the whole of standard input to EOF into one `string`
+/// (empty when stdin is empty or already closed). A read failure (for example,
+/// non-UTF-8 bytes on stdin) is the resource error `L0419`.
+pub fn read_stdin_all() -> Result<Value, RuntimeError> {
+    use std::io::Read;
+    let mut buffer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_to_string(&mut buffer)
+        .map_err(|error| {
+            RuntimeError::resource("L0419", format!("failed to read stdin: {error}"))
+        })?;
+    Ok(Value::String(buffer.into()))
+}
+
 /// Build an `option<V>` runtime value using the shared `Value::Enum` option
 /// representation (`some(v)` or `none`).
 pub fn option_value(payload: Option<Value>) -> Value {
@@ -2419,6 +2475,8 @@ impl<'a> Runtime<'a> {
             "print" => self.builtin_print("print", args, false),
             "println" => self.builtin_print("println", args, true),
             "warn" => self.builtin_warn(args),
+            "read_line" => Self::builtin_read_line(args),
+            "read_all" => Self::builtin_read_all(args),
             "wasm_log" => self.builtin_wasm_log(args),
             "console_log" => self.builtin_console_log(args),
             "dom_set_text" => self.builtin_dom_set_text(args),

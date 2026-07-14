@@ -605,6 +605,27 @@ fn validates_io_and_system_builtins() {
 }
 
 #[test]
+fn validates_stdin_builtins() {
+    // `read_line() -> option<string>` type-checks through `match`, and
+    // `read_all() -> string` composes with the string library.
+    let source = "fn main -> i64\n    let line option<string> = read_line()\n    let all string = read_all()\n    match line\n        some(text) -> len(text) + len(all)\n        none -> len(all)\n";
+    assert!(validate_source(source).is_ok());
+}
+
+#[test]
+fn rejects_stdin_builtins_with_arguments() {
+    // Both stdin builtins are nullary; passing an argument is an arity error.
+    assert!(validate_source("fn bad -> string\n    read_all(\"x\")\n").is_err());
+    let diagnostics =
+        validate_source("fn bad -> i64\n    let line option<string> = read_line(\"x\")\n    0\n")
+            .expect_err("semantic");
+    assert!(
+        !diagnostics.is_empty(),
+        "read_line with an argument must be rejected"
+    );
+}
+
+#[test]
 fn resolves_type_aliases_structurally() {
     // `Count` is an alias for `i64`, so alias and target are interchangeable.
     let source = "alias Count = i64\n\nfn main -> Count\n    let a Count = 41\n    let b i64 = a\n    b + 1\n";

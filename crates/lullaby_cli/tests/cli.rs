@@ -1353,6 +1353,10 @@ mod suite3;
 #[path = "cli/fuzz.rs"]
 mod fuzz;
 
+// -- Standard-input builtins (`read_line` / `read_all`) ----------------------
+#[path = "cli/suite4.rs"]
+mod suite4;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {
