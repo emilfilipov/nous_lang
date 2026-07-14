@@ -186,13 +186,12 @@ fn emits_object_for_while_loop() {
 }
 
 #[test]
-fn ilp_unrolls_counting_sum_loop() {
+fn counting_sum_lowers_to_closed_form() {
     // `while i < N { acc = acc + i; i = i + 1 }` with `acc`/`i` promoted i64 is
-    // recognized as a counting-sum reduction and lowered with a blocked main
-    // loop that folds four iterations per step — `lea rax, [i*4 + 6]` (the
-    // block sum `4*i + (0+1+2+3)`) then a single `acc += rax` — so the serial
-    // `acc += i` dependency chain advances once per four iterations. A scalar
-    // remainder loop handles the final `< 4` iterations.
+    // recognized as a counting sum and lowered to the O(1) closed form
+    // `acc += (i0+N-1)*(N-i0)/2` — NO loop. The exact-halving `imul rax, rdx`
+    // (48 0F AF C2) and the parity `test dl, 1` (F6 C2 01) must appear, and there
+    // must be no backward `jmp` in `main` (the loop is gone).
     let program = emit_native_program(&module_for(
             "fn main -> i64\n    let acc i64 = 0\n    let i i64 = 0\n    while i < 1000\n        acc = acc + i\n        i = i + 1\n    return acc\n",
         ))
@@ -201,27 +200,19 @@ fn ilp_unrolls_counting_sum_loop() {
     let text_offset = read_u32(&program.bytes, sec + 20) as usize;
     let text_size = read_u32(&program.bytes, sec + 16) as usize;
     let text = &program.bytes[text_offset..text_offset + text_size];
-    // `lea rax, [<i>*4 + 6]`: 48 8D 04 <SIB> 06 00 00 00, where the SIB has
-    // scale=4/base=none and index rbx (0x9D) or rsi (0xB5) — whichever register
-    // `i` promoted into.
-    let has_block_sum = text.windows(8).any(|w| {
-        w[0..3] == [0x48, 0x8D, 0x04]
-            && (w[3] == 0x9D || w[3] == 0xB5)
-            && w[4..8] == [0x06, 0x00, 0x00, 0x00]
-    });
     assert!(
-        has_block_sum,
-        "expected the block-sum `lea rax, [i*4 + 6]` of the ILP unroll"
+        text.windows(4).any(|w| w == [0x48, 0x0F, 0xAF, 0xC2]),
+        "expected the closed-form exact-halving `imul rax, rdx`"
     );
-    // The blocked main loop and the scalar remainder loop each close with a
-    // backward `jmp`, so at least two appear.
-    let backward = text
-        .windows(5)
-        .filter(|w| w[0] == 0xE9 && i32::from_le_bytes([w[1], w[2], w[3], w[4]]) < 0)
-        .count();
     assert!(
-        backward >= 2,
-        "expected main + remainder backward jumps, got {backward}"
+        text.windows(3).any(|w| w == [0xF6, 0xC2, 0x01]),
+        "expected the closed-form parity `test dl, 1`"
+    );
+    assert!(
+        !text
+            .windows(5)
+            .any(|w| w[0] == 0xE9 && i32::from_le_bytes([w[1], w[2], w[3], w[4]]) < 0),
+        "the counting sum is closed-form (O(1)); no backward loop jump should remain"
     );
 }
 
@@ -316,12 +307,11 @@ fn quadratic_reduction_uses_multi_accumulator() {
 }
 
 #[test]
-fn ilp_unrolls_runtime_bound_counting_sum() {
-    // `while i < n` (a *runtime* i64 bound) also lowers to the blocked ILP loop:
-    // the block-sum `lea rax, [i*4 + 6]` must appear, and — because the counter
-    // and accumulator now win register promotion over the loop-invariant
-    // parameter `n` — both operate in the promoted registers. Without this, the
-    // runtime-bound counting sum was 5x slower than C; with it, it beats C.
+fn runtime_bound_counting_sum_lowers_to_closed_form() {
+    // `while i < n` (a *runtime* i64 bound) also lowers to the O(1) closed form:
+    // `n` is materialized into rcx (`mov rcx, rax` after loading the parameter),
+    // `count = n - i0` in rdx, and the exact-halving `imul rax, rdx` computes the
+    // sum with no loop at all.
     let program = emit_native_program(&module_for(concat!(
         "fn sum_to n i64 -> i64\n",
         "    let acc i64 = 0\n",
@@ -338,22 +328,13 @@ fn ilp_unrolls_runtime_bound_counting_sum() {
     let text_offset = read_u32(&program.bytes, sec + 20) as usize;
     let text_size = read_u32(&program.bytes, sec + 16) as usize;
     let text = &program.bytes[text_offset..text_offset + text_size];
-    // `lea rax, [<i>*4 + 6]` with the index register being rbx (0x9D) or rsi
-    // (0xB5) — proving the counter promoted despite the runtime bound.
-    let has_block_sum = text.windows(8).any(|w| {
-        w[0..3] == [0x48, 0x8D, 0x04]
-            && (w[3] == 0x9D || w[3] == 0xB5)
-            && w[4..8] == [0x06, 0x00, 0x00, 0x00]
-    });
     assert!(
-        has_block_sum,
-        "expected the block-sum `lea rax, [i*4 + 6]` of the ILP unroll on a runtime bound"
+        text.windows(4).any(|w| w == [0x48, 0x0F, 0xAF, 0xC2]),
+        "expected the closed-form exact-halving `imul rax, rdx` on a runtime bound"
     );
-    // The runtime guard `cmp rcx, 4` (48 83 F9 04) gates the blocked loop so tiny
-    // `n` falls to the scalar remainder.
     assert!(
-        text.windows(4).any(|w| w == [0x48, 0x83, 0xF9, 0x04]),
-        "expected the runtime `n < K` guard before the blocked loop"
+        text.windows(3).any(|w| w == [0xF6, 0xC2, 0x01]),
+        "expected the closed-form parity `test dl, 1`"
     );
 }
 

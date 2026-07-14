@@ -2551,14 +2551,6 @@ pub(crate) fn detect_sum_reduction(
     })
 }
 
-/// `lea rax, [<index>*4 + disp]` — the block sum `4*i + 6` in one instruction.
-pub(crate) fn emit_lea_rax_index4_plus(code: &mut Vec<u8>, index: PReg, disp: i32) {
-    // REX.W 8D /r ; ModRM mod=00 reg=rax(000) rm=100(SIB) ; SIB scale=4 index base=none(disp32).
-    let sib = 0x80 | (index.code3() << 3) | 0x05;
-    code.extend_from_slice(&[0x48, 0x8D, 0x04, sib]);
-    code.extend_from_slice(&disp.to_le_bytes());
-}
-
 /// Emit the ILP-unrolled counting-sum loop: a blocked main loop summing `K`
 /// consecutive counter values per iteration into `acc` (one dependent add per
 /// block), then a scalar remainder loop for the final `< K` iterations.
@@ -2585,80 +2577,79 @@ fn emit_align_loop_top(code: &mut Vec<u8>) {
     }
 }
 
+/// `sub rdx, <counter>` (`counter` is rbx or rsi).
+fn emit_sub_rdx_counter(code: &mut Vec<u8>, counter: PReg) {
+    // sub r/m64, r64 = REX.W 29 /r ; ModRM = 11 <counter> rdx(010).
+    code.extend_from_slice(&[0x48, 0x29, 0xC0 | (counter.code3() << 3) | 0x02]);
+}
+
+/// `mov <counter>, rcx` — seat the exit value `n` into the counter register.
+fn emit_mov_counter_rcx(code: &mut Vec<u8>, counter: PReg) {
+    // mov r/m64, r64 = REX.W 89 /r ; ModRM = 11 rcx(001) <counter>.
+    code.extend_from_slice(&[0x48, 0x89, 0xC0 | (0x01 << 3) | counter.code3()]);
+}
+
+/// Emit the counting sum `while i < n { acc += i; i += 1 }` as a **closed form**
+/// — no loop at all. The sum of the run `i = i0 .. n-1` is
+/// `(i0 + n-1) * (n - i0) / 2`; since `(i0+n-1) + (n-i0) = 2n-1` is odd, exactly
+/// one factor is even, so the `/2` is exact under wrapping (halve the even factor
+/// first, then multiply). `i0`, `n`, and the running `acc` are read at run time,
+/// so this is fully general (any start value, constant or runtime bound). A
+/// `count <= 0` guard leaves `acc`/`i` untouched (an empty loop). O(1) instead of
+/// O(n) — orders of magnitude faster than C's per-element loop.
 pub(crate) fn emit_sum_reduction(
     ctx: &mut NativeCtx,
     plan: &SumReductionLoop,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
-    const K: i64 = 4;
-    const BLOCK_ADD: i64 = K * (K - 1) / 2; // 0+1+2+3 = 6
     let SumReductionLoop { acc, counter, .. } = *plan;
     const RCX: u8 = 1;
-    const RDX: u8 = 2;
 
-    // Materialize the two loop bounds into scratch registers:
-    //   rcx = `bound`         (the remainder-loop limit, `cmp i, bound`)
-    //   rdx = `bound - (K-1)` (the blocked main-loop limit, `cmp i, bound-3`)
-    // The counting-sum body touches only rax and the promoted acc/counter, so
-    // rcx/rdx stay live across the whole loop with no reload. For a constant
-    // bound the values are immediates; for a runtime bound they are computed
-    // once, up front, from the (loop-invariant) bound value in rax.
-    let skip_main_site = match &plan.bound {
-        SumBound::Const(bound) => {
-            // mov rcx, bound ; mov rdx, bound-(K-1)  (both known i32-range).
-            emit_mov_scratch_imm(code, RCX, *bound as i32);
-            emit_mov_scratch_imm(code, RDX, (bound - (K - 1)) as i32);
-            None
-        }
+    // rcx = n (the bound), constant immediate or the runtime value.
+    match &plan.bound {
+        SumBound::Const(bound) => emit_mov_scratch_imm(code, RCX, *bound as i32),
         SumBound::Runtime(bound_expr) => {
             lower_native_expr(ctx, bound_expr, code)?; // rax = n
-            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax  (bound)
-            // If n < K the blocked loop cannot run a full block, and `n-(K-1)`
-            // could underflow — so skip straight to the scalar remainder, which
-            // is correct for every n (including n <= 0: it runs zero times).
-            code.extend_from_slice(&[0x48, 0x83, 0xF9, K as u8]); // cmp rcx, K
-            code.extend_from_slice(&[0x0F, 0x8C]); // jl skip_main (n < K)
-            let site = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
-            // rdx = rcx - (K-1)  (n >= K here, so no underflow).
-            code.extend_from_slice(&[0x48, 0x89, 0xCA]); // mov rdx, rcx
-            code.extend_from_slice(&[0x48, 0x83, 0xEA, (K - 1) as u8]); // sub rdx, K-1
-            Some(site)
+            code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
         }
-    };
-
-    // Main loop: while i < bound-(K-1), fold the whole block `i..i+K-1` in one
-    // `acc` add. `4*i + 6` wrapping equals four wrapping `+= i` steps.
-    emit_align_loop_top(code);
-    let main_top = code.len();
-    emit_cmp_counter_scratch(code, counter, RDX); // cmp i, rdx (bound-3)
-    code.extend_from_slice(&[0x0F, 0x8D]); // jge main_end
-    let main_exit = code.len();
-    code.extend_from_slice(&[0, 0, 0, 0]);
-    emit_lea_rax_index4_plus(code, counter, BLOCK_ADD as i32); // rax = 4*i + 6
-    acc.add_rax(code); // acc += rax
-    counter.add_imm(code, K as i32); // i += 4
-    emit_jmp_to(code, main_top);
-    let main_end = code.len();
-    patch_rel32_to(code, main_exit, main_end);
-
-    // `n < K` jumps here, past the blocked loop, into the scalar remainder.
-    if let Some(site) = skip_main_site {
-        let here = code.len();
-        patch_rel32_to(code, site, here);
     }
 
-    // Remainder: the ordinary scalar loop for the final < K iterations.
-    let rem_top = code.len();
-    emit_cmp_counter_scratch(code, counter, RCX); // cmp i, rcx (bound)
-    code.extend_from_slice(&[0x0F, 0x8D]); // jge rem_end
-    let rem_exit = code.len();
+    // rdx = count = n - i0. If count <= 0 the loop body never runs; skip, leaving
+    // acc and i unchanged.
+    code.extend_from_slice(&[0x48, 0x89, 0xCA]); // mov rdx, rcx
+    emit_sub_rdx_counter(code, counter); // sub rdx, i0
+    code.extend_from_slice(&[0x48, 0x85, 0xD2]); // test rdx, rdx
+    code.extend_from_slice(&[0x0F, 0x8E]); // jle done (count <= 0)
+    let done_site = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
-    acc.add_reg(code, counter); // acc += i
-    counter.add_imm(code, 1); // i += 1
-    emit_jmp_to(code, rem_top);
-    let rem_end = code.len();
-    patch_rel32_to(code, rem_exit, rem_end);
+
+    // rax = A = i0 + n - 1.
+    counter.to_rax(code); // mov rax, i0
+    code.extend_from_slice(&[0x48, 0x01, 0xC8]); // add rax, rcx  (+ n)
+    code.extend_from_slice(&[0x48, 0x83, 0xE8, 0x01]); // sub rax, 1
+
+    // Exact `A * count / 2`: halve whichever of A/count is even, then multiply.
+    // count (rdx) > 0 here. If count is odd then A is even (their sum is odd).
+    code.extend_from_slice(&[0xF6, 0xC2, 0x01]); // test dl, 1
+    code.extend_from_slice(&[0x0F, 0x84]); // jz count_even
+    let count_even_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x48, 0xD1, 0xF8]); // sar rax, 1   (A even -> A/2, exact)
+    code.extend_from_slice(&[0xE9]); // jmp mul
+    let jmp_mul_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    let count_even = code.len();
+    patch_rel32_to(code, count_even_site, count_even);
+    code.extend_from_slice(&[0x48, 0xD1, 0xEA]); // shr rdx, 1   (count even -> count/2, exact)
+    let mul = code.len();
+    patch_rel32_to(code, jmp_mul_site, mul);
+    code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC2]); // imul rax, rdx  (rax = A*count/2)
+
+    acc.add_rax(code); // acc += sum
+    emit_mov_counter_rcx(code, counter); // i = n (the loop's exit value)
+
+    let done = code.len();
+    patch_rel32_to(code, done_site, done);
     Ok(())
 }
 

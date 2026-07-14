@@ -54,14 +54,12 @@ Lullaby already beats Python.
 - Deep recursion (`fib(35)`): **~1.00× C — at parity** (from 1.26×): the per-call
   `if n < 2` compares the promoted register directly (no `rax` reload), and the
   recursive args `fib(n-1)`/`fib(n-2)` form with one `lea rcx,[rbx-k]`, as C does.
-- Tight counting-`sum` loop: **0.52× C — faster than C** — the backend
-  ILP-unrolls `while i < N: acc = acc + i; i = i + 1`, folding four iterations
-  per step into one dependent add and breaking the serial `acc` chain. This now
-  fires for a **runtime bound** too (`while i < n`): loop-weighted register
-  promotion keeps the counter and accumulator in registers ahead of the
-  invariant `n`, and 16-byte **loop-top alignment** keeps the tight body off the
-  32-byte fetch boundary — together taking that loop from **5× slower than C to
-  2× faster** (constant and runtime bound now both ~0.066 ns/iter).
+- Counting-`sum` loop (`while i < N: acc = acc + i; i = i + 1`): **~26× faster
+  than C** — the backend recognizes it and emits the **O(1) closed form**
+  `acc += (i0+N-1)·(N-i0)/2` (exact under wrapping — one factor is always even,
+  so the halve is exact), *no loop at all*, vs C's O(N) per-element loop. Works
+  for any start value and a constant *or* runtime bound (`while i < n`), reading
+  `i0`/`n`/`acc` at run time with a `count ≤ 0` guard.
 - Affine reduction loops (`acc += a*i + b` — `i+i`, `3*i+5`, weighted sums):
   **0.30–0.53× C — up to ~3× faster than C**. The affine block sum folds four
   iterations into one `imul`+`add` (`acc += 4a*i + (6a+4b)`), one dependent op
