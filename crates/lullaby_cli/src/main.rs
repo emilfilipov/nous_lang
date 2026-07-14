@@ -539,16 +539,25 @@ fn native_file(
         (None, obj)
     };
 
-    // Direct PE fast path. For a freestanding COFF program (a `main`, imports only
-    // `kernel32!ExitProcess`, no C runtime), the native backend already laid a
-    // complete runnable PE32+ image around the `.text` bytes. Writing it directly
-    // skips both the object file and the external linker (`rust-lld`) — the single
-    // biggest compile-speed lever. `--debug` keeps the object + linker path so its
-    // CodeView `.debug$S`/PDB line info is still produced; a program without a
-    // direct PE image (a library object, or one needing the C runtime) also falls
-    // through to the existing path. See `documents/native_backend_contract.md`.
-    if freestanding
-        && is_coff
+    // Direct PE fast path — the DEFAULT for eligible native executable builds.
+    // Whenever the backend produced a complete runnable PE32+ image (a COFF target
+    // with a `main` and no C-runtime import — see how `pe_image` is set in
+    // `native_object.rs`), writing it directly skips both the intermediate object
+    // file and the external linker (`rust-lld`) — the single biggest compile-speed
+    // lever. This applies with OR without `--freestanding`: `--freestanding` is a
+    // stricter *guarantee* (it rejects any C-runtime dependency above with L0426),
+    // not the trigger for this path. The linker path is kept only when the direct
+    // image is unusable, which the guard already encodes:
+    //   * `pe_image` is `None` — a library object (no `main`), a program needing
+    //     the C runtime (`extern fn`), or a non-COFF target. For those the exe is
+    //     produced by the linker, or the deliverable is an object, not an exe; so
+    //     they fall through to the object + link path below. AND
+    //   * `--debug` (`-g`) is NOT set — a debug build must keep the object +
+    //     linker path so its CodeView `.debug$S`/PDB source-line info is produced;
+    //     the direct PE image carries no debug info.
+    // Non-exe deliverables (library objects, ELF/Mach-O objects) never reach here
+    // because `pe_image` is `None` for them. See `native_backend_contract.md`.
+    if is_coff
         && !debug
         && let Some(image) = program.pe_image.as_ref()
     {
@@ -574,9 +583,13 @@ fn native_file(
             target.triple,
             object_format_label(&target)
         );
-        println!(
-            "freestanding (no-std): no C runtime linked; only kernel32!ExitProcess for process exit"
-        );
+        if freestanding {
+            println!(
+                "freestanding (no-std): no C runtime linked; only kernel32!ExitProcess for process exit"
+            );
+        } else {
+            println!("no C runtime linked; only kernel32!ExitProcess for process exit");
+        }
         println!("native exe: {} (direct PE, no linker)", exe.display());
         if mode == OutputMode::Verbose {
             for name in &program.compiled {

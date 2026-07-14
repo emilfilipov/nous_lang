@@ -2068,3 +2068,120 @@ pub(crate) fn fullstack_shared_logic_round_trip() {
         );
     }
 }
+
+/// Direct PE is the DEFAULT for eligible native builds. A plain `lullaby native
+/// -o out.exe file.lby` (NO `--freestanding`) on a COFF program with a `main` and
+/// no C-runtime import must write the runnable `.exe` in-house and skip the
+/// external linker (`rust-lld`) entirely. This test needs neither `rust-lld` nor
+/// `kernel32.lib` — that is the whole point — so it runs unconditionally across a
+/// scalar, string/heap, aggregate, and control-flow fixture: emit each with the
+/// default command, assert the direct-PE notice and the *absence* of an
+/// intermediate object file (proof no linker ran), run the produced `.exe`, and
+/// assert its exit code equals the interpreter's `main` result (mod 256).
+#[test]
+pub(crate) fn native_default_direct_pe_runs_without_linker() {
+    let cases = [
+        ("native_scalars", 39_i64),
+        ("native_strings", 11),
+        ("native_aggregates", 43),
+        ("native_control_flow", 31),
+    ];
+    for (name, expected) in cases {
+        let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
+        let out = std::env::temp_dir().join(format!("lullaby_default_direct_pe_{name}.exe"));
+        let obj = out.with_extension("obj");
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&obj);
+
+        // The DEFAULT native command: no `--freestanding`, no `--debug`.
+        let emit = lullaby()
+            .args([
+                "native",
+                "-o",
+                out.to_str().expect("out path"),
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(emit.status.success(), "{name}: {}", stderr(&emit));
+        let listing = stdout(&emit);
+        assert!(
+            listing.contains("direct PE, no linker"),
+            "{name}: default native build must take the direct-PE path: {listing}"
+        );
+        assert!(
+            out.is_file(),
+            "{name}: expected a direct-PE exe at {}",
+            out.display()
+        );
+        // The direct path never invokes the linker, so it writes no object file.
+        // Its absence is the proof that `rust-lld` was not part of this build.
+        assert!(
+            !obj.is_file(),
+            "{name}: direct-PE default path must not write an object file"
+        );
+
+        // A real PE image begins with the DOS `MZ` magic.
+        let bytes = std::fs::read(&out).expect("read direct pe");
+        assert_eq!(&bytes[0..2], b"MZ", "{name}: PE image DOS magic");
+
+        // Interpreter ground truth for `main`.
+        let run = lullaby()
+            .args(["run", fixture.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{name}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(interp, expected, "{name}: fixture main computes {expected}");
+
+        // Run the in-house `.exe` (no linker was involved) and compare exit codes.
+        let exe = Command::new(&out).output().expect("run direct pe exe");
+        let exit = exe.status.code().expect("native exit code");
+        assert_eq!(
+            exit,
+            (interp.rem_euclid(256)) as i32,
+            "{name}: direct-PE exit code must equal the interpreter result (mod 256)"
+        );
+    }
+}
+
+/// A `--debug` native build must NOT take the direct-PE path: the CodeView
+/// `.debug$S`/PDB source-line info lives only in the object + linker path, so a
+/// debug build always emits an object file and reports the CodeView table. This
+/// asserts the debug guard on the default-direct-PE change holds — no `rust-lld`
+/// or `kernel32.lib` is required to observe it (the emit + object write happen
+/// before any link attempt).
+#[test]
+pub(crate) fn native_debug_keeps_object_and_skips_direct_pe() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_scalars.lby");
+    let out = std::env::temp_dir().join("lullaby_debug_no_direct_pe.exe");
+    let obj = out.with_extension("obj");
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&obj);
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--debug",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    let listing = stdout(&emit);
+    // Debug build stays on the object + linker path.
+    assert!(
+        !listing.contains("direct PE, no linker"),
+        "--debug must not take the direct-PE fast path: {listing}"
+    );
+    assert!(
+        listing.contains("native object:") && listing.contains("CodeView"),
+        "--debug must emit an object with a CodeView source-line table: {listing}"
+    );
+    assert!(
+        obj.is_file(),
+        "--debug must write an object file for the linker path"
+    );
+}
