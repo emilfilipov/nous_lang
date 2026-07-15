@@ -817,15 +817,32 @@ pub enum ExprKind {
         actor: String,
         args: Vec<Expr>,
     },
-    /// `tell TARGET.HANDLER(args)`: enqueue a fire-and-forget message onto the
-    /// actor addressed by `target` (an `Actor<T>` handle) and return `void`
-    /// immediately. Valid only for a handler declared without a `-> T` reply
-    /// type. `args` are the handler arguments (the target is `target`, not part
-    /// of `args`).
+    /// A message send to the actor addressed by `target` (an `Actor<T>` handle).
+    /// This one node carries both message-send forms, distinguished by `is_ask`:
+    ///
+    /// - `is_ask == false` — `tell TARGET.HANDLER(args)`: a fire-and-forget send
+    ///   that enqueues onto the target's mailbox and returns `void` immediately.
+    ///   Valid only for a handler declared without a `-> T` reply type.
+    /// - `is_ask == true` — `ask TARGET.HANDLER(args)`: a request-reply send that
+    ///   enqueues a message carrying a one-shot reply slot and evaluates to
+    ///   `Future<R>`, where `R` is the handler's `-> R` reply type. Valid only for
+    ///   a handler declared *with* a reply type. `await` resolves the `Future<R>`
+    ///   to the reply value.
+    ///
+    /// `args` are the handler arguments (the target is `target`, not part of
+    /// `args`). Both forms run only on the AST interpreter; the IR/bytecode
+    /// backends reject an actor program (`L0355`) and native/WASM cleanly skip it
+    /// (`L0339`/`L0338`). The two forms share one variant so the existing
+    /// backend-deferral arms (which match `Tell { .. }`) cover `ask` unchanged.
     Tell {
         target: Box<Expr>,
         handler: String,
         args: Vec<Expr>,
+        /// `true` for `ask` (request-reply, yields `Future<R>`), `false` for
+        /// `tell` (fire-and-forget, yields `void`). Serde-defaulted to `false` so
+        /// existing single-file artifacts and AST snapshots stay valid.
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_ask: bool,
     },
     /// An inline closure literal `fn PARAMS -> EXPR`: an anonymous function value
     /// that captures the enclosing scope's locals by value at evaluation time.

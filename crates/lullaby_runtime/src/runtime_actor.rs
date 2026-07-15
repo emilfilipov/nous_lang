@@ -1,18 +1,35 @@
-//! The AST interpreter's actor scheduler (stage 1: `spawn` + `tell`).
+//! The AST interpreter's actor scheduler (stage 1: `spawn` + `tell`; stage 2:
+//! `ask` + `await` + `Future<R>`).
 //!
 //! Actors run on a single-threaded, cooperative, deterministic scheduler. `spawn`
 //! constructs an actor (zero-initializing its private `state`, then running its
 //! `init`) and returns a typed [`Value::ActorRef`] handle. `tell` enqueues a
-//! fire-and-forget message on a global FIFO mailbox. Every outstanding message is
-//! drained — run-to-completion, one at a time — by [`Runtime::drain_actors`]
-//! before `main` returns, so a `tell` with an observable side effect (e.g.
-//! `print`) produces deterministic output identical on every run. Because only
-//! one message runs at a time and each actor's `state` is touched only by its own
-//! handlers, the state is a single-writer resource with no data races.
+//! fire-and-forget message on a global FIFO mailbox; `ask` enqueues a request
+//! carrying a one-shot reply slot and hands back a `Future<R>`
+//! ([`Value::ActorFuture`]). `await` on that future drives the mailbox until the
+//! slot is filled by the target handler's reply.
+//!
+//! **Turn model — non-reentrant run-to-completion.** An actor is *busy* for the
+//! whole span of a message turn (including any nested `await`s). The scheduler
+//! only ever runs the first *deliverable* message — one whose target actor is not
+//! busy — so a single actor never runs two turns at once and its `state` stays a
+//! single-writer resource with no data races. When nothing is on the stack (the
+//! graceful drain before `main` returns), every message is deliverable, so the
+//! order is plain FIFO and fully deterministic.
+//!
+//! **Ordering & fulfillment.** `await f` repeatedly runs the next deliverable
+//! message until `f`'s reply slot is filled, then takes it. Because dispatch is
+//! FIFO over deliverable messages on one thread, the sequence of turns — and thus
+//! every reply and side effect — is identical on every run.
+//!
+//! **Deadlock.** If an `await` can only be satisfied by re-entering a busy actor
+//! (a request cycle, e.g. A asks B while B is awaiting a reply from A), no message
+//! is deliverable and the awaited slot can never fill. That is reported as a clean,
+//! deterministic runtime error (`L0356`) rather than hanging.
 //!
 //! This is the AST-interpreter runtime; the IR/bytecode backends reject an actor
-//! program (`L0355`) and the native/WASM backends cleanly skip it, so stage 1
-//! actors run only here.
+//! program (`L0355`) and the native/WASM backends cleanly skip it, so actors run
+//! only here.
 
 use lullaby_parser::{ActorDecl, ActorHandler, StructField, TypeRef};
 
@@ -97,23 +114,107 @@ impl<'a> Runtime<'a> {
             actor_id,
             handler: handler.to_string(),
             args,
+            reply_slot: None,
         });
         Ok(Value::Void)
     }
 
-    /// Drain the actor mailbox: run every outstanding message to completion, one
-    /// at a time, in FIFO order. A handler may itself `tell` (or `spawn`) during
-    /// its turn, appending to the queue; the loop continues until the queue is
-    /// empty. Single-threaded and deterministic.
-    pub(crate) fn drain_actors(&mut self) -> Result<(), RuntimeError> {
-        while let Some(message) = self.actor_mailbox.pop_front() {
-            self.dispatch_message(message)?;
+    /// `ask TARGET.HANDLER(args)`: enqueue a request-reply message on the target
+    /// actor's mailbox and return a `Future<R>` ([`Value::ActorFuture`]) for the
+    /// reply. A fresh one-shot reply slot is allocated; the handler's turn writes
+    /// its reply value into it, and `await` on the returned future drives the
+    /// scheduler until the slot is filled.
+    pub(crate) fn ask_actor(
+        &mut self,
+        target: Value,
+        handler: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let Value::ActorRef(actor_id) = target else {
+            return Err(RuntimeError::new(
+                "L0401",
+                format!("`ask` target is not an actor handle: `{target}`"),
+            ));
+        };
+        if actor_id >= self.actor_instances.len() {
+            return Err(RuntimeError::new(
+                "L0401",
+                format!("`ask` to unknown actor handle `{actor_id}`"),
+            ));
         }
+        let slot = self.actor_reply_slots.len();
+        self.actor_reply_slots.push(None);
+        self.actor_mailbox.push_back(ActorMessage {
+            actor_id,
+            handler: handler.to_string(),
+            args,
+            reply_slot: Some(slot),
+        });
+        Ok(Value::ActorFuture(slot))
+    }
+
+    /// `await` on an actor request-reply future: drive the mailbox until the
+    /// awaited reply slot is filled, then take and return the reply value. Each
+    /// iteration runs the next *deliverable* message (one whose target actor is not
+    /// mid-turn). If no message is deliverable and the slot is still empty, the
+    /// reply can never be produced — a deterministic deadlock reported as `L0356`
+    /// rather than a hang.
+    pub(crate) fn await_actor_future(
+        &mut self,
+        slot: usize,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        loop {
+            if let Some(reply) = self.actor_reply_slots.get_mut(slot).and_then(Option::take) {
+                return Ok(reply);
+            }
+            if !self.run_one_deliverable()? {
+                return Err(RuntimeError::new(
+                    "L0356",
+                    "`await` can never complete: the awaited actor reply cannot be produced because no queued message is deliverable (a request cycle re-enters an actor that is already running) — this is a deterministic deadlock",
+                )
+                .with_span(span));
+            }
+        }
+    }
+
+    /// Drain the actor mailbox: run every outstanding message to completion, one
+    /// at a time, until nothing is deliverable. At the top-level graceful drain no
+    /// actor is busy, so every message is deliverable and the queue empties fully
+    /// in FIFO order. A handler may itself `tell`/`ask`/`spawn` during its turn,
+    /// appending to the queue; the loop continues until it is empty.
+    pub(crate) fn drain_actors(&mut self) -> Result<(), RuntimeError> {
+        while self.run_one_deliverable()? {}
         Ok(())
     }
 
+    /// Run the first *deliverable* mailbox message — the earliest queued message
+    /// whose target actor is not currently running a turn — to completion. Returns
+    /// `true` if one ran, `false` if none is deliverable (the queue is empty, or
+    /// every pending message targets a busy actor). Skipping a message bound for a
+    /// busy actor preserves per-target FIFO (that actor's messages stay in order,
+    /// merely delayed) while upholding the non-reentrant run-to-completion
+    /// guarantee.
+    fn run_one_deliverable(&mut self) -> Result<bool, RuntimeError> {
+        let Some(index) = self
+            .actor_mailbox
+            .iter()
+            .position(|message| !self.busy_actors.contains(&message.actor_id))
+        else {
+            return Ok(false);
+        };
+        // `index` was just computed from the live queue, so the removal resolves.
+        let message = self
+            .actor_mailbox
+            .remove(index)
+            .expect("deliverable index is valid");
+        self.dispatch_message(message)?;
+        Ok(true)
+    }
+
     /// Run one mailbox message on its target actor: locate the handler on the
-    /// actor's declaration and run its body as a turn over the actor's state.
+    /// actor's declaration, run its body as a turn over the actor's state, and —
+    /// for an `ask` request — write the turn's reply value into its reply slot.
     fn dispatch_message(&mut self, message: ActorMessage) -> Result<(), RuntimeError> {
         let actor_name = self.actor_instances[message.actor_id].actor_name.clone();
         let decl: &'a ActorDecl = match self.actors.get(actor_name.as_str()).copied() {
@@ -140,21 +241,26 @@ impl<'a> Runtime<'a> {
             .iter()
             .map(|param| param.name.clone())
             .collect();
-        self.run_actor_turn(
+        let reply = self.run_actor_turn(
             message.actor_id,
             &decl.state,
             &param_names,
             &handler.body,
             message.args,
-        )
+        )?;
+        // For an `ask` request, the handler's turn value is the reply: publish it
+        // into the reply slot so an `await` on the corresponding future resolves.
+        if let Some(slot) = message.reply_slot {
+            self.actor_reply_slots[slot] = Some(reply);
+        }
+        Ok(())
     }
 
-    /// Run one actor turn: take the instance's state out, bind it (plus the
-    /// handler/init parameters) into a fresh environment, evaluate the body to
-    /// completion, then read the (possibly mutated) state fields back into the
-    /// instance. Taking the state out for the duration of the turn is safe
-    /// because the scheduler is single-threaded and processes one message at a
-    /// time, so nothing else can observe the instance mid-turn.
+    /// Run one actor turn and return its value (the handler/`init` block's final
+    /// value — the reply value for an `ask` handler, `void` otherwise). Marks the
+    /// actor busy for the whole turn (including nested `await`s) so no second turn
+    /// for the same actor can start, upholding the non-reentrant run-to-completion
+    /// guarantee; the busy mark is cleared on every exit path.
     fn run_actor_turn(
         &mut self,
         id: usize,
@@ -162,7 +268,28 @@ impl<'a> Runtime<'a> {
         param_names: &[String],
         body: &'a [Stmt],
         args: Vec<Value>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Value, RuntimeError> {
+        self.busy_actors.insert(id);
+        let result = self.run_actor_turn_inner(id, state_fields, param_names, body, args);
+        self.busy_actors.remove(&id);
+        result
+    }
+
+    /// The body of a single actor turn (see [`Runtime::run_actor_turn`], which
+    /// wraps this with the busy guard): take the instance's state out, bind it
+    /// (plus the handler/`init` parameters) into a fresh environment, evaluate the
+    /// body to completion, read the (possibly mutated) state fields back into the
+    /// instance, and return the block's value. Taking the state out for the turn is
+    /// safe because an actor runs at most one turn at a time (enforced by the busy
+    /// set), so nothing else can observe the instance mid-turn.
+    fn run_actor_turn_inner(
+        &mut self,
+        id: usize,
+        state_fields: &[StructField],
+        param_names: &[String],
+        body: &'a [Stmt],
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
         if param_names.len() != args.len() {
             return Err(RuntimeError::new(
                 "L0402",
@@ -184,12 +311,15 @@ impl<'a> Runtime<'a> {
         }
 
         let control = self.eval_block(body, &mut env)?;
-        if matches!(control, Control::Break | Control::Continue) {
-            return Err(RuntimeError::new(
-                "L0410",
-                "loop control escaped an actor handler body",
-            ));
-        }
+        let reply = match control {
+            Control::Value(value) | Control::Return(value) => value,
+            Control::Break | Control::Continue => {
+                return Err(RuntimeError::new(
+                    "L0410",
+                    "loop control escaped an actor handler body",
+                ));
+            }
+        };
 
         // Read the state fields back out of the environment. Every field was
         // bound at turn start, so each read resolves.
@@ -198,7 +328,7 @@ impl<'a> Runtime<'a> {
             new_state.push((field.name.clone(), env.get(&field.name)?));
         }
         self.actor_instances[id].state = new_state;
-        Ok(())
+        Ok(reply)
     }
 
     /// A type-appropriate zero value for an actor `state` field, used to

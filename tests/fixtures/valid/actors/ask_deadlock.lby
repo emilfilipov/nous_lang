@@ -1,0 +1,24 @@
+# A deterministic actor deadlock: an actor holds a handle to itself and, inside
+# a message turn, `ask`s itself and `await`s the reply. Because an actor runs one
+# turn at a time (non-reentrant run-to-completion), it cannot process its own
+# next message while the current turn is suspended at the `await` — the reply can
+# never be produced. The scheduler detects that no queued message is deliverable
+# and reports a clean, deterministic runtime error (L0356) instead of hanging.
+#
+# This program type-checks; it fails at run time. The CLI test asserts a non-zero
+# exit reporting L0356.
+actor Selfie
+    state
+        me Actor<Selfie>
+
+    on connect s Actor<Selfie>
+        me = s
+
+    on spin -> i64
+        await ask me.spin()
+
+fn main -> i64
+    let s Actor<Selfie> = spawn Selfie()
+    tell s.connect(s)
+    let n i64 = await ask s.spin()
+    n

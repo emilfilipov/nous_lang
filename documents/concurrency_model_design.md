@@ -46,12 +46,65 @@ surface, exactly as the decided syntax in
   IR interpreter and bytecode VM **reject** an actor program with a dedicated
   `L0355` (never silently diverging); the native and WASM backends **cleanly
   skip** it (`L0339`/`L0338`) and it runs on the interpreter — no miscompile.
-- **Deferred to later stages (not built):** `ask`/`Future`/`await` request-reply
-  (stage 2); move/`shared` message semantics + `copy` and the use-after-send
-  analysis (stage 3); supervision/failure (stage 4); back-pressure, `try_tell`,
-  `join_all`/`select` (stage 5); native/WASM actor codegen (stage 6); and the IR
-  and bytecode interpreters (an actor program currently rejects there rather than
-  running).
+- **Deferred to later stages (not built at stage 1):** `ask`/`Future`/`await`
+  request-reply (stage 2, **now delivered** — see below); move/`shared` message
+  semantics + `copy` and the use-after-send analysis (stage 3); supervision/
+  failure (stage 4); back-pressure, `try_tell`, `join_all`/`select` (stage 5);
+  native/WASM actor codegen (stage 6); and the IR and bytecode interpreters (an
+  actor program currently rejects there rather than running).
+
+## Stage 2 delivery (2026-07-16)
+
+Stage 2 of §5.2 — **request-reply** — is implemented and test-locked on the AST
+interpreter, exactly as the §1.2–§1.4 surface specifies. Delivered surface:
+
+- **`ask TARGET.HANDLER(args)`** — a request-reply send to an `Actor<T>` handle
+  whose handler is declared with a reply type (`on name params -> R`). It
+  enqueues a request carrying a one-shot reply slot and evaluates to a
+  **`Future<R>`**. `ask` is a keyword, mirroring `tell`; a handler *replies* by
+  the ordinary block-value rule — the reply is the handler body's final
+  expression, of the declared type `R` (no separate `reply` keyword this stage).
+- **`await FUTURE`** — resolves a `Future<R>` to its `R`. The existing `await`
+  (from the thread-spawning `async fn` substrate) is reused: it now also accepts
+  an actor request-reply future. `await ask c.value()` inline and a stored
+  `let f Future<i64> = ask c.value()` then `await f` both work; a `Future<R>` is
+  a first-class value (stored in a local, passed, returned).
+- **Semantics:** `ask` requires a reply (`-> R`) handler and `tell` a
+  fire-and-forget one; the opposite pairing is `L0352`. `ask` arguments obey the
+  same sendability rule as `tell` arguments, and a reply handler's `-> R` reply
+  type is checked sendable **at the handler declaration** (so a reply can never
+  smuggle a non-atomic `rc`/`ref`/`ptr` back to the asker) — both `L0353`. `await`
+  typing is unchanged (`Future<R>` → `R`).
+- **Runtime (AST interpreter) — fulfillment, ordering, deadlock.** The stage-1
+  deterministic single-threaded mailbox is extended with one-shot **reply slots**
+  and a **non-reentrant run-to-completion** turn model. `await f` repeatedly runs
+  the next *deliverable* message — the earliest queued message whose target actor
+  is not already mid-turn — until `f`'s reply slot is filled, then takes it.
+  Ordering guarantee: because dispatch is FIFO over deliverable messages on one
+  thread, the turn sequence (and every reply and side effect) is identical on
+  every run; results are deterministic and tests assert on results, never
+  interleavings. An actor is *busy* for the whole span of a turn including nested
+  `await`s, so it never runs two turns at once — its `state` stays single-writer.
+  **Deadlock:** if an `await` could only be satisfied by re-entering a busy actor
+  (an actor asking itself, or a mutual `ask` cycle), no message is deliverable and
+  the slot can never fill; this is reported as a clean, deterministic runtime
+  error **`L0356`** rather than a hang.
+- **Tiers.** Request-reply runs on the **AST interpreter only**, like stage 1.
+  Because `ask` reuses the `tell` message-send AST node, the IR/bytecode backends
+  reject an `ask` program with the same **`L0355`** gate, native/WASM cleanly skip
+  it (**`L0339`/`L0338`**, program-declares-actors), and a `no-runtime` module
+  rejects it with **`L0441`** — all inherited, no new tier plumbing.
+- **New diagnostic:** `L0356` (request-reply deadlock). Reused: `L0352`
+  (send-form mismatch now covers `ask`↔`tell`), `L0353` (now also the reply
+  path).
+- **Deferred to later stages (unchanged):** move/`shared` + `copy` and
+  use-after-send (stage 3); supervision/failure (stage 4); `join_all`/`select`,
+  back-pressure/`try_tell` (stage 5); native/WASM actor codegen (stage 6). A
+  `Future<R>` is awaited **once** (one-shot); collection/`select`/`race` over many
+  futures is stage 5. Cross-actor `async`/`await` fan-out within a turn works
+  today via the cooperative mailbox drive (a handler may hold several outstanding
+  asks and await them in sequence); the structured `join_all`/`select`
+  combinators remain stage 5.
 
 The rest of this document is the original design proposal (the full model); the
 above is the slice that is live today.

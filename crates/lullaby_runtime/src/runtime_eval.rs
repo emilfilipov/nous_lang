@@ -224,8 +224,17 @@ impl<'a> Runtime<'a> {
             }
             ExprKind::Await { expr } => {
                 let value = self.eval_expr(expr, env)?;
-                let future = expect_future("await", value)?;
-                await_future(&future)
+                match value {
+                    // An actor request-reply future: drive the deterministic
+                    // mailbox until the awaited reply slot is filled (or a
+                    // deadlock is detected). See `await_actor_future`.
+                    Value::ActorFuture(slot) => self.await_actor_future(slot, expr.span),
+                    // A thread-spawned `async fn` future: join its OS thread.
+                    other => {
+                        let future = expect_future("await", other)?;
+                        await_future(&future)
+                    }
+                }
             }
             // Postfix `EXPR?` error propagation. Evaluate the operand to an
             // `option`/`result` enum value; on the success variant (`some`/`ok`)
@@ -371,21 +380,27 @@ impl<'a> Runtime<'a> {
                 }
                 self.spawn_actor(actor, values)
             }
-            // `tell TARGET.HANDLER(args)`: evaluate the target handle and the
-            // arguments, enqueue the message on the actor's mailbox, and return
-            // `void`. Messages are drained (run-to-completion, one at a time)
-            // before `main` returns.
+            // `tell`/`ask TARGET.HANDLER(args)`: evaluate the target handle and
+            // the arguments, then dispatch. `tell` enqueues a fire-and-forget
+            // message and returns `void`; `ask` enqueues a request carrying a
+            // reply slot and returns a `Future<R>` (`Value::ActorFuture`) that
+            // `await` resolves by driving the mailbox until the reply arrives.
             ExprKind::Tell {
                 target,
                 handler,
                 args,
+                is_ask,
             } => {
                 let target = self.eval_expr(target, env)?;
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args {
                     values.push(self.eval_expr(arg, env)?);
                 }
-                self.tell_actor(target, handler, values)
+                if *is_ask {
+                    self.ask_actor(target, handler, values)
+                } else {
+                    self.tell_actor(target, handler, values)
+                }
             }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))

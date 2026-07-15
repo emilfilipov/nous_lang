@@ -1,0 +1,21 @@
+# A `no-runtime` module may not declare or drive an actor, including request-
+# reply: `ask`/`await`/`Future` require the Lullaby runtime scheduler (hidden
+# control flow + reply-slot allocation). The declaration, the `spawn`, the
+# `ask`, and the `await` are each rejected with L0441.
+no-runtime
+
+actor Echo
+    state
+        last i64
+
+    on remember v i64
+        last = v
+
+    on value -> i64
+        last
+
+fn main -> i64
+    let e Actor<Echo> = spawn Echo()
+    tell e.remember(7)
+    let n i64 = await ask e.value()
+    n

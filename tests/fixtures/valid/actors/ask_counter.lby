@@ -1,0 +1,25 @@
+# Stage-2 request-reply: a client `ask`s a counter for its current value and
+# `await`s the reply. The two `tell`s enqueue increments ahead of the `ask` in
+# the mailbox; `await` drives the mailbox in FIFO order, so both increments are
+# processed before the `value` reply is produced. The awaited reply is therefore
+# deterministic: 0 + 5 + 3 = 8.
+actor Counter
+    state
+        count i64
+
+    init start i64
+        count = start
+
+    on bump amount i64
+        count += amount
+
+    on value -> i64
+        count
+
+fn main -> i64
+    let c Actor<Counter> = spawn Counter(0)
+    tell c.bump(5)
+    tell c.bump(3)
+    let n i64 = await ask c.value()
+    println(to_string(n))
+    0

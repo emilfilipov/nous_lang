@@ -459,12 +459,16 @@ impl<'a> ExprParser<'a> {
                     span: token.span,
                 })
             }
-            // `tell TARGET.HANDLER(args)`: a fire-and-forget message send. The
-            // operand parses as an ordinary postfix expression, which turns the
+            // `tell`/`ask TARGET.HANDLER(args)`: a message send. The operand
+            // parses as an ordinary postfix expression, which turns the
             // method-call syntax `c.increment(5)` into a `Call{increment,[c,5]}`
             // (UFCS). We split that back into the target (first argument) and the
-            // handler name plus its remaining arguments.
-            TokenKind::Keyword(Keyword::Tell) => {
+            // handler name plus its remaining arguments. `tell` is fire-and-forget
+            // (`is_ask = false`); `ask` is request-reply (`is_ask = true`, yields
+            // `Future<R>`). Both share the `Tell` node.
+            TokenKind::Keyword(keyword @ (Keyword::Tell | Keyword::Ask)) => {
+                let is_ask = keyword == Keyword::Ask;
+                let verb = if is_ask { "ask" } else { "tell" };
                 let operand = self.parse_postfix()?;
                 match operand.kind {
                     ExprKind::Call { name, mut args } if !args.is_empty() => {
@@ -474,11 +478,12 @@ impl<'a> ExprParser<'a> {
                                 target: Box::new(target),
                                 handler: name,
                                 args,
+                                is_ask,
                             },
                             span: token.span,
                         })
                     }
-                    _ => Err("`tell` expects `target.handler(args)`".to_string()),
+                    _ => Err(format!("`{verb}` expects `target.handler(args)`")),
                 }
             }
             TokenKind::Identifier(name) => {

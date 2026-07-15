@@ -1,0 +1,16 @@
+# An `ask` argument crosses the actor boundary, so it obeys the same sendability
+# rule as a `tell` argument: a non-atomic `rc<T>` must not be shared between
+# actors. -> L0353
+actor Acc
+    state
+        n i64
+
+    on addr h rc<i64> -> i64
+        n += 1
+        n
+
+fn main -> i64
+    let a Actor<Acc> = spawn Acc()
+    let r rc<i64> = rc_new(5)
+    let x i64 = await ask a.addr(r)
+    x

@@ -275,10 +275,15 @@ fn render_actor(emitter: &mut Emitter, decl: &ActorDecl, block_next: usize) {
     header.push_str(&format!("actor {}", decl.name));
     emitter.emit_line(0, decl.span.line, &header);
 
-    // `state` block (spanless fields, like a struct body).
-    emitter.push_field_line(1, "state");
-    for field in &decl.state {
-        emitter.push_field_line(2, &format!("{} {}", field.name, field.ty.name));
+    // `state` block (spanless fields, like a struct body). The `state` header is
+    // emitted only when the actor has at least one field: an empty `state` block
+    // is not re-parseable (a `state` keyword requires indented fields), so a
+    // stateless actor renders with no `state` section at all — which round-trips.
+    if !decl.state.is_empty() {
+        emitter.push_field_line(1, "state");
+        for field in &decl.state {
+            emitter.push_field_line(2, &format!("{} {}", field.name, field.ty.name));
+        }
     }
 
     // Optional `init <params>` constructor.
@@ -957,15 +962,18 @@ fn render_expr(expr: &Expr) -> String {
             let args = args.iter().map(render_expr).collect::<Vec<_>>().join(", ");
             format!("spawn {actor}({args})")
         }
-        // `tell TARGET.HANDLER(args)` — a fire-and-forget message send. Rendered
-        // back in method-call syntax so it re-parses to the same `Tell` node.
+        // `tell`/`ask TARGET.HANDLER(args)` — a message send. Rendered back in
+        // method-call syntax so it re-parses to the same `Tell` node; the verb is
+        // `ask` for a request-reply send and `tell` for a fire-and-forget one.
         ExprKind::Tell {
             target,
             handler,
             args,
+            is_ask,
         } => {
+            let verb = if *is_ask { "ask" } else { "tell" };
             let args = args.iter().map(render_expr).collect::<Vec<_>>().join(", ");
-            format!("tell {}.{handler}({args})", render_postfix_target(target))
+            format!("{verb} {}.{handler}({args})", render_postfix_target(target))
         }
     }
 }

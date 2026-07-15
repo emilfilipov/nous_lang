@@ -1,0 +1,13 @@
+# `ask` may only target a reply handler (one declared `-> T`). `put` is a
+# fire-and-forget handler with no reply, so there is nothing to await. -> L0352
+actor Box
+    state
+        n i64
+
+    on put v i64
+        n = v
+
+fn main -> i64
+    let b Actor<Box> = spawn Box()
+    let x i64 = await ask b.put(5)
+    x

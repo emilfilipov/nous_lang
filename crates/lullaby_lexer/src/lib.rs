@@ -91,6 +91,11 @@ pub enum Keyword {
     /// `tell` — a fire-and-forget message send `tell handle.handler(args)` that
     /// enqueues onto an actor's mailbox and returns `void`.
     Tell,
+    /// `ask` — a request-reply message send `ask handle.handler(args)` that
+    /// enqueues a request carrying a one-shot reply slot and evaluates to a
+    /// `Future<R>` (`R` is the handler's `-> R` reply type); `await` resolves the
+    /// future to the reply value.
+    Ask,
     /// `no-runtime` — the module-level freestanding-tier directive. When it is the
     /// first non-comment line of a `.lby` file, the module is compiled in the
     /// freestanding (`no-runtime`) tier: the compiler rejects any construct that
@@ -569,6 +574,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "asm" => Keyword::Asm,
         "actor" => Keyword::Actor,
         "tell" => Keyword::Tell,
+        "ask" => Keyword::Ask,
         _ => return None,
     })
 }

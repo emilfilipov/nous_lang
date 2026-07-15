@@ -1,0 +1,16 @@
+# A reply value crosses the actor boundary back to the asker, so it must be
+# sendable: a non-atomic `rc<T>` reply is rejected at the handler declaration.
+# -> L0353
+actor Leak
+    state
+        r rc<i64>
+
+    init
+        r = rc_new(0)
+
+    on grab -> rc<i64>
+        r
+
+fn main -> i64
+    let l Actor<Leak> = spawn Leak()
+    0

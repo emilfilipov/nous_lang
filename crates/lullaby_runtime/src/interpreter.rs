@@ -35,6 +35,10 @@ pub(crate) struct ActorMessage {
     pub(crate) actor_id: usize,
     pub(crate) handler: String,
     pub(crate) args: Vec<Value>,
+    /// For an `ask` request, the index of the `actor_reply_slots` entry the
+    /// handler's reply value is written into once the turn completes; `None` for a
+    /// fire-and-forget `tell`.
+    pub(crate) reply_slot: Option<usize>,
 }
 
 pub fn run_main(program: &Program) -> Result<Value, RuntimeError> {
@@ -325,11 +329,26 @@ pub(crate) struct Runtime<'a> {
     /// holds the actor's private `state`. Instances live until the program ends
     /// (stage 1 has no explicit `stop`).
     pub(crate) actor_instances: Vec<ActorInstance>,
-    /// The global message mailbox: a FIFO queue of pending deliveries. `tell`
-    /// enqueues; `drain_actors` (run before `main` returns) dequeues one message
-    /// at a time and runs its handler to completion. Single-threaded and
-    /// deterministic: the same program always produces the same output.
+    /// The global message mailbox: a FIFO queue of pending deliveries. `tell`/
+    /// `ask` enqueue; the scheduler dequeues the first *deliverable* message (one
+    /// whose target actor is not already running a turn) and runs its handler to
+    /// completion. Single-threaded and deterministic: the same program always
+    /// produces the same output.
     pub(crate) actor_mailbox: VecDeque<ActorMessage>,
+    /// One-shot reply slots for `ask` request-reply futures. A `Value::ActorFuture(i)`
+    /// indexes this vector; the slot is `None` until the target handler's turn
+    /// completes and writes its reply value, then `await` `take`s it. Slots live
+    /// until the program ends (a one-shot future is awaited once).
+    pub(crate) actor_reply_slots: Vec<Option<Value>>,
+    /// The set of actor ids whose turn is currently on the (Rust) call stack — an
+    /// actor is "busy" from the moment it begins a message turn until that turn
+    /// (including any `await`s inside it) completes. The scheduler never starts a
+    /// second turn for a busy actor: this is the **non-reentrant run-to-completion**
+    /// guarantee that keeps each actor's `state` single-writer. A `tell`/`ask` to a
+    /// busy actor stays queued until the actor is free; an `await` that could only
+    /// be satisfied by re-entering a busy actor is a deterministic deadlock
+    /// (`L0356`).
+    pub(crate) busy_actors: std::collections::HashSet<usize>,
     /// A free-list of reusable per-call environments. Function invocation is on the
     /// hot path and each call needs a fresh `Env`; rather than allocate one (its
     /// scope `Vec` plus a first-scope `Vec` that grows as parameters bind) on every
@@ -469,6 +488,8 @@ impl<'a> Runtime<'a> {
             actors,
             actor_instances: Vec::new(),
             actor_mailbox: VecDeque::new(),
+            actor_reply_slots: Vec::new(),
+            busy_actors: std::collections::HashSet::new(),
             env_pool: Vec::new(),
         })
     }

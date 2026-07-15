@@ -1,0 +1,29 @@
+# Stage-2 request-reply, inter-actor and chained. The client asks a Coordinator,
+# which — inside its own turn — asks a Worker twice and awaits each reply before
+# combining them. This exercises a nested `await` (the mailbox is driven to run
+# the Worker while the Coordinator is busy, without re-entering the Coordinator)
+# and a chain where one reply feeds the next computation.
+#
+# solve(3) = square(3) + square(4) = 9 + 16 = 25. Deterministic.
+actor Worker
+    on square n i64 -> i64
+        n * n
+
+actor Coordinator
+    state
+        w Actor<Worker>
+
+    init worker Actor<Worker>
+        w = worker
+
+    on solve base i64 -> i64
+        let a i64 = await ask w.square(base)
+        let b i64 = await ask w.square(base + 1)
+        a + b
+
+fn main -> i64
+    let worker Actor<Worker> = spawn Worker()
+    let coord Actor<Coordinator> = spawn Coordinator(worker)
+    let answer i64 = await ask coord.solve(3)
+    println(to_string(answer))
+    0

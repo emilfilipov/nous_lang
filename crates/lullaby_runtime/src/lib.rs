@@ -84,6 +84,7 @@ pub fn value_type_name(value: &Value) -> String {
         Value::Chan(_) => "Chan".to_string(),
         Value::Task(_) => "Task".to_string(),
         Value::Future(_) => "Future".to_string(),
+        Value::ActorFuture(_) => "Future".to_string(),
         Value::Mutex(_) => "Mutex".to_string(),
         Value::Atomic(_) => "atomic_i64".to_string(),
         Value::ActorRef(_) => "Actor".to_string(),
@@ -177,6 +178,14 @@ pub enum Value {
     /// A handle to an `async fn` call running on a spawned OS thread; `await`ed
     /// once to retrieve the produced value.
     Future(Future),
+    /// A one-shot actor request-reply future `Future<R>`: an index into the
+    /// interpreter's `actor_reply_slots` table. `ask` produces it (allocating the
+    /// slot and enqueuing the request); `await` resolves it by driving the
+    /// deterministic mailbox until the slot is filled by the target handler's
+    /// reply. Distinct from [`Value::Future`] (an OS-thread join) because an actor
+    /// reply is fulfilled cooperatively by the single-threaded scheduler, not by a
+    /// thread. The value is just the slot index, so the `Value` cell stays small.
+    ActorFuture(usize),
     /// A shared mutex over one `i64`; shared on clone.
     Mutex(SharedMutex),
     /// A shared atomic `i64` cell (`atomic_i64`); shared on clone. Backed by
@@ -276,6 +285,7 @@ impl fmt::Display for Value {
             Self::Chan(_) => write!(formatter, "chan"),
             Self::Task(_) => write!(formatter, "task"),
             Self::Future(_) => write!(formatter, "future"),
+            Self::ActorFuture(_) => write!(formatter, "future"),
             Self::Mutex(_) => write!(formatter, "mutex"),
             Self::Atomic(_) => write!(formatter, "atomic"),
             Self::ActorRef(id) => write!(formatter, "actor({id})"),

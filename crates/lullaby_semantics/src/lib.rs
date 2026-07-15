@@ -632,6 +632,16 @@ impl<'a> Checker<'a> {
                 }
                 if let Some(reply) = &handler.reply_type {
                     self.validate_type_wf(reply, handler.span, Some(&decl.name), &[]);
+                    // The reply value crosses the actor boundary back to the
+                    // asker, so it obeys the same sendability rule as message
+                    // arguments: a non-atomic `rc`/`ref`/`ptr` reply is `L0353`.
+                    // Checked here at the declaration so a reply handler can never
+                    // promise a non-sendable reply, whether or not it is `ask`ed.
+                    let synth = self.synth_actor_function(
+                        &format!("actor {}.{}", decl.name, handler.name),
+                        reply.clone(),
+                    );
+                    self.check_sendable(reply, handler.span, &synth, "returned as an actor reply");
                 }
                 let return_type = handler
                     .reply_type
@@ -761,39 +771,57 @@ impl<'a> Checker<'a> {
         Some(generic_type("Actor", &[TypeRef::new(actor)]))
     }
 
-    /// Type-check a `tell TARGET.HANDLER(args)` expression, producing `void`.
-    /// The target must be an `Actor<T>` handle, the handler must exist and must
-    /// be a fire-and-forget (`tell`) handler — not a reply (`ask`) handler — and
-    /// the arguments must match the handler's parameters in count, type, and
-    /// sendability (`L0352`/`L0353`).
-    fn check_tell(
+    /// Type-check a message send. The one entry point serves both forms:
+    ///
+    /// - `tell TARGET.HANDLER(args)` (`is_ask == false`) — fire-and-forget,
+    ///   produces `void`; the handler must be a `tell` handler (no `-> T`).
+    /// - `ask TARGET.HANDLER(args)` (`is_ask == true`) — request-reply, produces
+    ///   `Future<R>`; the handler must be a reply handler (declared `-> R`).
+    ///
+    /// In both cases the target must be an `Actor<T>` handle, the handler must
+    /// exist, and the arguments must match the handler's parameters in count,
+    /// type, and sendability (`L0352`/`L0353`). A mismatched send form (a `tell`
+    /// to a reply handler, or an `ask` to a fire-and-forget handler) is `L0352`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_send(
         &mut self,
         target: &Expr,
         handler: &str,
         args: &[Expr],
+        is_ask: bool,
         span: Span,
         scope: &Scope,
         function: &Function,
     ) -> Option<TypeRef> {
+        let verb = if is_ask { "ask" } else { "tell" };
+        // The result type on any early (error) exit: `void` for `tell`, and `None`
+        // for `ask` (its `Future<R>` is unknown, so callers/`await` should not see
+        // a bogus type).
+        let error_result = || {
+            if is_ask {
+                None
+            } else {
+                Some(TypeRef::new("void"))
+            }
+        };
+
         let target_type = self.check_expr(target, scope, function);
         let arg_types: Vec<Option<TypeRef>> = args
             .iter()
             .map(|arg| self.check_expr(arg, scope, function))
             .collect();
-        let Some(target_type) = target_type else {
-            return Some(TypeRef::new("void"));
-        };
+        let target_type = target_type?;
         let Some(actor_name) = actor_handle_target(&target_type) else {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0352",
                 format!(
-                    "`tell` target must be an `Actor<T>` handle but got `{}`",
+                    "`{verb}` target must be an `Actor<T>` handle but got `{}`",
                     target_type.name
                 ),
                 Some(function.name.clone()),
                 target.span,
             ));
-            return Some(TypeRef::new("void"));
+            return error_result();
         };
         let Some(info) = self.actors.get(&actor_name) else {
             self.diagnostics.push(SemanticDiagnostic::at(
@@ -802,7 +830,7 @@ impl<'a> Checker<'a> {
                 Some(function.name.clone()),
                 target.span,
             ));
-            return Some(TypeRef::new("void"));
+            return error_result();
         };
         let Some(sig) = info.handlers.get(handler).cloned() else {
             self.diagnostics.push(SemanticDiagnostic::at(
@@ -811,24 +839,40 @@ impl<'a> Checker<'a> {
                 Some(function.name.clone()),
                 span,
             ));
-            return Some(TypeRef::new("void"));
+            return error_result();
         };
-        if sig.reply_type.is_some() {
-            self.diagnostics.push(SemanticDiagnostic::at(
-                "L0352",
-                format!(
-                    "cannot `tell` handler `{handler}` of actor `{actor_name}`: it declares a reply type (`-> T`), so it is an `ask` handler; request-reply (`ask`) is a later stage"
-                ),
-                Some(function.name.clone()),
-                span,
-            ));
-            return Some(TypeRef::new("void"));
+        // Enforce that the send form matches the handler kind.
+        match (is_ask, &sig.reply_type) {
+            (false, Some(reply)) => {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0352",
+                    format!(
+                        "cannot `tell` handler `{handler}` of actor `{actor_name}`: it declares a reply type (`-> {}`), so it is an `ask` handler — send it with `ask` and `await` the reply",
+                        reply.name
+                    ),
+                    Some(function.name.clone()),
+                    span,
+                ));
+                return Some(TypeRef::new("void"));
+            }
+            (true, None) => {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0352",
+                    format!(
+                        "cannot `ask` handler `{handler}` of actor `{actor_name}`: it is a fire-and-forget handler (no `-> T` reply type), so it has no reply to await — send it with `tell`"
+                    ),
+                    Some(function.name.clone()),
+                    span,
+                ));
+                return None;
+            }
+            _ => {}
         }
         if args.len() != sig.params.len() {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0352",
                 format!(
-                    "`tell {actor_name}.{handler}` expects {} argument(s) but got {}",
+                    "`{verb} {actor_name}.{handler}` expects {} argument(s) but got {}",
                     sig.params.len(),
                     args.len()
                 ),
@@ -842,7 +886,7 @@ impl<'a> Checker<'a> {
                         self.diagnostics.push(SemanticDiagnostic::at(
                             "L0352",
                             format!(
-                                "`tell {actor_name}.{handler}` argument {} expects `{}` but got `{}`",
+                                "`{verb} {actor_name}.{handler}` argument {} expects `{}` but got `{}`",
                                 index + 1,
                                 param_ty.name,
                                 actual.name
@@ -855,7 +899,14 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        Some(TypeRef::new("void"))
+        // `tell` yields `void`; `ask` yields `Future<R>` for the handler's reply
+        // type `R`. The reply value crosses the actor boundary back to the asker,
+        // so `R`'s sendability is enforced at the handler declaration
+        // (`validate_actors`); here we only need to surface the future type.
+        match sig.reply_type {
+            Some(reply) => Some(future_type(&reply)),
+            None => Some(TypeRef::new("void")),
+        }
     }
 
     /// Enforce that a value crossing an actor boundary is **sendable**: it must
@@ -3029,7 +3080,8 @@ impl<'a> Checker<'a> {
                 target,
                 handler,
                 args,
-            } => self.check_tell(target, handler, args, expr.span, scope, function),
+                is_ask,
+            } => self.check_send(target, handler, args, *is_ask, expr.span, scope, function),
             ExprKind::Field { target, field } => {
                 let target_type = self.check_expr(target, scope, function)?;
                 // An actor's `state` is private: an `Actor<T>` handle exposes no
