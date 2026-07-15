@@ -126,17 +126,37 @@ pub struct IrImplMethod {
 }
 
 /// A struct type in the IR: name plus ordered `(field, type)` pairs.
+///
+/// `type_params` are the declared generic type-parameter names in source order
+/// (`["T"]` for `struct Box<T>`, `["K", "V"]` for `struct Pair<K, V>`); empty for a
+/// non-generic struct. The field types of a generic struct mention these names as
+/// ordinary `TypeRef`s (`Box`'s `value` field has type `T`). The interpreters run
+/// generic types by erasure and never consult this list, but the native backend
+/// uses it to **monomorphize** a concrete instantiation (`Box<i64>`) by zipping the
+/// parameters against the spelling's type arguments and substituting them into the
+/// field types before computing the native layout. Serde-defaulted to an empty list
+/// so existing `.lbc` artifacts and JSON snapshots without this field stay valid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IrStructDef {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<String>,
     pub fields: Vec<(String, TypeRef)>,
 }
 
 /// An enum type in the IR: name plus ordered variants, each a name plus an
 /// ordered list of positional payload types.
+///
+/// `type_params` mirrors [`IrStructDef::type_params`]: the declared generic
+/// type-parameter names in source order (`["T"]` for `enum Opt<T>`), used by the
+/// native backend to monomorphize a concrete enum instantiation (`Opt<i64>`) by
+/// substituting the spelling's type arguments into each variant's payload types.
+/// Serde-defaulted so existing artifacts and snapshots stay valid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IrEnumDef {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<String>,
     pub variants: Vec<IrEnumVariant>,
 }
 

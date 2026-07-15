@@ -2090,3 +2090,98 @@ pub(crate) fn native_string_utf8_foreach_parity_when_linkable() {
          interpreter (exit {exit} vs interpreter {expected})"
     );
 }
+
+/// Best-effort execution parity for **native monomorphization of user-defined
+/// generic types with SCALAR type arguments** (A1 stage-1 native). The fixture
+/// declares generic structs (`Box<T>`, `Pair<K, V>`) and generic enums (`Opt<T>`,
+/// `Either<L, R>`) and instantiates each with scalar arguments (`i64`/`bool`/`f64`),
+/// exercising construction, field read, value-semantic field write, `match`,
+/// value-semantic copy, and passing/returning generic values across boundaries.
+/// Every function must compile natively (monomorphization resolves each
+/// instantiation to a concrete scalar-only layout). The value-neutrality gate: the
+/// three interpreters must agree AND the native `.exe` exit code must equal that
+/// result (mod 256) — a monomorphized `Box<i64>` is byte-identical to the erased
+/// `Box<i64>` the interpreters run. Gated on `rust-lld` + `kernel32.lib`.
+#[test]
+pub(crate) fn native_generic_scalar_execution_parity_when_linkable() {
+    ensure_msvc_env();
+    let fixture = workspace_root().join("tests/fixtures/valid/native_generic_scalar.lby");
+    let out = std::env::temp_dir().join("lullaby_native_generic_scalar_parity.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    // Every generic instantiation resolves to a scalar-only layout, so all
+    // functions compile natively and nothing is skipped.
+    let emit_out = stdout(&emit);
+    for name in [
+        "unbox",
+        "rewrap",
+        "pair_score",
+        "opt_or",
+        "flag_or",
+        "either_to_i",
+        "f64box_hit",
+        "main",
+    ] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile natively (scalar generic monomorphization), got: {emit_out}"
+        );
+    }
+    assert!(
+        !emit_out.contains("skipped"),
+        "no scalar generic function should be skipped: {emit_out}"
+    );
+
+    // Interpreter ground truth, identical across every backend (generics erase, so
+    // a divergence here is itself a finding independent of native).
+    let mut expected: Option<i64> = None;
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        match expected {
+            None => expected = Some(interp),
+            Some(prev) => assert_eq!(
+                prev, interp,
+                "{backend}: generic-scalar interpreters must agree ({prev} vs {interp})"
+            ),
+        }
+    }
+    let expected = expected.expect("at least one interpreter run");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native generic-scalar link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit as i64,
+        expected.rem_euclid(256),
+        "native monomorphized generic value must equal the interpreter's erased value \
+         (exit {exit} vs interpreter {expected})"
+    );
+}

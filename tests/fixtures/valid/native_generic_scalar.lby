@@ -1,0 +1,85 @@
+# Native monomorphization of user-defined generic types with SCALAR type
+# arguments (A1 stage-1 native). Every generic instantiation here resolves, after
+# type-argument substitution, to a scalar-only layout, so each is compiled to
+# native machine code with a layout byte-identical to the interpreters' erased
+# value. Exercises construction (positional and named), field read, field write
+# (value-semantic mutation of one copy leaving the other unchanged), `match` over
+# generic enums, value-semantic copy, and passing/returning generic values across
+# function boundaries. `main` returns an i64, so the native `.exe` exit code must
+# equal the interpreter `run` result (mod 256).
+
+struct Box<T>
+    value T
+
+struct Pair<K, V>
+    first K
+    second V
+
+enum Opt<T>
+    present T
+    absent
+
+enum Either<L, R>
+    left L
+    right R
+
+# Read a field of a monomorphized `Box<i64>` (T = i64 substituted).
+fn unbox b Box<i64> -> i64
+    b.value
+
+# Take a generic value by value and return a FRESH one; the caller's argument is
+# unchanged (value semantics across the by-pointer aggregate ABI).
+fn rewrap b Box<i64> -> Box<i64>
+    Box(b.value + 1)
+
+# A two-parameter generic struct instantiated with two scalar arguments.
+fn pair_score p Pair<i64, bool> -> i64
+    let base i64 = p.first
+    if p.second
+        return base + 1
+    base
+
+# `match` over a monomorphized generic enum with the payload bound at `i64`.
+fn opt_or o Opt<i64> fallback i64 -> i64
+    match o
+        present(x) -> x
+        absent -> fallback
+
+# A generic enum flowing through a `bool` instantiation, proving two distinct
+# scalar instantiations of `Opt` coexist natively.
+fn flag_or f Opt<bool> fallback i64 -> i64
+    match f
+        present(b) -> 10 if b else 20
+        absent -> fallback
+
+# A two-parameter generic enum with an exhaustive `match`.
+fn either_to_i e Either<i64, bool> -> i64
+    match e
+        left(x) -> x
+        right(b) -> 1 if b else 0
+
+# A scalar `f64` type argument: read the `f64` field and derive an i64.
+fn f64box_hit b Box<f64> -> i64
+    1 if b.value > 2.0 else 0
+
+fn main -> i64
+    let a Box<i64> = Box(5)
+    let copy Box<i64> = a
+    let bumped Box<i64> = rewrap(a)
+    # Value-semantic field mutation: writing `copy.value` must not touch `a`.
+    let mutcopy Box<i64> = a
+    mutcopy.value = 40
+    let p Pair<i64, bool> = Pair(first: 10, second: true)
+    let q Pair<i64, bool> = Pair(first: 3, second: false)
+    let o Opt<i64> = present(30)
+    let miss Opt<i64> = absent
+    let flag Opt<bool> = present(true)
+    let e Either<i64, bool> = left(7)
+    let e2 Either<i64, bool> = right(true)
+    let fb Box<f64> = Box(2.5)
+    # unbox(a)=5 proves `a` survived both `rewrap` and the `mutcopy` write.
+    let boxes i64 = unbox(a) + unbox(copy) + unbox(bumped) + mutcopy.value
+    let pairs i64 = pair_score(p) + pair_score(q)
+    let opts i64 = opt_or(o, 0) + opt_or(miss, 100) + flag_or(flag, 0)
+    let eithers i64 = either_to_i(e) + either_to_i(e2)
+    boxes + pairs + opts + eithers + f64box_hit(fb)

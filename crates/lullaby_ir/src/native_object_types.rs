@@ -5,6 +5,12 @@
 
 use super::*;
 
+// Reused from semantics to substitute a generic type's type parameters with the
+// concrete type arguments of an instantiation (`{T: i64}` applied to `list<T>` ->
+// `list<i64>`). Recurses through nested generic spellings, so a monomorphized
+// field/payload type is fully concrete before its native layout is computed.
+use lullaby_semantics::substitute_type;
+
 // -- Stack aggregate layout (all-i64 structs and fixed i64 arrays) -----------
 //
 // Locals in the extended subset may be an `i64` scalar, an all-i64 (possibly
@@ -258,54 +264,159 @@ pub(crate) fn resolve_native_type(
                 value: Box::new(value_native),
             })
         }
-        // The built-in generic enums and user enums with scalar payloads.
+        // The built-in generic enums and user enums (generic or not) with scalar
+        // payloads. A user generic enum instantiation (`Opt<i64>`) is monomorphized
+        // inside `resolve_enum_type` by substituting the spelling's type arguments.
         name if is_enum_type_name(name, enums) => resolve_enum_type(ty, structs, enums),
         name => {
-            let def = structs
-                .iter()
-                .find(|s| s.name == name)
-                .ok_or_else(|| format!("type `{name}` is not in the native stack subset"))?;
-            let mut fields = Vec::with_capacity(def.fields.len());
-            for (field_name, field_ty) in &def.fields {
-                let native = resolve_native_type(field_ty, structs, enums).map_err(|_| {
-                    format!("struct `{name}` field `{field_name}` is not an all-i64 native type")
-                })?;
-                // An `f32` field is out of scope: the aggregate copy/pass paths move
-                // whole 8-byte words through a GPR, which would not keep a 4-byte
-                // f32 rounded. An `f64` is a full 8-byte word, so a GPR round-trip is
-                // bit-lossless — f64 fields ARE supported (read/store route through
-                // the float lowerer via `resolve_*_typed` + `float_width_of_expr`'s
-                // Field arm; init/copy move the word unchanged). Reject only f32.
-                if matches!(native, NativeType::F32) {
-                    return Err(format!(
-                        "struct `{name}` field `{field_name}` is an f32; f32 struct fields are not in the native subset (an f64 field is fine)"
-                    ));
-                }
-                // A MUTABLE heap-value field (`list`/`map`) inside an aggregate is
-                // deferred: the aggregate copy/pass paths move flat words and would
-                // SHARE (not deep-copy) the referenced heap block, breaking value
-                // semantics for a mutable list/map field. A `string` field IS
-                // supported: strings are immutable, so the flat word copy that the
-                // struct construction/boundary/`match` paths already emit shares the
-                // record pointer, which IS its value-semantic copy (exactly like a
-                // `string` list element or enum payload). So permit `String` here and
-                // reject only the mutable `List`/`Map` fields — the function then
-                // skips gracefully for those.
-                if matches!(native, NativeType::List { .. } | NativeType::Map { .. }) {
-                    return Err(format!(
-                        "struct `{name}` field `{field_name}` is a mutable heap value \
-                         (list/map); mutable heap-value struct fields are not in the native \
-                         subset (a `string` field is supported)"
-                    ));
-                }
-                fields.push((field_name.clone(), native));
+            // A non-generic struct declared under its exact name.
+            if let Some(def) = structs.iter().find(|s| s.name == name) {
+                return resolve_struct_fields(name, &def.fields, structs, enums);
             }
-            Ok(NativeType::Struct {
-                name: name.to_string(),
-                fields,
-            })
+            // A user-generic struct instantiation `Name<args>` (`Box<i64>`,
+            // `Pair<i64, bool>`): MONOMORPHIZE it. Look up the generic declaration by
+            // its head name, zip its declared type parameters against the spelling's
+            // concrete type arguments, substitute them into each field type, then
+            // resolve the resulting concrete layout with the ordinary struct
+            // machinery. The native layout of a monomorphized `Box<i64>` is identical
+            // to a hand-written `struct BoxI64 { value i64 }`, so this is
+            // value-neutral. The struct keeps its BASE name (`Box`) in the layout so
+            // the constructor-name check (`Box(...)`) and all downstream paths match.
+            if let Some((head, args)) = split_user_generic(ty)
+                && let Some(def) = structs.iter().find(|s| s.name == head)
+                && !def.type_params.is_empty()
+            {
+                let subst = subst_map(&def.type_params, &args);
+                let concrete_fields: Vec<(String, TypeRef)> = def
+                    .fields
+                    .iter()
+                    .map(|(fname, fty)| (fname.clone(), substitute_type(fty, &subst)))
+                    .collect();
+                let native = resolve_struct_fields(&head, &concrete_fields, structs, enums)?;
+                // Scalar-`T` scope gate (default-deny). Only compile a generic
+                // instantiation natively when EVERY field, after substitution,
+                // resolves to a scalar or a scalar-only aggregate. A heap-typed field
+                // introduced by a heap type argument (`Box<string>` -> a `string`
+                // field) or a field that becomes heap-typed after substitution
+                // (`Stack<i64>` -> a `list<i64>` field) is DEFERRED to the
+                // interpreters as a clean follow-up (heap-`T` needs per-instantiation
+                // drop-glue/reclamation). Skipping here keeps native default-deny.
+                if !is_scalar_only_layout(&native) {
+                    return Err(format!(
+                        "generic struct instantiation `{name}` has a heap-typed field after \
+                         substitution; heap type arguments are deferred to the interpreters"
+                    ));
+                }
+                return Ok(native);
+            }
+            Err(format!("type `{name}` is not in the native stack subset"))
         }
     }
+}
+
+/// Split a `TypeRef` spelling into `(head, args)` when it is a user-generic
+/// instantiation `Name<args>` (`Box<i64>` -> `("Box", ["i64"])`). Returns `None`
+/// for a plain type name, a function type (`fn(...) -> R`), or a spelling that is
+/// not `<...>`-bracketed. Built-in generics (`list<...>`, `option<...>`, ...) are
+/// handled by earlier arms of [`resolve_native_type`] and never reach this helper.
+fn split_user_generic(ty: &TypeRef) -> Option<(String, Vec<TypeRef>)> {
+    let open = ty.name.find('<')?;
+    if !ty.name.ends_with('>') || ty.name.starts_with("fn(") {
+        return None;
+    }
+    let head = ty.name[..open].to_string();
+    let args = ty.generic_args(&head)?;
+    Some((head, args))
+}
+
+/// Build the substitution map that pins each declared generic type parameter to
+/// its concrete type argument (`["T"]` + `["i64"]` -> `{T: i64}`). Semantics has
+/// already validated arity; a shorter argument list (which cannot occur for a
+/// checked program) simply leaves the surplus parameters unbound so their field
+/// types fail to resolve and the function skips.
+fn subst_map(type_params: &[String], args: &[TypeRef]) -> HashMap<String, TypeRef> {
+    type_params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect()
+}
+
+/// Whether a resolved native layout is composed ENTIRELY of scalars — an `i64`/
+/// fixed-width/`bool`/`char`/`byte` cell, an `f64`/`f32`, or a struct/array/enum
+/// whose fields/elements/payloads are themselves scalar-only. Any heap word
+/// (`string`, `list`, `map`, a heap struct, or a fat-array descriptor) makes it
+/// non-scalar. This is the scalar-`T` scope gate for generic monomorphization: a
+/// monomorphized generic type compiles natively only when its whole layout is
+/// scalar-only, so heap type arguments (and scalar arguments that still produce a
+/// heap-typed field, like `Stack<i64>`'s `list<i64>`) are deferred cleanly.
+pub(crate) fn is_scalar_only_layout(ty: &NativeType) -> bool {
+    match ty {
+        NativeType::I64 | NativeType::F64 | NativeType::F32 => true,
+        NativeType::String
+        | NativeType::List { .. }
+        | NativeType::Map { .. }
+        | NativeType::HeapStruct { .. }
+        | NativeType::FatArray { .. } => false,
+        NativeType::Struct { fields, .. } => fields.iter().all(|(_, f)| is_scalar_only_layout(f)),
+        NativeType::Array { elem, .. } => is_scalar_only_layout(elem),
+        NativeType::Enum { variants, .. } => variants
+            .iter()
+            .all(|v| v.payload.iter().all(is_scalar_only_layout)),
+    }
+}
+
+/// Resolve a struct's `(field, type)` list into a stack-flattened
+/// [`NativeType::Struct`] layout under `name`. Each field type must resolve to a
+/// native type; an `f32` field and a MUTABLE heap-value field (`list`/`map`) are
+/// rejected (the function then skips gracefully), while a `string` field is
+/// supported (immutable, shared on the flat word-copy). Shared by the non-generic
+/// struct path and the monomorphized generic-struct path.
+fn resolve_struct_fields(
+    name: &str,
+    field_defs: &[(String, TypeRef)],
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> Result<NativeType, String> {
+    let mut fields = Vec::with_capacity(field_defs.len());
+    for (field_name, field_ty) in field_defs {
+        let native = resolve_native_type(field_ty, structs, enums).map_err(|_| {
+            format!("struct `{name}` field `{field_name}` is not an all-i64 native type")
+        })?;
+        // An `f32` field is out of scope: the aggregate copy/pass paths move
+        // whole 8-byte words through a GPR, which would not keep a 4-byte
+        // f32 rounded. An `f64` is a full 8-byte word, so a GPR round-trip is
+        // bit-lossless — f64 fields ARE supported (read/store route through
+        // the float lowerer via `resolve_*_typed` + `float_width_of_expr`'s
+        // Field arm; init/copy move the word unchanged). Reject only f32.
+        if matches!(native, NativeType::F32) {
+            return Err(format!(
+                "struct `{name}` field `{field_name}` is an f32; f32 struct fields are not in the native subset (an f64 field is fine)"
+            ));
+        }
+        // A MUTABLE heap-value field (`list`/`map`) inside an aggregate is
+        // deferred: the aggregate copy/pass paths move flat words and would
+        // SHARE (not deep-copy) the referenced heap block, breaking value
+        // semantics for a mutable list/map field. A `string` field IS
+        // supported: strings are immutable, so the flat word copy that the
+        // struct construction/boundary/`match` paths already emit shares the
+        // record pointer, which IS its value-semantic copy (exactly like a
+        // `string` list element or enum payload). So permit `String` here and
+        // reject only the mutable `List`/`Map` fields — the function then
+        // skips gracefully for those.
+        if matches!(native, NativeType::List { .. } | NativeType::Map { .. }) {
+            return Err(format!(
+                "struct `{name}` field `{field_name}` is a mutable heap value \
+                 (list/map); mutable heap-value struct fields are not in the native \
+                 subset (a `string` field is supported)"
+            ));
+        }
+        fields.push((field_name.clone(), native));
+    }
+    Ok(NativeType::Struct {
+        name: name.to_string(),
+        fields,
+    })
 }
 
 /// The base enum-constructor name of a type spelling: `option` for `option<i64>`
@@ -336,6 +447,10 @@ fn resolve_enum_type(
     enums: &[IrEnumDef],
 ) -> Result<NativeType, String> {
     let ctor = enum_ctor_name(&ty.name);
+    // Set when `ctor` names a user-declared GENERIC enum (`enum Opt<T>`): the
+    // instantiation is monomorphized (its variant payloads substituted) and gated
+    // to the scalar-`T` scope below, exactly like a generic struct.
+    let mut user_generic = false;
     // The ordered (variant name, payload types) pairs for this enum.
     let variant_specs: Vec<(String, Vec<TypeRef>)> = match ctor {
         "option" => {
@@ -366,10 +481,31 @@ fn resolve_enum_type(
                 .iter()
                 .find(|e| e.name == ctor)
                 .ok_or_else(|| format!("enum `{ctor}` is not declared"))?;
-            def.variants
-                .iter()
-                .map(|v| (v.name.clone(), v.payload.clone()))
-                .collect()
+            if def.type_params.is_empty() {
+                def.variants
+                    .iter()
+                    .map(|v| (v.name.clone(), v.payload.clone()))
+                    .collect()
+            } else {
+                // MONOMORPHIZE a user generic enum instantiation (`Opt<i64>`):
+                // substitute the spelling's concrete type arguments into every
+                // variant's payload types before computing the native layout.
+                user_generic = true;
+                let args = ty.generic_args(ctor).unwrap_or_default();
+                let subst = subst_map(&def.type_params, &args);
+                def.variants
+                    .iter()
+                    .map(|v| {
+                        (
+                            v.name.clone(),
+                            v.payload
+                                .iter()
+                                .map(|p| substitute_type(p, &subst))
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            }
         }
     };
 
@@ -429,11 +565,26 @@ fn resolve_enum_type(
         });
     }
 
-    Ok(NativeType::Enum {
+    let native = NativeType::Enum {
         name: ctor.to_string(),
         variants,
         payload_words,
-    })
+    };
+    // Scalar-`T` scope gate (default-deny), mirroring the generic-struct path: a
+    // user generic enum instantiation compiles natively only when its whole layout
+    // is scalar-only. A heap-typed payload introduced by a heap type argument
+    // (`Opt<string>`) or one that becomes heap-typed after substitution
+    // (`Tree<i64>`'s `list<Tree<i64>>`) is DEFERRED to the interpreters. Built-in
+    // `option`/`result` and non-generic user enums keep their existing string/heap
+    // payload support (they are not gated here).
+    if user_generic && !is_scalar_only_layout(&native) {
+        return Err(format!(
+            "generic enum instantiation `{}` has a heap-typed payload after substitution; \
+             heap type arguments are deferred to the interpreters",
+            ty.name
+        ));
+    }
+    Ok(native)
 }
 
 /// Infer the `NativeType` of an initializer expression, using its static type

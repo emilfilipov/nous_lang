@@ -625,6 +625,65 @@ fn gen_list_struct_string_program(seed: u64) -> String {
     format!("{rec}{body}")
 }
 
+/// Generates a program exercising **native monomorphization of user-defined
+/// generic types with SCALAR type arguments**. Fixed generic declarations
+/// (`Box<T>`, `Pair<A, B>`, `Opt<T>`) are instantiated with scalar arguments
+/// (`i64`/`bool`) and randomized values, exercising construction (positional and
+/// named), field read, value-semantic field write (mutating one copy must not
+/// affect another), `match` over a generic enum, value-semantic copy, and
+/// passing/returning generic values across function boundaries. Every
+/// instantiation is scalar-only, so it must compile natively AND agree with the
+/// interpreters — a monomorphized `Box<i64>` is byte-identical to the erased
+/// `Box<i64>`. All arithmetic is wrapping `+`/`-`/`*` over `i64`/`bool` cells, so
+/// the program is divergence-free and its `main` returns an `i64`.
+fn gen_generic_scalar_program(seed: u64) -> String {
+    let mut rng = Rng(seed ^ 0x2B1D_66E4_9F07_5A3Cu64);
+    let decls = "struct Box<T>\n    value T\n\n\
+                 struct Pair<A, B>\n    first A\n    second B\n\n\
+                 enum Opt<T>\n    present T\n    absent\n\n\
+                 fn unbox b Box<i64> -> i64\n    b.value\n\n\
+                 fn opt_or o Opt<i64> f i64 -> i64\n    match o\n        \
+                 present(x) -> x\n        absent -> f\n\n";
+
+    let v1 = rng.range(-1000, 1000);
+    let v2 = rng.range(-1000, 1000);
+    let v3 = rng.range(-1000, 1000);
+    let flag = rng.chance(2);
+    let pair_bool = rng.chance(2);
+    let present = rng.chance(2);
+    let mutate = rng.chance(2);
+    let mutval = rng.range(-500, 500);
+    let fallback = rng.range(-500, 500);
+
+    let mut body = String::from("fn main -> i64\n");
+    // A boxed i64, a value-semantic copy, and a (maybe) mutated third copy: the
+    // final sum reads `unbox(a)` to prove `a` survived every copy/mutation.
+    body.push_str(&format!("    let a Box<i64> = Box({v1})\n"));
+    body.push_str("    let c Box<i64> = a\n");
+    body.push_str("    let m Box<i64> = a\n");
+    if mutate {
+        body.push_str(&format!("    m.value = {mutval}\n"));
+    }
+    // A second scalar instantiation of `Box` (bool) and a two-parameter `Pair`.
+    body.push_str(&format!("    let fb Box<bool> = Box({flag})\n"));
+    body.push_str(&format!(
+        "    let p Pair<i64, bool> = Pair(first: {v2}, second: {pair_bool})\n"
+    ));
+    let opt_ctor = if present {
+        format!("present({v3})")
+    } else {
+        "absent".to_string()
+    };
+    body.push_str(&format!("    let o Opt<i64> = {opt_ctor}\n"));
+    // The bool field / bool box guard scalar contributions.
+    body.push_str("    let pg i64 = p.first if p.second else 0\n");
+    body.push_str("    let fg i64 = 10 if fb.value else 20\n");
+    body.push_str(&format!(
+        "    unbox(a) + c.value + m.value + pg + fg + opt_or(o, {fallback})\n"
+    ));
+    format!("{decls}{body}")
+}
+
 /// The result of running a program on one backend, reduced to a comparable form.
 #[derive(PartialEq, Eq, Debug)]
 enum Outcome {
@@ -1237,5 +1296,95 @@ fn fuzz_list_struct_string_native_no_crash_when_linkable() {
                  interpreter={expected}, native exit={exit}"
             );
         }
+    }
+}
+
+#[test]
+fn fuzz_generic_scalar_interpreters_agree() {
+    // Cross-check the three engines on user-generic-type programs (scalar `T`).
+    // Always runs (no toolchain needed); a divergence prints the reproducing program.
+    const PROGRAMS: u64 = 2000;
+    let base_seed = 0x1F83_D9AB_5BE0_CD19u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_generic_scalar_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "generic-scalar backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "generic-scalar generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_generic_scalar_native_matches_interpreter_when_linkable() {
+    // The value-neutrality oracle for native monomorphization of user generic types
+    // with SCALAR type arguments: each generated program instantiates `Box<T>`,
+    // `Pair<A, B>`, and `Opt<T>` with scalar arguments, so every function MUST
+    // compile natively AND its `.exe` exit code MUST equal the interpreter result —
+    // a monomorphized `Box<i64>` is byte-identical to the erased `Box<i64>` the
+    // interpreters run. Gated on the link toolchain; skips cleanly when absent.
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld/kernel32.lib unavailable; skipping native generic-scalar fuzz");
+        return;
+    }
+    ensure_msvc_env();
+
+    const PROGRAMS: u64 = 120;
+    let base_seed = 0xC3D2_E1F0_A9B8_7654u64;
+    let dir = std::env::temp_dir().join("lullaby_fuzz_native_generic_scalar");
+    let _ = std::fs::create_dir_all(&dir);
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_generic_scalar_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on native-generic-scalar-fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => {
+                panic!("generic-scalar generator produced {other:?} on seed {seed:#x}:\n{source}")
+            }
+        };
+
+        let src_path = dir.join(format!("fuzz_gs_{i}.lby"));
+        let exe_path = dir.join(format!("fuzz_gs_{i}.exe"));
+        std::fs::write(&src_path, &source).expect("write fuzz source");
+        let _ = std::fs::remove_file(&exe_path);
+
+        let emit = lullaby()
+            .args([
+                "native",
+                "-o",
+                exe_path.to_str().expect("exe path"),
+                src_path.to_str().expect("src path"),
+            ])
+            .output()
+            .expect("run native");
+        // Every scalar generic instantiation is native-eligible, so an exe MUST be
+        // produced (unlike the heap-element regression oracle, a clean skip here
+        // would mean monomorphization regressed).
+        assert!(
+            emit.status.success() && exe_path.is_file(),
+            "expected a native exe for scalar generics on #{i} (seed {seed:#x}):\n{source}\n{}",
+            stderr(&emit)
+        );
+
+        let run = Command::new(&exe_path).output().expect("run fuzz exe");
+        let exit = run.status.code().expect("native exit code");
+        assert_eq!(
+            exit, expected as i32,
+            "NATIVE MISCOMPILE (generic scalar) on #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
     }
 }

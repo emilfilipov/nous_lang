@@ -1663,6 +1663,109 @@ fn skips_struct_with_f32_field() {
 }
 
 #[test]
+fn compiles_generic_struct_with_scalar_type_argument() {
+    // A user generic `struct Box<T>` instantiated with a SCALAR type argument
+    // (`Box<i64>`) is MONOMORPHIZED: `T` is substituted to `i64`, and the layout is
+    // byte-identical to a hand-written `struct BoxI64 { value i64 }`. Construction,
+    // field read, value-semantic copy, and passing/returning the generic value across
+    // a boundary all compile natively with no skips.
+    let program = emit_native_program(&module_for(
+            "struct Box<T>\n    value T\n\nfn rewrap b Box<i64> -> Box<i64>\n    Box(b.value + 1)\n\nfn main -> i64\n    let a Box<i64> = Box(5)\n    let c Box<i64> = a\n    let d Box<i64> = rewrap(a)\n    return a.value + c.value + d.value\n",
+        ))
+        .expect("scalar generic struct is native");
+    assert_eq!(
+        program.compiled,
+        vec!["rewrap".to_string(), "main".to_string()]
+    );
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
+}
+
+#[test]
+fn compiles_multi_param_generic_struct_with_scalar_arguments() {
+    // A two-parameter `struct Pair<K, V>` with two scalar arguments
+    // (`Pair<i64, bool>`) monomorphizes each parameter independently: `K -> i64`,
+    // `V -> bool` (a normalized `0`/`1` cell), a flat two-word aggregate.
+    let program = emit_native_program(&module_for(
+            "struct Pair<K, V>\n    first K\n    second V\n\nfn main -> i64\n    let p Pair<i64, bool> = Pair(first: 10, second: true)\n    let base i64 = p.first\n    if p.second\n        return base + 1\n    return base\n",
+        ))
+        .expect("scalar multi-param generic struct is native");
+    assert_eq!(program.compiled, vec!["main".to_string()]);
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
+}
+
+#[test]
+fn compiles_generic_enum_with_scalar_type_argument() {
+    // A user generic `enum Opt<T>` instantiated with a scalar argument (`Opt<i64>`)
+    // is monomorphized: the `present` variant payload substitutes to `i64`, and the
+    // native tag+payload layout matches the interpreters. Construction of both a
+    // payload and a unit variant plus an exhaustive `match` compile with no skips.
+    let program = emit_native_program(&module_for(
+            "enum Opt<T>\n    present T\n    absent\n\nfn opt_or o Opt<i64> fallback i64 -> i64\n    match o\n        present(x) -> x\n        absent -> fallback\n\nfn main -> i64\n    let o Opt<i64> = present(30)\n    let m Opt<i64> = absent\n    return opt_or(o, 0) + opt_or(m, 100)\n",
+        ))
+        .expect("scalar generic enum is native");
+    assert_eq!(
+        program.compiled,
+        vec!["opt_or".to_string(), "main".to_string()]
+    );
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
+}
+
+#[test]
+fn skips_generic_struct_with_heap_string_type_argument() {
+    // DEFAULT-DENY: a scalar-`T` increment. A generic struct instantiated with a
+    // HEAP type argument (`Box<string>` -> a `string` field after substitution) is
+    // DEFERRED to the interpreters as a clean follow-up (heap-`T` needs
+    // per-instantiation drop-glue/reclamation). Even though native already supports
+    // a hand-written string-field struct, the monomorphization scalar-only gate
+    // rejects the instantiation, so `main` is demoted and — nothing else eligible —
+    // the emitter reports `L0339`: a clean skip, never a miscompile.
+    let err = emit_native_program(&module_for(
+            "struct Box<T>\n    value T\n\nfn main -> i64\n    let b Box<string> = Box(\"hi\")\n    return len(b.value)\n",
+        ))
+        .expect_err("heap-T generic struct is deferred");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn skips_generic_struct_whose_field_becomes_heap_after_substitution() {
+    // DEFAULT-DENY even for a SCALAR type argument: `struct Stack<T> { items list<T> }`
+    // with `Stack<i64>` substitutes to a `list<i64>` FIELD — a mutable heap value —
+    // which is outside the scalar-`T` scope, so the whole function skips cleanly.
+    let err = emit_native_program(&module_for(
+            "struct Stack<T>\n    items list<T>\n    count i64\n\nfn main -> i64\n    let xs list<i64> = list_new()\n    let s Stack<i64> = Stack(xs, 0)\n    return s.count\n",
+        ))
+        .expect_err("generic struct with a heap-typed field is deferred");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn skips_generic_enum_with_heap_string_payload() {
+    // DEFAULT-DENY: a generic enum instantiated so a payload becomes heap-typed
+    // (`Either<i64, string>` -> a `string` payload) is deferred to the interpreters,
+    // exactly like the generic-struct heap-`T` case.
+    let err = emit_native_program(&module_for(
+            "enum Either<L, R>\n    left L\n    right R\n\nfn fold e Either<i64, string> -> i64\n    match e\n        left(x) -> x\n        right(s) -> len(s)\n\nfn main -> i64\n    let e Either<i64, string> = left(3)\n    return fold(e)\n",
+        ))
+        .expect_err("heap-payload generic enum is deferred");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
 fn skips_list_of_struct_string_field_when_pushing_a_variable() {
     // A `list<struct-with-string-field>` classifies as a native collection type, but
     // storing a struct *variable* into an element slot has no sound lowering: a struct
@@ -1781,6 +1884,7 @@ fn native_type_words_flatten_nested_aggregates() {
     let structs = vec![
         IrStructDef {
             name: "Pair".to_string(),
+            type_params: vec![],
             fields: vec![
                 ("a".to_string(), TypeRef::new("i64")),
                 ("b".to_string(), TypeRef::new("i64")),
@@ -1788,6 +1892,7 @@ fn native_type_words_flatten_nested_aggregates() {
         },
         IrStructDef {
             name: "Line".to_string(),
+            type_params: vec![],
             fields: vec![
                 ("start".to_string(), TypeRef::new("Pair")),
                 ("end".to_string(), TypeRef::new("Pair")),

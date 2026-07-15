@@ -848,6 +848,15 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|declaration| IrStructDef {
                 name: declaration.name.clone(),
+                // Carry the generic type-parameter names (in source order) into the
+                // IR so the native backend can monomorphize a concrete instantiation
+                // by substituting them into the field types. Empty for a non-generic
+                // struct; the interpreters ignore it (they run by erasure).
+                type_params: declaration
+                    .type_params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
                 fields: declaration
                     .fields
                     .iter()
@@ -861,6 +870,14 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|declaration| IrEnumDef {
                 name: declaration.name.clone(),
+                // Carry the generic type-parameter names (in source order) so the
+                // native backend can monomorphize a concrete enum instantiation by
+                // substituting them into each variant's payload types.
+                type_params: declaration
+                    .type_params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
                 variants: declaration
                     .variants
                     .iter()

@@ -30,6 +30,7 @@ Implemented now:
 - **First-class heap `string` values.** A `string` value is a heap pointer to a `[char_len i64][byte_len i64][utf8 bytes]` record. String literals used as values, string locals/parameters/returns/call arguments, runtime `+` concatenation, `len(s)` for any string value, and `to_string` for integers/`bool`/`char`/`byte` are compiled to native machine code, agreeing bit-for-bit with the interpreters (including UTF-8 char counting). Strings are immutable, so they pass/return by pointer with no deep copy. **Strings as `list`/`map` elements/values and enum payloads are now delivered** (`list<string>`, `map<K, string>`, `option<string>`, `result<i64, string>`, string-payload user enums — see the list/map/enum sections). `to_string(f64)`/`to_string(f32)`, the remaining string builtins (`replace`/`words`), string map keys, and strings as array **elements** remain deferred. **A `string` struct/enum FIELD is now delivered** (a struct with a `string` field, one level deep — see "Heap-Typed Aggregate Fields (`struct` with a `string` field)" below). See "First-class heap `string` values" below.
 - **Heap-typed aggregate FIELDS (`struct` with a `string` field), one level deep.** A `struct` (or scalar-payload enum) whose fields are scalars plus one or more immutable `string` fields is compiled to native machine code: the `string` field is stored as a single immutable pointer word inside the stack-flattened aggregate, construction evaluates the string expression into that word, a field read loads the pointer, and the value-semantic copy **shares** the pointer (correct because strings are immutable) — matching the interpreters bit-for-bit, including across function boundaries (the by-hidden-pointer aggregate ABI copies the word). **Recursive reclamation** extends the recursive RC drop-glue: a uniquely-owned, borrow-only heap-field aggregate loop temp is dropped by one `rc_dec` per `string` field at each loop edge, composing with BOTH the RC/free-list path (the record is freed and reused) AND the arena path (`rc_free` no-ops; the bump rewind reclaims) — no double-free, no leak on either. Nested heap-carrying struct fields also compile (a `string` field nested inside a struct field is still a shared immutable word, stack-flattened recursively). A MUTABLE heap field (`list`/`map`) and an `f32` field stay deferred, as does storing such an aggregate from a **non-constructor** value (a struct variable/parameter/`get` result) into a MUTABLE-aggregate `list`/`map` element or enum payload — only an inline constructor in that slot compiles; both skip cleanly. See "Heap-Typed Aggregate Fields (`struct` with a `string` field)" below.
 - **Direct PE executable emission (freestanding, no external linker).** `lullaby native --freestanding` writes a runnable Windows `.exe` in-house — a fixed-base PE32+ image laid around the generated `.text` with a one-import (`kernel32!ExitProcess`) table — skipping `rust-lld` entirely. This removes the external linker, which is ~93% of the `lullaby native` wall-clock, making the freestanding edit→exe loop linker-cost-free. Link-and-run verified on this host. See "Direct PE Executable Emission (Freestanding, No External Linker)" below.
+- **User generic types with scalar type arguments (native monomorphization).** A user-defined generic `struct`/`enum` instantiated with **scalar** type arguments — `Box<i64>`, `Pair<i64, bool>`, `Opt<i64>`, `Either<i64, bool>` — is **monomorphized**: the declared type parameters are substituted with the instantiation's concrete arguments (reusing the semantic `substitute_type`), and the resulting fully-concrete field/variant layout flows through the existing struct/enum machinery. Construction, field read/write, `match`, value-semantic copy, and passing/returning across boundaries all compile, byte-identical to the interpreters' erased value (value-neutral). **Default-deny scope gate:** an instantiation compiles only when its whole monomorphized layout is scalar-only; a heap type argument (`Box<string>`) or a scalar argument that still yields a heap field (`Stack<i64>` → `list<i64>`; a recursive `Tree<i64>`) is **deferred cleanly** to the interpreters (heap-`T` reclamation is a follow-up). Inherent methods on a generic type stay native-ineligible (as they are for non-generic structs). See "User Generic Types: Native Monomorphization (Scalar Type Arguments)" below.
 - **Fat-pointer array parameters (runtime-length `array<T>`).** A **read-only** scalar-element `array<T>` parameter (an integer cell `i64`/fixed-width/`bool`/`char`/`byte`, or a float `f64`/`f32`) whose length is not known at compile time is passed as a **fat pointer** — a `(data_ptr, length)` descriptor — so the callee reads the caller's storage in place instead of demoting because the length could not be inferred from a call site. `a[i]` (runtime-length bounds-checked; an integer element loads through a GPR, a float element through an XMM register), `len(a)`, and `for x in a` all lower against the descriptor. This closes the single largest native-reach gap (144→29 "no call site to infer its length from" corpus demotions). Value semantics hold because the parameter is read-only; a mutating or length-inferable parameter keeps the copy-in stack-array path. Forwarding a fat parameter as a call argument, mutating runtime-length parameters, and runtime-length returns/locals stay deferred. See "Fat-Pointer Array Parameters (Runtime-Length `array<T>`)" below.
 
 Now implemented (updated): `bool`/`char`/`byte` and the full fixed-width integer
@@ -441,6 +442,90 @@ A fixed array carries no length in its `array<T>` type, so an array-typed parame
 ### Verification
 
 The fixtures `tests/fixtures/valid/native_aggregate_params.lby` (a function taking a struct and returning an i64, one returning a struct, and a value-semantics check via `mutate_local`), `native_aggregate_array.lby` (taking and returning a fixed `i64` array plus a value-semantics check), `native_aggregate_enum.lby` (`option<i64>` as parameter and return, including a `match` on an enum-returning call), and `native_aggregate_value_semantics.lby` (a struct and an array whose callees clobber their parameter copies) each return a deterministic i64 < 256, run on all interpreter backends for ground truth, and are native-compiled, linked, and run by `native_aggregate_boundary_execution_parity_when_linkable` in `crates/lullaby_cli/tests/cli.rs`, asserting the `.exe` exit code equals the interpreter's `run` result (gated on `rust-lld` + `kernel32.lib`; the compile-not-skip and interpreter-truth assertions always run). Unit tests in `native_program_tests` assert the struct/array/enum boundary functions report `compiled` (not `skipped`), that the hidden-return-pointer write (`mov [rax - 8], rcx`), the by-pointer argument `lea`, and the parameter copy-in read (`mov rcx, [rax + disp]`) appear in the code, and that heap-containing aggregates skip with clear reasons. An aggregate-returning function with four visible parameters (five effective register arguments, the fifth spilling to the stack) is now compiled rather than skipped (`aggregate_return_with_four_params_uses_a_stack_argument`).
+
+## User Generic Types: Native Monomorphization (Scalar Type Arguments) (DELIVERED)
+
+User-defined generic types (`struct Box<T>`, `enum Opt<T>`, multi-parameter
+`Pair<K, V>` / `Either<L, R>`) run on the three interpreters by **type erasure**
+(one runtime shape per declaration over dynamic `Value`s). The native backend
+cannot erase — it is layout-and-reclamation driven and must know each field's
+concrete type — so it **monomorphizes**: at each concrete use site the generic
+type is specialized to its instantiation, following the hybrid strategy in
+[generics_design.md](generics_design.md). This increment delivers the
+**scalar-type-argument** case.
+
+### How substitution → concrete layout works
+
+`IrStructDef` and `IrEnumDef` carry the declared generic type-parameter names in
+source order (`type_params`, serde-defaulted empty; the interpreters ignore it).
+When native type resolution (`resolve_native_type` in `native_object_types.rs`)
+meets a field/parameter/return type that is a user-generic instantiation spelling
+`Name<args>` (e.g. `Box<i64>`, `Pair<i64, bool>`), it looks up the generic
+declaration by its head name, zips the declared type parameters against the
+spelling's concrete type arguments, and substitutes them into each field type
+(struct) or variant-payload type (enum) with the semantic `substitute_type`
+(reused from `lullaby_semantics`, which recurses through nested generic
+spellings). The resulting **fully concrete** field/payload types flow through the
+existing layout machinery — exact field offsets, `payload_words` enum sizing, the
+by-hidden-pointer aggregate ABI, the value-semantic word copy, and `match`
+dispatch. A monomorphized `Box<i64>` has the **identical native layout** to a
+hand-written `struct BoxI64 { value i64 }`, which is why the result is
+**value-neutral**: the native monomorphized value is byte-identical to the
+interpreters' erased value, so the `.exe` exit code equals the interpreter result.
+The specialized layout keeps the generic type's **base name** (`Box`, `Opt`) so
+the constructor-name check and every downstream path match; two distinct
+instantiations differ by their resolved field/payload layouts, not their name.
+
+### Scope and the scalar/heap boundary (DEFAULT-DENY)
+
+Only the **scalar-type-argument** case compiles. A generic instantiation is
+native-eligible **iff its whole monomorphized layout is scalar-only** — every
+field/payload, after substitution, resolves to an `i64`/fixed-width/`bool`/`char`/
+`byte` cell, an `f64`/`f32`, or a struct/array/enum recursively composed only of
+those (`is_scalar_only_layout`). Any heap word makes it ineligible, so these are
+**deferred cleanly to the interpreters** (the existing `L0339`/skip path, never a
+miscompile):
+
+- a **heap type argument** — `Box<string>`, `Opt<string>`, `Either<i64, string>`
+  (a `string`/`list`/`map` field or payload after substitution);
+- a **scalar type argument that still yields a heap field** — `Stack<i64>` whose
+  `items list<T>` becomes `list<i64>`, or `Tree<i64>` whose `branch list<Tree<T>>`
+  payload becomes a `list` — the *field* is heap even though `T` is scalar.
+
+Heap-`T` is a clean follow-up: it needs per-instantiation drop-glue/reclamation
+(the reclamation-soundness core in `generics_design.md` §5). Because the gate is
+applied on the resolved layout, the deferral is conservative and sound — when
+unsure, the function skips. Note the gate is stricter for a generic instantiation
+than for a hand-written struct: a hand-written `struct { name string }` compiles
+(immutable string field), but `Box<string>` is deferred, to keep this increment to
+the scalar scope.
+
+### Methods on generic types
+
+Constructing, reading, `match`ing, copying, and passing/returning a scalar generic
+value all compile. Calling an **inherent method** on a generic type
+(`box.peek()`) is still native-ineligible — exactly as inherent methods on a
+**non-generic** struct are also not yet compiled natively (native method dispatch
+is a separate later feature); such a program skips cleanly to the interpreters.
+
+### Verification
+
+The fixture `tests/fixtures/valid/native_generic_scalar.lby` declares generic
+structs (`Box<T>`, `Pair<K, V>`) and enums (`Opt<T>`, `Either<L, R>`),
+instantiates each with scalar arguments (`i64`/`bool`/`f64`), and exercises
+construction (positional + named), field read, value-semantic field write
+(mutating one copy leaves another unchanged), `match`, value-semantic copy, and
+passing/returning generic values across boundaries; every function compiles
+natively and the `.exe` exit code equals the interpreter result
+(`native_generic_scalar_execution_parity_when_linkable`, plus the
+`generics/box_pair.lby` and `generics/opt_res.lby` parity in suites 8/9). The
+differential fuzzer's `gen_generic_scalar_program` generator drives 2000
+interpreter-agreement programs and 120 native==interpreter programs
+(`fuzz_generic_scalar_*` in `cli/fuzz.rs`) as the value-neutrality oracle. Unit
+tests in `native_program_tests` assert a scalar generic struct/enum/multi-param
+instantiation reports `compiled` (not `skipped`) and that a heap-`T` struct
+(`Box<string>`), a scalar-`T`-with-heap-field struct (`Stack<i64>`), and a
+heap-payload enum (`Either<i64, string>`) all skip cleanly with `L0339`.
 
 ## C-ABI FFI (calling C) (DELIVERED, first increment)
 

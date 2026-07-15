@@ -10,7 +10,9 @@
 //! (generics are erased on the interpreters), so these tests pin that a program
 //! calling generic-type methods over two instantiations runs byte-for-byte
 //! identically on every interpreter backend (`ast`, `ir`, `bytecode`), that the
-//! native backend cleanly skips a function using a generic type (reported as
+//! native backend still cleanly skips a function that CALLS a generic-type method
+//! (native method dispatch is a separate later feature — inherent methods on a
+//! non-generic struct are not compiled natively either — so it is reported as
 //! native-ineligible via `L0339`, never miscompiled), and that the stage-4
 //! semantic negatives are rejected with their dedicated diagnostics.
 //!
@@ -55,12 +57,14 @@ pub(crate) fn generic_methods_run_identically_on_all_backends() {
     assert_eq!(results[2], results[0], "bytecode output differs from ast");
 }
 
-/// A function that calls a generic-type method is native-ineligible in stage 4
-/// (monomorphization on the native backend is a later stage), so the native
-/// backend must *cleanly skip* it via the existing `L0339` gate rather than
-/// miscompiling. Because `main` uses `Box<i64>`, no function is eligible and the
-/// native command surfaces `L0339` as a hard error — a clean diagnostic, never a
-/// produced-but-wrong executable.
+/// Scalar generic STRUCT/ENUM *values* now monomorphize natively (A1 stage-1
+/// native), but a call to an inherent *method* on a generic type is still
+/// native-ineligible — exactly as inherent methods on a NON-generic struct are
+/// also not yet compiled natively (native method dispatch is a separate, later
+/// feature). So a program whose `main` calls generic-type methods must still
+/// *cleanly skip* via the `L0339` gate rather than miscompiling: `main` is
+/// reported as skipped and — nothing else eligible — the command surfaces `L0339`
+/// as a hard error, never a produced-but-wrong executable.
 #[test]
 pub(crate) fn generic_methods_cleanly_skip_native() {
     let fixture = workspace_root().join("tests/fixtures/valid/generics/methods.lby");
@@ -81,16 +85,13 @@ pub(crate) fn generic_methods_cleanly_skip_native() {
         errors.contains("L0339"),
         "expected the no-eligible-function skip diagnostic: {errors}"
     );
-    // `main` (which uses a generic type) is reported as skipped with a reason that
-    // names the generic instantiation, proving it demoted to the interpreter
-    // rather than miscompiling.
+    // `main` (which calls generic-type methods) is reported as skipped, proving it
+    // demoted to the interpreter rather than miscompiling. The skip reason is the
+    // method dispatch, not the generic value — the `Box<i64>` value itself
+    // monomorphizes fine; the method call is what stays native-ineligible.
     assert!(
         errors.contains("skipped main"),
         "expected `main` to be skipped natively: {errors}"
-    );
-    assert!(
-        errors.contains("Box<i64>"),
-        "expected the skip reason to name the generic instantiation: {errors}"
     );
 }
 

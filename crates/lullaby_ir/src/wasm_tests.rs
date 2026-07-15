@@ -1485,6 +1485,7 @@ fn enum_layout_orders_builtin_and_user_variants() {
     // declaration order. The payload slot count is the max payload arity.
     let enums = enum_table(&[IrEnumDef {
         name: "Shape".to_string(),
+        type_params: vec![],
         variants: vec![
             IrEnumVariant {
                 name: "Circle".to_string(),
