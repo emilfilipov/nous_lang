@@ -789,6 +789,43 @@ fn non_generic_function_has_empty_type_params() {
 }
 
 #[test]
+fn parses_generic_struct_type_parameters() {
+    // A user-defined generic struct records its `<T>` list; the field type is an
+    // ordinary `TypeRef` naming the type parameter, and a concrete instantiation
+    // spelling `Box<i64>` parses in annotation position.
+    let source =
+        "struct Box<T>\n    value T\n\nfn main -> i64\n    let b Box<i64> = Box(0)\n    b.value\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert_eq!(program.structs[0].name, "Box");
+    assert_eq!(program.structs[0].type_params, vec![TypeParam::new("T")]);
+    assert_eq!(program.structs[0].fields[0].ty.name, "T");
+    // The concrete instantiation `Box<i64>` is a single `TypeRef` spelling.
+    let binding = &program.functions[0].body[0];
+    match binding {
+        Stmt::Let { ty: Some(ty), .. } => assert_eq!(ty.name, "Box<i64>"),
+        other => panic!("expected a typed let binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_generic_struct_has_empty_type_params() {
+    let source = "struct Point\n    x i64\n    y i64\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert!(program.structs[0].type_params.is_empty());
+}
+
+#[test]
+fn rejects_duplicate_struct_type_parameter() {
+    // The struct type-parameter list reuses the function `parse_type_params`
+    // machinery, so a duplicate name is the same `L0394` as on a function.
+    let tokens = lex("struct Bad<T, T>\n    a T\n").expect("lex");
+    let error = parse(&tokens).expect_err("duplicate struct type parameter");
+    assert!(error.iter().any(|d| d.code == "L0394"), "{error:?}");
+}
+
+#[test]
 fn rejects_duplicate_type_parameter() {
     let tokens = lex("fn dup<T, T> a T -> T\n    a\n").expect("lex");
     let diagnostics = parse(&tokens).expect_err("parse should fail");

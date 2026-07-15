@@ -1,0 +1,10 @@
+# The type parameter `T` appears in no field, so construction cannot pin it and
+# there is no annotation to supply it. Rejected with L0455 (add an annotation
+# such as `Tagged<i64>`).
+
+struct Tagged<T>
+    count i64
+
+fn main -> i64
+    let w = Tagged(0)
+    w.count

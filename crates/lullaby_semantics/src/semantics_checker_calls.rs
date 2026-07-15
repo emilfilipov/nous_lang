@@ -2084,7 +2084,7 @@ impl<'a> Checker<'a> {
         for place in path {
             match place {
                 Place::Field(field) => {
-                    let Some(fields) = self.structs.get(&current.name) else {
+                    let Some(fields) = self.struct_fields_for(&current) else {
                         self.diagnostics.push(SemanticDiagnostic::at(
                             "L0371",
                             format!(
@@ -2141,11 +2141,17 @@ impl<'a> Checker<'a> {
         &mut self,
         name: &str,
         args: &[Expr],
+        expected: Option<&TypeRef>,
         span: Span,
         scope: &Scope,
         function: &Function,
     ) -> Option<TypeRef> {
         let fields = self.structs.get(name).cloned()?;
+        let params = self
+            .struct_type_params
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
         if args.len() != fields.len() {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0372",
@@ -2157,28 +2163,154 @@ impl<'a> Checker<'a> {
                 Some(function.name.clone()),
                 span,
             ));
+            // Still type-check the arguments to surface nested errors.
+            for arg in args {
+                self.check_expr(arg, scope, function);
+            }
             return None;
         }
+
+        // Non-generic struct: each argument must match its declared field type
+        // exactly. This is the original, unchanged positional-construction path.
+        if params.is_empty() {
+            for (field, arg) in fields.iter().zip(args) {
+                let arg_type = self.check_expr(arg, scope, function);
+                if arg_type.as_ref() != Some(&field.ty) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0372",
+                        format!(
+                            "field `{}` of struct `{name}` expects `{}` but got `{}`",
+                            field.name,
+                            field.ty.name,
+                            arg_type
+                                .as_ref()
+                                .map(|ty| ty.name.as_str())
+                                .unwrap_or("<unknown>")
+                        ),
+                        Some(function.name.clone()),
+                        arg.span,
+                    ));
+                }
+            }
+            return Some(TypeRef::new(name));
+        }
+
+        // Generic struct: infer each type parameter from the arguments (reusing
+        // the generic-function unification engine), falling back to an expected
+        // instantiation annotation for any parameter the arguments cannot pin.
+        self.check_generic_struct_construction(
+            name, &fields, &params, args, expected, span, scope, function,
+        )
+    }
+
+    /// Type-check construction of a generic struct `Name(args...)`, inferring its
+    /// type arguments. Each argument unifies against the declared (parameterized)
+    /// field type via `unify_param`; a parameter left unpinned by the arguments
+    /// is filled from an `expected` `Name<...>` annotation. Conflicting inference
+    /// is `L0395`; a parameter that cannot be resolved at all is `L0455`; a
+    /// concrete (post-substitution) field/argument type mismatch is `L0372`.
+    /// Returns the concrete instantiation spelling, e.g. `Box<i64>`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_generic_struct_construction(
+        &mut self,
+        name: &str,
+        fields: &[StructField],
+        params: &[String],
+        args: &[Expr],
+        expected: Option<&TypeRef>,
+        span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        let mut arg_types: Vec<Option<TypeRef>> = Vec::with_capacity(args.len());
+        let mut field_conflicted: Vec<bool> = Vec::with_capacity(fields.len());
         for (field, arg) in fields.iter().zip(args) {
             let arg_type = self.check_expr(arg, scope, function);
-            if arg_type.as_ref() != Some(&field.ty) {
+            let mut conflicted = false;
+            if let Some(actual) = &arg_type
+                && let Err(GenericInferenceError::Conflict {
+                    param,
+                    first,
+                    second,
+                }) = unify_param(&field.ty, actual, params, &mut subst)
+            {
+                conflicted = true;
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0395",
+                    format!(
+                        "conflicting types for type parameter `{param}` of struct `{name}`: `{}` and `{}`",
+                        first.name, second.name
+                    ),
+                    Some(function.name.clone()),
+                    arg.span,
+                ));
+            }
+            arg_types.push(arg_type);
+            field_conflicted.push(conflicted);
+        }
+
+        // Fill any parameter the arguments could not pin from an expected
+        // `Name<...>` annotation (the empty/unpinnable-construction rule).
+        if let Some(exp) = expected {
+            let (exp_head, exp_args) = split_named_type(exp);
+            if exp_head == name && exp_args.len() == params.len() {
+                for (param, arg) in params.iter().zip(exp_args.iter()) {
+                    subst.entry(param.clone()).or_insert_with(|| arg.clone());
+                }
+            }
+        }
+
+        // Every type parameter must now be resolved.
+        if let Some(param) = params.iter().find(|p| !subst.contains_key(*p)) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0455",
+                format!(
+                    "cannot infer type parameter `{param}` of struct `{name}` from the arguments; add a type annotation such as `{name}<...>`"
+                ),
+                Some(function.name.clone()),
+                span,
+            ));
+            return None;
+        }
+
+        // Verify each argument against its concrete (substituted) field type. A
+        // field whose type parameter already conflicted above is skipped so the
+        // one root cause is reported once.
+        for ((field, arg_type), conflicted) in fields.iter().zip(&arg_types).zip(&field_conflicted)
+        {
+            if *conflicted {
+                continue;
+            }
+            let concrete = substitute_type(&field.ty, &subst);
+            if arg_type.as_ref() != Some(&concrete) {
                 self.diagnostics.push(SemanticDiagnostic::at(
                     "L0372",
                     format!(
                         "field `{}` of struct `{name}` expects `{}` but got `{}`",
                         field.name,
-                        field.ty.name,
+                        concrete.name,
                         arg_type
                             .as_ref()
                             .map(|ty| ty.name.as_str())
                             .unwrap_or("<unknown>")
                     ),
                     Some(function.name.clone()),
-                    arg.span,
+                    span,
                 ));
             }
         }
-        Some(TypeRef::new(name))
+
+        let type_args: Vec<TypeRef> = params
+            .iter()
+            .map(|param| {
+                subst
+                    .get(param)
+                    .cloned()
+                    .unwrap_or_else(|| TypeRef::new(param))
+            })
+            .collect();
+        Some(generic_type(name, &type_args))
     }
 
     /// Validate enum construction `Variant(args...)`: the payload arity and each
@@ -2463,6 +2595,7 @@ impl<'a> Checker<'a> {
         &mut self,
         name: &str,
         fields: &[(String, Expr)],
+        expected: Option<&TypeRef>,
         span: Span,
         scope: &Scope,
         function: &Function,
@@ -2481,38 +2614,25 @@ impl<'a> Checker<'a> {
             return None;
         }
         let declared = self.structs.get(name).cloned()?;
-        // Type-check each provided field value against its declared type.
+        let params = self
+            .struct_type_params
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+
+        // Every declared field must be provided exactly once; a provided name
+        // that is not a field is rejected. This coverage check is identical for
+        // generic and non-generic structs.
         for (field_name, expr) in fields {
-            let value_type = self.check_expr(expr, scope, function);
-            match declared.iter().find(|f| &f.name == field_name) {
-                Some(field) => {
-                    if value_type.as_ref() != Some(&field.ty) {
-                        self.diagnostics.push(SemanticDiagnostic::at(
-                            "L0372",
-                            format!(
-                                "field `{field_name}` of struct `{name}` expects `{}` but got `{}`",
-                                field.ty.name,
-                                value_type
-                                    .as_ref()
-                                    .map(|ty| ty.name.as_str())
-                                    .unwrap_or("<unknown>")
-                            ),
-                            Some(function.name.clone()),
-                            expr.span,
-                        ));
-                    }
-                }
-                None => {
-                    self.diagnostics.push(SemanticDiagnostic::at(
-                        "L0372",
-                        format!("struct `{name}` has no field `{field_name}`"),
-                        Some(function.name.clone()),
-                        expr.span,
-                    ));
-                }
+            if !declared.iter().any(|f| &f.name == field_name) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0372",
+                    format!("struct `{name}` has no field `{field_name}`"),
+                    Some(function.name.clone()),
+                    expr.span,
+                ));
             }
         }
-        // Every declared field must be provided exactly once.
         for field in &declared {
             let count = fields.iter().filter(|(n, _)| n == &field.name).count();
             if count == 0 {
@@ -2537,7 +2657,120 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
-        Some(TypeRef::new(name))
+
+        if params.is_empty() {
+            // Non-generic named construction: each provided value must match its
+            // declared field type exactly.
+            for (field_name, expr) in fields {
+                let value_type = self.check_expr(expr, scope, function);
+                if let Some(field) = declared.iter().find(|f| &f.name == field_name)
+                    && value_type.as_ref() != Some(&field.ty)
+                {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0372",
+                        format!(
+                            "field `{field_name}` of struct `{name}` expects `{}` but got `{}`",
+                            field.ty.name,
+                            value_type
+                                .as_ref()
+                                .map(|ty| ty.name.as_str())
+                                .unwrap_or("<unknown>")
+                        ),
+                        Some(function.name.clone()),
+                        expr.span,
+                    ));
+                }
+            }
+            return Some(TypeRef::new(name));
+        }
+
+        // Generic named construction: infer the type arguments from the provided
+        // field values (falling back to an expected `Name<...>` annotation),
+        // exactly as positional construction does.
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        let mut conflicted: HashSet<String> = HashSet::new();
+        let mut value_types: HashMap<String, (Option<TypeRef>, Span)> = HashMap::new();
+        for (field_name, expr) in fields {
+            let value_type = self.check_expr(expr, scope, function);
+            if let Some(field) = declared.iter().find(|f| &f.name == field_name) {
+                if let Some(actual) = &value_type
+                    && let Err(GenericInferenceError::Conflict {
+                        param,
+                        first,
+                        second,
+                    }) = unify_param(&field.ty, actual, &params, &mut subst)
+                {
+                    conflicted.insert(field.name.clone());
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0395",
+                        format!(
+                            "conflicting types for type parameter `{param}` of struct `{name}`: `{}` and `{}`",
+                            first.name, second.name
+                        ),
+                        Some(function.name.clone()),
+                        expr.span,
+                    ));
+                }
+                value_types.insert(field_name.clone(), (value_type, expr.span));
+            }
+        }
+
+        if let Some(exp) = expected {
+            let (exp_head, exp_args) = split_named_type(exp);
+            if exp_head == name && exp_args.len() == params.len() {
+                for (param, arg) in params.iter().zip(exp_args.iter()) {
+                    subst.entry(param.clone()).or_insert_with(|| arg.clone());
+                }
+            }
+        }
+
+        if let Some(param) = params.iter().find(|p| !subst.contains_key(*p)) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0455",
+                format!(
+                    "cannot infer type parameter `{param}` of struct `{name}` from the fields; add a type annotation such as `{name}<...>`"
+                ),
+                Some(function.name.clone()),
+                span,
+            ));
+            return None;
+        }
+
+        for field in &declared {
+            if conflicted.contains(&field.name) {
+                continue;
+            }
+            if let Some((value_type, value_span)) = value_types.get(&field.name) {
+                let concrete = substitute_type(&field.ty, &subst);
+                if value_type.as_ref() != Some(&concrete) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0372",
+                        format!(
+                            "field `{}` of struct `{name}` expects `{}` but got `{}`",
+                            field.name,
+                            concrete.name,
+                            value_type
+                                .as_ref()
+                                .map(|ty| ty.name.as_str())
+                                .unwrap_or("<unknown>")
+                        ),
+                        Some(function.name.clone()),
+                        *value_span,
+                    ));
+                }
+            }
+        }
+
+        let type_args: Vec<TypeRef> = params
+            .iter()
+            .map(|param| {
+                subst
+                    .get(param)
+                    .cloned()
+                    .unwrap_or_else(|| TypeRef::new(param))
+            })
+            .collect();
+        Some(generic_type(name, &type_args))
     }
 
     /// Verify `ty` is a `<ctor><T>` reference (`rc` or `ref`) and return its

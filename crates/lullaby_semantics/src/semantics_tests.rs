@@ -3404,3 +3404,107 @@ fn closure_body_reports_unknown_free_variable() {
         "expected L0306 for an unknown free variable: {diagnostics:?}"
     );
 }
+
+#[test]
+fn accepts_generic_struct_with_scalar_type_param() {
+    // A single-parameter generic struct used at two concrete instantiations,
+    // with construction, field read (with `T` substituted), a value-semantic
+    // copy, and a function that takes and returns the instantiated type.
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "fn rewrap b Box<i64> -> Box<i64>\n",
+        "    Box(b.value + 1)\n\n",
+        "fn main -> i64\n",
+        "    let a Box<i64> = Box(5)\n",
+        "    let flag Box<bool> = Box(true)\n",
+        "    let copy Box<i64> = a\n",
+        "    let bumped Box<i64> = rewrap(a)\n",
+        "    let extra i64 = 1 if flag.value else 0\n",
+        "    a.value + copy.value + bumped.value + extra\n",
+    );
+    validate_source(source).expect("generic struct with scalar T type-checks");
+}
+
+#[test]
+fn infers_generic_struct_instantiation_from_arguments() {
+    // With no annotation, the constructor argument pins `T`, and the field read
+    // sees the concrete type (so `b.value` is an `i64` usable in `i64` addition).
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "fn main -> i64\n",
+        "    let b = Box(7)\n",
+        "    b.value + 1\n",
+    );
+    validate_source(source).expect("argument-directed inference of Box<i64>");
+}
+
+#[test]
+fn rejects_wrong_generic_struct_arity() {
+    // `Box` declares one type parameter; two type arguments is `L0454`.
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "fn main -> i64\n",
+        "    let b Box<i64, bool> = Box(5)\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("wrong arity rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0454"),
+        "expected L0454 for a wrong generic arity: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_generic_struct_used_without_type_argument() {
+    // Naming `Box` with no type argument leaves its parameter unbound (`L0454`).
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "fn main -> i64\n",
+        "    let b Box = Box(5)\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("unbound type parameter rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0454"),
+        "expected L0454 for a generic type used without a type argument: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_bad_field_access_on_generic_instance() {
+    // A field that does not exist on the instantiated struct is `L0371`.
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "fn main -> i64\n",
+        "    let b Box<i64> = Box(5)\n",
+        "    b.missing\n",
+    );
+    let diagnostics = validate_source(source).expect_err("bad field access rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0371"),
+        "expected L0371 for a missing field on a generic instance: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_uninferable_generic_type_param() {
+    // `T` appears in no field, so construction without an annotation cannot pin
+    // it: `L0455`.
+    let source = concat!(
+        "struct Tagged<T>\n",
+        "    count i64\n\n",
+        "fn main -> i64\n",
+        "    let w = Tagged(0)\n",
+        "    w.count\n",
+    );
+    let diagnostics = validate_source(source).expect_err("uninferable type parameter rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0455"),
+        "expected L0455 for an uninferable type parameter: {diagnostics:?}"
+    );
+}

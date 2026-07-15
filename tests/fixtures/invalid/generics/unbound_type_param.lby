@@ -1,0 +1,10 @@
+# Using the generic type `Box` outside a context that provides its type
+# parameter: the annotation names `Box` with no type argument, so `T` is not in
+# scope / unbound. Rejected with L0454.
+
+struct Box<T>
+    value T
+
+fn main -> i64
+    let b Box = Box(5)
+    0

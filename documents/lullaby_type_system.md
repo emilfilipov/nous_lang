@@ -23,7 +23,9 @@ The compiler validates, with real (space-separated, colon-free) syntax:
   `result<T, E>`; fixed `array<T>`, growable `list<T>`, and `map<K, V>`.
 - **Reference/function:** `rc<T>`/`ref<T>`/`ptr<T>` and function values `fn(T) -> R`.
 - **Generics and traits:** generic functions `fn name<T> ...` with call-site
-  inference and trait bounds `<T: Trait>`; `trait`/`impl` with receiver-type dispatch.
+  inference and trait bounds `<T: Trait>`; `trait`/`impl` with receiver-type
+  dispatch; and single-parameter generic user structs `struct Box<T>` with
+  inference-directed construction (see "Generic User Structs").
 
 Local binding inference:
 - Explicit local annotations use `let name Type = expression` (no colon).
@@ -236,10 +238,48 @@ A bare `T` value supports only universal operations — binding, passing, return
 `==`/`!=` between two same-`T` values, and use as a payload to a built-in generic
 (`some(x)`). Arithmetic and ordering (`+`, `<`, …) on a bare `T` are rejected
 (`L0327`) until a trait provides them; a `<T: Trait>` bound lets the body call that
-trait's methods. Generic *user types* (parameterized `struct`/`enum` you declare),
-trait objects (`dyn`), and associated types are on the roadmap; the built-in
-generics `option`, `result`, `list`, `map`, `array`, `rc`, `ref`, and `ptr` are
-available today.
+trait's methods.
+
+### Generic User Structs
+
+A **generic `struct`** declares type parameters in angle brackets after its name,
+exactly like a generic function, and uses each as an ordinary field type:
+
+```lullaby
+struct Box<T>
+    value T
+
+fn main -> i64
+    let b Box<i64> = Box(5)      # T = i64 (from the annotation)
+    let c = Box(true)            # T = bool (inferred from the argument)
+    b.value                      # field read sees the concrete type: i64
+```
+
+A concrete instantiation is spelled `Name<Args>` (`Box<i64>`) wherever a type is
+written — a binding annotation, a parameter, or a return type — and reading a
+field of an instance substitutes the type arguments for the parameters, so
+`b.value` on a `Box<i64>` has type `i64`. Type arguments are fixed **by inference,
+not a turbofish call form**: the annotation on the binding/parameter/return pins
+them, or the constructor's arguments do (`Box(5)` → `Box<i64>`). A construction
+that pins no annotation and whose arguments cannot determine a parameter is
+rejected (`L0455`) — supply an annotation. Spelling a generic type with the wrong
+number of type arguments (or none) is `L0454`; fields that disagree on a shared
+parameter are `L0395`.
+
+The three interpreters (AST, IR, bytecode) run a generic struct by **type
+erasure** — at runtime a generic struct is just a struct over dynamic values, so
+`Box<i64>` and `Box<bool>` share one runtime shape and produce identical results
+on every interpreter. The native and WASM backends (which need concrete field
+layout) treat a function that uses a generic struct as ineligible for now and
+cleanly skip it to the interpreter (`L0339`), never miscompiling; per-instantiation
+monomorphization on those backends is a later stage.
+
+Stage 1 covers a **single-parameter generic `struct` with a scalar type
+parameter**. Generic *enums*, methods on generic types, heap-typed `T`
+(`string`/`list`/`map`/heap struct), multiple type parameters, and bounds on a
+generic type (`struct Sorted<T: Compare>`) are staged next. Trait objects (`dyn`)
+and associated types remain on the roadmap; the built-in generics `option`,
+`result`, `list`, `map`, `array`, `rc`, `ref`, and `ptr` are available today.
 
 ## Type Aliases
 

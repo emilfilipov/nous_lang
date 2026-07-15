@@ -91,6 +91,15 @@ pub struct ImplDecl {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructDecl {
     pub name: String,
+    /// Declared type parameters `<T>` or bounded `<T: Trait>` that follow the
+    /// struct name, in source order. Empty for a non-generic struct. Serde-
+    /// defaulted to an empty list so existing single-file artifacts and AST
+    /// snapshots stay valid. A type-parameter name is in scope as a type variable
+    /// within this struct's field types (and, in later stages, its methods),
+    /// where it is spelled as an ordinary `TypeRef`; its bounds name traits the
+    /// type variable must satisfy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<StructField>,
     pub span: Span,
     /// True when the declaration is exported with `pub`. Serde-defaulted to

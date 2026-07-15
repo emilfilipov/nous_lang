@@ -950,14 +950,42 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// The declared type of `field` on struct `struct_name`, if any.
+    /// The declared type of `field` on the struct value type `struct_name`, if
+    /// any. `struct_name` may be a concrete generic instantiation spelling such
+    /// as `Box<i64>`: its head (`Box`) resolves the declaration and its type
+    /// arguments (`[i64]`) are substituted for the declaration's type parameters,
+    /// so `value T` on `Box<i64>` resolves to `i64`. A non-generic struct's field
+    /// type is returned verbatim.
     pub(crate) fn struct_field_type(&self, struct_name: &str, field: &str) -> Option<TypeRef> {
-        self.program
+        let (head, args) = match struct_name.find('<') {
+            Some(open) if struct_name.ends_with('>') && !struct_name.starts_with("fn(") => {
+                let head = struct_name[..open].to_string();
+                let args = TypeRef::new(struct_name)
+                    .generic_args(&head)
+                    .unwrap_or_default();
+                (head, args)
+            }
+            _ => (struct_name.to_string(), Vec::new()),
+        };
+        let declaration = self
+            .program
             .structs
             .iter()
-            .find(|declaration| declaration.name == struct_name)
-            .and_then(|declaration| declaration.fields.iter().find(|f| f.name == field))
-            .map(|f| f.ty.clone())
+            .find(|declaration| declaration.name == head)?;
+        let field_ty = declaration
+            .fields
+            .iter()
+            .find(|f| f.name == field)?
+            .ty
+            .clone();
+        if declaration.type_params.is_empty() {
+            return Some(field_ty);
+        }
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        for (param, arg) in declaration.type_params.iter().zip(args.iter()) {
+            subst.insert(param.name.clone(), arg.clone());
+        }
+        Some(lullaby_semantics::substitute_type(&field_ty, &subst))
     }
 
     pub(crate) fn is_struct(&self, name: &str) -> bool {

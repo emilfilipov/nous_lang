@@ -1,0 +1,9 @@
+# Wrong instantiation: `Box` declares one type parameter but is spelled with two
+# type arguments. Rejected with L0454.
+
+struct Box<T>
+    value T
+
+fn main -> i64
+    let b Box<i64, bool> = Box(5)
+    0

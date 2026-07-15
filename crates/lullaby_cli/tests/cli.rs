@@ -1372,6 +1372,10 @@ mod suite6;
 #[path = "cli/suite7.rs"]
 mod suite7;
 
+// -- User-defined generic structs, stage 1 (`struct Box<T>`) ------------------
+#[path = "cli/suite8.rs"]
+mod suite8;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

@@ -465,6 +465,10 @@ impl<'a> Parser<'a> {
     fn parse_struct(&mut self, is_public: bool) -> Option<StructDecl> {
         let span = self.previous().span;
         let name = self.expect_identifier("expected struct name")?;
+        // Optional `<T>` / `<T: Trait + Other>` generic type parameters, parsed by
+        // the same helper (and with the same `L0394` duplicate/shadow checks) that
+        // generic functions use. Absent for a non-generic struct.
+        let type_params = self.parse_type_params(span)?;
         self.expect_newline("expected newline after struct name");
         self.expect(TokenKindRef::Indent, "expected indented struct fields")?;
         let mut fields = Vec::new();
@@ -480,6 +484,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKindRef::Dedent, "expected struct body dedent")?;
         Some(StructDecl {
             name,
+            type_params,
             fields,
             span,
             is_public,
@@ -1237,12 +1242,32 @@ impl<'a> Parser<'a> {
                     "array" | "ptr" | "ref" | "rc" | "option" | "list" | "Future"
                 );
                 let is_multi = matches!(name.as_str(), "result" | "map");
+                // A user-defined generic type `Name<A, B>` (e.g. `Box<i64>`) uses
+                // the same angle-bracket spelling as the built-in generics. Any
+                // identifier that is not a fixed-arity built-in constructor accepts
+                // a comma-separated argument list here; arity and whether the head
+                // actually names a declared generic type are checked in semantics.
+                let is_user_generic = !is_single && !is_multi && self.at_symbol("<");
                 if (is_single || is_multi) && self.eat_symbol("<") {
                     let mut args = vec![self.expect_type("expected generic type argument")?];
                     if is_multi {
                         while self.eat_symbol(",") {
                             args.push(self.expect_type("expected generic type argument")?);
                         }
+                    }
+                    if !self.eat_generic_close() {
+                        self.error(
+                            "L0203",
+                            "expected `>` after generic type argument",
+                            self.peek().span,
+                        );
+                        return None;
+                    }
+                    Some(generic_type(&name, &args))
+                } else if is_user_generic && self.eat_symbol("<") {
+                    let mut args = vec![self.expect_type("expected generic type argument")?];
+                    while self.eat_symbol(",") {
+                        args.push(self.expect_type("expected generic type argument")?);
                     }
                     if !self.eat_generic_close() {
                         self.error(

@@ -149,6 +149,22 @@ fn option_type(payload: &TypeRef) -> TypeRef {
     generic_type("option", std::slice::from_ref(payload))
 }
 
+/// Split a value type spelling into its head constructor name and its top-level
+/// type arguments: `Box<i64>` -> (`"Box"`, `[i64]`), `Pair<i64, bool>` ->
+/// (`"Pair"`, `[i64, bool]`), and a plain `Point` or scalar -> (`"Point"`, `[]`).
+/// A function-type spelling `fn(...) -> R` has no angle-bracket head, so it is
+/// returned whole with no arguments (function types never name a user struct).
+fn split_named_type(ty: &TypeRef) -> (String, Vec<TypeRef>) {
+    match ty.name.find('<') {
+        Some(open) if ty.name.ends_with('>') && !ty.name.starts_with("fn(") => {
+            let head = ty.name[..open].to_string();
+            let args = ty.generic_args(&head).unwrap_or_default();
+            (head, args)
+        }
+        _ => (ty.name.clone(), Vec::new()),
+    }
+}
+
 /// Canonical `result<T, E>` type spelling.
 fn result_type(ok: &TypeRef, err: &TypeRef) -> TypeRef {
     generic_type("result", &[ok.clone(), err.clone()])
@@ -243,8 +259,15 @@ struct Checker<'a> {
     loop_depth: usize,
     unsafe_depth: usize,
     region_names: HashSet<String>,
-    /// Declared struct types: name -> ordered fields.
+    /// Declared struct types: name -> ordered fields. For a generic struct the
+    /// field types may mention the struct's type parameters (see
+    /// `struct_type_params`); a use site substitutes them to concrete types.
     structs: HashMap<String, Vec<StructField>>,
+    /// Declared type parameters of each struct, in `<...>` order (empty for a
+    /// non-generic struct). A generic struct `Box<T>` records `["T"]`. Kept
+    /// alongside `structs` so a use site can build the parameter -> concrete-type
+    /// substitution for field-type resolution and instantiation checking.
+    struct_type_params: HashMap<String, Vec<String>>,
     /// Declared enum types: enum name -> ordered variants.
     enums: HashMap<String, Vec<EnumVariant>>,
     /// Variant name -> (owning enum name, payload types). Variant names are
@@ -300,6 +323,7 @@ impl<'a> Checker<'a> {
             unsafe_depth: 0,
             region_names: HashSet::new(),
             structs: HashMap::new(),
+            struct_type_params: HashMap::new(),
             enums: HashMap::new(),
             variants: HashMap::new(),
             traits: HashMap::new(),
@@ -751,7 +775,104 @@ impl<'a> Checker<'a> {
             }
             self.structs
                 .insert(declaration.name.clone(), declaration.fields.clone());
+            self.struct_type_params.insert(
+                declaration.name.clone(),
+                declaration
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.name.clone())
+                    .collect(),
+            );
         }
+        // With every struct's parameter list registered, validate that each
+        // field type is well-formed: a generic user struct mentioned in a field
+        // type must be given the right number of type arguments, and (for the
+        // struct's own body) only its declared type parameters are in scope.
+        for declaration in &self.program.structs {
+            let in_scope: Vec<String> = declaration
+                .type_params
+                .iter()
+                .map(|tp| tp.name.clone())
+                .collect();
+            for field in &declaration.fields {
+                self.validate_type_wf(&field.ty, declaration.span, None, &in_scope);
+            }
+        }
+    }
+
+    /// Validate that a type spelling is well-formed with respect to declared
+    /// generic user structs: every mention of a generic struct must supply the
+    /// exact number of type arguments its declaration expects (`L0454`).
+    /// Recurses into the type arguments of compound spellings. A name that is a
+    /// type parameter currently in scope is never treated as a struct head, so a
+    /// bare type variable `T` is accepted. Non-struct heads (primitives, built-in
+    /// generics, unknown names) are ignored here — they are validated, or left
+    /// opaque, by the existing rules.
+    fn validate_type_wf(
+        &mut self,
+        ty: &TypeRef,
+        span: Span,
+        owner: Option<&str>,
+        type_params_in_scope: &[String],
+    ) {
+        let (head, args) = split_named_type(ty);
+        for arg in &args {
+            self.validate_type_wf(arg, span, owner, type_params_in_scope);
+        }
+        if type_params_in_scope.iter().any(|p| p == &head) {
+            return;
+        }
+        if let Some(params) = self.struct_type_params.get(&head) {
+            let expected = params.len();
+            if args.len() != expected {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0454",
+                    format!(
+                        "generic struct `{head}` expects {expected} type argument(s) but got {} in `{}`",
+                        args.len(),
+                        ty.name
+                    ),
+                    owner.map(str::to_string),
+                    span,
+                ));
+            }
+        }
+    }
+
+    /// The field list of a struct value type, with any generic type parameters
+    /// substituted to the concrete type arguments carried by the spelling. For a
+    /// non-generic struct `Point` this is its declared fields verbatim; for a
+    /// generic instance `Box<i64>` the field types have the parameter `T`
+    /// replaced by `i64`. Returns `None` when the head name is not a declared
+    /// struct, or when the type-argument arity does not match its declaration
+    /// (that arity error is reported at the use site by `validate_type_wf`).
+    pub(crate) fn struct_fields_for(&self, ty: &TypeRef) -> Option<Vec<StructField>> {
+        let (head, args) = split_named_type(ty);
+        let fields = self.structs.get(&head)?;
+        let params = self
+            .struct_type_params
+            .get(&head)
+            .cloned()
+            .unwrap_or_default();
+        if params.is_empty() {
+            return Some(fields.clone());
+        }
+        if params.len() != args.len() {
+            return None;
+        }
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        for (param, arg) in params.iter().zip(args.iter()) {
+            subst.insert(param.clone(), arg.clone());
+        }
+        Some(
+            fields
+                .iter()
+                .map(|field| StructField {
+                    name: field.name.clone(),
+                    ty: substitute_type(&field.ty, &subst),
+                })
+                .collect(),
+        )
     }
 
     /// Collect enum declarations. Enforces unique enum names, unique variant
@@ -1009,6 +1130,29 @@ impl<'a> Checker<'a> {
 
     fn validate_function(&mut self, function: &Function) {
         self.region_names.clear();
+        // Any generic struct named in a parameter or return type must be given
+        // the right number of type arguments. The function's own type
+        // parameters are in scope so a bare type variable is not mistaken for a
+        // struct head.
+        let fn_type_params: Vec<String> = function
+            .type_params
+            .iter()
+            .map(|tp| tp.name.clone())
+            .collect();
+        for param in &function.params {
+            self.validate_type_wf(
+                &param.ty,
+                function.span,
+                Some(&function.name),
+                &fn_type_params,
+            );
+        }
+        self.validate_type_wf(
+            &function.return_type,
+            function.span,
+            Some(&function.name),
+            &fn_type_params,
+        );
         let mut scope = Scope::default();
         for param in &function.params {
             if scope
@@ -1105,6 +1249,22 @@ impl<'a> Checker<'a> {
             Stmt::Let {
                 name, ty, value, ..
             } => {
+                // A generic struct named in the binding's annotation must carry
+                // the right number of type arguments (the function's type
+                // parameters stay in scope so a bare type variable is allowed).
+                if let Some(declared) = ty {
+                    let fn_type_params: Vec<String> = function
+                        .type_params
+                        .iter()
+                        .map(|tp| tp.name.clone())
+                        .collect();
+                    self.validate_type_wf(
+                        declared,
+                        value.span,
+                        Some(&function.name),
+                        &fn_type_params,
+                    );
+                }
                 let value_type = self.check_expr_expected(value, ty.as_ref(), scope, function);
                 let binding_type = match ty {
                     Some(declared) => {
@@ -2024,17 +2184,17 @@ impl<'a> Checker<'a> {
                 } else if self.variants.contains_key(name) {
                     self.check_enum_construction(name, args, expr.span, scope, function)
                 } else if self.structs.contains_key(name) {
-                    self.check_struct_construction(name, args, expr.span, scope, function)
+                    self.check_struct_construction(name, args, expected, expr.span, scope, function)
                 } else {
                     self.check_call(name, args, expr.span, expected, scope, function)
                 }
             }
             ExprKind::StructLiteral { name, fields } => {
-                self.check_struct_literal(name, fields, expr.span, scope, function)
+                self.check_struct_literal(name, fields, expected, expr.span, scope, function)
             }
             ExprKind::Field { target, field } => {
                 let target_type = self.check_expr(target, scope, function)?;
-                match self.structs.get(&target_type.name) {
+                match self.struct_fields_for(&target_type) {
                     Some(fields) => match fields.iter().find(|f| &f.name == field) {
                         Some(matched) => Some(matched.ty.clone()),
                         None => {

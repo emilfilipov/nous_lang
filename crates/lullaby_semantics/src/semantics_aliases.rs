@@ -78,6 +78,7 @@ pub(crate) fn resolve_program_aliases(program: &Program) -> (Program, Vec<Semant
         .iter()
         .map(|declaration| StructDecl {
             name: declaration.name.clone(),
+            type_params: declaration.type_params.clone(),
             fields: declaration
                 .fields
                 .iter()

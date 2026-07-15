@@ -1,0 +1,9 @@
+# Ill-typed field access: `Box<i64>` has a field `value`, not `missing`. Reading
+# a non-existent field on a generic instance is rejected with L0371.
+
+struct Box<T>
+    value T
+
+fn main -> i64
+    let b Box<i64> = Box(5)
+    b.missing
