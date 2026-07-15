@@ -9,8 +9,11 @@ memory model, two tiers, kernel scope), [concurrency_model_design.md](concurrenc
 backlogs ([large_file_split_plan.md](large_file_split_plan.md),
 [optimization_opportunities.md](optimization_opportunities.md)).
 
-Status values: **OPEN** (needs owner decision) · **PLANNED** (decided, needs
+Status values: **DECIDED** (owner call made) · **PLANNED** (decided, needs
 building) · **CONFIRMED GAP** (verified missing in the current compiler).
+
+**Decision milestone — 2026-07-15:** the owner accepted all five A-recommendations
+(A1–A5). They are now DECIDED and move into the implementation backlog.
 
 ## Already decided AND built (context — not open)
 - **Module/package system** — file-as-module, `import` + `pub` exports, multi-file
@@ -32,47 +35,49 @@ direct-ELF. These need no new decision — they're in flight or queued.
 
 ---
 
-## A. Open decisions — need owner sign-off
+## A. Decisions (A1–A5 — DECIDED 2026-07-15, owner accepted the recommendations)
 
-### A1. Generic user types — **OPEN / CONFIRMED GAP**
+### A1. Generic user types — **DECIDED: in 1.0** (was CONFIRMED GAP)
 User-defined generic types (`struct Stack<T>`, `enum Opt<T>`) do not parse today
-(`enum Opt<T>` → **L0205**, `struct Stack<T>` → **L0205**). Bounded generic
-*functions* work; generic *types* do not.
-- **Decision:** in 1.0, or post-1.0?
-- **Recommendation: 1.0.** You cannot write reusable containers or a real
-  data-structure library without them; that is core to a "spanning set." This is
-  the single largest open language-feature decision.
+(both → **L0205**). Bounded generic *functions* work; generic *types* do not.
+- **Decision: ship in 1.0.** Reusable containers / a data-structure library require
+  them; core to the "spanning set." Largest of the five.
+- **Next:** needs an implementation-strategy spike first (monomorphization vs type
+  erasure, and how it composes with value-semantics + arena memory) → then
+  parser/semantics/IR/interpreters/native. Design spike dispatched.
 
-### A2. Const / compile-time evaluation — **OPEN / CONFIRMED GAP**
-There is no `const` keyword or compile-time-constant story (`const N i64 = 5` →
-**L0201**; no `const` token in lexer/parser). Kernel/embedded code needs it
-(MMIO addresses, fixed buffer sizes, `const`-sized arrays).
-- **Decision:** minimal const-eval in 1.0?
-- **Recommendation: yes, a minimal story in 1.0** — named compile-time constants
-  and const-sized arrays. Full const-fn evaluation can be post-1.0.
+### A2. Const / compile-time evaluation — **DECIDED: minimal in 1.0** (was CONFIRMED GAP)
+No `const` keyword or compile-time-constant story today (`const N i64 = 5` →
+**L0201**; no `const` token in lexer/parser).
+- **Decision: minimal const-eval in 1.0** — named compile-time constants and
+  const-sized arrays. Full const-fn evaluation is post-1.0.
+- **Next:** named constants (parser + semantic const-fold to literals) first;
+  const-sized arrays as a follow-up (needs type-system work). Named-constant
+  increment dispatched.
 
-### A3. FFI completeness — **OPEN**
-Base FFI ships; deferred today (L0424): **callbacks (fn pointers), struct-by-value,
-and `string`/`list`/`map` marshalling**.
-- **Decision:** which of these are 1.0?
-- **Recommendation: callbacks (fn pointers across the C ABI) in 1.0** — real C
-  interop, drivers, and registering handlers need them. Deep struct/collection
-  marshalling can be post-1.0.
+### A3. FFI completeness — **DECIDED: callbacks in 1.0**
+Base FFI ships; deferred today (L0424): callbacks (fn pointers), struct-by-value,
+and `string`/`list`/`map` marshalling.
+- **Decision: callbacks (fn pointers across the C ABI) in 1.0.** Deep
+  struct/collection marshalling stays post-1.0.
+- **Next:** semantics marshalling-rule extension + native codegen for fn-pointer
+  params/returns. Queued behind native-aggregate (native codegen is occupied).
 
-### A4. Integer overflow semantics — **OPEN**
-Arithmetic is **wrapping** everywhere today (the native path relies on it).
-- **Decision:** make wrapping the conscious 1.0 default, or add checked/trapping?
-- **Recommendation: keep wrapping as the default** (matches the fast native path and
-  kernel expectations) and provide explicit `checked_*` / `saturating_*` operations
-  in the stdlib. The point is to *decide* it, not inherit it by accident.
+### A4. Integer overflow semantics — **DECIDED: wrapping default + checked ops**
+Arithmetic is wrapping everywhere today.
+- **Decision: wrapping is the conscious 1.0 default; add explicit `checked_*` /
+  `saturating_*` operations in the stdlib.** Document it as intentional.
+- **Next:** verify what overflow/checked builtins already exist (native+WASM
+  overflow builtins reportedly shipped), then fill the `checked_*`/`saturating_*`
+  surface + document the wrapping default. Queued (touches native codegen).
 
-### A5. Safe-tier failure semantics — **OPEN**
-What a bounds-check failure / `option` unwrap-on-`none` / divide-by-zero does in the
-**safe** tier (the freestanding tier already routes to a user panic handler).
-- **Decision:** abort-only, or unwinding/catchable?
-- **Recommendation: abort-with-diagnostic, no unwinding.** It's deterministic and
-  GC-free-friendly; recoverable errors already flow through `result`/`?`/throw-catch,
-  so panics are reserved for bugs.
+### A5. Safe-tier failure semantics — **DECIDED: abort + diagnostic, no unwinding**
+What a bounds-fail / unwrap-on-`none` / divide-by-zero does in the safe tier.
+- **Decision: abort-with-diagnostic, no unwinding.** Deterministic, GC-free-friendly;
+  recoverable errors flow through `result`/`?`/throw-catch, so panics are for bugs.
+- **Next:** audit current bounds/unwrap/div-by-zero behavior across backends for
+  consistency (native already traps via `ud2`), wire a clear diagnostic/message on
+  abort, and document the guarantee. Partly verification. Queued.
 
 ---
 
@@ -97,16 +102,17 @@ These are toolchain-completeness items, not language decisions.
 ---
 
 ## Decision log
-| # | Item | Status | Recommendation | Owner decision |
-|---|------|--------|----------------|----------------|
-| A1 | Generic user types | OPEN (confirmed gap) | 1.0 | — |
-| A2 | Const / compile-time eval | OPEN (confirmed gap) | minimal in 1.0 | — |
-| A3 | FFI completeness | OPEN | callbacks in 1.0 | — |
-| A4 | Integer overflow semantics | OPEN | wrapping default + checked ops | — |
-| A5 | Safe-tier failure semantics | OPEN | abort + diagnostic, no unwind | — |
-| B1 | Closures native codegen | PLANNED | schedule post-arena | n/a |
-| B2 | Concrete stdlib contents | PLANNED | enumerate near finish | n/a |
-| B3 | Stable-grade toolchain | PLANNED | test runner + DWARF + LSP/pkg | n/a |
+| # | Item | Status | Decision | Date |
+|---|------|--------|----------|------|
+| A1 | Generic user types | **DECIDED** | Ship in 1.0 | 2026-07-15 |
+| A2 | Const / compile-time eval | **DECIDED** | Minimal in 1.0 (named consts + const-sized arrays) | 2026-07-15 |
+| A3 | FFI completeness | **DECIDED** | Callbacks in 1.0; deep marshalling post-1.0 | 2026-07-15 |
+| A4 | Integer overflow semantics | **DECIDED** | Wrapping default + stdlib `checked_*`/`saturating_*` | 2026-07-15 |
+| A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
+| B1 | Closures native codegen | PLANNED | schedule post-arena | — |
+| B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
+| B3 | Stable-grade toolchain | PLANNED | test runner + DWARF + LSP/pkg | — |
 
-Fill the **Owner decision** column as calls are made, then move each into the
-relevant architecture doc / implementation backlog.
+**Scheduling note.** A1 (generics design spike) and A2 (named constants) are startable
+now (parser/semantics are free). A3/A4/A5 touch native codegen and are queued behind
+the in-flight native-aggregate work.
