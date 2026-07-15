@@ -344,11 +344,18 @@ fn render_method_sig(method: &MethodSig) -> String {
 }
 
 fn render_impl(emitter: &mut Emitter, decl: &ImplDecl, block_next: usize) {
-    emitter.emit_line(
-        0,
-        decl.span.line,
-        &format!("impl {} for {}", decl.trait_name, decl.type_name),
-    );
+    // An inherent impl (`impl Box<T>`) has no trait; a trait impl renders
+    // `impl Trait for Type`. Inherent impls carry the `<T>` type-parameter list.
+    let header = if decl.is_inherent() {
+        format!(
+            "impl {}{}",
+            decl.type_name,
+            render_type_params(&decl.type_params)
+        )
+    } else {
+        format!("impl {} for {}", decl.trait_name, decl.type_name)
+    };
+    emitter.emit_line(0, decl.span.line, &header);
     for index in 0..decl.methods.len() {
         let following = decl
             .methods

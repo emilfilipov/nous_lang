@@ -35,6 +35,13 @@ impl<'a> Checker<'a> {
                 function,
             );
         }
+        // An inherent method call (`recv.get(...)` desugared to `get(recv, ...)`):
+        // resolve the method by the receiver's concrete instantiation, pinning the
+        // generic type's parameters. Method names are disjoint from free-function
+        // and trait-method names, so this interception is unambiguous.
+        if self.impl_method_names.contains(name) {
+            return self.check_inherent_method_call(name, args, call_span, scope, function);
+        }
         match name {
             "alloc" => {
                 self.expect_arg_count(name, args, 1, function)?;
@@ -1914,6 +1921,113 @@ impl<'a> Checker<'a> {
                     arg.span,
                 ));
             }
+        }
+        Some(return_type)
+    }
+
+    /// Check an inherent-method call `method(recv, extra_args...)` on a generic
+    /// type. The receiver's concrete instantiation (`Box<i64>`) pins the method's
+    /// type variables: `self`'s declared type (`Box<T>`) is unified against it, so
+    /// a method returning `T` yields `i64` and a parameter of type `T` accepts
+    /// `i64`. Reports:
+    /// - `L0457` when the receiver's type declares no method of this name,
+    /// - `L0312` on wrong argument arity (after the receiver),
+    /// - `L0313` when an argument's type does not match the substituted parameter,
+    /// - `L0455` when a type variable is left unpinned (defensive; `self` pins all
+    ///   of a single-parameter type's variables).
+    pub(crate) fn check_inherent_method_call(
+        &mut self,
+        method: &str,
+        args: &[Expr],
+        call_span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        if args.is_empty() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0457",
+                format!("method `{method}` requires a receiver argument"),
+                Some(function.name.clone()),
+                call_span,
+            ));
+            return None;
+        }
+        let receiver_ty = self.check_expr(&args[0], scope, function)?;
+        // The receiver's base type name (`Box` for `Box<i64>`) selects the impl.
+        let (base, _) = split_named_type(&receiver_ty);
+        let Some(sig) = self
+            .generic_impl_methods
+            .get(&(base, method.to_string()))
+            .cloned()
+        else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0457",
+                format!("type `{}` has no method `{method}`", receiver_ty.name),
+                Some(function.name.clone()),
+                args[0].span,
+            ));
+            return None;
+        };
+
+        // Pin the type variables by unifying `self`'s declared type against the
+        // receiver's concrete instantiation (`Box<T>` vs `Box<i64>` -> `T = i64`).
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        let _ = unify_param(&sig.self_ty, &receiver_ty, &sig.type_params, &mut subst);
+        let param_types: Vec<TypeRef> = sig
+            .params
+            .iter()
+            .map(|param| substitute_type(param, &subst))
+            .collect();
+        let return_type = substitute_type(&sig.return_type, &subst);
+
+        let extra = &args[1..];
+        if extra.len() != param_types.len() {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0312",
+                format!(
+                    "method `{method}` expects {} argument(s) after the receiver but got {}",
+                    param_types.len(),
+                    extra.len()
+                ),
+                Some(function.name.clone()),
+                call_span,
+            ));
+            return None;
+        }
+        for (index, (arg, expected)) in extra.iter().zip(param_types.iter()).enumerate() {
+            let actual = self.check_expr_expected(arg, Some(expected), scope, function);
+            if actual.as_ref() != Some(expected) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0313",
+                    format!(
+                        "argument {} for method `{method}` must be `{}` but got `{}`",
+                        index + 2,
+                        expected.name,
+                        actual
+                            .as_ref()
+                            .map(|ty| ty.name.as_str())
+                            .unwrap_or("<unknown>")
+                    ),
+                    Some(function.name.clone()),
+                    arg.span,
+                ));
+            }
+        }
+        // Defensive: a single-parameter type's variables are all pinned by the
+        // receiver, but guard against a return type mentioning an unpinned
+        // variable so it surfaces as a clear diagnostic rather than leaking a bare
+        // `T` type spelling downstream.
+        if let Some(param) = first_unresolved_type_var(&return_type, &sig.type_params, &subst) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0455",
+                format!(
+                    "method `{method}` leaves type parameter `{param}` unresolved for receiver `{}`",
+                    receiver_ty.name
+                ),
+                Some(function.name.clone()),
+                call_span,
+            ));
+            return None;
         }
         Some(return_type)
     }

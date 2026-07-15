@@ -3654,3 +3654,107 @@ fn non_generic_enum_still_type_checks() {
     );
     validate_source(source).expect("non-generic enum still type-checks");
 }
+
+#[test]
+fn accepts_methods_on_generic_type() {
+    // Stage 4: inherent methods on a generic type. `peek` returns the type
+    // parameter `T` (so on a `Box<i64>` it is an `i64` usable in `i64`
+    // arithmetic); `rewrap` takes a `T` and returns a fresh `Box<T>`. The method
+    // resolves by the receiver's concrete instantiation, substituting `T`, over
+    // two instantiations (`Box<i64>` and `Box<bool>`). A generic enum method
+    // matches `self` with the payload bound as the concrete `T`.
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "impl Box<T>\n",
+        "    fn peek self -> T\n",
+        "        self.value\n",
+        "    fn rewrap self v T -> Box<T>\n",
+        "        Box(v)\n\n",
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "impl Opt<T>\n",
+        "    fn unwrap_or self fallback T -> T\n",
+        "        match self\n",
+        "            present(x) -> x\n",
+        "            absent -> fallback\n\n",
+        "fn main -> i64\n",
+        "    let a Box<i64> = Box(5)\n",
+        "    let flag Box<bool> = Box(true)\n",
+        "    let bumped Box<i64> = a.rewrap(9)\n",
+        "    let o Opt<i64> = present(30)\n",
+        "    let extra i64 = 1 if flag.peek() else 0\n",
+        "    a.peek() + bumped.peek() + o.unwrap_or(0) + extra\n",
+    );
+    validate_source(source).expect("methods on generic types type-check");
+}
+
+#[test]
+fn rejects_method_argument_type_parameter_mismatch() {
+    // `rewrap` on a `Box<i64>` pins `T = i64`, so its argument must be an `i64`;
+    // a `bool` argument mismatches the substituted parameter type (`L0313`).
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "impl Box<T>\n",
+        "    fn rewrap self v T -> Box<T>\n",
+        "        Box(v)\n\n",
+        "fn main -> i64\n",
+        "    let a Box<i64> = Box(5)\n",
+        "    let bad Box<i64> = a.rewrap(true)\n",
+        "    a.value\n",
+    );
+    let diagnostics = validate_source(source).expect_err("argument mismatch rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0313"),
+        "expected L0313 for a method argument type mismatch: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_undefined_method_on_generic_type() {
+    // `peek` is a method of `Box<T>`, not `Opt<T>`; calling it on an `Opt<i64>`
+    // is a receiver-type mismatch (`L0457`).
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "impl Box<T>\n",
+        "    fn peek self -> T\n",
+        "        self.value\n\n",
+        "fn main -> i64\n",
+        "    let o Opt<i64> = present(5)\n",
+        "    o.peek()\n",
+    );
+    let diagnostics = validate_source(source).expect_err("undefined method rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0457"),
+        "expected L0457 for a method the receiver type does not declare: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_method_name_colliding_with_free_function() {
+    // A method name shares the receiver-dispatch namespace: it must be disjoint
+    // from free-function (and trait-method) names so a call `m(recv, ...)`
+    // resolves to exactly one target (`L0398`).
+    let source = concat!(
+        "struct Box<T>\n",
+        "    value T\n\n",
+        "fn peek b Box<i64> -> i64\n",
+        "    b.value\n\n",
+        "impl Box<T>\n",
+        "    fn peek self -> T\n",
+        "        self.value\n\n",
+        "fn main -> i64\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("method/free-function collision rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0398"),
+        "expected L0398 for a method colliding with a free function: {diagnostics:?}"
+    );
+}

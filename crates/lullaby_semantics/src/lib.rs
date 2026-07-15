@@ -318,6 +318,17 @@ struct Checker<'a> {
     /// Set of `(type_name, trait_name)` pairs that have an `impl`. Used for
     /// bound checking (`L0400`) and duplicate detection (`L0399`).
     impl_traits: HashSet<(String, String)>,
+    /// Inherent (`impl Type<T>`) methods, keyed by `(base type name, method
+    /// name)`. Each entry keeps the impl's type-parameter names, the `self` type
+    /// spelling (`Box<T>`), the parameter types after `self`, and the return type
+    /// — all still mentioning the type variables. A call site resolves the method
+    /// by unifying `self` against the receiver's concrete instantiation and
+    /// substituting the type variables into the parameter/return types.
+    generic_impl_methods: HashMap<(String, String), InherentMethodSig>,
+    /// Every method name declared in an inherent impl, so a call `m(recv, ...)`
+    /// is recognized as a receiver-dispatched method rather than a free function.
+    /// Disjoint from free-function and trait-method names.
+    impl_method_names: HashSet<String>,
     /// Return types inferred for functions declared without a `-> T` clause
     /// (`INFERRED_RETURN`), keyed by function name. Populated by
     /// [`Checker::resolve_inferred_returns`] before body validation; consulted
@@ -362,6 +373,8 @@ impl<'a> Checker<'a> {
             trait_methods: HashMap::new(),
             impl_methods: HashMap::new(),
             impl_traits: HashSet::new(),
+            generic_impl_methods: HashMap::new(),
+            impl_method_names: HashSet::new(),
             resolved_returns: HashMap::new(),
             inferring: HashSet::new(),
             deferred_diagnostics: Vec::new(),
@@ -592,6 +605,13 @@ impl<'a> Checker<'a> {
     /// the same trait for the same type → `L0399`.
     fn collect_impls(&mut self) {
         for decl in &self.program.impls {
+            // An inherent impl (`impl Box<T>`) registers receiver-dispatched
+            // methods with their type variables intact, rather than satisfying a
+            // trait. Handled separately from the trait-impl path below.
+            if decl.is_inherent() {
+                self.collect_inherent_impl(decl);
+                continue;
+            }
             let key = (decl.type_name.clone(), decl.trait_name.clone());
             if self.impl_traits.contains(&key) {
                 self.diagnostics.push(SemanticDiagnostic::at(
@@ -633,6 +653,71 @@ impl<'a> Checker<'a> {
                     (param_types, return_type),
                 );
             }
+        }
+    }
+
+    /// Register the methods of an inherent impl (`impl Box<T>`) for receiver-type
+    /// dispatch. Each method keeps its type variables; a call site pins them by
+    /// unifying `self` against the receiver's concrete instantiation. Method names
+    /// must be globally unique and disjoint from free-function and trait-method
+    /// names (`L0398`); a method redeclared for the same type is a duplicate
+    /// (`L0399`).
+    fn collect_inherent_impl(&mut self, decl: &lullaby_parser::ImplDecl) {
+        let base = &decl.type_name;
+        let type_params: Vec<String> = decl.type_params.iter().map(|tp| tp.name.clone()).collect();
+        for method in &decl.methods {
+            // The `self` receiver type is the method's first parameter (the full
+            // instantiation spelling `Box<T>` injected by the parser).
+            let self_ty = method
+                .params
+                .first()
+                .map(|param| param.ty.clone())
+                .unwrap_or_else(|| TypeRef::new(base.clone()));
+            let params: Vec<TypeRef> = method
+                .params
+                .iter()
+                .skip(1)
+                .map(|param| param.ty.clone())
+                .collect();
+            let key = (base.clone(), method.name.clone());
+            if self.generic_impl_methods.contains_key(&key) {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0399",
+                    format!(
+                        "method `{}` is declared more than once for type `{base}`",
+                        method.name
+                    ),
+                    Some(method.name.clone()),
+                    method.span,
+                ));
+                continue;
+            }
+            // A method name must not collide with a free function or a trait
+            // method: a call `m(recv, ...)` must resolve to exactly one of them.
+            if self.signatures.contains_key(&method.name)
+                || self.trait_methods.contains_key(&method.name)
+            {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0398",
+                    format!(
+                        "method `{}` collides with a free function or trait method of the same name; method, free-function, and trait-method names must be disjoint",
+                        method.name
+                    ),
+                    Some(method.name.clone()),
+                    method.span,
+                ));
+                continue;
+            }
+            self.generic_impl_methods.insert(
+                key,
+                InherentMethodSig {
+                    type_params: type_params.clone(),
+                    self_ty,
+                    params,
+                    return_type: method.return_type.clone(),
+                },
+            );
+            self.impl_method_names.insert(method.name.clone());
         }
     }
 
@@ -3011,6 +3096,23 @@ pub struct Signature {
     /// caller materializes a NUL-terminated copy across the FFI boundary); no
     /// other call path admits `string` where a `cstr` is declared.
     pub is_extern: bool,
+}
+
+/// The resolved signature of an inherent (`impl Type<T>`) method, kept with its
+/// type variables intact. A call site unifies `self_ty` against the receiver's
+/// concrete instantiation to pin the type variables, then substitutes them into
+/// `params` and `return_type`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InherentMethodSig {
+    /// The impl's type-parameter names (`["T"]` for `impl Box<T>`).
+    type_params: Vec<String>,
+    /// The `self` parameter's type spelling (`Box<T>`), unified against the
+    /// receiver type to pin the type variables.
+    self_ty: TypeRef,
+    /// Parameter types after `self`, still mentioning the type variables.
+    params: Vec<TypeRef>,
+    /// The return type, still mentioning the type variables.
+    return_type: TypeRef,
 }
 
 #[derive(Debug, Clone, Default)]

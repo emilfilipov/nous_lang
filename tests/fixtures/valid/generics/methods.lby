@@ -1,0 +1,45 @@
+# Stage 4 user-defined generics: methods on generic types via inherent `impl`
+# blocks. `impl Box<T>` introduces methods whose signatures and bodies use the
+# type parameter `T` and the `self` receiver; a call resolves the method by the
+# receiver's concrete instantiation, substituting `T`. `peek` on a `Box<i64>`
+# returns `i64` and on a `Box<bool>` returns `bool`; `rewrap` takes a `T` and
+# returns a fresh `Box<T>`. A generic `enum Opt<T>` gets a method too, matching
+# on `self` with the payload bound as the concrete `T`. Because generics are
+# erased on the interpreters, method dispatch is ordinary receiver dispatch at
+# runtime and the program runs byte-for-byte identically on ast / ir / bytecode.
+
+struct Box<T>
+    value T
+
+impl Box<T>
+    # Returns the wrapped value as the concrete `T` (i64 for Box<i64>).
+    fn peek self -> T
+        self.value
+    # Takes a `T` and returns a fresh `Box<T>` (value semantics: `self` unchanged).
+    fn rewrap self v T -> Box<T>
+        Box(v)
+
+enum Opt<T>
+    present T
+    absent
+
+impl Opt<T>
+    # Matches `self`; the `present` arm binds the payload as the concrete `T`, so
+    # returning it (or the `T` fallback) type-checks at each instantiation.
+    fn unwrap_or self fallback T -> T
+        match self
+            present(x) -> x
+            absent -> fallback
+
+fn main -> i64
+    let a Box<i64> = Box(5)
+    let flag Box<bool> = Box(true)
+    # `rewrap` on a Box<i64> substitutes T = i64: takes i64, returns Box<i64>.
+    let bumped Box<i64> = a.rewrap(9)
+    let o Opt<i64> = present(30)
+    let missing Opt<i64> = absent
+    # `flag.peek()` returns bool at the Box<bool> instantiation.
+    let extra i64 = 100 if flag.peek() else 0
+    # a.peek()=5 (a survived `rewrap` unchanged) + bumped.peek()=9
+    # + o.unwrap_or(0)=30 + missing.unwrap_or(7)=7 + extra=100 = 151
+    a.peek() + bumped.peek() + o.unwrap_or(0) + missing.unwrap_or(7) + extra

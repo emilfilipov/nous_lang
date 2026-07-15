@@ -335,20 +335,70 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse `impl Trait for Type` followed by an indented list of method bodies.
+    /// Parse an impl block. Two forms are accepted:
+    ///
+    /// - `impl Trait for Type` — a trait implementation. `trait_name` is set and
+    ///   `type_params` is empty; each method's `self` has the implementing type.
+    /// - `impl Type<T>` (or `impl Type`) — an **inherent** impl on a (possibly
+    ///   generic) type. `trait_name` is left empty, `type_params` carries the
+    ///   `<T>` list (parsed by the shared `parse_type_params` helper), and each
+    ///   method's `self` is typed with the full instantiation spelling (`Box<T>`)
+    ///   so `T` is in scope over the method body.
+    ///
     /// Each method is an ordinary `fn` whose first parameter is `self`.
     fn parse_impl(&mut self) -> Option<ImplDecl> {
         let span = self.previous().span;
-        let trait_name = self.expect_identifier("expected trait name after `impl`")?;
-        if self.eat_keyword(Keyword::For).is_none() {
-            self.error(
-                "L0216",
-                "expected `for` in `impl Trait for Type`",
-                self.peek().span,
-            );
-            return None;
+        let head = self.expect_identifier("expected trait or type name after `impl`")?;
+        // `impl Trait for Type` (trait impl) vs `impl Type<T>` (inherent impl) is
+        // decided by whether `for` follows the head name. A trait impl's head is
+        // the trait; an inherent impl's head is the type, optionally followed by
+        // `<T>` generic parameters.
+        if self.eat_keyword(Keyword::For).is_some() {
+            let type_name =
+                self.expect_identifier("expected implementing type name after `for`")?;
+            let methods = self.parse_impl_methods(&TypeRef::new(&type_name), &[])?;
+            return Some(ImplDecl {
+                trait_name: head,
+                type_name,
+                type_params: Vec::new(),
+                methods,
+                span,
+            });
         }
-        let type_name = self.expect_identifier("expected implementing type name after `for`")?;
+        // Inherent impl: an optional `<T>` / `<T: Trait>` type-parameter list
+        // (same helper, `L0394` checks, that generic functions/structs/enums use).
+        let type_params = self.parse_type_params(span)?;
+        // The `self` receiver of every method is the full instantiation spelling,
+        // e.g. `Box<T>` for `impl Box<T>`, or the bare name for a non-generic
+        // inherent impl. This puts `T` in scope over the method signatures/bodies.
+        let self_ty = if type_params.is_empty() {
+            TypeRef::new(&head)
+        } else {
+            let args = type_params
+                .iter()
+                .map(|tp| tp.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            TypeRef::new(format!("{head}<{args}>"))
+        };
+        let methods = self.parse_impl_methods(&self_ty, &type_params)?;
+        Some(ImplDecl {
+            trait_name: String::new(),
+            type_name: head,
+            type_params,
+            methods,
+            span,
+        })
+    }
+
+    /// Parse the indented `fn` method bodies of an impl block. `self_ty` is the
+    /// type injected as each method's `self` parameter; `method_type_params` are
+    /// attached to every method so an inherent generic impl's `T` is in scope.
+    fn parse_impl_methods(
+        &mut self,
+        self_ty: &TypeRef,
+        method_type_params: &[TypeParam],
+    ) -> Option<Vec<Function>> {
         self.expect_newline("expected newline after impl header");
         self.expect(TokenKindRef::Indent, "expected indented impl methods")?;
         let mut methods = Vec::new();
@@ -361,24 +411,25 @@ impl<'a> Parser<'a> {
                 );
                 return None;
             }
-            let method = self.parse_impl_method(&type_name)?;
+            let method = self.parse_impl_method(self_ty, method_type_params)?;
             methods.push(method);
             self.skip_newlines();
         }
         self.expect(TokenKindRef::Dedent, "expected impl body dedent")?;
-        Some(ImplDecl {
-            trait_name,
-            type_name,
-            methods,
-            span,
-        })
+        Some(methods)
     }
 
     /// Parse an impl method `method self [param Type ...] -> Ret` + indented body
     /// (the leading `fn` has been consumed). The `self` receiver is untyped in
-    /// source; its type is the implementing `type_name`, injected as the first
-    /// parameter so the rest of the pipeline sees an ordinary function.
-    fn parse_impl_method(&mut self, type_name: &str) -> Option<Function> {
+    /// source; its type is `self_ty`, injected as the first parameter so the rest
+    /// of the pipeline sees an ordinary function. `method_type_params` (the
+    /// inherent impl's `<T>`, empty for a trait impl) are attached so the body
+    /// type-checks with the type variables in scope.
+    fn parse_impl_method(
+        &mut self,
+        self_ty: &TypeRef,
+        method_type_params: &[TypeParam],
+    ) -> Option<Function> {
         let fn_span = self.previous().span;
         let name = self.expect_identifier("expected method name after `fn`")?;
         let receiver = self.expect_identifier("expected `self` receiver in impl method")?;
@@ -392,7 +443,7 @@ impl<'a> Parser<'a> {
         }
         let mut params = vec![Param {
             name: "self".to_string(),
-            ty: TypeRef::new(type_name),
+            ty: self_ty.clone(),
         }];
         while !self.at(TokenKindRef::Arrow)
             && !self.at(TokenKindRef::Newline)
@@ -420,7 +471,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKindRef::Dedent, "expected method body dedent")?;
         Some(Function {
             name,
-            type_params: Vec::new(),
+            type_params: method_type_params.to_vec(),
             params,
             return_type,
             body,

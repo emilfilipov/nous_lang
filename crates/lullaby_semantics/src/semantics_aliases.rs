@@ -156,6 +156,7 @@ pub(crate) fn resolve_program_aliases(program: &Program) -> (Program, Vec<Semant
                 .map(|decl| lullaby_parser::ImplDecl {
                     trait_name: decl.trait_name.clone(),
                     type_name: decl.type_name.clone(),
+                    type_params: decl.type_params.clone(),
                     methods: decl
                         .methods
                         .iter()

@@ -883,12 +883,23 @@ impl<'a> Lowerer<'a> {
                 });
             }
         }
-        let trait_methods = self
+        // Receiver-dispatched method names: trait methods plus inherent
+        // (`impl Box<T>`) methods. Under erasure both dispatch on the receiver's
+        // runtime type via `impls` (keyed by `(base type name, method name)`), so
+        // the interpreter/VM recognizes a call to either as a method call.
+        let mut trait_methods: Vec<String> = self
             .program
             .traits
             .iter()
             .flat_map(|decl| decl.methods.iter().map(|method| method.name.clone()))
             .collect();
+        for decl in &self.program.impls {
+            if decl.trait_name.is_empty() {
+                for method in &decl.methods {
+                    trait_methods.push(method.name.clone());
+                }
+            }
+        }
         // Record every `async fn` so the interpreter and VM spawn a thread on a
         // call to one (and yield a `Future`).
         let async_functions = self
@@ -999,6 +1010,42 @@ impl<'a> Lowerer<'a> {
             .iter()
             .flat_map(|decl| decl.methods.iter())
             .find(|method| method.name == name)
+    }
+
+    /// The static result type of an inherent-method call `name(recv, ...)` on a
+    /// generic type, if `name` is a method declared by an `impl Base<T>` whose
+    /// `Base` matches the receiver's type. The impl's type parameters are pinned
+    /// by the receiver's concrete instantiation (`Box<i64>` -> `T = i64`) and
+    /// substituted into the method's declared return type. Returns `None` when
+    /// `name` is not an inherent method for the receiver's type — the caller then
+    /// falls through to the builtin/user-function paths, so a builtin whose name
+    /// coincides with a method (e.g. list `get`) is unaffected on a non-matching
+    /// receiver.
+    fn inherent_method_return_type(&self, name: &str, args: &[IrExpr]) -> Option<TypeRef> {
+        let receiver = args.first()?;
+        // Split the receiver spelling into its base name and type arguments
+        // (`Box<i64>` -> `Box`, `[i64]`; a plain `Point` -> `Point`, `[]`).
+        let base = match receiver.ty.name.find('<') {
+            Some(open) if receiver.ty.name.ends_with('>') => &receiver.ty.name[..open],
+            _ => receiver.ty.name.as_str(),
+        };
+        let recv_args = receiver.ty.generic_args(base).unwrap_or_default();
+        for decl in &self.program.impls {
+            if !decl.trait_name.is_empty() || decl.type_name != base {
+                continue;
+            }
+            if let Some(method) = decl.methods.iter().find(|m| m.name == name) {
+                let mut subst: HashMap<String, TypeRef> = HashMap::new();
+                for (tp, arg) in decl.type_params.iter().zip(recv_args.iter()) {
+                    subst.insert(tp.name.clone(), arg.clone());
+                }
+                return Some(lullaby_semantics::substitute_type(
+                    &method.return_type,
+                    &subst,
+                ));
+            }
+        }
+        None
     }
 
     /// If `name` is a known enum variant, the owning enum's name.
@@ -2725,6 +2772,16 @@ impl<'a> Lowerer<'a> {
                 )
             })?;
             return Ok(substitute_self_type(&method_sig.return_type, &receiver.ty));
+        }
+        // An inherent-method call (`impl Box<T>`): the result type is the method's
+        // declared return type with the impl's type parameters substituted by the
+        // receiver's concrete instantiation (`Box<i64>` -> `T = i64`). Generics are
+        // erased at runtime, so this only pins the static result type; the emitted
+        // call stays a name-based `Call` that the interpreter/VM dispatches on the
+        // receiver's runtime type. Checked before the builtin table so a method
+        // whose name coincides with a receiver-typed builtin resolves correctly.
+        if let Some(return_type) = self.inherent_method_return_type(name, args) {
+            return Ok(return_type);
         }
         // A call whose name is a known enum variant is enum construction; its
         // type is the owning enum's nominal type.

@@ -861,6 +861,46 @@ fn rejects_duplicate_enum_type_parameter() {
 }
 
 #[test]
+fn parses_inherent_impl_on_generic_type() {
+    // An inherent `impl Box<T>` has no trait, records its `<T>` list, and injects
+    // the full instantiation spelling `Box<T>` as each method's `self` type while
+    // attaching `T` to every method's type parameters so the body checks with the
+    // variable in scope.
+    let source = "struct Box<T>\n    value T\n\nimpl Box<T>\n    fn peek self -> T\n        self.value\n    fn rewrap self v T -> Box<T>\n        Box(v)\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    let decl = &program.impls[0];
+    assert!(decl.is_inherent(), "expected an inherent impl");
+    assert!(decl.trait_name.is_empty());
+    assert_eq!(decl.type_name, "Box");
+    assert_eq!(decl.type_params, vec![TypeParam::new("T")]);
+    // `self` is typed with the full instantiation spelling.
+    assert_eq!(decl.methods[0].params[0].name, "self");
+    assert_eq!(decl.methods[0].params[0].ty.name, "Box<T>");
+    assert_eq!(decl.methods[0].return_type.name, "T");
+    // The impl's type parameters are attached to every method.
+    assert_eq!(decl.methods[0].type_params, vec![TypeParam::new("T")]);
+    // A method taking `T` records the parameter and returns the generic spelling.
+    assert_eq!(decl.methods[1].params[1].ty.name, "T");
+    assert_eq!(decl.methods[1].return_type.name, "Box<T>");
+}
+
+#[test]
+fn trait_impl_is_not_inherent() {
+    // The `impl Trait for Type` form still parses to a trait impl (non-inherent)
+    // with an empty type-parameter list and the concrete `self` type.
+    let source = "trait Show\n    fn show self -> i64\n\nstruct Point\n    x i64\n\nimpl Show for Point\n    fn show self -> i64\n        self.x\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    let decl = &program.impls[0];
+    assert!(!decl.is_inherent(), "expected a trait impl");
+    assert_eq!(decl.trait_name, "Show");
+    assert_eq!(decl.type_name, "Point");
+    assert!(decl.type_params.is_empty());
+    assert_eq!(decl.methods[0].params[0].ty.name, "Point");
+}
+
+#[test]
 fn rejects_duplicate_type_parameter() {
     let tokens = lex("fn dup<T, T> a T -> T\n    a\n").expect("lex");
     let diagnostics = parse(&tokens).expect_err("parse should fail");

@@ -1,0 +1,18 @@
+# Calling a method the receiver's generic type does not declare. `peek` is a
+# method of `Box<T>`, not `Opt<T>`; calling it on an `Opt<i64>` is rejected with
+# `L0457` (the receiver type has no such method).
+
+struct Box<T>
+    value T
+
+enum Opt<T>
+    present T
+    absent
+
+impl Box<T>
+    fn peek self -> T
+        self.value
+
+fn main -> i64
+    let o Opt<i64> = present(5)
+    o.peek()
