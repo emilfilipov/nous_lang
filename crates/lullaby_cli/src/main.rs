@@ -16,7 +16,7 @@ use lullaby_ir::{
     run_bytecode_main_with_args, run_main_with_args as run_ir_main_with_args,
 };
 use lullaby_lexer::{CANONICAL_EXTENSION, Diagnostic, lex_with_comments, validate_source_path};
-use lullaby_parser::{Program, format_program_with_comments, parse};
+use lullaby_parser::{format_program_with_comments, parse};
 use lullaby_runtime::{ErrorCategory, RuntimeError, Value, run_main_with_args, run_named_function};
 use lullaby_semantics::{CheckedProgram, validate, validate_executable};
 
@@ -845,7 +845,7 @@ fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
 
     let verbose = mode == OutputMode::Verbose;
     let mut names = Vec::new();
-    for function in &compiled.program.functions {
+    for function in &compiled.checked.program.functions {
         if !function.name.starts_with("test_") {
             continue;
         }
@@ -881,7 +881,7 @@ fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
     let mut passed = 0usize;
     let mut failed = 0usize;
     for name in &names {
-        match run_named_function(&compiled.program, name) {
+        match run_named_function(&compiled.checked.program, name) {
             Ok(_) => {
                 passed += 1;
                 println!("PASS {name}");
@@ -939,7 +939,7 @@ fn run_file(
     };
 
     let result = match backend {
-        Backend::Ast => run_main_with_args(&compiled.program, program_args),
+        Backend::Ast => run_main_with_args(&compiled.checked.program, program_args),
         Backend::Ir => {
             let module = lower(&compiled.checked).map_err(|error| {
                 format_reports(
@@ -1337,7 +1337,6 @@ fn compile(path: &Path, source_mode: SourceMode) -> Result<CompiledSource, Compi
     Ok(CompiledSource {
         path: path.clone(),
         source,
-        program,
         checked,
     })
 }
@@ -1412,7 +1411,6 @@ fn format_reports(reports: &[DiagnosticReport], mode: OutputMode, source: Option
 struct CompiledSource {
     path: PathBuf,
     source: String,
-    program: Program,
     checked: CheckedProgram,
 }
 

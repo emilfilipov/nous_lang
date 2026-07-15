@@ -47,13 +47,21 @@ User-defined generic types (`struct Stack<T>`, `enum Opt<T>`) do not parse today
   parser/semantics/IR/interpreters/native. Design spike dispatched.
 
 ### A2. Const / compile-time evaluation — **DECIDED: minimal in 1.0** (was CONFIRMED GAP)
-No `const` keyword or compile-time-constant story today (`const N i64 = 5` →
-**L0201**; no `const` token in lexer/parser).
 - **Decision: minimal const-eval in 1.0** — named compile-time constants and
   const-sized arrays. Full const-fn evaluation is post-1.0.
-- **Next:** named constants (parser + semantic const-fold to literals) first;
-  const-sized arrays as a follow-up (needs type-system work). Named-constant
-  increment dispatched.
+- **Named constants: SHIPPED.** `const NAME type = <expr>` parses (lexer `const`
+  keyword + parser `ConstDecl`, `pub const` supported). Semantic analysis
+  evaluates each initializer as a constant expression (literals + arithmetic/
+  logical/bitwise/comparison/unary over literals and other constants, plus string
+  concat), type-checks it, rejects non-constant initializers / type mismatches /
+  cyclic / duplicate-or-colliding constants (`L0450`–`L0453`), and **folds every
+  scope-aware reference into its literal before the checker runs** — so no backend
+  (interpreters, native, WASM) sees a `const`; a folded constant in an all-`i64`
+  function stays native-eligible. See `semantics_consts.rs`,
+  `lullaby_type_system.md`, and `tests/fixtures/valid/const/`.
+- **Next (remaining A2):** const-sized arrays (`array<T, N>` where `N` is a
+  constant) — needs type-system work; the clean follow-up. Full const-fn
+  evaluation stays post-1.0.
 
 ### A3. FFI completeness — **DECIDED: callbacks in 1.0**
 Base FFI ships; deferred today (L0424): callbacks (fn pointers), struct-by-value,

@@ -1,0 +1,23 @@
+# Named compile-time constants of every scalar constant kind (i64, f64, bool,
+# string, char), each used across multiple functions. `DOUBLED` is defined from
+# another constant. All references fold to literals before execution, so the
+# result is byte-for-byte identical on every interpreter backend.
+const MAX_LEN i64 = 128
+const DOUBLED i64 = MAX_LEN * 2
+const GREETING string = "hi"
+const PI f64 = 3.0
+const ENABLED bool = true
+const GRADE char = 'A'
+
+fn describe -> string
+    GREETING
+
+fn area r f64 -> f64
+    PI * r * r
+
+fn main -> i64
+    println(describe())
+    let ok bool = area(2.0) == 12.0
+    if ok and ENABLED
+        println("ready")
+    len(GREETING) + DOUBLED + char_code(GRADE)

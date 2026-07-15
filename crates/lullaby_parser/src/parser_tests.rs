@@ -980,3 +980,70 @@ fn malformed_closure_missing_arrow_is_rejected() {
         "a closure missing `->` must be rejected"
     );
 }
+
+#[test]
+fn parses_named_constant_declaration() {
+    let tokens = lex("const MAX_LEN i64 = 128\n").expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert_eq!(program.consts.len(), 1);
+    let decl = &program.consts[0];
+    assert_eq!(decl.name, "MAX_LEN");
+    assert_eq!(decl.ty.name, "i64");
+    assert!(!decl.is_public);
+    assert_eq!(decl.value.kind, ExprKind::Integer(128));
+}
+
+#[test]
+fn parses_constant_expression_over_another_constant() {
+    // A constant initializer may be an arbitrary expression referencing another
+    // constant; the parser keeps it as an expression (semantics evaluates it).
+    let tokens = lex("const MAX_LEN i64 = 128\nconst DOUBLED i64 = MAX_LEN * 2\n").expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert_eq!(program.consts.len(), 2);
+    assert!(matches!(
+        program.consts[1].value.kind,
+        ExprKind::Binary { .. }
+    ));
+}
+
+#[test]
+fn parses_public_constant() {
+    let tokens = lex("pub const GREETING string = \"hi\"\n").expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert_eq!(program.consts.len(), 1);
+    assert!(program.consts[0].is_public);
+    assert_eq!(program.consts[0].ty.name, "string");
+}
+
+#[test]
+fn constant_without_type_is_rejected() {
+    // Unlike an inferred `let`, a constant's type annotation is mandatory.
+    let tokens = lex("const X = 5\n").expect("lex");
+    assert!(parse(&tokens).is_err(), "a const must declare its type");
+}
+
+#[test]
+fn constant_declaration_round_trips_through_formatter() {
+    // `const NAME type = <expr>` (and `pub const`) format back to source that
+    // re-parses to the same AST, and formatting is idempotent.
+    let source = concat!(
+        "const MAX_LEN i64 = 128\n",
+        "\n",
+        "pub const GREETING string = \"hi\"\n",
+        "\n",
+        "const DOUBLED i64 = MAX_LEN * 2\n",
+        "\n",
+        "fn main -> i64\n",
+        "    DOUBLED\n",
+    );
+    let program = parse(&lex(source).expect("lex")).expect("parse");
+    let formatted = format_program(&program);
+    let reparsed = parse(&lex(&formatted).expect("lex formatted")).expect("parse formatted");
+    assert_eq!(program, reparsed, "formatting must preserve the AST");
+    let twice = format_program(&reparsed);
+    assert_eq!(formatted, twice, "formatting must be idempotent");
+    assert!(
+        formatted.contains("pub const GREETING string = \"hi\""),
+        "formatted output renders the const: {formatted}"
+    );
+}

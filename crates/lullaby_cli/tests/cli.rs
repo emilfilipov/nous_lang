@@ -1368,6 +1368,10 @@ mod suite5;
 #[path = "cli/suite6.rs"]
 mod suite6;
 
+// -- Named compile-time constants (`const NAME type = <expr>`) ----------------
+#[path = "cli/suite7.rs"]
+mod suite7;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

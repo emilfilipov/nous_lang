@@ -96,6 +96,7 @@ impl<'a> Parser<'a> {
         let mut imports = Vec::new();
         let mut traits = Vec::new();
         let mut impls = Vec::new();
+        let mut consts = Vec::new();
         self.skip_newlines();
 
         // Leading `import NAME` lines: zero or more, before any declaration.
@@ -173,6 +174,10 @@ impl<'a> Parser<'a> {
                     token.span,
                 );
                 self.advance();
+            } else if self.eat_keyword(Keyword::Const).is_some() {
+                if let Some(declaration) = self.parse_const(is_public) {
+                    consts.push(declaration);
+                }
             } else if self.eat_keyword(Keyword::Alias).is_some() {
                 if let Some(alias) = self.parse_alias(is_public) {
                     aliases.push(alias);
@@ -199,7 +204,7 @@ impl<'a> Parser<'a> {
                 let token = self.peek();
                 self.error(
                     "L0201",
-                    "`pub` must prefix a `fn`, `struct`, `enum`, `alias`, or `trait` declaration",
+                    "`pub` must prefix a `fn`, `struct`, `enum`, `alias`, `const`, or `trait` declaration",
                     token.span,
                 );
                 self.advance();
@@ -225,7 +230,33 @@ impl<'a> Parser<'a> {
             imports,
             traits,
             impls,
+            consts,
         }
+    }
+
+    /// Parse `const NAME type = <expr>`. Unlike a `let`, the type annotation is
+    /// mandatory; the initializer is any expression line (validated as a
+    /// *constant expression* and evaluated during semantic analysis).
+    fn parse_const(&mut self, is_public: bool) -> Option<ConstDecl> {
+        let span = self.previous().span;
+        let name = self.expect_identifier("expected constant name after `const`")?;
+        let ty = self.expect_type("expected constant type after its name")?;
+        if !self.eat_symbol("=") {
+            self.error(
+                "L0206",
+                "expected `=` in const declaration",
+                self.peek().span,
+            );
+            return None;
+        }
+        let value = self.parse_value_expr(span, "expected newline after const declaration")?;
+        Some(ConstDecl {
+            name,
+            ty,
+            value,
+            span,
+            is_public,
+        })
     }
 
     /// Parse `trait NAME` followed by an indented list of method signatures

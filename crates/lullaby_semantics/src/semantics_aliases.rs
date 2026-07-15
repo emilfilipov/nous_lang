@@ -8,8 +8,8 @@
 use std::collections::{HashMap, HashSet};
 
 use lullaby_parser::{
-    EnumDecl, EnumVariant, Expr, ExprKind, Function, IfBranch, MatchArm, Param, Program, Stmt,
-    StructDecl, StructField, TypeRef,
+    ConstDecl, EnumDecl, EnumVariant, Expr, ExprKind, Function, IfBranch, MatchArm, Param, Program,
+    Stmt, StructDecl, StructField, TypeRef,
 };
 
 use super::SemanticDiagnostic;
@@ -182,6 +182,20 @@ pub(crate) fn resolve_program_aliases(program: &Program) -> (Program, Vec<Semant
                         })
                         .collect(),
                     span: decl.span,
+                })
+                .collect(),
+            // A constant's declared type may name an alias (`const N Count = 5`);
+            // resolve it to the canonical type so the checker/const-evaluator
+            // never sees an alias. The initializer expression is unchanged.
+            consts: program
+                .consts
+                .iter()
+                .map(|decl| ConstDecl {
+                    name: decl.name.clone(),
+                    ty: resolve_alias_type(&decl.ty, &map),
+                    value: decl.value.clone(),
+                    span: decl.span,
+                    is_public: decl.is_public,
                 })
                 .collect(),
         },

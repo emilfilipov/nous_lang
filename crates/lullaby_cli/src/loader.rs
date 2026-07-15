@@ -337,6 +337,9 @@ fn declared_names(program: &Program) -> HashSet<String> {
     for alias in &program.aliases {
         names.insert(alias.name.clone());
     }
+    for decl in &program.consts {
+        names.insert(decl.name.clone());
+    }
     names
 }
 
@@ -361,6 +364,11 @@ fn public_names(program: &Program) -> HashSet<String> {
     for alias in &program.aliases {
         if alias.is_public {
             names.insert(alias.name.clone());
+        }
+    }
+    for decl in &program.consts {
+        if decl.is_public {
+            names.insert(decl.name.clone());
         }
     }
     names
@@ -408,6 +416,9 @@ fn module_declarations(program: &Program) -> Vec<(String, Span)> {
     }
     for alias in &program.aliases {
         items.push((alias.name.clone(), alias.span));
+    }
+    for decl in &program.consts {
+        items.push((decl.name.clone(), decl.span));
     }
     items
 }
@@ -694,6 +705,7 @@ fn merge(modules: &[Module]) -> Program {
     let mut enums = Vec::new();
     let mut traits = Vec::new();
     let mut impls = Vec::new();
+    let mut consts = Vec::new();
     for module in modules {
         functions.extend(module.program.functions.iter().cloned());
         aliases.extend(module.program.aliases.iter().cloned());
@@ -701,6 +713,7 @@ fn merge(modules: &[Module]) -> Program {
         enums.extend(module.program.enums.iter().cloned());
         traits.extend(module.program.traits.iter().cloned());
         impls.extend(module.program.impls.iter().cloned());
+        consts.extend(module.program.consts.iter().cloned());
     }
     Program {
         functions,
@@ -710,5 +723,6 @@ fn merge(modules: &[Module]) -> Program {
         imports: Vec::new(),
         traits,
         impls,
+        consts,
     }
 }

@@ -53,6 +53,7 @@ pub enum Keyword {
     Break,
     Continue,
     Let,
+    Const,
     And,
     Or,
     Not,
@@ -488,6 +489,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "break" => Keyword::Break,
         "continue" => Keyword::Continue,
         "let" => Keyword::Let,
+        "const" => Keyword::Const,
         "and" => Keyword::And,
         "or" => Keyword::Or,
         "not" => Keyword::Not,
@@ -569,6 +571,17 @@ mod tests {
             tokens
                 .iter()
                 .any(|token| token.kind == TokenKind::Keyword(Keyword::Catch))
+        );
+    }
+
+    #[test]
+    fn recognizes_const_keyword() {
+        let tokens = lex("const MAX i64 = 5\n").expect("lex");
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Keyword(Keyword::Const)),
+            "expected a `const` keyword token, got {tokens:?}"
         );
     }
 

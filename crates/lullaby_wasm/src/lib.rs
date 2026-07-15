@@ -37,8 +37,12 @@ pub fn run(source: &str) -> String {
     let outcome = (|| -> Result<String, String> {
         let tokens = lex(source).map_err(|d| render_diagnostics(&d))?;
         let program = parse(&tokens).map_err(|d| render_diagnostics(&d))?;
-        validate(&program).map_err(|d| render_semantic(&d))?;
-        let value = run_main(&program).map_err(|e| format!("{}: {}", e.code, e.message))?;
+        // Run the checked program: `validate` resolves aliases, writes back
+        // inferred return types, and folds named compile-time constants into
+        // literals, so the AST interpreter never sees an unresolved `const`.
+        let checked = validate(&program).map_err(|d| render_semantic(&d))?;
+        let value =
+            run_main(&checked.program).map_err(|e| format!("{}: {}", e.code, e.message))?;
         Ok(value.to_string())
     })();
     let output = take_wasm_output();

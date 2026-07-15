@@ -8,6 +8,7 @@ use lullaby_parser::{
 };
 
 mod semantics_aliases;
+mod semantics_consts;
 mod semantics_generics;
 
 // Re-export the generic-inference helpers at the crate root so the public API
@@ -78,8 +79,16 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
     // no runtime representation, so runtime layout is unchanged.
     let (mut resolved, alias_diagnostics) = resolve_program_aliases(program);
 
+    // Evaluate named compile-time constants and fold every reference to a
+    // constant into its literal value. After this the checker (and every
+    // backend) only ever sees ordinary literals, so no downstream stage needs
+    // any `const` awareness.
+    let (const_types, const_diagnostics) = semantics_consts::resolve_and_fold_consts(&mut resolved);
+
     let mut checker = Checker::new(&resolved);
+    checker.consts = const_types;
     checker.diagnostics = alias_diagnostics;
+    checker.diagnostics.extend(const_diagnostics);
     checker.validate();
     if !checker.diagnostics.is_empty() {
         return Err(std::mem::take(&mut checker.diagnostics));
@@ -271,6 +280,13 @@ struct Checker<'a> {
     /// skipped in the real pass so a broken return type does not cascade into
     /// confusing secondary errors; the `L0439` already tells the user the fix.
     inference_failed: HashSet<String>,
+    /// Named compile-time constant declared types, keyed by name. References to a
+    /// constant are folded into literals before checking, so this map is only a
+    /// safety net: it types a reference to a constant whose *value* failed to
+    /// evaluate (which left the reference un-folded), preventing a cascade of
+    /// spurious `L0306` "unknown variable" diagnostics on top of the real
+    /// constant error.
+    consts: HashMap<String, TypeRef>,
 }
 
 impl<'a> Checker<'a> {
@@ -294,6 +310,7 @@ impl<'a> Checker<'a> {
             inferring: HashSet::new(),
             deferred_diagnostics: Vec::new(),
             inference_failed: HashSet::new(),
+            consts: HashMap::new(),
         }
     }
 
@@ -1724,6 +1741,14 @@ impl<'a> Checker<'a> {
                         // top-level function evaluates to a function value of
                         // type `fn(params) -> ret`.
                         Some(function_type(&signature.params, &signature.return_type))
+                    } else if let Some(const_type) = self.consts.get(name) {
+                        // A reference to a named constant. Cleanly-evaluated
+                        // constants were already folded to literals, so this only
+                        // fires for a constant whose value failed to evaluate; its
+                        // real error is already reported, and typing it by its
+                        // declared type keeps the failure from cascading into a
+                        // spurious `L0306`.
+                        Some(const_type.clone())
                     } else {
                         self.diagnostics.push(SemanticDiagnostic::at(
                             "L0306",

@@ -19,9 +19,9 @@
 //! formatting a commented file is idempotent.
 
 use crate::{
-    AliasDecl, AssignOp, BinaryOp, EnumDecl, Expr, ExprKind, Function, IfBranch, ImplDecl,
-    MatchArm, MatchPattern, MethodSig, Param, Place, Program, RegionDecl, Stmt, StructDecl,
-    TraitDecl, TypeParam, UnaryOp,
+    AliasDecl, AssignOp, BinaryOp, ConstDecl, EnumDecl, Expr, ExprKind, Function, IfBranch,
+    ImplDecl, MatchArm, MatchPattern, MethodSig, Param, Place, Program, RegionDecl, Stmt,
+    StructDecl, TraitDecl, TypeParam, UnaryOp,
 };
 use lullaby_lexer::Comment;
 
@@ -44,6 +44,9 @@ pub fn format_program_with_comments(program: &Program, comments: &[Comment]) -> 
     let mut items: Vec<TopItem> = Vec::new();
     for alias in &program.aliases {
         items.push(TopItem::Alias(alias));
+    }
+    for declaration in &program.consts {
+        items.push(TopItem::Const(declaration));
     }
     for decl in &program.structs {
         items.push(TopItem::Struct(decl));
@@ -86,6 +89,7 @@ pub fn format_program_with_comments(program: &Program, comments: &[Comment]) -> 
 /// declaration buckets by source line without cloning.
 enum TopItem<'a> {
     Alias(&'a AliasDecl),
+    Const(&'a ConstDecl),
     Struct(&'a StructDecl),
     Enum(&'a EnumDecl),
     Trait(&'a TraitDecl),
@@ -97,6 +101,7 @@ impl TopItem<'_> {
     fn line(&self) -> usize {
         match self {
             TopItem::Alias(alias) => alias.span.line,
+            TopItem::Const(decl) => decl.span.line,
             TopItem::Struct(decl) => decl.span.line,
             TopItem::Enum(decl) => decl.span.line,
             TopItem::Trait(decl) => decl.span.line,
@@ -234,6 +239,7 @@ impl<'a> Emitter<'a> {
 fn render_item(emitter: &mut Emitter, item: &TopItem, block_next: usize) {
     match item {
         TopItem::Alias(alias) => emitter.emit_line(0, alias.span.line, &render_alias(alias)),
+        TopItem::Const(decl) => emitter.emit_line(0, decl.span.line, &render_const(decl)),
         TopItem::Struct(decl) => render_struct(emitter, decl, block_next),
         TopItem::Enum(decl) => render_enum(emitter, decl, block_next),
         TopItem::Trait(decl) => render_trait(emitter, decl, block_next),
@@ -244,6 +250,20 @@ fn render_item(emitter: &mut Emitter, item: &TopItem, block_next: usize) {
 
 fn render_alias(alias: &AliasDecl) -> String {
     format!("alias {} = {}", alias.name, alias.target.name)
+}
+
+fn render_const(decl: &ConstDecl) -> String {
+    let mut header = String::new();
+    if decl.is_public {
+        header.push_str("pub ");
+    }
+    header.push_str(&format!(
+        "const {} {} = {}",
+        decl.name,
+        decl.ty.name,
+        render_expr(&decl.value)
+    ));
+    header
 }
 
 fn render_struct(emitter: &mut Emitter, decl: &StructDecl, block_next: usize) {

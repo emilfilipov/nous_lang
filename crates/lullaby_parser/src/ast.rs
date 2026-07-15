@@ -23,6 +23,32 @@ pub struct Program {
     /// Serde-defaulted so existing artifacts and AST snapshots stay valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub impls: Vec<ImplDecl>,
+    /// Named compile-time constants (`const NAME type = <expr>`), in source
+    /// order. Each carries a constant-expression initializer that semantic
+    /// analysis evaluates to a literal and folds into every reference, so the
+    /// backends never see a `const`. Serde-defaulted so existing single-file
+    /// artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consts: Vec<ConstDecl>,
+}
+
+/// A named compile-time constant declaration: `const NAME type = <expr>`. The
+/// type annotation is mandatory (unlike an inferred `let`), and the initializer
+/// must be a *constant expression* — literals plus arithmetic/logical/bitwise/
+/// comparison operators over literals and other already-defined constants.
+/// Semantic analysis evaluates it once at compile time and folds every
+/// reference to the constant into the resulting literal, so no backend needs
+/// any `const` awareness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: TypeRef,
+    pub value: Expr,
+    pub span: Span,
+    /// True when the declaration is exported with `pub`. Serde-defaulted to
+    /// `false` so existing single-file artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_public: bool,
 }
 
 /// A trait declaration: `trait NAME` followed by indented method signatures.

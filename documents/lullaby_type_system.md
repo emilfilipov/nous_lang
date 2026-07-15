@@ -250,6 +250,44 @@ alias Bytes = array<i64>
 let data Bytes = [1, 2, 3]
 ```
 
+## Named Compile-Time Constants
+
+A top-level `const NAME type = <expr>` declaration binds a name to a value that is
+computed **at compile time**. Unlike an inferred `let`, the type annotation is
+mandatory. A constant may be exported with `pub const` and referenced from any
+function; a local binding, parameter, loop variable, `match` binding, or closure
+parameter of the same name shadows it as usual.
+
+```lullaby
+const MAX_LEN i64 = 128
+const GREETING string = "hi"
+const DOUBLED i64 = MAX_LEN * 2   # a constant expression over another constant
+```
+
+The initializer must be a **constant expression**: a literal (`i64`, `f64`,
+`bool`, `string`, `char`), or an arithmetic/logical/bitwise/comparison/unary
+operator applied to literals and other already-defined constants. String `+`
+concatenation of constant strings/chars is included. Anything that reads a runtime
+value — a call to a non-`const` function, an array/index/field/struct/enum/match
+value, a closure — is **not** a constant expression and is rejected (`L0450`).
+Integer arithmetic wraps like the rest of the language, but a constant division or
+remainder by zero is a compile error (`L0450`).
+
+Each constant is type-checked against its declared type (`L0451`; there is no
+implicit `i64`→`f64` widening, so an `f64` constant needs a float literal such as
+`3.0`). Cyclic references (`A = B + 1`, `B = A + 1`) are rejected (`L0452`), as are
+duplicate constant names or a name that collides with another top-level
+declaration (`L0453`).
+
+Constants are a **frontend-only** feature: semantic analysis evaluates every
+constant once and folds each reference into its literal value before the type
+checker validates function bodies. Every backend (the AST/IR/bytecode
+interpreters, the native x86-64/AArch64 backends, and WASM) therefore only ever
+sees ordinary literals and needs no `const` awareness — a folded `const` in an
+otherwise all-`i64` function stays native-eligible. Const-sized arrays
+(`array<T, N>` where `N` is a constant) are a planned follow-up and are not part of
+this increment.
+
 ## Types for Systems / OS Development
 
 The scalar and struct types map directly onto kernel data structures — fixed-width

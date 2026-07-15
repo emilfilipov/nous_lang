@@ -1,0 +1,18 @@
+# Named compile-time constants over i64: a constant used in expressions, a
+# constant defined from another constant, and a constant used across multiple
+# functions. Every reference is folded to a literal before codegen, so this
+# whole program is native-eligible (all-i64) and runs identically on every
+# backend.
+const MAX_LEN i64 = 128
+const DOUBLED i64 = MAX_LEN * 2
+const OFFSET i64 = DOUBLED - MAX_LEN + 1
+const MASK i64 = (1 << 4) - 1
+
+fn scaled x i64 -> i64
+    x * MAX_LEN + OFFSET
+
+fn masked v i64 -> i64
+    v & MASK
+
+fn main -> i64
+    scaled(2) + DOUBLED + masked(255)
