@@ -1,0 +1,15 @@
+# A method argument whose type disagrees with the receiver-pinned type parameter.
+# `rewrap` on a `Box<i64>` substitutes `T = i64`, so it expects an `i64` argument;
+# passing a `bool` is rejected with `L0313` (argument type mismatch).
+
+struct Box<T>
+    value T
+
+impl Box<T>
+    fn rewrap self v T -> Box<T>
+        Box(v)
+
+fn main -> i64
+    let a Box<i64> = Box(5)
+    let bad Box<i64> = a.rewrap(true)
+    a.value

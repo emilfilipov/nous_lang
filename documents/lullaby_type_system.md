@@ -276,11 +276,12 @@ cleanly skip it to the interpreter (`L0339`), never miscompiling; per-instantiat
 monomorphization on those backends is a later stage.
 
 Stage 1 covers a **single-parameter generic `struct` with a scalar type
-parameter**. Methods on generic types, heap-typed `T`
-(`string`/`list`/`map`/heap struct), multiple type parameters, and bounds on a
-generic type (`struct Sorted<T: Compare>`) are staged next. Trait objects (`dyn`)
-and associated types remain on the roadmap; the built-in generics `option`,
-`result`, `list`, `map`, `array`, `rc`, `ref`, and `ptr` are available today.
+parameter**; methods on generic types ship too (see "Methods on Generic Types").
+Heap-typed `T` (`string`/`list`/`map`/heap struct), multiple type parameters, and
+bounds on a generic type (`struct Sorted<T: Compare>`) are staged next. Trait
+objects (`dyn`) and associated types remain on the roadmap; the built-in generics
+`option`, `result`, `list`, `map`, `array`, `rc`, `ref`, and `ptr` are available
+today.
 
 ### Generic User Enums
 
@@ -340,6 +341,53 @@ generic enum as ineligible for now and cleanly skip it to the interpreter
 later stage. Stage A1 covers a **single-parameter generic `enum`** plus the
 recursion-through-indirection rule; methods, heap-`T` native monomorphization,
 multiple parameters, and bounds are staged next.
+
+### Methods on Generic Types
+
+An **inherent `impl` block** attaches methods to a generic type. `impl Box<T>`
+introduces the type parameter `T` over every method in the block; a method's
+signature and body use `T` and the `self` receiver like any other type:
+
+```lullaby
+struct Box<T>
+    value T
+
+impl Box<T>
+    fn peek self -> T                # returns the wrapped value as the concrete T
+        self.value
+    fn rewrap self v T -> Box<T>     # takes a T, returns a fresh Box<T>
+        Box(v)
+
+fn main -> i64
+    let a Box<i64> = Box(5)
+    let flag Box<bool> = Box(true)
+    let bumped Box<i64> = a.rewrap(9)  # T = i64: rewrap takes i64, returns Box<i64>
+    a.peek() + bumped.peek() + (1 if flag.peek() else 0)  # peek() is i64 / bool
+```
+
+An inherent `impl` has **no `for`** — that distinguishes it from a trait impl
+(`impl Show for Point`). A method is called with the usual receiver syntax
+(`recv.method(args)`), which resolves the method by the **receiver's concrete
+instantiation**: unifying the method's `self` type (`Box<T>`) against the
+receiver's type (`Box<i64>`) pins the type parameters, and those are substituted
+into the method's parameter and return types. So `peek` returns `i64` on a
+`Box<i64>` and `bool` on a `Box<bool>`; a parameter of type `T` accepts exactly
+the receiver's `T`. A wrong-typed argument is `L0313`; calling a method the
+receiver's type does not declare is `L0457`. A generic `enum` takes methods the
+same way (an `impl Opt<T>` method may `match self`, binding a payload as the
+concrete `T`).
+
+Method names share the **receiver-dispatch namespace** with trait methods: a
+method name must be distinct from every free-function and trait-method name
+(`L0398`), and a method may be declared only once per type (`L0399`). Like the
+generic types themselves, methods run by **type erasure** on the three
+interpreters — dispatch on a generic type is ordinary receiver dispatch at
+runtime, so a program calling generic-type methods runs identically on
+`ast`/`ir`/`bytecode`. A function that calls a generic-type method is
+native-ineligible for now and cleanly skips to the interpreter (`L0339`), never
+miscompiling; per-instantiation monomorphization on the native/WASM backends is a
+later stage, as are multiple type parameters and bounds on a generic type
+(`impl Sorted<T: Compare>`).
 
 ## Type Aliases
 

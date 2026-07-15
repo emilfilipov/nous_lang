@@ -76,15 +76,41 @@ pub struct MethodSig {
     pub span: Span,
 }
 
-/// A trait implementation: `impl Trait for Type` followed by indented method
-/// bodies. Each method is an ordinary [`Function`] whose first parameter is
-/// `self` (its type is the implementing type).
+/// An implementation block. Two forms share this node:
+///
+/// - A **trait** implementation `impl Trait for Type`, where `trait_name` names
+///   the implemented trait and `type_name` the implementing type.
+/// - An **inherent** implementation `impl Type<T>` on a (possibly generic) type,
+///   which introduces methods that are not tied to a trait. An inherent impl has
+///   an **empty** `trait_name` (use [`ImplDecl::is_inherent`]); `type_name` is the
+///   base type name (`Box` for `impl Box<T>`), and `type_params` carries the
+///   type parameters `<T>` introduced for every method in the block. Each method's
+///   `self` parameter is typed with the full instantiation spelling (`Box<T>`) so
+///   the body type-checks with `T` in scope; a call site resolves the method by
+///   the receiver's concrete instantiation, substituting `T`.
+///
+/// Each method is an ordinary [`Function`] whose first parameter is `self`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImplDecl {
     pub trait_name: String,
     pub type_name: String,
+    /// Type parameters `<T>` introduced by an inherent impl on a generic type,
+    /// in scope over every method's signature and body. Empty for a trait impl
+    /// and for an inherent impl on a non-generic type. Serde-defaulted to an
+    /// empty list so existing single-file artifacts and AST snapshots stay valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<TypeParam>,
     pub methods: Vec<Function>,
     pub span: Span,
+}
+
+impl ImplDecl {
+    /// True for an inherent impl (`impl Type<T>`) — one with no implemented trait.
+    /// An inherent impl records its methods for receiver-type dispatch rather than
+    /// checking them against a trait's required signatures.
+    pub fn is_inherent(&self) -> bool {
+        self.trait_name.is_empty()
+    }
 }
 
 /// A struct declaration: `struct NAME` followed by indented `field type` lines.

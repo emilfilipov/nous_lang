@@ -1380,6 +1380,10 @@ mod suite8;
 #[path = "cli/suite9.rs"]
 mod suite9;
 
+// -- Methods on generic types, stage 4 (`impl Box<T>`) -----------------------
+#[path = "cli/suite10.rs"]
+mod suite10;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

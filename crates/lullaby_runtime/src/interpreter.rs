@@ -315,6 +315,15 @@ impl<'a> Runtime<'a> {
             for method in &decl.methods {
                 impl_methods.insert((decl.type_name.clone(), method.name.clone()), method);
             }
+            // Inherent (`impl Box<T>`) methods dispatch by the receiver's runtime
+            // type exactly like trait methods under erasure, so their names join
+            // the receiver-dispatch set. `decl.type_name` is the base type name
+            // (`Box`), which matches `value_type_name` of a `Box<...>` value.
+            if decl.is_inherent() {
+                for method in &decl.methods {
+                    trait_method_names.insert(method.name.clone());
+                }
+            }
         }
 
         let structs = program
