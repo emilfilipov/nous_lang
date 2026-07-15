@@ -32,6 +32,7 @@ Implemented now:
 - **Direct PE executable emission (freestanding, no external linker).** `lullaby native --freestanding` writes a runnable Windows `.exe` in-house — a fixed-base PE32+ image laid around the generated `.text` with a one-import (`kernel32!ExitProcess`) table — skipping `rust-lld` entirely. This removes the external linker, which is ~93% of the `lullaby native` wall-clock, making the freestanding edit→exe loop linker-cost-free. Link-and-run verified on this host. See "Direct PE Executable Emission (Freestanding, No External Linker)" below.
 - **User generic types with scalar OR one-level `string` type arguments (native monomorphization).** A user-defined generic `struct`/`enum` instantiated with **scalar** type arguments — `Box<i64>`, `Pair<i64, bool>`, `Opt<i64>`, `Either<i64, bool>` — **or with a `string` type argument that yields a one-level immutable `string` field/payload** — `Box<string>`, `Pair<string, i64>`, `Opt<string>`, `Either<i64, string>` — is **monomorphized**: the declared type parameters are substituted with the instantiation's concrete arguments (reusing the semantic `substitute_type`), and the resulting fully-concrete field/variant layout flows through the existing struct/enum machinery. Construction, field read/write, `match`, value-semantic copy, and passing/returning across boundaries all compile, byte-identical to the interpreters' erased value (value-neutral). A monomorphized `Box<string>` has the **identical layout** to a hand-written `struct { value string }`, so the whole heap-field machinery applies unchanged: the `string` field is a shared immutable pointer word, and the recursive `rc_dec` drop-glue reclaims each instantiation's `string` field per loop iteration, composing with **both** the RC/free-list path and the arena rewind (no leak, no double-free). **Default-deny scope gate:** an instantiation compiles only when its monomorphized layout is scalar-only or scalars plus one-level `string` words; a **deeper** heap shape — a mutable heap field (`Stack<i64>` → `list<i64>`; a recursive `Tree<i64>`), a nested heap-carrying aggregate, or a two-level `string` nesting — is **deferred cleanly** to the interpreters, exactly what the non-generic heap-field aggregate path also defers. Inherent methods on a generic type stay native-ineligible (as they are for non-generic structs). See "User Generic Types: Native Monomorphization (Scalar + One-Level `string` Type Arguments)" below.
 - **Fat-pointer array parameters (runtime-length `array<T>`).** A **read-only** scalar-element `array<T>` parameter (an integer cell `i64`/fixed-width/`bool`/`char`/`byte`, or a float `f64`/`f32`) whose length is not known at compile time is passed as a **fat pointer** — a `(data_ptr, length)` descriptor — so the callee reads the caller's storage in place instead of demoting because the length could not be inferred from a call site. `a[i]` (runtime-length bounds-checked; an integer element loads through a GPR, a float element through an XMM register), `len(a)`, and `for x in a` all lower against the descriptor. This closes the single largest native-reach gap (144→29 "no call site to infer its length from" corpus demotions). Value semantics hold because the parameter is read-only; a mutating or length-inferable parameter keeps the copy-in stack-array path. Forwarding a fat parameter as a call argument, mutating runtime-length parameters, and runtime-length returns/locals stay deferred. See "Fat-Pointer Array Parameters (Runtime-Length `array<T>`)" below.
+- **Closures — Stage 1 (scalar captures, direct non-escaping call).** A closure literal `fn PARAMS -> EXPR` that captures only **integer-cell scalars** (`i64`/fixed-width/`bool`/`char`/`byte`), takes at most three integer-cell scalar parameters, returns an integer-cell scalar, and whose single-expression body is heap-free and calls no user/`extern` function is compiled to native machine code when it is **created by a direct literal** (`let f fn(...) = fn x -> …`) and used **only as the callee of a direct call** (`f(args)`). The closure value is a heap block `[code_ptr][capture words…]` allocated by the shared bump/RC allocator, so it is reclaimed by the arena rewind (a per-iteration sub-region for a non-escaping loop closure — bounded heap) or the RC/free-list path like any other block. The call loads word 0 (the code pointer), puts the env pointer in `rcx`, the arguments in `rdx`/`r8`/`r9`, and issues an indirect `call rax`. **Default-deny — everything else skips cleanly to the interpreters (`L0339`), never miscompiled:** a `string`/`list`/`map`/aggregate or float capture, a closure passed to a higher-order function/builtin (`apply(f, x)`), a returned/escaping closure, a mutable/rebound closure local, a closure bound from a non-literal (a factory result), or more than three parameters. See "Closures — Stage 1" below.
 
 Now implemented (updated): `bool`/`char`/`byte` and the full fixed-width integer
 lattice (`i8`…`u64`, `isize`/`usize`) and `f64`/`f32` floats are lowered as native
@@ -951,6 +952,100 @@ Deferred beyond this increment: **`to_string(f64)`/`to_string(f32)`** (needs dto
 ### Verification
 
 The fixture `tests/fixtures/valid/native_string_build.lby` (a `greeting` function that returns a concatenated string, a `measure` function that takes a string and returns its `len`, and a `main` that builds strings via `+`, `to_string(i64)`, and `to_string(bool)`, passes a string across a boundary, and derives `17`) runs on all interpreter backends for ground truth and is native-compiled, linked, and run by `native_string_build_execution_parity_when_linkable` in `crates/lullaby_cli/tests/cli.rs`, which sources MSVC's `LIB` when unset and asserts the `.exe` exit code equals the interpreter's `run` result (mod 256; gated on `rust-lld` + `kernel32.lib`, with the all-functions-compile and interpreter-truth assertions always running). The index-based string operations add `tests/fixtures/valid/native_string_ops.lby` (char-indexed `substring`/`find` over the multi-byte `"café"` — where `é` is 2 bytes — an empty needle, present/absent `find`, and true/false cases of every predicate, combined into `11`), run identically on the AST/IR/bytecode interpreters and native-compiled, linked, and run by `native_string_ops_execution_parity_when_linkable` (same MSVC/`rust-lld`/`kernel32` gating and mod-256 exit-code assertion; the all-fifteen-functions-compile-natively and interpreter-truth assertions always run). The existing `native_strings.lby` (`len("literal")`) fixture and its parity test still pass unchanged. Unit tests in `native_program_tests` assert that string-value functions (a string return, a string parameter, `+` concat, `to_string`, `len`) report `compiled` (not `skipped`), that the object emits the `__lullaby_str_lit`/`_concat`/`_from_int`/`_from_bool`/`_from_char` **and** `_substring`/`_find`/`_contains`/`_starts_with`/`_ends_with` helper symbols and the bump allocator + `.bss` heap, that a concat call site references the concat helper, that every index-string call site references its helper (and the using function compiles natively), that the `substring` helper carries the `ud2` `L0413` trap and calls the allocator while the four scan helpers are leaf functions (no relocations, ending in `ret`), that a `string` is a scalar (not a by-pointer aggregate) with one word, and that `to_string(f64)` and a heap-field aggregate skip with clear reasons.
+
+## Closures — Stage 1 (Scalar Captures, Direct Non-Escaping Call) (DELIVERED, link-and-run verified)
+
+A closure literal `fn PARAMS -> EXPR` lowers (in the interpreters) to a
+`Value::Closure { id, captured }` whose body lives in `BytecodeModule::closures`
+keyed by the parse-order `id`; the `Closure { id }` IR node carries only the id.
+Roadmap item **B1** compiles the **narrow, provably-sound** slice of that model,
+default-deny everywhere else. The implementation lives in
+`crates/lullaby_ir/src/native_object_closure.rs` and integrates through the
+existing per-function lowering (`native_object.rs`/`native_object_expr.rs`).
+
+### Supported slice
+
+A closure is compiled natively when ALL hold:
+
+- It is **created by a direct literal** — `let f fn(...) = fn x -> …` (the binding
+  local's value is a `Closure { id }` node, classified in `collect_native_locals`).
+- It captures only **integer-cell scalars** (`i64`/fixed-width/`bool`/`char`/`byte`).
+  The captured **free-variable set** is the closure body's `Variable` reads minus
+  its parameters, in first-seen order; codegen picks that order.
+- It takes at most **three** integer-cell scalar parameters (the env pointer
+  consumes `rcx`, leaving `rdx`/`r8`/`r9`) and returns an integer-cell scalar.
+- Its single-expression body is **heap-free** and calls **no user/`extern`
+  function** (inline scalar builtins are fine), so the closure allocates nothing and
+  retains no pointer — keeping the enclosing arena reasoning a true leaf.
+- The closure local is used **only** as its `let`'s literal initializer or as the
+  callee of a direct call `f(args)` (`closure_local_ok`). A bare value read, being
+  passed as an argument, a return, a reassignment, or any store makes it
+  escape/higher-order and defers.
+
+### Object layout and call ABI
+
+- **Closure object** = a heap block `[code_ptr][capture0][capture1]…]` allocated by
+  the shared `__lullaby_alloc` (reusing the `[size][refcount]` heap machinery). The
+  literal lowering allocates `(1 + n_captures)·8` bytes, stores the captured scalar
+  values at words 1.., and stores the code pointer at word 0 via
+  `lea rax,[rip+__closure_{id}]` + a REL32 relocation against the synthesized body
+  symbol. The block pointer is the closure value.
+- **Synthesized body** `__closure_{id}` — a `.text` function per referenced closure
+  def, receiving the **env pointer** (the block base) in `rcx` and its parameters in
+  `rdx`/`r8`/`r9`, seating them into frame slots, resolving each captured name to
+  `[env + 8·(k+1)]`, and returning the body's scalar value in `rax`. It is chained
+  into the emitted function set (appended to the lowered functions), so the enclosing
+  `lea`/`call` resolves and the direct-PE/COFF writers emit it as an ordinary symbol.
+- **Call** `f(args)`: load the closure local (env pointer), stage the env and
+  arguments, distribute the env to `rcx` and the arguments to `rdx`/`r8`/`r9`, load
+  word 0 (the code pointer) into `rax`, and issue an indirect `call rax` (`FF D0`).
+
+### Reclamation soundness
+
+A scalar-only closure object is a plain heap block with the standard RC header, so
+it composes with the existing reclamation with no per-type drop-glue: a closure
+literal is recognized as **heap-touching** (`expr_touches_heap`) so an
+arena-eligible loop that allocates a closure per iteration gets a **per-iteration
+sub-region** whose bump-pointer rewind reclaims each block at the iteration edge
+(bounded heap); a non-arena enclosing function keeps the RC/free-list path (a
+single non-looped closure is bounded and reclaimed at the function-scoped arena
+rewind or simply orphaned like any other non-reclaimed block, exactly as a grown
+list's old block is today). Because the closure body allocates nothing and retains
+no pointer, and the closure never escapes (default-deny), no live value can
+reference a reclaimed block. The `native_closure_reclaim.lby` fixture allocates a
+closure per iteration across 100000 iterations (32 bytes/block vs the 1 MB heap):
+its correct completion — rather than a heap-exhaustion `ud2` trap around iteration
+~32k — proves the sub-region reclaims.
+
+### Deferred (skips cleanly to the interpreters, `L0339`)
+
+A `string`/`list`/`map`/aggregate or **float** capture; a closure passed to a
+higher-order function/builtin (`apply(f, x)`, `sort_by`, `list_map`); a
+returned/escaping closure; a mutable/rebound closure local; a closure bound from a
+non-literal (a factory result); a closure body that touches the heap or calls a
+user/`extern` function; and more than three parameters. Each is default-denied at
+classification or synthesis time, so the enclosing function is recorded skipped and
+runs on the interpreters — never miscompiled.
+
+### Verification
+
+`tests/fixtures/valid/native_closure_scalar.lby` (one scalar capture, direct call →
+`12`), `native_closure_multi_capture.lby` (two captures → `115`),
+`native_closure_loop.lby` (closure created+called in a loop → `26`), and
+`native_closure_reclaim.lby` (100000 per-iteration closures, bounded via the arena
+sub-region → `157`) run identically on the AST/IR/bytecode interpreters (the
+auto-discovering parity harness) and are native-compiled via the DEFAULT direct-PE
+path (no linker) and run by `native_closures_direct_pe_run_parity`
+(`crates/lullaby_cli/tests/cli/suite3.rs`), asserting each `.exe` exit code equals
+the interpreter result. `native_closure_deferred_shapes_skip` pins that a `string`
+capture (`native_closure_string_capture.lby`), a higher-order `apply` closure
+(`run_closures.lby`), and a returned closure (`run_closures_returned.lby`) fail
+native compilation with `L0339` (listing `skipped main`) yet still run correctly on
+the interpreters. Unit tests in `native_program_tests` assert the compiled/skip
+boundary (`__closure_0` compiled, the indirect `call rax` present, the direct-PE
+image produced) and pin every deferred shape (string capture, higher-order,
+returned, >3 params). A closure-using function is excluded from register promotion
+(a captured scalar must stay addressable in its frame slot).
 
 ## Deferred Native Work
 

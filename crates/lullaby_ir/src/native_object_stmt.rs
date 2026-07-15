@@ -43,6 +43,7 @@ pub(crate) fn lower_native_function(
     array_lengths: &ArrayLengths,
     fast_math: bool,
     is_arena: bool,
+    closure_layouts: &HashMap<usize, ClosureLayout>,
 ) -> Result<LoweredNativeFunction, String> {
     let mut ctx = NativeCtx::plan(
         function,
@@ -54,6 +55,7 @@ pub(crate) fn lower_native_function(
         signatures,
         array_lengths,
         is_arena,
+        closure_layouts,
     )?;
     ctx.fast_math = fast_math;
     let mut code = Vec::new();
