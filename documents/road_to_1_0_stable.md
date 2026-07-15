@@ -42,9 +42,14 @@ User-defined generic types (`struct Stack<T>`, `enum Opt<T>`) do not parse today
 (both → **L0205**). Bounded generic *functions* work; generic *types* do not.
 - **Decision: ship in 1.0.** Reusable containers / a data-structure library require
   them; core to the "spanning set." Largest of the five.
-- **Next:** needs an implementation-strategy spike first (monomorphization vs type
-  erasure, and how it composes with value-semantics + arena memory) → then
-  parser/semantics/IR/interpreters/native. Design spike dispatched.
+- **Strategy (design complete — [generics_design.md](generics_design.md)):** HYBRID —
+  type erasure on the interpreters (dynamic `Value`, free), monomorphization on
+  native/WASM (per-instantiation layout + reclamation need the concrete `T`). Two
+  sub-forks adopted per the design's recs (owner may veto): **inference-only
+  construction** (no turbofish) and **recursion-through-indirection required**.
+- **Next:** 5-stage impl (scalar-`T` struct → heap-`T` → generic enums + recursion
+  rule → methods → multi-param + bounds). Queued behind A2-const (parser/semantics
+  occupied) + native-aggregate (native occupied).
 
 ### A2. Const / compile-time evaluation — **DECIDED: minimal in 1.0** (was CONFIRMED GAP)
 No `const` keyword or compile-time-constant story today (`const N i64 = 5` →
