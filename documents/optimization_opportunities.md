@@ -272,23 +272,46 @@ bit-identical to the interpreters (gate with `cargo test --all`).
 *(The lowering shipped in `native_object_loops.rs`, not `native_object_stmt.rs` —
 `for` lowering moved there in the split; see the SHIPPED note above.)*
 
-**2. Native array-argument pass-by-value copies the whole array per call.**
-*Evidence.* Disassembly of `arraysum_native` shows the timed rep loop, before
-each `scan(a)` call, copying all 64 elements from the source stack slots into a
-fresh temp region (64 `mov`-load + 64 `mov`-store = 128 memory ops) — the
-by-value argument copy — for 64 useful `add`s. C passes a pointer and copies
-nothing. No packed/SSE instructions are emitted (0 `paddq`/`movdqa`): the
-reduction does **not** vectorize across the fat-pointer function boundary, unlike
-the inline SIMD reductions elsewhere. The per-call copy dominates the ~9× C gap.
-*Fix.* Pass a read-only (unmutated) array argument by reference/borrow instead of
-copying it — an escape/mutation analysis on the callee, defaulting to the current
-copy when unsure. Secondarily, extend SIMD reduction recognition through the
-fat-pointer parameter.
-*Files.* Native call-argument lowering / value-semantics in
-`crates/lullaby_ir/src/native_object_stmt.rs` and `native_object_expr.rs`; ties
-into the arena-first / value-semantics memory-model work.
-*ROI.* High on array-passing code. *Risk.* Moderate–high: aliasing correctness
-must be exact. *Status.* **Blocked** — native codegen + memory-model in-flight.
+**2. Native array-argument pass-by-value copies the whole array per call —
+by-reference tried, MEASURED A REGRESSION, reverted (2026-07-15).**
+*Evidence.* The callee `scan(a)` copies all 64 elements from the caller's storage
+into its own frame on entry (64 `mov`-load + 64 `mov`-store = 128 memory ops) for
+64 useful `add`s. C passes a pointer and copies nothing. No packed/SSE
+instructions are emitted (0 `paddq`/`movdqa`): the reduction does **not**
+vectorize in either the copy-in or the fat-pointer path. Baseline: native
+**0.71–0.75 ns/elem vs C 0.083–0.088 = ~8.5× C**.
+*Hypothesis tested.* Pass a read-only (unmutated) array argument by **fat pointer**
+(`data_ptr, length` descriptor — no element copy) even when its length is inferable
+from call sites, reusing the existing `param_is_read_only` / `fat_array_param_elem`
+default-deny analysis (guarded so every call site passes a bare array variable, so
+value semantics are preserved bit-for-bit — the parameter is never written).
+*Result — HONEST NEGATIVE.* Verified by disassembly that `scan` then copies only
+the 2 descriptor words (no element copy) and reads through the descriptor with a
+runtime-length bounds check. But the workload **regressed 0.71 → 1.87 ns/elem
+(~8.5× → ~22× C)**, a reproducible 2.5×; reverting restored 0.71. The per-call
+copy is **not** dominant: it is ~2 amortized ops/element, whereas the fat
+per-element read adds MORE — an extra loop-invariant data-pointer reload
+(`mov rcx,[rbp-descr]`) and a memory-operand runtime bounds check (`cmp rax,
+[rbp-len]`) on **every** element — because the generic stack-machine lowering
+hoists nothing. Net: the by-reference path removes ~2 ops/elem of copy and adds
+~3 ops/elem of indirection. So eliminating the copy at the *analysis* level, with
+the current per-element access codegen, is a net loss on a full-scan reduction.
+*Real fix (larger, deferred).* The by-reference approach only pays off once the
+per-element access is made cheap: hoist the descriptor's `data_ptr` and `length`
+into loop-invariant registers, elide the per-element bounds check when the loop
+bound is provably `len(a)`, keep the accumulator in a register (à la the scalar
+register-promotion loop win), and/or extend SIMD reduction recognition through the
+fat-pointer boundary. That is a **loop-scoped register-promotion** change in
+`crates/lullaby_ir/src/native_object_loops.rs` (+ `native_object_place.rs`
+element addressing / `native_object_simd.rs`), not the call-arg/eligibility swap —
+substantially larger and correctness-critical, so it is scoped as a follow-up
+rather than forced into a small change.
+*Files (attempted).* `crates/lullaby_ir/src/native_object_eligibility.rs`
+(`infer_array_lengths` fat-vs-copy choice) — reverted.
+*ROI.* Was assumed high; **measured neutral-to-negative** for the analysis-only
+swap. *Risk.* Moderate–high. *Status.* **Analysis-level swap rejected on
+measurement; real lever is loop-scoped register promotion + bounds-check elision /
+SIMD (deferred, needs `native_object_loops.rs`).**
 
 **3. Native call-argument marshalling does a redundant stack round-trip.**
 *Evidence.* In both the strscan loop and the arraysum call site, a single scalar
