@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 mod analysis;
+mod completion;
 mod diagnostics;
 mod project;
 mod transport;
@@ -171,6 +172,10 @@ pub fn handle_message(
             Some(id) => vec![Message::result(id, handle_definition(state, &params))],
             None => Vec::new(),
         },
+        "textDocument/completion" => match id {
+            Some(id) => vec![Message::result(id, handle_completion(state, &params))],
+            None => Vec::new(),
+        },
         // Unknown request: reply with a "method not found" error so the client
         // is not left waiting. Unknown notifications are ignored.
         _ => match id {
@@ -195,6 +200,12 @@ fn initialize_result() -> Value {
             "documentFormattingProvider": true,
             "hoverProvider": true,
             "definitionProvider": true,
+            // Completion offers keywords, in-scope declarations/locals, and
+            // imported `pub` symbols. No resolve step and no trigger characters
+            // (member/`.` completion is deferred).
+            "completionProvider": {
+                "resolveProvider": false,
+            },
         },
         "serverInfo": {
             "name": "lullaby-lsp",
@@ -303,6 +314,23 @@ fn handle_definition(state: &ServerState, params: &Value) -> Value {
         return Value::Null;
     };
     project::definition(uri, text, line, character, &state.documents)
+}
+
+/// `textDocument/completion`: return the completion items for the cursor
+/// position as an LSP `CompletionItem[]`. Offers keywords, the buffer's in-scope
+/// declarations and locals, and imported `pub` symbols. Returns an empty array
+/// when the document is not open; never errors on an unparseable buffer.
+fn handle_completion(state: &ServerState, params: &Value) -> Value {
+    let Some(uri) = params["textDocument"]["uri"].as_str() else {
+        return Value::Array(Vec::new());
+    };
+    let Some(text) = state.documents.get(uri) else {
+        return Value::Array(Vec::new());
+    };
+    let line = params["position"]["line"]
+        .as_u64()
+        .map(|line| line as usize);
+    project::completion(uri, text, line, &state.documents)
 }
 
 /// Look up the open document text plus the 0-based `(line, character)` for a
@@ -633,6 +661,112 @@ fn main -> i64
         let value = out[0].clone().into_json();
         // The `let total` binding is on line 4 (0-based).
         assert_eq!(value["result"]["range"]["start"]["line"], json!(4));
+    }
+
+    #[test]
+    fn initialize_advertises_completion() {
+        let mut state = ServerState::new();
+        let out = handle_message(&mut state, "initialize", Some(json!(1)), json!({}));
+        let value = out[0].clone().into_json();
+        let caps = &value["result"]["capabilities"];
+        assert_eq!(caps["completionProvider"]["resolveProvider"], json!(false));
+    }
+
+    /// A program with a function, struct, enum, and const for completion tests.
+    const COMPLETION_PROG: &str = "\
+struct Widget
+    size i64
+
+enum State
+    On
+    Off
+
+const MAX i64 = 5
+
+fn build w i64 -> i64
+    return w
+";
+
+    fn completion(uri: &str, line: u64, character: u64) -> Value {
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+        })
+    }
+
+    fn completion_labels(value: &Value) -> Vec<String> {
+        value["result"]
+            .as_array()
+            .expect("completion array")
+            .iter()
+            .map(|item| item["label"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn completion_item<'a>(value: &'a Value, label: &str) -> Option<&'a Value> {
+        value["result"]
+            .as_array()
+            .expect("completion array")
+            .iter()
+            .find(|item| item["label"] == json!(label))
+    }
+
+    #[test]
+    fn completion_offers_keywords_at_top_level() {
+        let mut state = ServerState::new();
+        open(&mut state, "file:///c.lby", COMPLETION_PROG);
+        let out = handle_message(
+            &mut state,
+            "textDocument/completion",
+            Some(json!(20)),
+            completion("file:///c.lby", 0, 0),
+        );
+        let value = out[0].clone().into_json();
+        let labels = completion_labels(&value);
+        for keyword in ["fn", "let", "struct", "enum", "import", "pub"] {
+            assert!(labels.contains(&keyword.to_string()), "missing {keyword}");
+        }
+        // Keyword items carry the LSP Keyword kind (14).
+        assert_eq!(completion_item(&value, "fn").unwrap()["kind"], json!(14));
+    }
+
+    #[test]
+    fn completion_offers_in_file_declarations_with_kinds() {
+        let mut state = ServerState::new();
+        open(&mut state, "file:///c.lby", COMPLETION_PROG);
+        let out = handle_message(
+            &mut state,
+            "textDocument/completion",
+            Some(json!(21)),
+            completion("file:///c.lby", 10, 4),
+        );
+        let value = out[0].clone().into_json();
+        // fn = 3, struct = 22, enum = 13, constant = 21.
+        assert_eq!(completion_item(&value, "build").unwrap()["kind"], json!(3));
+        assert_eq!(
+            completion_item(&value, "Widget").unwrap()["kind"],
+            json!(22)
+        );
+        assert_eq!(completion_item(&value, "State").unwrap()["kind"], json!(13));
+        assert_eq!(completion_item(&value, "MAX").unwrap()["kind"], json!(21));
+    }
+
+    #[test]
+    fn completion_on_unparseable_buffer_still_returns_keywords() {
+        let mut state = ServerState::new();
+        // A brace is a forbidden delimiter; this never parses.
+        let bad = "fn main -> i64 {\n    let x = \n";
+        open(&mut state, "file:///bad.lby", bad);
+        let out = handle_message(
+            &mut state,
+            "textDocument/completion",
+            Some(json!(22)),
+            completion("file:///bad.lby", 1, 8),
+        );
+        let value = out[0].clone().into_json();
+        let labels = completion_labels(&value);
+        assert!(labels.contains(&"fn".to_string()));
+        assert!(labels.contains(&"return".to_string()));
     }
 
     #[test]

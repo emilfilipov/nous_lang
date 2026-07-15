@@ -28,7 +28,7 @@ use lullaby_parser::{Program, parse};
 use lullaby_semantics::{SemanticDiagnostic, validate};
 use serde_json::{Value, json};
 
-use crate::{analysis, diagnostics};
+use crate::{analysis, completion, diagnostics};
 
 /// Compute the diagnostics to publish for the document `uri` (current text
 /// `text`), consulting every open document in `documents` for cross-file
@@ -110,6 +110,49 @@ pub fn definition(
         return value;
     }
     cross_file_definition(uri, text, line, character, documents).unwrap_or(Value::Null)
+}
+
+/// Compute the completion items for the document `uri`, with `line` being the
+/// 0-based cursor line when known. Always offers keywords and the buffer's own
+/// in-scope declarations/locals (via [`completion::completion_items`]); when the
+/// file is module-aware, it additionally offers the `pub` symbols reachable
+/// through its imports, resolved by the same loader as diagnostics/hover.
+///
+/// Every step degrades gracefully: an unparseable buffer still yields keywords,
+/// and a failed project load simply omits the imported symbols.
+pub fn completion(
+    uri: &str,
+    text: &str,
+    line: Option<usize>,
+    documents: &HashMap<String, String>,
+) -> Value {
+    let mut items = completion::completion_items(text, line);
+    let mut seen: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|item| item["label"].as_str().map(str::to_string))
+        .collect();
+
+    if let Some(path) = uri_to_path(uri)
+        && let Some(loaded) = load_project(&path, text, documents)
+    {
+        let entry = overlay_key(&path);
+        for module in &loaded.modules {
+            // Skip the entry file itself: its declarations are already offered by
+            // the buffer-local pass above.
+            if overlay_key(&module.path) == entry {
+                continue;
+            }
+            for item in completion::public_declaration_items(&module.program) {
+                if let Some(label) = item["label"].as_str()
+                    && seen.insert(label.to_string())
+                {
+                    items.push(item);
+                }
+            }
+        }
+    }
+
+    Value::Array(items)
 }
 
 /// Hover for an identifier that resolves to a `pub` declaration in an imported
@@ -458,6 +501,47 @@ mod tests {
             contents.contains("fn square x i64 -> i64"),
             "hover should show the imported signature, got {contents:?}"
         );
+    }
+
+    #[test]
+    fn completion_includes_imported_pub_symbol() {
+        let project = TempProject::new();
+        let a_path = project.write("main.lby", MAIN_A);
+        project.write("math.lby", MODULE_B);
+        let uri = path_to_uri(&a_path);
+        let docs = documents(&[(&uri, MAIN_A)]);
+
+        let value = completion(&uri, MAIN_A, Some(3), &docs);
+        let items = value.as_array().expect("completion array");
+        let square = items
+            .iter()
+            .find(|item| item["label"] == json!("square"))
+            .expect("imported `square` should be offered");
+        // `square` is a function (kind 3), and its detail is the imported signature.
+        assert_eq!(square["kind"], json!(3));
+        assert!(
+            square["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("fn square x i64 -> i64"),
+            "got {square:?}"
+        );
+        // Keywords are still present alongside the imported symbol.
+        assert!(items.iter().any(|item| item["label"] == json!("fn")));
+    }
+
+    #[test]
+    fn completion_on_lone_unparseable_file_still_offers_keywords() {
+        let project = TempProject::new();
+        // A forbidden brace: never parses, and the file has no imports/project.
+        let bad = "fn main -> i64 {\n";
+        let path = project.write("lone.lby", bad);
+        let uri = path_to_uri(&path);
+        let docs = documents(&[(&uri, bad)]);
+
+        let value = completion(&uri, bad, Some(0), &docs);
+        let items = value.as_array().expect("completion array");
+        assert!(items.iter().any(|item| item["label"] == json!("fn")));
     }
 
     #[test]

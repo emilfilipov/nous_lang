@@ -15,7 +15,7 @@ Overall maturity at a glance:
 
 | Piece | Rating | Verdict for 1.0-stable |
 |---|---|---|
-| Language Server (LSP) | **Adequate-minus** | Usable core; needs completion + a shipped editor client |
+| Language Server (LSP) | **Adequate** | Usable core with completion; still needs a shipped editor client |
 | Package manager / project system | **Adequate for 1.0** | Local-path project system is complete and honest; registry is correctly post-1.0 |
 | Test runner | **Adequate-minus** | Real and correct; needs filtering + multi-backend, both small |
 | Debug info | **Incomplete** | Windows-only, function-granularity; Linux/macOS DWARF is a real gap |
@@ -51,10 +51,21 @@ missing ones are the ones users notice fastest in a real editor.
   recorded `expression_types`, not re-inferred).
 - **Go-to-definition:** resolves to functions, structs, enums, aliases, local
   `let` bindings, and parameters.
+- **Completion (`textDocument/completion`):** offers the Lullaby keyword set
+  (mirrored from the lexer and pinned to it by a test), the current file's
+  top-level declarations (functions/structs/enums/aliases/traits/constants) and
+  the enclosing function's locals/parameters with the correct
+  `CompletionItemKind` and a signature/type detail, and — when the file is
+  module-aware — the `pub` symbols reachable through its `import`s (via the same
+  `lullaby_loader` machinery). Degrades to keyword-only completion on an
+  unparseable buffer without panicking. See `documents/lsp_design.md` →
+  "Completion".
 
 ### What is missing or stubbed (verified by absence + the `-32601` fallback)
-- **Completion (`textDocument/completion`)** — *absent.* The single most-expected
-  editor feature. No keyword/builtin/in-scope-symbol completion at all.
+- **Member/`.`-completion, signature help, completion ranking/snippets** —
+  *absent.* Completion offers keywords, in-scope declarations/locals, and imported
+  `pub` symbols, but does not yet complete fields/methods after a `.`, provide
+  parameter hints, or rank context-sensitively.
 - **Find-references / rename** — *absent* (the `references` test asserts the
   method-not-found path). No workspace-wide symbol rewrite.
 - **Document/workspace symbols (`documentSymbol`, `workspace/symbol`)** —
@@ -86,8 +97,11 @@ missing ones are the ones users notice fastest in a real editor.
 1. **A shipped, installable editor client** (at minimum a VS Code extension with
    a TextMate grammar + LSP glue). Without this, "we have an LSP" is not a user
    experience. *Highest leverage, mostly packaging work.*
-2. **Completion** (keywords, builtins, in-scope functions/locals/types). The
-   feature whose absence most signals "immature."
+2. **Completion** (keywords, in-scope functions/locals/types, imported symbols) —
+   *done.* `textDocument/completion` offers the keyword set, the file's top-level
+   declarations and enclosing-function locals/parameters (with kinds + detail),
+   and imported `pub` symbols, degrading to keywords on an unparseable buffer.
+   Member/`.`-completion and signature help remain post-1.0.
 3. **Cross-file resolution** — *done.* The server runs the module loader so
    diagnostics, hover, and definition work across `import`ed files (module/
    project-aware, with an open-buffer overlay and single-document fallback).
@@ -262,8 +276,10 @@ backend coverage), each small, none deep.
 **Must-do for 1.0-stable (roughly ordered by leverage):**
 1. **DWARF line tables (ELF + Mach-O)** — the explicit B3 item; largest effort.
 2. **A shipped editor client** (VS Code extension + grammar) fronting the LSP.
-3. **LSP completion** (cross-file resolution — running the module loader in the
-   server — is now done).
+3. **LSP completion** — **DONE.** `textDocument/completion` offers keywords,
+   in-file declarations + enclosing-function locals/parameters, and imported
+   `pub` symbols (cross-file resolution via the module loader). Member/`.`
+   completion and signature help remain post-1.0.
 4. **Test filtering** + **test backend selection** (run the suite on native, not
    just the AST interpreter).
 5. **Manifest `version` field + schema validation**, and document the manifest as

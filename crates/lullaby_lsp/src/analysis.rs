@@ -183,7 +183,7 @@ pub(crate) fn declaration_hover(program: &Program, name: &str) -> Option<String>
 }
 
 /// Render a function's signature as a single `fn NAME p1 T1 ... -> Ret` line.
-fn function_signature_text(func: &Function) -> String {
+pub(crate) fn function_signature_text(func: &Function) -> String {
     let mut out = String::from("fn ");
     out.push_str(&func.name);
     for param in &func.params {
@@ -270,7 +270,7 @@ fn let_binding_line(func: &Function, name: &str) -> Option<usize> {
 /// conservative — it covers the common nesting (`while`/`for`/`loop`/`unsafe`/
 /// `try` bodies); `if`/`match` arm bodies are not descended into, which only
 /// means a `let` inside a conditional falls back to the function level.
-fn stmt_body(stmt: &Stmt) -> &[Stmt] {
+pub(crate) fn stmt_body(stmt: &Stmt) -> &[Stmt] {
     match stmt {
         Stmt::While { body, .. }
         | Stmt::For { body, .. }
@@ -284,7 +284,7 @@ fn stmt_body(stmt: &Stmt) -> &[Stmt] {
 /// The function whose body/signature encloses the 0-based `line`, if any. Chooses
 /// the function whose span line is the greatest one at or before `line` (source
 /// order), so a cursor inside a body resolves to that body's function.
-fn enclosing_function(program: &Program, line: usize) -> Option<&Function> {
+pub(crate) fn enclosing_function(program: &Program, line: usize) -> Option<&Function> {
     let target = line + 1; // spans are 1-based
     program
         .functions

@@ -41,14 +41,15 @@ The `initialize` response advertises:
 - `documentFormattingProvider = true`.
 - `hoverProvider = true`.
 - `definitionProvider = true`.
+- `completionProvider = { resolveProvider: false }` (no resolve step, no trigger characters).
 
-Completion, references, and other providers are intentionally not advertised.
+References and other providers are intentionally not advertised.
 
 ## Lifecycle
 
 | Method | Behavior |
 | --- | --- |
-| `initialize` | Returns capabilities and `serverInfo`. |
+| `initialize` | Returns capabilities (including completion) and `serverInfo`. |
 | `initialized` | Acknowledged (no-op notification). |
 | `shutdown` | Marks the server as shutdown-requested and returns a null result. |
 | `exit` | Sets the exit flag so the stdio loop stops. |
@@ -124,6 +125,39 @@ Go-to-definition returns a `Location` in the same document:
   `let` line, and a parameter resolves to the function's signature line. Local
   resolution descends `while`/`for`/`loop`/`unsafe`/`try` bodies.
 
+## Completion
+
+`crates/lullaby_lsp/src/completion.rs` handles `textDocument/completion`. It is a
+deliberately simple, robust first implementation — no context-sensitive ranking,
+no snippet expansion, and no member/`.`-completion (see "Deferred Features"). It
+returns a plain `CompletionItem[]` (each with a `label`, an integer `kind`, and a
+`detail` string), built from the union of three sources, with labels
+de-duplicated (first occurrence wins):
+
+- **Keywords.** The Lullaby keyword set, mirrored from the lexer's keyword table
+  (there is no public enumeration of it) as `completion::KEYWORDS` and pinned to
+  the lexer by the `keyword_list_matches_the_lexer` test, which asserts every
+  entry still lexes to a single `Keyword` token so an upstream rename/removal
+  fails the build. Kind `Keyword` (14).
+- **In-file top-level declarations.** Functions (kind `Function`, detail is the
+  `fn NAME p T ... -> Ret` signature), structs (`Struct`), enums (`Enum`), type
+  aliases (`Class`, detail `alias NAME = TARGET`), traits (`Interface`), and
+  constants (`Constant`, detail `const NAME type`) parsed from the current
+  buffer. **In-scope locals/parameters** of the function enclosing the cursor are
+  also offered (kind `Variable`, detail `NAME type`), reusing the same
+  enclosing-function and block-descent helpers as hover/go-to-definition.
+- **Imported `pub` symbols.** When the file is module-aware (uses `import` or
+  lives in a `lullaby.json` project), `crate::project::completion` runs the same
+  `lullaby_loader` machinery as diagnostics/hover over the file's project and
+  adds the `pub` declarations of every non-entry module, so symbols reachable
+  through the file's imports complete with the imported signature as their
+  detail.
+
+Robustness is the one hard requirement: keywords are produced unconditionally, so
+a mid-edit buffer that does not lex/parse still yields keyword completions and
+never panics; the declaration/local passes and the project load each degrade to
+nothing on failure rather than erroring.
+
 ## Testing
 
 `crates/lullaby_lsp` carries unit tests that drive `handle_message` directly (no stdio):
@@ -134,6 +168,7 @@ Go-to-definition returns a `Location` in the same document:
 - `didChange` updates the stored text and republishes.
 - `didClose` drops the document and clears diagnostics.
 - `formatting` returns exactly one full-document `TextEdit` for a parseable-but-unformatted document and no edits for an unparseable one.
+- `completion` at a top-level position offers the keyword set; it offers an in-file `fn`/`struct`/`enum`/`const` with the correct `CompletionItemKind`; a two-file project offers an imported `pub` symbol with its signature detail; and an unparseable buffer still returns keywords without panicking. The keyword list is pinned to the lexer by `keyword_list_matches_the_lexer`, and `public_declaration_items` is unit-tested to filter to `pub`.
 - `hover` over a function name returns its signature; over a typed local returns its type; over whitespace or an unknown identifier returns `null`.
 - `definition` on a call jumps to the function declaration's name range; on a local jumps to its `let` line; on an unresolved position returns `null`.
 
@@ -145,7 +180,7 @@ The transport module additionally tests the framed read/write loop end to end ov
 
 The following are intentionally out of scope for this increment and can be layered on later without changing the transport or the `handle_message` shape:
 
-- Completion, signature help.
+- Signature help; member/`.`-completion (field/method completion after a `.`); context-sensitive completion ranking and snippet expansion. (Keyword + declaration + local + imported-symbol completion is now supported; see the "Completion" section above.)
 - References, document symbols, workspace symbols. (Hover and go-to-definition are now supported; see the section above.)
 - Incremental (range) document sync.
 - Code actions / quick fixes (for example applying the formatter or diagnostic-directed edits).
