@@ -497,6 +497,68 @@ fn gen_arena_program(seed: u64) -> String {
     format!("{h}{main}")
 }
 
+/// Generates one program that exercises **arena-first memory with a heap-typed
+/// aggregate field**: an arena-eligible LEAF helper `h a i64 -> i64` that constructs
+/// a `struct Rec { name string, id i64 }` — a struct whose `string` field is a
+/// one-level heap-typed field — keeps it local (read only via `len(r.name)` and the
+/// scalar `r.id`), and returns a scalar. `h` routes its heap through the
+/// function-scoped arena (straight-line shape) or a per-iteration sub-region
+/// (confined-loop shape), so the struct's `string` record is reclaimed by the bump
+/// rewind. The recursive drop-glue (`rc_dec` per string field) coexists with the
+/// arena (`rc_free` no-ops in arena mode), so ANY native/interpreter divergence is a
+/// reclamation or layout miscompile of the heap-typed aggregate field.
+///
+/// Every string op is native-subset and all-backend-agreeing (ASCII `len`, valid
+/// bounds), and the struct stays borrow-only, so the program is divergence-free like
+/// the other generators.
+fn gen_arena_struct_string_program(seed: u64) -> String {
+    let mut rng = Rng(seed ^ 0x51C7_0F33_2B9E_1D47u64);
+    let hi = rng.range(5, 40);
+    let bias = rng.range(-50, 50);
+    let rec = "struct Rec\n    name string\n    id i64\n\n";
+    let main = format!(
+        "\n\nfn main -> i64\n    let total i64 = 0\n    for i from 0 to {hi}\n        \
+         total = total + h(i)\n    total + {bias}\n"
+    );
+
+    // Confined-loop shape (stage 2): `h` allocates a non-escaping per-iteration
+    // struct-string temp, so the loop is confined and gets a sub-region.
+    if rng.below(2) == 0 {
+        let k = rng.range(2, 12);
+        let name_expr = match rng.below(4) {
+            0 => "to_string(a + j) + \"__x__\"".to_string(),
+            1 => "trim(to_string(a * 2 + j))".to_string(),
+            2 => "upper(to_string(a + j * 3))".to_string(),
+            _ => "repeat(\"ab\", 2) + to_string(j)".to_string(),
+        };
+        let acc = match rng.below(3) {
+            0 => "total = total + len(r.name) + r.id".to_string(),
+            1 => "total = total + len(r.name) * 2 - r.id".to_string(),
+            _ => "total = total + len(r.name)".to_string(),
+        };
+        let h = format!(
+            "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
+             let r Rec = Rec({name_expr}, a + j)\n        {acc}\n    total\n"
+        );
+        return format!("{rec}{h}{main}");
+    }
+
+    // Straight-line shape (stage 1): build a struct-string local, derive a scalar.
+    let name_expr = match rng.below(4) {
+        0 => "to_string(a) + \"__suffix__\"".to_string(),
+        1 => "trim(to_string(a * 3))".to_string(),
+        2 => "substring(to_string(a * 7 + 1), 0, 1)".to_string(),
+        _ => "repeat(\"ab\", 3)".to_string(),
+    };
+    let result = match rng.below(3) {
+        0 => "len(r.name) + r.id".to_string(),
+        1 => "len(r.name) * 2 - r.id".to_string(),
+        _ => "len(r.name) + r.id * 3".to_string(),
+    };
+    let h = format!("fn h a i64 -> i64\n    let r Rec = Rec({name_expr}, a)\n    {result}\n");
+    format!("{rec}{h}{main}")
+}
+
 /// The result of running a program on one backend, reduced to a comparable form.
 #[derive(PartialEq, Eq, Debug)]
 enum Outcome {
@@ -922,6 +984,102 @@ fn fuzz_arena_native_matches_interpreter_when_linkable() {
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (arena) on #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_arena_struct_string_interpreters_agree() {
+    // Cross-check the three engines on arena-eligible programs that build a struct
+    // with a heap-typed (`string`) field. Always runs (no toolchain needed); a
+    // divergence prints the reproducing program.
+    const PROGRAMS: u64 = 2000;
+    let base_seed = 0x7C3E_15A9_D40B_2E86u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_arena_struct_string_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "arena struct-string backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "arena struct-string generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_arena_struct_string_native_matches_interpreter_when_linkable() {
+    // The high-value oracle for arena reclamation of a **heap-typed aggregate field**:
+    // compile each generated program (an arena-eligible leaf that builds a
+    // struct-with-`string`-field, called from a loop) to a real `.exe` and check its
+    // exit code against the interpreter. The arena rewind reclaims the struct's string
+    // record while the recursive drop-glue's `rc_free` no-ops, so ANY divergence is a
+    // reclamation/layout miscompile of the heap-field aggregate. Also asserts the
+    // arena-eligible helper compiles natively (a regression that demoted it fails here
+    // rather than silently passing). Gated on the link toolchain; skips when absent.
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld/kernel32.lib unavailable; skipping native arena struct-string fuzz");
+        return;
+    }
+    ensure_msvc_env();
+
+    const PROGRAMS: u64 = 100;
+    let base_seed = 0x2F81_66DA_9C40_7B15u64;
+    let dir = std::env::temp_dir().join("lullaby_fuzz_native_arena_struct_string");
+    let _ = std::fs::create_dir_all(&dir);
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_arena_struct_string_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on native-arena-struct-string-fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => panic!(
+                "arena struct-string generator produced {other:?} on seed {seed:#x}:\n{source}"
+            ),
+        };
+
+        let src_path = dir.join(format!("fuzz_arena_ss_{i}.lby"));
+        let exe_path = dir.join(format!("fuzz_arena_ss_{i}.exe"));
+        std::fs::write(&src_path, &source).expect("write fuzz source");
+        let _ = std::fs::remove_file(&exe_path);
+
+        let emit = lullaby()
+            .args([
+                "native",
+                "-o",
+                exe_path.to_str().expect("exe path"),
+                src_path.to_str().expect("src path"),
+            ])
+            .output()
+            .expect("run native");
+        assert!(
+            emit.status.success(),
+            "native emit failed on arena-struct-string-fuzz #{i} (seed {seed:#x}) — the \
+             arena-eligible struct-string helper must compile:\n{source}\n{}",
+            stderr(&emit)
+        );
+        assert!(
+            exe_path.is_file(),
+            "no linked exe on arena-struct-string-fuzz #{i} (seed {seed:#x}):\n{source}\n{}",
+            stdout(&emit)
+        );
+
+        let run = Command::new(&exe_path).output().expect("run fuzz exe");
+        let exit = run.status.code().expect("native exit code");
+        assert_eq!(
+            exit, expected as i32,
+            "NATIVE MISCOMPILE (arena struct-string) on #{i} (seed {seed:#x}):\n{source}\n\
              interpreter={expected}, native exit={exit}"
         );
     }

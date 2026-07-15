@@ -477,11 +477,11 @@ fn native_file(
                     DiagnosticReport::new(error.code, DiagnosticPhase::Ir, error.message)
                         .with_source_path(compiled.path.display().to_string());
                 report = report.with_note(
-                "the native backend compiles scalar (i64/fixed-width/bool/char/byte/f64/f32), \
+                    "the native backend compiles scalar (i64/fixed-width/bool/char/byte/f64/f32), \
                  string, list, and map values; scalar-field and one-level heap-field \
                  (string-field) structs/enums; and control flow, calls, and FFI over these — \
                  a function outside that subset runs on the interpreters instead",
-            );
+                );
                 let mut rendered = format_reports(&[report], mode, Some(&compiled.source));
                 if mode == OutputMode::Verbose {
                     for skip in &error.skipped {

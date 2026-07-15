@@ -1,0 +1,13 @@
+struct Rec
+    name string
+    id i64
+
+fn build_len x i64 -> i64
+    let r Rec = Rec(to_string(x) + "!!!!!!!!!!", x)
+    len(r.name) + r.id
+
+fn main -> i64
+    let total i64 = 0
+    for i from 0 to 300000
+        total = total + build_len(i)
+    total

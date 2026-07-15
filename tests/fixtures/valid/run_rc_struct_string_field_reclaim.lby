@@ -1,0 +1,13 @@
+struct Rec
+    name string
+    id i64
+
+fn tick x i64 -> i64
+    x
+
+fn main -> i64
+    let total i64 = 0
+    for i from 0 to 300000
+        let r Rec = Rec(to_string(i) + "!!!!!!!!!!", i)
+        total = total + len(r.name) + r.id
+    tick(total)

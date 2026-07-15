@@ -809,7 +809,7 @@ fn arena_loop_reset_mark(
     body: &[BytecodeInstruction],
     depth: usize,
 ) -> Option<i32> {
-    if ctx.is_arena && touches_heap && loop_body_confines_heap(body) {
+    if ctx.is_arena && touches_heap && loop_body_confines_heap(body, &ctx.heap_aggregates) {
         Some(ctx.arena_loop_mark_slot(depth))
     } else {
         None
@@ -3633,7 +3633,8 @@ pub(crate) fn lower_native_while(
     // rewind to it. Saved once; the mark is invariant because nothing escapes.
     let arena_reset_mark = arena_loop_reset_mark(
         ctx,
-        expr_touches_heap(condition) || body_touches_heap(body),
+        expr_touches_heap(condition, &ctx.heap_aggregates)
+            || body_touches_heap(body, &ctx.heap_aggregates),
         body,
         loops.len(),
     );
@@ -3695,7 +3696,12 @@ pub(crate) fn lower_native_loop(
 ) -> Result<(), String> {
     // Arena stage-2 sub-region: save the entry bump pointer before `top:` when the
     // loop confines its heap to the iteration.
-    let arena_reset_mark = arena_loop_reset_mark(ctx, body_touches_heap(body), body, loops.len());
+    let arena_reset_mark = arena_loop_reset_mark(
+        ctx,
+        body_touches_heap(body, &ctx.heap_aggregates),
+        body,
+        loops.len(),
+    );
     if let Some(mark) = arena_reset_mark {
         emit_arena_loop_save(ctx, mark, code);
     }
@@ -4043,7 +4049,9 @@ pub(crate) fn struct_field_borrow_only_stmt(
             // orphan a string field the drop set no longer tracks).
             n != name
                 && path.iter().all(|p| match p {
-                    BytecodePlace::Index(e) => struct_field_borrow_only_expr(name, string_fields, e),
+                    BytecodePlace::Index(e) => {
+                        struct_field_borrow_only_expr(name, string_fields, e)
+                    }
                     BytecodePlace::Field(_) => true,
                 })
                 && struct_field_borrow_only_expr(name, string_fields, value)
@@ -4654,10 +4662,10 @@ pub(crate) fn lower_native_for(
     // seated (so the mark excludes only their one-time temps), before `top:`.
     let arena_reset_mark = arena_loop_reset_mark(
         ctx,
-        expr_touches_heap(start)
-            || expr_touches_heap(end)
-            || step.is_some_and(expr_touches_heap)
-            || body_touches_heap(body),
+        expr_touches_heap(start, &ctx.heap_aggregates)
+            || expr_touches_heap(end, &ctx.heap_aggregates)
+            || step.is_some_and(|s| expr_touches_heap(s, &ctx.heap_aggregates))
+            || body_touches_heap(body, &ctx.heap_aggregates),
         body,
         loops.len(),
     );

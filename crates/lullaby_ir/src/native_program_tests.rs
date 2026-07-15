@@ -1627,7 +1627,11 @@ fn compiles_struct_with_string_field() {
         ))
         .expect("string-field struct is native");
     assert_eq!(program.compiled, vec!["main".to_string()]);
-    assert!(program.skipped.is_empty(), "no skips: {:?}", program.skipped);
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
 }
 
 #[test]
@@ -2833,7 +2837,11 @@ fn compiles_string_field_aggregate_across_boundary() {
         program.compiled,
         program.skipped
     );
-    assert!(program.skipped.is_empty(), "no skips: {:?}", program.skipped);
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
 }
 
 #[test]
@@ -3638,6 +3646,106 @@ fn struct_string_field_loop_temp_uses_recursive_drop() {
         coff_symbol(&program.bytes, RC_DEC_SYMBOL).is_some_and(|(s, _)| s == 1),
         "an owned borrow-only struct-string loop temp must be recursively dropped \
          (rc_dec per string field)"
+    );
+}
+
+#[test]
+fn struct_string_field_reclaim_on_rc_free_list_path() {
+    // The recursive struct-string drop-glue composing with the RC / free-list path:
+    // `sweep` calls a user function (`tick`), so it is NOT arena-eligible (a leaf
+    // requirement fails) and keeps the RC codegen — its per-iteration `rc_dec` of the
+    // struct's `string` field actually frees the record onto the free list, which the
+    // next iteration's alloc reuses (bounded heap). The struct is borrow-only (read
+    // only via `len(r.name)` + the scalar `r.id`), so exactly ONE `rc_dec` fires per
+    // record: no double-free, no leak. Assert the function compiles, is NOT arena
+    // (so `rc_free` really frees), and the per-field `rc_dec` drop is present.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn tick x i64 -> i64\n    x\n\n",
+        "fn sweep n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        let r Rec = Rec(to_string(i) + \"!!!!!!!!!!\", i)\n",
+        "        total = total + len(r.name) + r.id\n",
+        "    tick(total)\n\n",
+        "fn main -> i64\n    sweep(3)\n",
+    )))
+    .expect("emit struct-string RC reclaim program");
+    assert!(
+        program.compiled.contains(&"sweep".to_string()),
+        "the struct-string RC reclaim function must compile: {:?}",
+        program.skipped
+    );
+    assert!(
+        !has_arena_prologue(&program),
+        "a non-leaf function must NOT take the arena path (RC / free-list reclaims)"
+    );
+    assert!(
+        coff_symbol(&program.bytes, RC_DEC_SYMBOL).is_some_and(|(s, _)| s == 1),
+        "the borrow-only struct-string loop temp must be recursively dropped \
+         (one rc_dec per string field) on the RC path"
+    );
+}
+
+#[test]
+fn struct_string_field_reclaim_on_arena_path() {
+    // The recursive struct-string drop-glue composing with the ARENA path:
+    // `build_len` is a provably-local heap-using LEAF (scalar return, no user calls,
+    // no loop) that constructs a `struct` with a fresh `string` field kept local
+    // (read only via `len`), so it is arena-eligible and takes the arena path — its
+    // whole region is reclaimed by the bump-pointer rewind on return. `rc_free`
+    // no-ops in arena mode, so the drop-glue and the arena rewind coexist without a
+    // double-free.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn build_len x i64 -> i64\n",
+        "    let r Rec = Rec(to_string(x) + \"!!!!!!!!!!\", x)\n",
+        "    len(r.name) + r.id\n\n",
+        "fn main -> i64\n    build_len(5)\n",
+    )))
+    .expect("emit struct-string arena reclaim program");
+    assert!(
+        program.compiled.contains(&"build_len".to_string()),
+        "the struct-string arena reclaim function must compile: {:?}",
+        program.skipped
+    );
+    assert!(
+        has_arena_prologue(&program),
+        "a provably-local struct-string heap function must take the arena path"
+    );
+}
+
+#[test]
+fn arena_not_used_when_a_struct_string_escapes_a_confined_loop() {
+    // Default-deny soundness fix: a `struct` value transitively carries heap (its
+    // `string` field), so storing it into an iteration-outliving location is an
+    // ESCAPE. `f` reassigns the outer `acc` (a `Rec`) inside a loop; were the loop
+    // treated as "confined", a per-iteration arena sub-region rewind would reclaim a
+    // record `acc` still references — a use-after-free once a later allocation reuses
+    // the rewound bytes. The escape analysis now recognizes the heap-carrying struct
+    // store, so `f` is NOT arena-routed (no sub-region), keeping it sound.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn f n i64 -> i64\n",
+        "    let acc Rec = Rec(\"start\", 0)\n",
+        "    let total i64 = 0\n",
+        "    for i from 1 to n\n",
+        "        if i == 1\n",
+        "            acc = Rec(to_string(i) + \"Z\", i)\n",
+        "        let scratch string = to_string(i) + \"0123456789\"\n",
+        "        total = total + len(acc.name) + len(scratch)\n",
+        "    total\n\n",
+        "fn main -> i64\n    f(5)\n",
+    )))
+    .expect("emit struct-string escape program");
+    assert!(
+        program.compiled.contains(&"f".to_string()),
+        "the function still compiles (on the RC path): {:?}",
+        program.skipped
+    );
+    assert!(
+        !has_arena_prologue(&program),
+        "a loop storing a heap-carrying struct to an outer var must NOT be arena-confined"
     );
 }
 
