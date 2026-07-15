@@ -826,6 +826,41 @@ fn rejects_duplicate_struct_type_parameter() {
 }
 
 #[test]
+fn parses_generic_enum_type_parameters() {
+    // A user-defined generic enum records its `<T>` list; a variant payload type
+    // is an ordinary `TypeRef` naming the type parameter, a unit variant has no
+    // payload, and a concrete instantiation spelling `Opt<i64>` parses in
+    // annotation position.
+    let source = "enum Opt<T>\n    present T\n    absent\n\nfn main o Opt<i64> -> i64\n    0\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert_eq!(program.enums[0].name, "Opt");
+    assert_eq!(program.enums[0].type_params, vec![TypeParam::new("T")]);
+    assert_eq!(program.enums[0].variants[0].name, "present");
+    assert_eq!(program.enums[0].variants[0].payload[0].name, "T");
+    assert!(program.enums[0].variants[1].payload.is_empty());
+    // The concrete instantiation `Opt<i64>` is a single `TypeRef` spelling.
+    assert_eq!(program.functions[0].params[0].ty.name, "Opt<i64>");
+}
+
+#[test]
+fn non_generic_enum_has_empty_type_params() {
+    let source = "enum Color\n    red\n    green\n    blue\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    assert!(program.enums[0].type_params.is_empty());
+}
+
+#[test]
+fn rejects_duplicate_enum_type_parameter() {
+    // The enum type-parameter list reuses the same `parse_type_params` machinery,
+    // so a duplicate name is the same `L0394` as on a function or struct.
+    let tokens = lex("enum Bad<T, T>\n    one T\n    none\n").expect("lex");
+    let error = parse(&tokens).expect_err("duplicate enum type parameter");
+    assert!(error.iter().any(|d| d.code == "L0394"), "{error:?}");
+}
+
+#[test]
 fn rejects_duplicate_type_parameter() {
     let tokens = lex("fn dup<T, T> a T -> T\n    a\n").expect("lex");
     let diagnostics = parse(&tokens).expect_err("parse should fail");

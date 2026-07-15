@@ -28,8 +28,13 @@ pub enum GenericInferenceError {
 }
 
 /// Split a `ctor<...>` spelling into `(ctor, args)` when it is a compound
-/// generic type. Recognizes every built-in generic constructor plus function
-/// types spelled `fn(...) -> R`. Returns `None` for a plain type name.
+/// generic type. Recognizes every built-in generic constructor, function types
+/// spelled `fn(...) -> R`, and any user-defined generic type spelled
+/// `Name<args>` (e.g. `Box<i64>`, `Tree<T>`). Returns `None` for a plain type
+/// name. Decomposing user generics here lets substitution, unification, and the
+/// unresolved-variable walk recurse through nested user instantiations such as
+/// `list<Tree<T>>` — the parameter `T` inside `Tree<T>` is reachable and gets
+/// substituted.
 pub(crate) fn decompose_generic(ty: &TypeRef) -> Option<(String, Vec<TypeRef>)> {
     if let Some((params, ret)) = ty.function_signature() {
         let mut args = params;
@@ -41,6 +46,18 @@ pub(crate) fn decompose_generic(ty: &TypeRef) -> Option<(String, Vec<TypeRef>)> 
     ] {
         if let Some(args) = ty.generic_args(ctor) {
             return Some((ctor.to_string(), args));
+        }
+    }
+    // Fallback: a user-defined generic instantiation `Name<args>`. Its head is
+    // the text before the first `<`; a function type (`fn(...) -> R`) is already
+    // handled above and is excluded here.
+    if let Some(open) = ty.name.find('<')
+        && ty.name.ends_with('>')
+        && !ty.name.starts_with("fn(")
+    {
+        let head = &ty.name[..open];
+        if let Some(args) = ty.generic_args(head) {
+            return Some((head.to_string(), args));
         }
     }
     None

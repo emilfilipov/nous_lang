@@ -120,6 +120,15 @@ pub struct StructField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnumDecl {
     pub name: String,
+    /// Declared type parameters `<T>` or bounded `<T: Trait>` that follow the
+    /// enum name, in source order. Empty for a non-generic enum. Serde-defaulted
+    /// to an empty list so existing single-file artifacts and AST snapshots stay
+    /// valid. A type-parameter name is in scope as a type variable within this
+    /// enum's variant payload types (and, in later stages, its methods), where it
+    /// is spelled as an ordinary `TypeRef`; its bounds name traits the type
+    /// variable must satisfy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<TypeParam>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
     /// True when the declaration is exported with `pub`. Serde-defaulted to

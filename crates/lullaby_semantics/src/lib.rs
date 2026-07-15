@@ -165,6 +165,29 @@ fn split_named_type(ty: &TypeRef) -> (String, Vec<TypeRef>) {
     }
 }
 
+/// Whether the value type `ty` embeds the enum named `enum_name` *by value* —
+/// i.e. a recursion that would make `enum_name` infinitely sized. Used to enforce
+/// the recursive-generic-enum indirection rule (`L0456`).
+///
+/// A payload that is the enum itself (`Tree<T>` inside `enum Tree<T>`) embeds it
+/// by value. The only *other* constructors that store their arguments inline are
+/// the built-in tagged unions `option`/`result`, so a recursive mention nested
+/// inside one (`option<Tree<T>>`) is still by-value and is reported. Every
+/// remaining constructor here — the pointer/heap-backed built-ins
+/// `rc`/`ref`/`ptr`/`list`/`map`/`array`, and any user struct (a heap value on
+/// the layout-driven backends) — breaks the value cycle, so recursion routed
+/// through it is allowed (`node rc<Tree<T>>`, `node list<Tree<T>>`).
+fn type_embeds_by_value(ty: &TypeRef, enum_name: &str) -> bool {
+    let (head, args) = split_named_type(ty);
+    if head == enum_name {
+        return true;
+    }
+    if matches!(head.as_str(), "option" | "result") {
+        return args.iter().any(|arg| type_embeds_by_value(arg, enum_name));
+    }
+    false
+}
+
 /// Canonical `result<T, E>` type spelling.
 fn result_type(ok: &TypeRef, err: &TypeRef) -> TypeRef {
     generic_type("result", &[ok.clone(), err.clone()])
@@ -268,10 +291,18 @@ struct Checker<'a> {
     /// alongside `structs` so a use site can build the parameter -> concrete-type
     /// substitution for field-type resolution and instantiation checking.
     struct_type_params: HashMap<String, Vec<String>>,
-    /// Declared enum types: enum name -> ordered variants.
+    /// Declared enum types: enum name -> ordered variants. For a generic enum the
+    /// variant payload types may mention the enum's type parameters (see
+    /// `enum_type_params`); a use site substitutes them to concrete types.
     enums: HashMap<String, Vec<EnumVariant>>,
+    /// Declared type parameters of each enum, in `<...>` order (empty for a
+    /// non-generic enum). A generic enum `Opt<T>` records `["T"]`. Kept alongside
+    /// `enums` so a use site can build the parameter -> concrete-type substitution
+    /// for variant construction, `match`, and instantiation checking.
+    enum_type_params: HashMap<String, Vec<String>>,
     /// Variant name -> (owning enum name, payload types). Variant names are
     /// globally unique across all enums, so this resolves construction directly.
+    /// For a generic enum the payload types mention the enum's type parameters.
     variants: HashMap<String, (String, Vec<TypeRef>)>,
     /// Trait name -> its required method signatures. A method signature stores
     /// the parameters after `self` and the return type; `Self` in a type means
@@ -325,6 +356,7 @@ impl<'a> Checker<'a> {
             structs: HashMap::new(),
             struct_type_params: HashMap::new(),
             enums: HashMap::new(),
+            enum_type_params: HashMap::new(),
             variants: HashMap::new(),
             traits: HashMap::new(),
             trait_methods: HashMap::new(),
@@ -341,6 +373,7 @@ impl<'a> Checker<'a> {
     fn validate(&mut self) {
         self.collect_structs();
         self.collect_enums();
+        self.validate_declared_type_wf();
         self.collect_traits();
         self.collect_signatures();
         self.collect_impls();
@@ -784,10 +817,17 @@ impl<'a> Checker<'a> {
                     .collect(),
             );
         }
-        // With every struct's parameter list registered, validate that each
-        // field type is well-formed: a generic user struct mentioned in a field
-        // type must be given the right number of type arguments, and (for the
-        // struct's own body) only its declared type parameters are in scope.
+    }
+
+    /// Validate that every declared struct field type and enum variant payload
+    /// type is well-formed with respect to the declared generic user types: any
+    /// generic struct or enum it mentions must be given the right number of type
+    /// arguments (`L0454`), and only the owning declaration's own type parameters
+    /// are in scope (so a bare type variable `T` is accepted, an out-of-scope
+    /// name is treated as an opaque type). Runs after both `collect_structs` and
+    /// `collect_enums` so a struct field may reference a generic enum and vice
+    /// versa and still get its arity checked.
+    fn validate_declared_type_wf(&mut self) {
         for declaration in &self.program.structs {
             let in_scope: Vec<String> = declaration
                 .type_params
@@ -796,6 +836,18 @@ impl<'a> Checker<'a> {
                 .collect();
             for field in &declaration.fields {
                 self.validate_type_wf(&field.ty, declaration.span, None, &in_scope);
+            }
+        }
+        for declaration in &self.program.enums {
+            let in_scope: Vec<String> = declaration
+                .type_params
+                .iter()
+                .map(|tp| tp.name.clone())
+                .collect();
+            for variant in &declaration.variants {
+                for payload in &variant.payload {
+                    self.validate_type_wf(payload, declaration.span, None, &in_scope);
+                }
             }
         }
     }
@@ -829,6 +881,20 @@ impl<'a> Checker<'a> {
                     "L0454",
                     format!(
                         "generic struct `{head}` expects {expected} type argument(s) but got {} in `{}`",
+                        args.len(),
+                        ty.name
+                    ),
+                    owner.map(str::to_string),
+                    span,
+                ));
+            }
+        } else if let Some(params) = self.enum_type_params.get(&head) {
+            let expected = params.len();
+            if args.len() != expected {
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0454",
+                    format!(
+                        "generic enum `{head}` expects {expected} type argument(s) but got {} in `{}`",
                         args.len(),
                         ty.name
                     ),
@@ -977,6 +1043,45 @@ impl<'a> Checker<'a> {
             }
             self.enums
                 .insert(declaration.name.clone(), declaration.variants.clone());
+            self.enum_type_params.insert(
+                declaration.name.clone(),
+                declaration
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.name.clone())
+                    .collect(),
+            );
+        }
+        // With every enum registered, reject a generic enum that recurses on
+        // itself *directly* (by value): such a type is infinitely sized. The
+        // recursion must pass through a built-in indirection (`rc`/`ref`/`ptr`/
+        // `list`/`map`/`array`), e.g. `node rc<Tree<T>>` — else `L0456`. Scoped to
+        // generic enums, the surface this stage introduces; non-generic recursive
+        // enums keep their existing handling.
+        for declaration in &self.program.enums {
+            if declaration.type_params.is_empty() {
+                continue;
+            }
+            for variant in &declaration.variants {
+                for payload in &variant.payload {
+                    if type_embeds_by_value(payload, &declaration.name) {
+                        self.diagnostics.push(SemanticDiagnostic::at(
+                            "L0456",
+                            format!(
+                                "enum `{}` recurses on itself directly through variant `{}` payload `{}`, which is infinitely sized; route the recursion through an indirection such as `rc<{}<...>>`, `list<{}<...>>`, or `ptr<{}<...>>`",
+                                declaration.name,
+                                variant.name,
+                                payload.name,
+                                declaration.name,
+                                declaration.name,
+                                declaration.name,
+                            ),
+                            None,
+                            declaration.span,
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1883,7 +1988,14 @@ impl<'a> Checker<'a> {
                     // constructs that variant.
                     if let Some((enum_name, payload)) = self.variants.get(name).cloned() {
                         if payload.is_empty() {
-                            Some(TypeRef::new(enum_name))
+                            // A unit variant of a generic enum (`absent` of
+                            // `Opt<T>`) cannot pin its type parameters from the
+                            // (absent) payload, so the concrete instantiation must
+                            // come from the contextual expected `Opt<...>` type;
+                            // without one it is uninferable (`L0455`).
+                            self.resolve_unit_variant_type(
+                                &enum_name, name, expected, expr.span, function,
+                            )
                         } else {
                             self.diagnostics.push(SemanticDiagnostic::at(
                                 "L0381",
@@ -2182,7 +2294,7 @@ impl<'a> Checker<'a> {
                         function,
                     )
                 } else if self.variants.contains_key(name) {
-                    self.check_enum_construction(name, args, expr.span, scope, function)
+                    self.check_enum_construction(name, args, expected, expr.span, scope, function)
                 } else if self.structs.contains_key(name) {
                     self.check_struct_construction(name, args, expected, expr.span, scope, function)
                 } else {

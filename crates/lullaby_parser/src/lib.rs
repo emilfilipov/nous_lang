@@ -437,6 +437,10 @@ impl<'a> Parser<'a> {
     fn parse_enum(&mut self, is_public: bool) -> Option<EnumDecl> {
         let span = self.previous().span;
         let name = self.expect_identifier("expected enum name")?;
+        // Optional `<T>` / `<T: Trait + Other>` generic type parameters, parsed by
+        // the same helper (and with the same `L0394` duplicate/shadow checks) that
+        // generic functions and generic structs use. Absent for a non-generic enum.
+        let type_params = self.parse_type_params(span)?;
         self.expect_newline("expected newline after enum name");
         self.expect(TokenKindRef::Indent, "expected indented enum variants")?;
         let mut variants = Vec::new();
@@ -455,6 +459,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKindRef::Dedent, "expected enum body dedent")?;
         Some(EnumDecl {
             name,
+            type_params,
             variants,
             span,
             is_public,

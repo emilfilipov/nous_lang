@@ -24,8 +24,9 @@ The compiler validates, with real (space-separated, colon-free) syntax:
 - **Reference/function:** `rc<T>`/`ref<T>`/`ptr<T>` and function values `fn(T) -> R`.
 - **Generics and traits:** generic functions `fn name<T> ...` with call-site
   inference and trait bounds `<T: Trait>`; `trait`/`impl` with receiver-type
-  dispatch; and single-parameter generic user structs `struct Box<T>` with
-  inference-directed construction (see "Generic User Structs").
+  dispatch; and single-parameter generic user structs `struct Box<T>` and enums
+  `enum Opt<T>` with inference-directed construction (see "Generic User Structs"
+  and "Generic User Enums").
 
 Local binding inference:
 - Explicit local annotations use `let name Type = expression` (no colon).
@@ -275,11 +276,70 @@ cleanly skip it to the interpreter (`L0339`), never miscompiling; per-instantiat
 monomorphization on those backends is a later stage.
 
 Stage 1 covers a **single-parameter generic `struct` with a scalar type
-parameter**. Generic *enums*, methods on generic types, heap-typed `T`
+parameter**. Methods on generic types, heap-typed `T`
 (`string`/`list`/`map`/heap struct), multiple type parameters, and bounds on a
 generic type (`struct Sorted<T: Compare>`) are staged next. Trait objects (`dyn`)
 and associated types remain on the roadmap; the built-in generics `option`,
 `result`, `list`, `map`, `array`, `rc`, `ref`, and `ptr` are available today.
+
+### Generic User Enums
+
+A **generic `enum`** declares type parameters in angle brackets after its name,
+exactly like a generic struct, and each variant payload may mention them:
+
+```lullaby
+enum Opt<T>
+    present T
+    absent
+
+fn unwrap_or o Opt<i64> fallback i64 -> i64
+    match o
+        present(x) -> x            # x binds as i64: T substituted from Opt<i64>
+        absent -> fallback
+
+fn main -> i64
+    let a Opt<i64> = present(5)    # T = i64 (from the annotation)
+    let b = present(true)          # T = bool (inferred from the payload)
+    let missing Opt<i64> = absent  # unit variant: T from the annotation
+    unwrap_or(a, 0)
+```
+
+A concrete instantiation is spelled `Name<Args>` (`Opt<i64>`) wherever a type is
+written, and a `match` over an instance substitutes the type arguments for the
+parameters, so a `present(x)` arm on `Opt<i64>` binds `x` as `i64`. Type arguments
+are fixed **by inference, not a turbofish**: an annotation on the
+binding/parameter/return pins them, or a payload-carrying variant's arguments do
+(`present(5)` → `Opt<i64>`). A **unit** variant of a generic enum (`absent`)
+carries no payload to infer from, so it needs the annotation; without one it is
+`L0455`. When an annotation is present it is authoritative, so a payload argument
+that disagrees with the pinned parameter is a clean payload mismatch (`L0381`).
+Spelling a generic enum with the wrong number of type arguments (or none) is
+`L0454`; payloads that disagree on a shared parameter are `L0395`.
+
+**Recursion through an indirection.** A value-semantic recursive type is
+infinitely sized, so a generic enum may recurse on itself only when the recursion
+passes through a heap/pointer **indirection** — `rc<...>`, `ref<...>`, `ptr<...>`,
+`list<...>`, `map<...>`, or `array<...>`:
+
+```lullaby
+enum Tree<T>
+    leaf T
+    branch list<Tree<T>>           # OK: recursion goes through list<...>
+```
+
+A **direct** self-recursion by value (`node Tree<T>` inside `enum Tree<T>`, or one
+nested only through the by-value tagged unions `option`/`result`) is rejected with
+`L0456`.
+
+Like generic structs, the three interpreters run a generic enum by **type
+erasure** — at runtime a generic enum is just a tagged union over dynamic values,
+so every instantiation shares one runtime shape and produces identical results on
+`ast`/`ir`/`bytecode`. The native and WASM backends treat a function that uses a
+generic enum as ineligible for now and cleanly skip it to the interpreter
+(`L0339`/`L0338`), never miscompiling; per-instantiation monomorphization is a
+later stage. Stage A1 covers a **single-parameter generic `enum`** plus the
+recursion-through-indirection rule; methods, heap-`T` native monomorphization,
+multiple parameters, and bounds are staged next.
 
 ## Type Aliases
 

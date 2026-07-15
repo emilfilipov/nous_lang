@@ -1,0 +1,11 @@
+# Payload-type mismatch on a generic enum: `present` is constructed with a
+# `string` but the binding annotation pins `T = i64`, so the payload argument does
+# not match the substituted payload type `i64`. Rejected with L0381.
+
+enum Opt<T>
+    present T
+    absent
+
+fn main -> i64
+    let o Opt<i64> = present("nope")
+    0

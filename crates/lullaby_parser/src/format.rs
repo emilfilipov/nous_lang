@@ -290,6 +290,7 @@ fn render_enum(emitter: &mut Emitter, decl: &EnumDecl, block_next: usize) {
         header.push_str("pub ");
     }
     header.push_str(&format!("enum {}", decl.name));
+    header.push_str(&render_type_params(&decl.type_params));
     emitter.emit_line(0, decl.span.line, &header);
     for variant in &decl.variants {
         let mut text = variant.name.clone();
@@ -1315,6 +1316,17 @@ mod tests {
         let plain = "struct Box<T>\n    value T\n";
         assert_eq!(fmt(plain), plain);
         let bounded = "struct Sorted<T: Compare>\n    items list<T>\n";
+        assert_eq!(fmt(bounded), bounded);
+    }
+
+    #[test]
+    fn formats_generic_enum_type_params() {
+        // A generic enum's `<T>` list (and a bounded one) round-trips through the
+        // formatter unchanged, reusing the same `render_type_params` helper as
+        // generic functions and generic structs.
+        let plain = "enum Opt<T>\n    present T\n    absent\n";
+        assert_eq!(fmt(plain), plain);
+        let bounded = "enum Bag<T: Compare>\n    one T\n    none\n";
         assert_eq!(fmt(bounded), bounded);
     }
 

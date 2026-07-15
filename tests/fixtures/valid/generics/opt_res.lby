@@ -1,0 +1,50 @@
+# Stage A1 user-defined generic enums: single type parameter `T`.
+# Exercises two distinct instantiations of `Opt<T>` (`Opt<i64>` and `Opt<bool>`),
+# a second generic enum `Res<T>` with a payload variant and a unit variant, both
+# construction forms (payload-carrying `present(v)` and unit `absent`), exhaustive
+# `match` with the payload `T` substituted to the concrete type, and passing /
+# returning a generic enum value through functions. The result is identical on
+# every interpreter backend (ast / ir / bytecode).
+
+enum Opt<T>
+    present T
+    absent
+
+enum Res<T>
+    okay T
+    fail
+
+# Construct a payload variant of a generic enum and return it (the concrete
+# instantiation comes from the return annotation).
+fn wrap n i64 -> Opt<i64>
+    present(n)
+
+# Match over a generic enum with concrete `T = i64`: the `present` arm binds the
+# payload as `i64`, so the arithmetic type-checks.
+fn unwrap_or o Opt<i64> fallback i64 -> i64
+    match o
+        present(x) -> x
+        absent -> fallback
+
+# A generic enum flowing through a `bool` instantiation, proving two distinct
+# instantiations of the same declaration coexist.
+fn flag_to_int f Opt<bool> -> i64
+    match f
+        present(b) -> 1 if b else 2
+        absent -> 0
+
+fn res_value r Res<i64> -> i64
+    match r
+        okay(v) -> v
+        fail -> 0 - 1
+
+fn main -> i64
+    let a Opt<i64> = wrap(5)
+    let bumped Opt<i64> = present(6)
+    let missing Opt<i64> = absent
+    let flag Opt<bool> = present(true)
+    let r Res<i64> = okay(30)
+    let bad Res<i64> = fail
+    # unwrap_or(a)=5 + unwrap_or(bumped)=6 + unwrap_or(missing,100)=100
+    # + flag_to_int(flag)=1 + res_value(r)=30 + res_value(bad)=-1 = 141
+    unwrap_or(a, 0) + unwrap_or(bumped, 0) + unwrap_or(missing, 100) + flag_to_int(flag) + res_value(r) + res_value(bad)

@@ -1376,6 +1376,10 @@ mod suite7;
 #[path = "cli/suite8.rs"]
 mod suite8;
 
+// -- User-defined generic enums, stage A1 (`enum Opt<T>`) --------------------
+#[path = "cli/suite9.rs"]
+mod suite9;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

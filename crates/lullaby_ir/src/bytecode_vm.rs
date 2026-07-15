@@ -1692,13 +1692,50 @@ impl<'a> Lowerer<'a> {
                 _ => Vec::new(),
             };
         }
-        self.program
+        // `scrutinee_ty` may be a concrete generic-enum instantiation spelling
+        // such as `Opt<i64>`: its head (`Opt`) resolves the declaration and its
+        // type arguments (`[i64]`) are substituted for the declaration's type
+        // parameters, so a `present x` arm on `Opt<i64>` binds `x: i64`. A
+        // non-generic enum's payload types are returned verbatim.
+        let (head, args) = match scrutinee_ty.name.find('<') {
+            Some(open)
+                if scrutinee_ty.name.ends_with('>') && !scrutinee_ty.name.starts_with("fn(") =>
+            {
+                let head = scrutinee_ty.name[..open].to_string();
+                let args = TypeRef::new(scrutinee_ty.name.clone())
+                    .generic_args(&head)
+                    .unwrap_or_default();
+                (head, args)
+            }
+            _ => (scrutinee_ty.name.clone(), Vec::new()),
+        };
+        let Some(declaration) = self
+            .program
             .enums
             .iter()
-            .find(|declaration| declaration.name == scrutinee_ty.name)
-            .and_then(|declaration| declaration.variants.iter().find(|v| v.name == variant))
+            .find(|declaration| declaration.name == head)
+        else {
+            return Vec::new();
+        };
+        let Some(payload) = declaration
+            .variants
+            .iter()
+            .find(|v| v.name == variant)
             .map(|v| v.payload.clone())
-            .unwrap_or_default()
+        else {
+            return Vec::new();
+        };
+        if declaration.type_params.is_empty() {
+            return payload;
+        }
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        for (param, arg) in declaration.type_params.iter().zip(args.iter()) {
+            subst.insert(param.name.clone(), arg.clone());
+        }
+        payload
+            .iter()
+            .map(|ty| lullaby_semantics::substitute_type(ty, &subst))
+            .collect()
     }
 
     pub(crate) fn lower_place(

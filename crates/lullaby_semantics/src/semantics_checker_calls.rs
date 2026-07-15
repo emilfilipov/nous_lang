@@ -2320,11 +2320,17 @@ impl<'a> Checker<'a> {
         &mut self,
         name: &str,
         args: &[Expr],
+        expected: Option<&TypeRef>,
         span: Span,
         scope: &Scope,
         function: &Function,
     ) -> Option<TypeRef> {
         let (enum_name, payload) = self.variants.get(name).cloned()?;
+        let params = self
+            .enum_type_params
+            .get(&enum_name)
+            .cloned()
+            .unwrap_or_default();
         if args.len() != payload.len() {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0381",
@@ -2342,25 +2348,192 @@ impl<'a> Checker<'a> {
             }
             return None;
         }
-        for (expected, arg) in payload.iter().zip(args) {
+
+        // Non-generic enum: each payload argument must match its declared type
+        // exactly. This is the original, unchanged construction path.
+        if params.is_empty() {
+            for (declared, arg) in payload.iter().zip(args) {
+                let arg_type = self.check_expr(arg, scope, function);
+                if arg_type.as_ref() != Some(declared) {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0381",
+                        format!(
+                            "payload of variant `{name}` expects `{}` but got `{}`",
+                            declared.name,
+                            arg_type
+                                .as_ref()
+                                .map(|ty| ty.name.as_str())
+                                .unwrap_or("<unknown>")
+                        ),
+                        Some(function.name.clone()),
+                        arg.span,
+                    ));
+                }
+            }
+            return Some(TypeRef::new(enum_name));
+        }
+
+        // Generic enum: infer each type parameter from the payload arguments
+        // (reusing the generic-function unification engine), falling back to an
+        // expected `Name<...>` annotation for any parameter the arguments cannot
+        // pin. Returns the concrete instantiation spelling, e.g. `Opt<i64>`.
+        self.check_generic_enum_construction(
+            name, &enum_name, &payload, &params, args, expected, span, scope, function,
+        )
+    }
+
+    /// Type-check construction of a variant of a generic enum, inferring the
+    /// enum's type arguments. Each payload argument unifies against the declared
+    /// (parameterized) payload type via `unify_param`; a parameter left unpinned
+    /// by the arguments is filled from an expected `Name<...>` annotation.
+    /// Conflicting inference is `L0395`; a parameter that cannot be resolved at
+    /// all is `L0455`; a concrete (post-substitution) payload/argument mismatch is
+    /// `L0381`. Returns the concrete instantiation spelling, e.g. `Opt<i64>`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_generic_enum_construction(
+        &mut self,
+        variant: &str,
+        enum_name: &str,
+        payload: &[TypeRef],
+        params: &[String],
+        args: &[Expr],
+        expected: Option<&TypeRef>,
+        span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let mut subst: HashMap<String, TypeRef> = HashMap::new();
+        let mut arg_types: Vec<Option<TypeRef>> = Vec::with_capacity(args.len());
+        let mut arg_conflicted: Vec<bool> = Vec::with_capacity(args.len());
+        for (declared, arg) in payload.iter().zip(args) {
             let arg_type = self.check_expr(arg, scope, function);
-            if arg_type.as_ref() != Some(expected) {
+            let mut conflicted = false;
+            if let Some(actual) = &arg_type
+                && let Err(GenericInferenceError::Conflict {
+                    param,
+                    first,
+                    second,
+                }) = unify_param(declared, actual, params, &mut subst)
+            {
+                conflicted = true;
+                self.diagnostics.push(SemanticDiagnostic::at(
+                    "L0395",
+                    format!(
+                        "conflicting types for type parameter `{param}` of enum `{enum_name}`: `{}` and `{}`",
+                        first.name, second.name
+                    ),
+                    Some(function.name.clone()),
+                    arg.span,
+                ));
+            }
+            arg_types.push(arg_type);
+            arg_conflicted.push(conflicted);
+        }
+
+        // An expected `Name<...>` annotation is authoritative: it both fills any
+        // parameter the arguments could not pin (the empty/unpinnable-construction
+        // rule) and overrides argument inference, so a concrete annotation such as
+        // `Opt<i64>` on a `present("nope")` construction is checked as "payload
+        // expects `i64`" (a clean `L0381`) rather than silently inferring
+        // `Opt<string>`.
+        if let Some(exp) = expected {
+            let (exp_head, exp_args) = split_named_type(exp);
+            if exp_head == enum_name && exp_args.len() == params.len() {
+                for (param, arg) in params.iter().zip(exp_args.iter()) {
+                    subst.insert(param.clone(), arg.clone());
+                }
+            }
+        }
+
+        // Every type parameter must now be resolved.
+        if let Some(param) = params.iter().find(|p| !subst.contains_key(*p)) {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0455",
+                format!(
+                    "cannot infer type parameter `{param}` of enum `{enum_name}` from variant `{variant}`; add a type annotation such as `{enum_name}<...>`"
+                ),
+                Some(function.name.clone()),
+                span,
+            ));
+            return None;
+        }
+
+        // Verify each argument against its concrete (substituted) payload type. A
+        // payload whose type parameter already conflicted above is skipped so the
+        // one root cause is reported once.
+        for ((declared, arg_type), conflicted) in
+            payload.iter().zip(&arg_types).zip(&arg_conflicted)
+        {
+            if *conflicted {
+                continue;
+            }
+            let concrete = substitute_type(declared, &subst);
+            if arg_type.as_ref() != Some(&concrete) {
                 self.diagnostics.push(SemanticDiagnostic::at(
                     "L0381",
                     format!(
-                        "payload of variant `{name}` expects `{}` but got `{}`",
-                        expected.name,
+                        "payload of variant `{variant}` expects `{}` but got `{}`",
+                        concrete.name,
                         arg_type
                             .as_ref()
                             .map(|ty| ty.name.as_str())
                             .unwrap_or("<unknown>")
                     ),
                     Some(function.name.clone()),
-                    arg.span,
+                    span,
                 ));
             }
         }
-        Some(TypeRef::new(enum_name))
+
+        let type_args: Vec<TypeRef> = params
+            .iter()
+            .map(|param| {
+                subst
+                    .get(param)
+                    .cloned()
+                    .unwrap_or_else(|| TypeRef::new(param))
+            })
+            .collect();
+        Some(generic_type(enum_name, &type_args))
+    }
+
+    /// Resolve the concrete type of a *unit* variant (`absent` of `Opt<T>`) used
+    /// as a bare value. A non-generic enum's unit variant is simply its enum type.
+    /// A generic enum's unit variant carries no payload to infer its type
+    /// parameters from, so the concrete instantiation must come from the
+    /// contextual expected `Name<...>` annotation; without one (or with a
+    /// mismatched head/arity) the type parameters are uninferable (`L0455`).
+    pub(crate) fn resolve_unit_variant_type(
+        &mut self,
+        enum_name: &str,
+        variant: &str,
+        expected: Option<&TypeRef>,
+        span: Span,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let params = self
+            .enum_type_params
+            .get(enum_name)
+            .cloned()
+            .unwrap_or_default();
+        if params.is_empty() {
+            return Some(TypeRef::new(enum_name));
+        }
+        if let Some(exp) = expected {
+            let (exp_head, exp_args) = split_named_type(exp);
+            if exp_head == enum_name && exp_args.len() == params.len() {
+                return Some(generic_type(enum_name, &exp_args));
+            }
+        }
+        self.diagnostics.push(SemanticDiagnostic::at(
+            "L0455",
+            format!(
+                "cannot infer type parameter(s) of enum `{enum_name}` from unit variant `{variant}`; add a type annotation such as `{enum_name}<...>`"
+            ),
+            Some(function.name.clone()),
+            span,
+        ));
+        None
     }
 
     /// Validate a `match` over an enum. The scrutinee must be an enum type
@@ -2374,8 +2547,41 @@ impl<'a> Checker<'a> {
     /// (`some(U)` + `none`) and `result<T, E>` (`ok(T)` + `err(E)`) generics,
     /// whose variant payloads are instantiated from the scrutinee's type args.
     pub(crate) fn match_variants(&self, ty: &TypeRef) -> Option<(String, Vec<EnumVariant>)> {
+        // A non-generic enum matches by its exact name.
         if let Some(variants) = self.enums.get(&ty.name) {
             return Some((ty.name.clone(), variants.clone()));
+        }
+        // A user generic enum instantiation `Opt<i64>`: resolve the declaration by
+        // its head (`Opt`) and substitute the concrete type arguments (`[i64]`)
+        // for the declaration's type parameters, so each arm binds a payload of
+        // the concrete instantiated type (e.g. `present i64`).
+        let (head, args) = split_named_type(ty);
+        if head != ty.name
+            && let Some(variants) = self.enums.get(&head)
+        {
+            let params = self
+                .enum_type_params
+                .get(&head)
+                .cloned()
+                .unwrap_or_default();
+            if params.len() == args.len() {
+                let mut subst: HashMap<String, TypeRef> = HashMap::new();
+                for (param, arg) in params.iter().zip(args.iter()) {
+                    subst.insert(param.clone(), arg.clone());
+                }
+                let instantiated = variants
+                    .iter()
+                    .map(|variant| EnumVariant {
+                        name: variant.name.clone(),
+                        payload: variant
+                            .payload
+                            .iter()
+                            .map(|ty| substitute_type(ty, &subst))
+                            .collect(),
+                    })
+                    .collect();
+                return Some((ty.name.clone(), instantiated));
+            }
         }
         if let Some(payload) = ty.option_element() {
             return Some((

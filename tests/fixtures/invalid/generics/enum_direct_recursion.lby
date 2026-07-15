@@ -1,0 +1,10 @@
+# A generic enum that recurses on itself DIRECTLY (by value): the `node` variant
+# carries a `Tree<T>` payload with no indirection, so the type is infinitely
+# sized. Rejected with L0456 (route the recursion through `rc`/`list`/`ptr`).
+
+enum Tree<T>
+    leaf T
+    node Tree<T>
+
+fn main -> i64
+    0

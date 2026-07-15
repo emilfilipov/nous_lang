@@ -1,0 +1,10 @@
+# Wrong instantiation: `Opt` declares one type parameter but is spelled with two
+# type arguments. Rejected with L0454.
+
+enum Opt<T>
+    present T
+    absent
+
+fn main -> i64
+    let o Opt<i64, bool> = present(5)
+    0

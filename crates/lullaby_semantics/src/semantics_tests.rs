@@ -3508,3 +3508,149 @@ fn rejects_uninferable_generic_type_param() {
         "expected L0455 for an uninferable type parameter: {diagnostics:?}"
     );
 }
+
+#[test]
+fn accepts_generic_enum_with_scalar_type_param() {
+    // A single-parameter generic enum used at two concrete instantiations, with
+    // payload-variant and unit-variant construction, a `match` whose payload is
+    // substituted to the concrete `T`, and a function that takes the instantiated
+    // enum and returns an `i64`.
+    let source = concat!(
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "fn unwrap_or o Opt<i64> fallback i64 -> i64\n",
+        "    match o\n",
+        "        present(x) -> x\n",
+        "        absent -> fallback\n\n",
+        "fn main -> i64\n",
+        "    let a Opt<i64> = present(5)\n",
+        "    let missing Opt<i64> = absent\n",
+        "    let flag Opt<bool> = present(true)\n",
+        "    unwrap_or(a, 0) + unwrap_or(missing, 100)\n",
+    );
+    validate_source(source).expect("generic enum with scalar T type-checks");
+}
+
+#[test]
+fn infers_generic_enum_instantiation_from_payload_argument() {
+    // With no annotation, the payload argument pins `T`, and the `match` binding
+    // sees the concrete type (so `x` is an `i64` usable in `i64` addition).
+    let source = concat!(
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "fn main -> i64\n",
+        "    let o = present(7)\n",
+        "    match o\n",
+        "        present(x) -> x + 1\n",
+        "        absent -> 0\n",
+    );
+    validate_source(source).expect("argument-directed inference of Opt<i64>");
+}
+
+#[test]
+fn accepts_recursive_generic_enum_through_indirection() {
+    // A generic enum may recurse on itself when the recursion passes through a
+    // `list<...>` (or `rc`/`ptr`) indirection — no `L0456`.
+    let source = concat!(
+        "enum Tree<T>\n",
+        "    leaf T\n",
+        "    branch list<Tree<T>>\n\n",
+        "fn main -> i64\n",
+        "    let a Tree<i64> = leaf(3)\n",
+        "    0\n",
+    );
+    validate_source(source).expect("recursive generic enum through list indirection type-checks");
+}
+
+#[test]
+fn rejects_wrong_generic_enum_arity() {
+    // `Opt` declares one type parameter; two type arguments is `L0454`.
+    let source = concat!(
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "fn main -> i64\n",
+        "    let o Opt<i64, bool> = present(5)\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("wrong arity rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0454"),
+        "expected L0454 for a wrong generic enum arity: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_uninferable_generic_enum_unit_variant() {
+    // A unit variant with no payload to pin `T` and no annotation is `L0455`.
+    let source = concat!(
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "fn main -> i64\n",
+        "    let o = absent\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("uninferable unit variant rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0455"),
+        "expected L0455 for an uninferable generic enum unit variant: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_directly_recursive_generic_enum() {
+    // A generic enum whose variant payload is the enum itself, by value, is
+    // infinitely sized and rejected with the new `L0456`.
+    let source = concat!(
+        "enum Tree<T>\n",
+        "    leaf T\n",
+        "    node Tree<T>\n\n",
+        "fn main -> i64\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("direct recursion rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0456"),
+        "expected L0456 for a directly recursive generic enum: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_generic_enum_payload_type_mismatch() {
+    // With `T` pinned to `i64` by the annotation, a `string` payload argument
+    // mismatches the substituted payload type `i64` (`L0381`).
+    let source = concat!(
+        "enum Opt<T>\n",
+        "    present T\n",
+        "    absent\n\n",
+        "fn main -> i64\n",
+        "    let o Opt<i64> = present(\"nope\")\n",
+        "    0\n",
+    );
+    let diagnostics = validate_source(source).expect_err("payload mismatch rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0381"),
+        "expected L0381 for a generic enum payload mismatch: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn non_generic_enum_still_type_checks() {
+    // Regression: a plain (non-generic) enum with payload and unit variants,
+    // constructed and matched, is unaffected by the generic-enum machinery.
+    let source = concat!(
+        "enum Shape\n",
+        "    circle i64\n",
+        "    dot\n\n",
+        "fn area s Shape -> i64\n",
+        "    match s\n",
+        "        circle(r) -> r * r\n",
+        "        dot -> 0\n\n",
+        "fn main -> i64\n",
+        "    area(circle(4)) + area(dot)\n",
+    );
+    validate_source(source).expect("non-generic enum still type-checks");
+}

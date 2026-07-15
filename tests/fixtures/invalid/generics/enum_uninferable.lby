@@ -1,0 +1,11 @@
+# The unit variant `absent` carries no payload to pin `T`, and the binding has no
+# `Opt<...>` annotation, so the type parameter cannot be inferred. Rejected with
+# L0455 (add an annotation such as `Opt<i64>`).
+
+enum Opt<T>
+    present T
+    absent
+
+fn main -> i64
+    let o = absent
+    0

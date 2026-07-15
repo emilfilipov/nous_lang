@@ -97,6 +97,7 @@ pub(crate) fn resolve_program_aliases(program: &Program) -> (Program, Vec<Semant
         .iter()
         .map(|declaration| EnumDecl {
             name: declaration.name.clone(),
+            type_params: declaration.type_params.clone(),
             variants: declaration
                 .variants
                 .iter()

@@ -1,0 +1,36 @@
+# Stage A1 recursive generic enum through an indirection. A generic enum may
+# recurse on itself only when the recursion passes through a heap/pointer
+# indirection (`rc`, `list`, `ptr`, ...), never by value. Here `Tree<T>` recurses
+# through `list<Tree<T>>` (its children) and a `leaf` carries a bare `T`. This is
+# accepted (no `L0456`) and runs identically on every interpreter backend.
+
+enum Tree<T>
+    leaf T
+    branch list<Tree<T>>
+
+# Sum the leaves of an `i64` tree. Recursion over the child list mirrors the
+# recursive type. `match` binds the `leaf` payload as `i64` and the `branch`
+# payload as `list<Tree<i64>>`, both with `T = i64` substituted.
+fn sum_tree t Tree<i64> -> i64
+    match t
+        leaf(v) -> v
+        branch(kids) ->
+            let total i64 = 0
+            for kid in kids
+                total = total + sum_tree(kid)
+            total
+
+fn main -> i64
+    let a Tree<i64> = leaf(3)
+    let b Tree<i64> = leaf(4)
+    let c Tree<i64> = leaf(10)
+    let inner list<Tree<i64>> = list_new()
+    inner = push(inner, a)
+    inner = push(inner, b)
+    let left Tree<i64> = branch(inner)
+    let outer list<Tree<i64>> = list_new()
+    outer = push(outer, left)
+    outer = push(outer, c)
+    let root Tree<i64> = branch(outer)
+    # leaves: 3 + 4 + 10 = 17
+    sum_tree(root)
