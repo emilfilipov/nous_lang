@@ -2009,3 +2009,84 @@ pub(crate) fn native_struct_string_field_arena_reclaim_execution_parity_when_lin
          result (a crash here means the per-call arena reset regressed)"
     );
 }
+
+/// Best-effort execution parity for **native `for c in s` over multi-byte UTF-8**.
+/// The `for c in s` loop is lowered to a forward byte cursor (O(N)) that decodes
+/// each code point in place; this fixture iterates strings whose characters span
+/// all four UTF-8 widths (ASCII, 2-byte `é`, 3-byte `☕`/`日本語`, 4-byte `🎉`) and
+/// sums their `char_code`s, so any decode error — a wrong scalar value, a
+/// miscounted iteration, or a desynced cursor — diverges from the interpreters
+/// (which use Rust's real UTF-8 decoding as ground truth). Asserts `sum_codes`,
+/// `count_chars`, and `main` compile natively and — when linkable — the `.exe`
+/// exit code equals the interpreter result.
+#[test]
+pub(crate) fn native_string_utf8_foreach_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_string_utf8_foreach.lby");
+    let out = std::env::temp_dir().join("lullaby_native_string_utf8_foreach_parity.exe");
+
+    ensure_msvc_env();
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    // The byte-cursor `for c in s` loops must all compile natively (a regression
+    // that demoted them would hide the decode path behind the interpreter).
+    let emit_out = stdout(&emit);
+    for name in ["sum_codes", "count_chars", "main"] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile natively (byte-cursor string loop), got: {emit_out}"
+        );
+    }
+
+    // Interpreter ground truth (real UTF-8 decoding), identical across every backend.
+    let mut expected: Option<i64> = None;
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        match expected {
+            None => expected = Some(interp),
+            Some(prev) => assert_eq!(
+                prev, interp,
+                "{backend}: UTF-8 foreach interpreters must agree ({prev} vs {interp})"
+            ),
+        }
+    }
+    let expected = expected.expect("at least one interpreter run");
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld and/or kernel32.lib (via the LIB env var) not available; \
+             skipping native UTF-8 foreach link+run parity"
+        );
+        return;
+    }
+
+    assert!(out.is_file(), "expected linked exe at {}", out.display());
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit as i64,
+        expected.rem_euclid(256),
+        "native byte-cursor `for c in s` must decode multi-byte UTF-8 exactly like the \
+         interpreter (exit {exit} vs interpreter {expected})"
+    );
+}

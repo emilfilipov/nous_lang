@@ -1,0 +1,20 @@
+fn sum_codes s string -> i64
+    let total i64 = 0
+    for c in s
+        total = total + char_code(c)
+    total
+
+fn count_chars s string -> i64
+    let n i64 = 0
+    for c in s
+        n = n + 1
+    n
+
+fn main -> i64
+    let a string = "héllo"
+    let b string = "café ☕"
+    let c string = "日本語"
+    let d string = "🎉ok"
+    let s i64 = sum_codes(a) + sum_codes(b) + sum_codes(c) + sum_codes(d)
+    let n i64 = count_chars(a) + count_chars(b) + count_chars(c) + count_chars(d)
+    (s + n) % 256

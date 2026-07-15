@@ -2700,6 +2700,83 @@ pub(crate) fn emit_char_to_byte_walk(code: &mut Vec<u8>) {
     patch_rel32(code, wdone_site);
 }
 
+/// Decode, inline, the UTF-8 sequence whose lead byte is at `[r11]` into `r8` (the
+/// Unicode scalar) and its byte width (1..=4) into `rdx`. This is byte-for-byte the
+/// same decode as [`emit_str_char_at_helper`], so lowering a string `for c in s` to
+/// a forward byte cursor (advancing `p += width` per step) yields identical `char`
+/// values and iteration order to the O(i) char-index path — a value-neutral change.
+/// The caller passes `r11` already pointing AT the cursor byte (`record + STR_DATA_OFF
+/// + p`) and guarantees a complete sequence (the string's own bytes), so no bounds
+/// check is needed here. Preserves `rax` (the caller keeps the byte cursor there);
+/// clobbers `rcx`, `rdx`, `r8`, `r9`, `r10`.
+pub(crate) fn emit_utf8_decode_advance(code: &mut Vec<u8>) {
+    // r8d = lead byte.
+    code.extend_from_slice(&[0x45, 0x0F, 0xB6, 0x03]); // movzx r8d, byte [r11]
+    // 1-byte: lead < 0x80 -> cp = lead, width = 1.
+    code.extend_from_slice(&[0x41, 0x81, 0xF8]);
+    code.extend_from_slice(&0x80u32.to_le_bytes()); // cmp r8d, 0x80
+    code.extend_from_slice(&[0x0F, 0x82]); // jb one_byte
+    let one_byte_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // b1 = [r11+1] & 0x3F -> r9d.
+    code.extend_from_slice(&[0x45, 0x0F, 0xB6, 0x4B, 0x01]); // movzx r9d, byte [r11+1]
+    code.extend_from_slice(&[0x41, 0x83, 0xE1, 0x3F]); // and r9d, 0x3F
+    // 2-byte: lead < 0xE0 -> cp = ((lead & 0x1F) << 6) | b1, width = 2.
+    code.extend_from_slice(&[0x41, 0x81, 0xF8]);
+    code.extend_from_slice(&0xE0u32.to_le_bytes()); // cmp r8d, 0xE0
+    code.extend_from_slice(&[0x0F, 0x83]); // jae three_plus
+    let three_plus_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x41, 0x83, 0xE0, 0x1F]); // and r8d, 0x1F
+    code.extend_from_slice(&[0x41, 0xC1, 0xE0, 0x06]); // shl r8d, 6
+    code.extend_from_slice(&[0x45, 0x09, 0xC8]); // or r8d, r9d
+    code.extend_from_slice(&[0xBA, 0x02, 0x00, 0x00, 0x00]); // mov edx, 2
+    code.push(0xE9); // jmp done
+    let done2_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // three_plus: b2 = [r11+2] & 0x3F -> r10d.
+    patch_rel32(code, three_plus_site);
+    code.extend_from_slice(&[0x45, 0x0F, 0xB6, 0x53, 0x02]); // movzx r10d, byte [r11+2]
+    code.extend_from_slice(&[0x41, 0x83, 0xE2, 0x3F]); // and r10d, 0x3F
+    // 3-byte: lead < 0xF0 -> cp = ((lead & 0x0F) << 12) | (b1 << 6) | b2, width = 3.
+    code.extend_from_slice(&[0x41, 0x81, 0xF8]);
+    code.extend_from_slice(&0xF0u32.to_le_bytes()); // cmp r8d, 0xF0
+    code.extend_from_slice(&[0x0F, 0x83]); // jae four
+    let four_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    code.extend_from_slice(&[0x41, 0x83, 0xE0, 0x0F]); // and r8d, 0x0F
+    code.extend_from_slice(&[0x41, 0xC1, 0xE0, 0x0C]); // shl r8d, 12
+    code.extend_from_slice(&[0x41, 0xC1, 0xE1, 0x06]); // shl r9d, 6
+    code.extend_from_slice(&[0x45, 0x09, 0xC8]); // or r8d, r9d
+    code.extend_from_slice(&[0x45, 0x09, 0xD0]); // or r8d, r10d
+    code.extend_from_slice(&[0xBA, 0x03, 0x00, 0x00, 0x00]); // mov edx, 3
+    code.push(0xE9); // jmp done
+    let done3_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // four: b3 = [r11+3] & 0x3F -> ecx ; cp = ((lead&0x07)<<18)|(b1<<12)|(b2<<6)|b3.
+    patch_rel32(code, four_site);
+    code.extend_from_slice(&[0x41, 0x0F, 0xB6, 0x4B, 0x03]); // movzx ecx, byte [r11+3]
+    code.extend_from_slice(&[0x83, 0xE1, 0x3F]); // and ecx, 0x3F
+    code.extend_from_slice(&[0x41, 0x83, 0xE0, 0x07]); // and r8d, 0x07
+    code.extend_from_slice(&[0x41, 0xC1, 0xE0, 0x12]); // shl r8d, 18
+    code.extend_from_slice(&[0x41, 0xC1, 0xE1, 0x0C]); // shl r9d, 12
+    code.extend_from_slice(&[0x41, 0xC1, 0xE2, 0x06]); // shl r10d, 6
+    code.extend_from_slice(&[0x45, 0x09, 0xC8]); // or r8d, r9d
+    code.extend_from_slice(&[0x45, 0x09, 0xD0]); // or r8d, r10d
+    code.extend_from_slice(&[0x41, 0x09, 0xC8]); // or r8d, ecx
+    code.extend_from_slice(&[0xBA, 0x04, 0x00, 0x00, 0x00]); // mov edx, 4
+    code.push(0xE9); // jmp done
+    let done4_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // one_byte: width = 1 (cp = lead, already in r8).
+    patch_rel32(code, one_byte_site);
+    code.extend_from_slice(&[0xBA, 0x01, 0x00, 0x00, 0x00]); // mov edx, 1
+    // done: r8 = code point, rdx = width.
+    patch_rel32(code, done2_site);
+    patch_rel32(code, done3_site);
+    patch_rel32(code, done4_site);
+}
+
 /// `__lullaby_str_char_at(rcx = s, rdx = i) -> rax = code point`.
 ///
 /// Returns the Unicode scalar of the `i`-th character. Bounds-checks `i` against

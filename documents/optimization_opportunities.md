@@ -225,8 +225,27 @@ array reduction (~9× C) and the two string shapes (~30–39× C).
 
 ### Prioritized next-optimization levers (highest ROI first)
 
-**1. Native `for c in s` is O(n²) per scan — the single biggest native gap.**
-*Evidence.* Disassembly of the native string-scan `checksum` (`strscan_native`)
+**1. Native `for c in s` was O(n²) per scan — SHIPPED (2026-07-15), now O(N).**
+*Status.* **DONE.** Lowered `for c in s` to a forward byte cursor:
+`detect_string_char_foreach` recognizes the `for idx from 0 to len(s)-1 { let c =
+s[idx]; … }` desugar and `lower_native_for_string_chars`
+(`crates/lullaby_ir/src/native_object_loops.rs`) emits a loop that decodes one code
+point at `data + p` and advances `p += width` per step, via the new inline
+`emit_utf8_decode_advance` (`native_object_runtime_helpers.rs`) — byte-for-byte the
+same decode as `__lullaby_str_char_at`, so char values and order are identical (a
+pure performance change). Default-deny: any deviation from the exact desugar (the
+counter used elsewhere, the string reassigned mid-loop, a promoted slot) falls
+through to the previous O(n²) lowering, which stays correct.
+*Measured (this box, best-of-5).* strscan native **30.6 → 1.66 ns/char** (**42.7× →
+2.43× C**); csvsum native **24.8 → 2.88 ns/char** (**24.5× → 2.61× C**). The
+scaling signature is gone: at a fixed 19.8M total chars, native wall time is now
+**flat with string length** (66/264/528 chars → 33/30/31 ms, was 616/2124/5334 ms)
+— i.e. O(N), not O(N²). Correctness: full `cargo test --all` green (incl. the
+`gen_string_loop_program` differential fuzzer) plus a new multi-byte fixture
+`tests/fixtures/valid/native_string_utf8_foreach.lby` (1/2/3/4-byte code points:
+`é`, `☕`, `日本語`, `🎉`) asserting native exit == interpreter.
+
+*Original evidence (kept for the record).* Disassembly of the native string-scan `checksum` (`strscan_native`)
 shows the `for c in s` body calling a per-character helper that, for character
 index `i`, **walks the UTF-8 from the string start counting code points to locate
 the i-th one** (the loop at the helper's entry: `xor rax,rax; xor rcx,rcx;
@@ -250,7 +269,8 @@ for-over-string desugar feeding it).
 win compounds. Even at 66 chars it should recover a large fraction of the ~39×/30×
 gap. *Risk.* Moderate: touches correctness-critical char decoding; must stay
 bit-identical to the interpreters (gate with `cargo test --all`).
-*Status.* **Blocked** — native codegen files in-flight.
+*(The lowering shipped in `native_object_loops.rs`, not `native_object_stmt.rs` —
+`for` lowering moved there in the split; see the SHIPPED note above.)*
 
 **2. Native array-argument pass-by-value copies the whole array per call.**
 *Evidence.* Disassembly of `arraysum_native` shows the timed rep loop, before

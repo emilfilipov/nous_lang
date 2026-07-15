@@ -732,6 +732,18 @@ pub(crate) fn lower_native_for(
     code: &mut Vec<u8>,
     loops: &mut Vec<NativeLoop>,
 ) -> Result<(), String> {
+    // `for c in s` (a string character loop) desugars to `for idx from 0 to
+    // len(s)-1 { let c = s[idx]; … }`, which the generic lowering below runs with a
+    // per-iteration `char_at(s, idx)` — and that helper re-walks the UTF-8 from the
+    // string start to the idx-th code point, so a length-N scan is O(N²). Recognize
+    // that exact desugared shape and lower it instead as a single FORWARD BYTE
+    // CURSOR: decode one code point and advance the byte pointer by its UTF-8 width
+    // per step, so the whole loop is O(N). The decode is byte-for-byte the same as
+    // `char_at`, so the `char` values and iteration order are identical (a pure
+    // performance change). Default-deny: anything but the exact shape falls through.
+    if let Some(plan) = detect_string_char_foreach(ctx, name, start, end, step, body) {
+        return lower_native_for_string_chars(ctx, &plan, body, code, loops);
+    }
     // Close-form an affine `for` reduction (`for i from a to b { acc += a*i+b }`)
     // to O(1) — no loop. A distinct shape from the array reductions below (an
     // `a[i]` addend is not affine in the counter, so it is rejected here and
@@ -900,4 +912,341 @@ pub(crate) fn emit_for_compare(code: &mut Vec<u8>, end_slot: i32, set_opcode: u8
     code.extend_from_slice(&(-end_slot).to_le_bytes());
     // set<cc> al
     code.extend_from_slice(&[0x0F, set_opcode, 0xC0]);
+}
+
+// -- `for c in s` byte-cursor lowering (native O(N) string char iteration) -------
+
+/// The recognized `for c in s` desugar: the counter `idx_name` runs `0..len(s)-1`
+/// and the body's FIRST statement binds `c = s[idx]`. `s_name` is the iterated
+/// string local; `c_name` the per-iteration char binding. The generic path lowers
+/// `s[idx]` as an O(idx) `char_at`; [`lower_native_for_string_chars`] replaces the
+/// whole loop with an O(N) forward byte cursor.
+pub(crate) struct StringCharForeach {
+    s_name: String,
+    c_name: String,
+    idx_name: String,
+}
+
+/// Recognize the exact `for c in s` desugar so it can be lowered as a byte cursor.
+/// Default-deny — every clause must hold, or `None` (the caller keeps the generic,
+/// still-correct O(N²) lowering):
+///  * `start == 0`, `step` is the implicit `+1` (`None`);
+///  * `end == len(S) - 1` for a `string` variable `S`;
+///  * `body[0] == let C = S[idx]` (a `char`) with `idx` the loop counter;
+///  * the counter `idx` appears NOWHERE else in the body (it is a hidden synthetic
+///    local, so a real use means this is not the foreach desugar) — the cursor
+///    lowering discards the numeric index entirely;
+///  * `S` is never reassigned/shadowed in the body (a byte cursor would desync from
+///    a re-pointed string; the generic path re-reads `S` by char index each step);
+///  * the counter and char locals live in stack slots (a heap/string function is
+///    never register-promoted, but verify rather than assume).
+pub(crate) fn detect_string_char_foreach(
+    ctx: &NativeCtx,
+    name: &str,
+    start: &BytecodeExpr,
+    end: &BytecodeExpr,
+    step: Option<&BytecodeExpr>,
+    body: &[BytecodeInstruction],
+) -> Option<StringCharForeach> {
+    if step.is_some() {
+        return None;
+    }
+    if !matches!(&start.kind, BytecodeExprKind::Integer(0)) {
+        return None;
+    }
+    // end == len(S) - 1, S a string variable.
+    let BytecodeExprKind::Binary {
+        left,
+        op: BinaryOp::Subtract,
+        right,
+    } = &end.kind
+    else {
+        return None;
+    };
+    if !matches!(&right.kind, BytecodeExprKind::Integer(1)) {
+        return None;
+    }
+    let BytecodeExprKind::Call {
+        name: fname,
+        args: len_args,
+    } = &left.kind
+    else {
+        return None;
+    };
+    if fname != "len" || len_args.len() != 1 || left.ty.name != "i64" {
+        return None;
+    }
+    let BytecodeExprKind::Variable(s_name) = &len_args[0].kind else {
+        return None;
+    };
+    if len_args[0].ty.name != "string" {
+        return None;
+    }
+    // body[0] == let C = S[idx] : char.
+    let BytecodeInstruction::Let {
+        name: c_name,
+        value,
+        ..
+    } = body.first()?
+    else {
+        return None;
+    };
+    if value.ty.name != "char" {
+        return None;
+    }
+    let BytecodeExprKind::Index { target, index } = &value.kind else {
+        return None;
+    };
+    let (BytecodeExprKind::Variable(tv), BytecodeExprKind::Variable(iv)) =
+        (&target.kind, &index.kind)
+    else {
+        return None;
+    };
+    if tv != s_name || iv != name {
+        return None;
+    }
+    // The synthetic counter must not appear anywhere after the char read, and the
+    // iterated string must not be reassigned/shadowed inside the loop body.
+    let rest = &body[1..];
+    if stmts_mention_var(rest, name) || stmts_rebind_var(rest, s_name) {
+        return None;
+    }
+    // The counter, char, and string locals must be plain stack slots (a heap/string
+    // function is never register-promoted, but verify rather than assume — the
+    // cursor lowering addresses all three as `[rbp - slot]`).
+    let idx_slot = ctx.local_slot(name).ok()?;
+    let c_slot = ctx.local_slot(c_name).ok()?;
+    let s_slot = ctx.local_slot(s_name).ok()?;
+    if ctx.promoted_reg(idx_slot).is_some()
+        || ctx.promoted_reg(c_slot).is_some()
+        || ctx.promoted_reg(s_slot).is_some()
+    {
+        return None;
+    }
+    Some(StringCharForeach {
+        s_name: s_name.clone(),
+        c_name: c_name.clone(),
+        idx_name: name.to_string(),
+    })
+}
+
+/// Lower a recognized `for c in s` (see [`detect_string_char_foreach`]) as a forward
+/// byte cursor. The reserved counter slot is repurposed as the byte offset `p`; the
+/// loop guard is `p < byte_len(s)` (read from the record header), and each iteration
+/// decodes one UTF-8 code point at `data + p` into the `c` slot then advances
+/// `p += width`. The decode/advance run BEFORE the body (so a `continue` jumps
+/// straight back to the top with the cursor already advanced), mirroring the
+/// `while`-loop structure. All the RC/arena drop machinery is preserved verbatim,
+/// applied to the user body (`body[1..]`, i.e. everything after the synthetic char
+/// read), so per-iteration owned temporaries are reclaimed exactly as before.
+pub(crate) fn lower_native_for_string_chars(
+    ctx: &mut NativeCtx,
+    plan: &StringCharForeach,
+    body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    // Everything after the synthetic `let c = s[idx]` is the real user body.
+    let idx_body = &body[1..];
+    // The reserved loop-counter slot is repurposed as the byte cursor `p`.
+    let p_slot = ctx.local_slot(&plan.idx_name)?;
+    let c_slot = ctx.local_slot(&plan.c_name)?;
+    let s_slot = ctx.local_slot(&plan.s_name)?;
+
+    // p = 0.
+    emit_mov_rax_imm(code, 0);
+    store_local(code, p_slot);
+
+    // Arena stage-2 sub-region: same discipline as the numeric `for` — confine the
+    // body's heap to the iteration when nothing escapes. (A string-foreach function
+    // is not normally an arena region, so this is usually `None`, but keep parity.)
+    let arena_reset_mark = arena_loop_reset_mark(
+        ctx,
+        body_touches_heap(idx_body, &ctx.heap_aggregates),
+        idx_body,
+        loops.len(),
+    );
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_save(ctx, mark, code);
+    }
+
+    let top = code.len();
+
+    // Guard + decode + advance, all before the body. `s` is a simple stack local,
+    // re-read each iteration (matching the char_at path, which also re-reads it).
+    load_local(code, s_slot); // rax = string record ptr
+    code.extend_from_slice(&[0x49, 0x89, 0xC3]); // mov r11, rax  (record ptr)
+    load_local(code, p_slot); // rax = p (byte cursor)
+    // if p >= [r11 + byte_len] goto end.
+    code.extend_from_slice(&[0x49, 0x3B, 0x43, STR_BYTE_LEN_OFF as u8]); // cmp rax, [r11+8]
+    code.extend_from_slice(&[0x0F, 0x83]); // jae end (patched)
+    let exit_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    // r11 = &cursor byte = record + STR_DATA_OFF + p.
+    code.extend_from_slice(&[0x49, 0x83, 0xC3, STR_DATA_OFF as u8]); // add r11, 16
+    code.extend_from_slice(&[0x49, 0x01, 0xC3]); // add r11, rax
+    // Decode into r8 (code point) and rdx (width); rax (= p) preserved.
+    emit_utf8_decode_advance(code);
+    // c = code point.
+    code.extend_from_slice(&[0x4C, 0x89, 0x85]); // mov [rbp - c_slot], r8
+    code.extend_from_slice(&(-c_slot).to_le_bytes());
+    // p += width ; store the advanced cursor.
+    code.extend_from_slice(&[0x48, 0x01, 0xD0]); // add rax, rdx
+    store_local(code, p_slot);
+
+    loops.push(NativeLoop {
+        continue_target: Some(top),
+        continue_sites: Vec::new(),
+        break_sites: Vec::new(),
+        live_drops: Vec::new(),
+        arena_reset_mark,
+    });
+    lower_loop_body_with_drops(ctx, idx_body, code, loops)?;
+    emit_loop_body_string_drops(ctx, idx_body, code)?;
+    if let Some(mark) = arena_reset_mark {
+        emit_arena_loop_rewind(ctx, mark, code);
+    }
+    let loop_ctx = loops.pop().expect("loop pushed");
+
+    emit_jmp_to(code, top);
+
+    let end = code.len();
+    patch_rel32_to(code, exit_site, end);
+    for site in loop_ctx.break_sites {
+        patch_rel32_to(code, site, end);
+    }
+    Ok(())
+}
+
+/// Whether `Variable(name)` appears anywhere in `expr`.
+fn expr_mentions_var(expr: &BytecodeExpr, name: &str) -> bool {
+    match &expr.kind {
+        BytecodeExprKind::Variable(v) => v == name,
+        BytecodeExprKind::Integer(_)
+        | BytecodeExprKind::Float(_)
+        | BytecodeExprKind::Bool(_)
+        | BytecodeExprKind::String(_)
+        | BytecodeExprKind::Char(_)
+        | BytecodeExprKind::Closure { .. } => false,
+        BytecodeExprKind::Array(elems) => elems.iter().any(|e| expr_mentions_var(e, name)),
+        BytecodeExprKind::Index { target, index } => {
+            expr_mentions_var(target, name) || expr_mentions_var(index, name)
+        }
+        BytecodeExprKind::Unary { expr, .. } | BytecodeExprKind::Await { expr } => {
+            expr_mentions_var(expr, name)
+        }
+        BytecodeExprKind::Binary { left, right, .. } => {
+            expr_mentions_var(left, name) || expr_mentions_var(right, name)
+        }
+        BytecodeExprKind::Call { args, .. } => args.iter().any(|a| expr_mentions_var(a, name)),
+        BytecodeExprKind::Field { target, .. } => expr_mentions_var(target, name),
+    }
+}
+
+/// Whether `Variable(name)` appears anywhere across `stmts` (recursing into nested
+/// blocks). Used to prove a synthetic loop counter is never read outside the
+/// desugared char access — the byte-cursor lowering discards the numeric index.
+fn stmts_mention_var(stmts: &[BytecodeInstruction], name: &str) -> bool {
+    stmts.iter().any(|s| stmt_mentions_var(s, name))
+}
+
+fn stmt_mentions_var(stmt: &BytecodeInstruction, name: &str) -> bool {
+    match stmt {
+        BytecodeInstruction::Let { value, .. } => expr_mentions_var(value, name),
+        BytecodeInstruction::Assign { path, value, .. } => {
+            path.iter().any(|p| match p {
+                BytecodePlace::Index(e) => expr_mentions_var(e, name),
+                BytecodePlace::Field(_) => false,
+            }) || expr_mentions_var(value, name)
+        }
+        BytecodeInstruction::Return(Some(e)) | BytecodeInstruction::Expr(e) => {
+            expr_mentions_var(e, name)
+        }
+        BytecodeInstruction::Return(None)
+        | BytecodeInstruction::Break(_)
+        | BytecodeInstruction::Continue(_)
+        | BytecodeInstruction::Asm { .. } => false,
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|b| expr_mentions_var(&b.condition, name) || stmts_mention_var(&b.body, name))
+                || stmts_mention_var(else_body, name)
+        }
+        BytecodeInstruction::While {
+            condition, body, ..
+        } => expr_mentions_var(condition, name) || stmts_mention_var(body, name),
+        BytecodeInstruction::For {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            expr_mentions_var(start, name)
+                || expr_mentions_var(end, name)
+                || step.as_ref().is_some_and(|s| expr_mentions_var(s, name))
+                || stmts_mention_var(body, name)
+        }
+        BytecodeInstruction::Loop { body, .. } => stmts_mention_var(body, name),
+        BytecodeInstruction::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_mentions_var(scrutinee, name)
+                || arms.iter().any(|a| stmts_mention_var(&a.body, name))
+        }
+        BytecodeInstruction::Throw { value, .. } => expr_mentions_var(value, name),
+        BytecodeInstruction::Try {
+            body, catch_body, ..
+        } => stmts_mention_var(body, name) || stmts_mention_var(catch_body, name),
+    }
+}
+
+/// Whether `name` is rebound anywhere across `stmts` — reassigned (`Assign`),
+/// re-declared/shadowed (`Let`), a `for`-counter, or a `catch`/pattern binding.
+/// Any of these could re-point the iterated string mid-loop, which the byte cursor
+/// (a byte offset, not a char index) cannot track, so it disqualifies the fast path.
+fn stmts_rebind_var(stmts: &[BytecodeInstruction], name: &str) -> bool {
+    stmts.iter().any(|s| stmt_rebinds_var(s, name))
+}
+
+fn stmt_rebinds_var(stmt: &BytecodeInstruction, name: &str) -> bool {
+    match stmt {
+        BytecodeInstruction::Let { name: n, .. } => n == name,
+        BytecodeInstruction::Assign { name: n, .. } => n == name,
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            branches.iter().any(|b| stmts_rebind_var(&b.body, name))
+                || stmts_rebind_var(else_body, name)
+        }
+        BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
+            stmts_rebind_var(body, name)
+        }
+        BytecodeInstruction::For { name: n, body, .. } => n == name || stmts_rebind_var(body, name),
+        BytecodeInstruction::Match { arms, .. } => arms.iter().any(|a| {
+            matches!(&a.pattern, BytecodeMatchPattern::Variant { bindings, .. }
+                if bindings.iter().any(|b| b == name))
+                || stmts_rebind_var(&a.body, name)
+        }),
+        BytecodeInstruction::Try {
+            body,
+            catch_name,
+            catch_body,
+            ..
+        } => {
+            catch_name == name || stmts_rebind_var(body, name) || stmts_rebind_var(catch_body, name)
+        }
+        BytecodeInstruction::Return(_)
+        | BytecodeInstruction::Break(_)
+        | BytecodeInstruction::Continue(_)
+        | BytecodeInstruction::Expr(_)
+        | BytecodeInstruction::Asm { .. }
+        | BytecodeInstruction::Throw { .. } => false,
+    }
 }
