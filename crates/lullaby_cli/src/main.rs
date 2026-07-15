@@ -178,7 +178,7 @@ fn new_project(name: PathBuf) -> Result<(), String> {
 
     let manifest_name = manifest::MANIFEST_FILE_NAME;
     let manifest_json = format!(
-        "{{\n  \"name\": \"{name}\",\n  \"entry\": \"src/main.lby\",\n  \"src\": [\"src\"]\n}}\n"
+        "{{\n  \"name\": \"{name}\",\n  \"version\": \"0.1.0\",\n  \"entry\": \"src/main.lby\",\n  \"src\": [\"src\"]\n}}\n"
     );
     let main_lby = format!(
         "# {name} — a new Lullaby project.\n\

@@ -113,6 +113,7 @@ directories and depend on other local Lullaby projects:
 ```json
 {
   "name": "myapp",
+  "version": "0.1.0",
   "entry": "src/main.lby",
   "src": ["src"],
   "dependencies": { "mathx": "../mathx" }
@@ -120,6 +121,15 @@ directories and depend on other local Lullaby projects:
 ```
 
 - `name` (string) — the project name.
+- `version` (string, optional) — the project's own version, a semver-shaped
+  `MAJOR.MINOR.PATCH` with an optional `-<prerelease>` suffix (e.g. `0.1.0`,
+  `1.2.0`, `1.0.0-preview`). This mirrors the toolchain's `MAJOR.PATCH-STATUS`
+  display scheme mapped onto semver (see [versioning.md](versioning.md)). It is
+  **optional and backward-compatible**: a manifest with no `version` loads
+  unchanged. When present it must be well-formed — exactly three `.`-separated
+  non-negative integers (no leading zeros except the single digit `0`), plus an
+  optional `-<prerelease>` of `.`-separated ASCII-alphanumeric/`-` identifiers —
+  or the manifest is rejected with `L0343`. `lullaby new` scaffolds `"0.1.0"`.
 - `entry` (path, optional) — the executable `.lby`, relative to the manifest
   directory. Library projects omit it.
 - `src` (array of paths, default `["."]`) — source directories, relative to the
@@ -127,6 +137,19 @@ directories and depend on other local Lullaby projects:
 - `dependencies` (object, default `{}`) — dependency name → path to another
   project root that contains its own `lullaby.json`. **Local path dependencies
   only**; remote/registry *fetching* is deferred.
+
+### The manifest is a stable 1.0 contract
+
+`lullaby.json` is part of the 1.0-stable public surface: the field names above
+(`name`, `version`, `entry`, `src`, `dependencies`), their meanings, the module
+resolution order below, and the `L0343` diagnostic are a **stable contract**. The
+format is designed to stay **forward-compatible** — later toolchain versions add
+capability by introducing *new optional* fields (e.g. a package registry source,
+per-dependency version *constraints*, a lockfile reference) without changing or
+removing any existing field, so a `lullaby.json` written today keeps loading on
+future toolchains. The `version` field is reserved now precisely so that a future
+registry/dependency-versioning layer is a purely additive change. Manifests
+authored before `version` existed (no `version` key) remain valid indefinitely.
 
 ### Module resolution across a project
 

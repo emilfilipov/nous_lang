@@ -29,6 +29,16 @@ pub const MANIFEST_FILE_NAME: &str = "lullaby.json";
 pub struct ProjectManifest {
     /// The project name.
     pub name: String,
+    /// The project's own version: a semver-shaped `MAJOR.MINOR.PATCH` string with
+    /// an optional `-<prerelease>` suffix (e.g. `0.1.0`, `1.2.0`,
+    /// `1.0.0-preview`). Optional and backward-compatible — manifests written
+    /// before this field existed (no `version`) load unchanged. When present it
+    /// must be well-formed or the manifest is rejected with `L0343`. This mirrors
+    /// the toolchain's own `MAJOR.PATCH-STATUS` display scheme mapped onto semver
+    /// (see `documents/versioning.md`) and reserves the field so a future package
+    /// registry can add version *constraints* without breaking existing manifests.
+    #[serde(default)]
+    pub version: Option<String>,
     /// The executable entry `.lby` file, relative to the manifest directory.
     /// Optional: library projects have no entry.
     #[serde(default)]
@@ -122,7 +132,7 @@ fn parse_manifest(manifest_path: &Path) -> Result<ProjectManifest, Box<Diagnosti
             manifest_path,
         )
     })?;
-    serde_json::from_str::<ProjectManifest>(&text).map_err(|error| {
+    let manifest = serde_json::from_str::<ProjectManifest>(&text).map_err(|error| {
         manifest_error(
             format!(
                 "failed to parse project manifest `{}`: {error}",
@@ -130,7 +140,99 @@ fn parse_manifest(manifest_path: &Path) -> Result<ProjectManifest, Box<Diagnosti
             ),
             manifest_path,
         )
-    })
+    })?;
+
+    if let Some(version) = &manifest.version
+        && let Err(reason) = validate_version(version)
+    {
+        return Err(manifest_error(
+            format!(
+                "project manifest `{}` has an invalid `version` \"{version}\": it {reason}; \
+                 use a semver-shaped MAJOR.MINOR.PATCH, optionally with a `-status` suffix \
+                 (e.g. \"0.1.0\" or \"1.0.0-preview\")",
+                manifest_path.display()
+            ),
+            manifest_path,
+        ));
+    }
+
+    Ok(manifest)
+}
+
+/// Validate a manifest `version` string. A well-formed version is a semver-shaped
+/// `MAJOR.MINOR.PATCH` core — exactly three `.`-separated non-negative integers,
+/// each digits-only with no leading zero (except the single digit `0`) — with an
+/// optional `-<prerelease>` suffix of one or more `.`-separated identifiers, each
+/// a non-empty run of ASCII letters, digits, or `-` (e.g. `-preview`,
+/// `-experimental.2`). Returns `Ok(())` for a well-formed version, or `Err(reason)`
+/// describing the first problem for the diagnostic message.
+fn validate_version(version: &str) -> Result<(), String> {
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (version, None),
+    };
+
+    let mut components = core.split('.');
+    for label in ["major", "minor", "patch"] {
+        match components.next() {
+            Some(component) => validate_numeric_component(component, label)?,
+            None => {
+                return Err(format!(
+                    "is missing the {label} number (expected MAJOR.MINOR.PATCH)"
+                ));
+            }
+        }
+    }
+    if components.next().is_some() {
+        return Err(format!(
+            "has too many `.`-separated numbers (expected exactly three: MAJOR.MINOR.PATCH), found {}",
+            core.split('.').count()
+        ));
+    }
+
+    if let Some(prerelease) = prerelease {
+        if prerelease.is_empty() {
+            return Err("has an empty pre-release suffix after `-`".to_string());
+        }
+        for identifier in prerelease.split('.') {
+            if identifier.is_empty() {
+                return Err(
+                    "has an empty pre-release identifier (a leading, trailing, or doubled `.`)"
+                        .to_string(),
+                );
+            }
+            if !identifier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            {
+                return Err(format!(
+                    "has an invalid pre-release identifier `{identifier}` \
+                     (use ASCII letters, digits, or `-`)"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate one `MAJOR`/`MINOR`/`PATCH` numeric component: non-empty, digits only,
+/// and no leading zero unless it is the single digit `0`.
+fn validate_numeric_component(component: &str, label: &str) -> Result<(), String> {
+    if component.is_empty() {
+        return Err(format!("has an empty {label} number"));
+    }
+    if !component.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "has a non-numeric {label} number `{component}` (expected digits only)"
+        ));
+    }
+    if component.len() > 1 && component.starts_with('0') {
+        return Err(format!(
+            "has a {label} number `{component}` with a leading zero"
+        ));
+    }
+    Ok(())
 }
 
 /// Append the (validated, existing) `src` directories of a manifest to `out`.
@@ -207,4 +309,123 @@ fn resolve_dependencies(
         resolve_dependencies(&dep_root, &dep_manifest, visited, out)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Create a unique, empty temporary directory for a test and return its path.
+    /// Uses the process id and a monotonic counter so parallel tests never collide.
+    fn temp_project_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "lullaby_loader_manifest_test_{}_{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("src")).expect("create temp project dir");
+        dir
+    }
+
+    /// Write a `lullaby.json` with the given body into `dir` and load it, mapping
+    /// any failure to its `(code, message)` for assertions.
+    fn write_and_load(
+        dir: &Path,
+        manifest_body: &str,
+    ) -> Result<ResolvedProject, (String, String)> {
+        let manifest_path = dir.join(MANIFEST_FILE_NAME);
+        std::fs::write(&manifest_path, manifest_body).expect("write manifest");
+        load_manifest(dir, &manifest_path)
+            .map_err(|report| (report.code.clone(), report.message.clone()))
+    }
+
+    #[test]
+    fn manifest_with_valid_version_parses_and_exposes_it() {
+        let dir = temp_project_dir();
+        let project = write_and_load(
+            &dir,
+            "{\n  \"name\": \"withver\",\n  \"version\": \"1.2.0\",\n  \"src\": [\"src\"]\n}\n",
+        )
+        .expect("valid version should load");
+        assert_eq!(project.manifest.version.as_deref(), Some("1.2.0"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manifest_with_prerelease_version_parses() {
+        let dir = temp_project_dir();
+        let project = write_and_load(
+            &dir,
+            "{\n  \"name\": \"pre\",\n  \"version\": \"1.0.0-preview\",\n  \"src\": [\"src\"]\n}\n",
+        )
+        .expect("prerelease version should load");
+        assert_eq!(project.manifest.version.as_deref(), Some("1.0.0-preview"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manifest_without_version_still_loads() {
+        let dir = temp_project_dir();
+        let project = write_and_load(
+            &dir,
+            "{\n  \"name\": \"noversion\",\n  \"src\": [\"src\"]\n}\n",
+        )
+        .expect("manifest without version must remain backward-compatible");
+        assert_eq!(project.manifest.version, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn manifest_with_malformed_version_is_rejected() {
+        for bad in [
+            "1.2",        // too few components
+            "1.2.3.4",    // too many components
+            "1.2.x",      // non-numeric
+            "1.02.0",     // leading zero
+            "v1.2.0",     // stray prefix -> non-numeric major
+            "1.2.0-",     // empty prerelease
+            "1.2.0-bad!", // invalid prerelease character
+        ] {
+            let dir = temp_project_dir();
+            let body = format!(
+                "{{\n  \"name\": \"badver\",\n  \"version\": \"{bad}\",\n  \"src\": [\"src\"]\n}}\n"
+            );
+            let (code, message) = write_and_load(&dir, &body)
+                .expect_err(&format!("version `{bad}` should be rejected"));
+            assert_eq!(code, "L0343", "wrong diagnostic code for `{bad}`");
+            assert!(
+                message.contains("invalid `version`"),
+                "expected an invalid-version diagnostic for `{bad}`, got: {message}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn validate_version_accepts_well_formed() {
+        for good in [
+            "0.1.0",
+            "1.0.0",
+            "10.20.30",
+            "1.0.0-preview",
+            "2.0.0-experimental.2",
+        ] {
+            assert!(
+                validate_version(good).is_ok(),
+                "expected `{good}` to be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_version_rejects_malformed() {
+        for bad in ["1.0", "1.0.0.0", "1.0.a", "01.0.0", "1.0.0-", "1.0.0-a..b"] {
+            assert!(
+                validate_version(bad).is_err(),
+                "expected `{bad}` to be rejected"
+            );
+        }
+    }
 }

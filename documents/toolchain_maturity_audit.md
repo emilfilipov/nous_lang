@@ -141,12 +141,17 @@ otherwise.
 1. **Nothing structurally new is required for 1.0.** The local-path project system
    spans "any program you can write on one machine," which matches the 1.0 goal.
    The honest posture (no fake registry) is the right call.
-2. **Manifest `version` field + schema validation with a clear diagnostic** for
-   unknown/malformed keys. Cheap, and it future-proofs `lullaby.json` so adding a
-   registry later is non-breaking. *The one genuinely worth doing before 1.0.*
+2. **Manifest `version` field + schema validation with a clear diagnostic**
+   — **DONE.** `ProjectManifest` now carries an optional semver-shaped `version`
+   (`MAJOR.MINOR.PATCH` + optional `-<prerelease>`), validated in
+   `crates/lullaby_loader/src/manifest.rs` (`validate_version`) and rejected via
+   `L0343` when malformed. Optional and backward-compatible (manifests without a
+   `version` still load); `lullaby new` scaffolds `"0.1.0"`. This future-proofs
+   `lullaby.json` so adding a registry later is non-breaking.
 3. **Document the manifest surface** (fields, resolution order, diagnostics) as a
-   stable, versioned contract — since 1.0-stable is an API-stability promise and
-   the manifest format is part of that surface.
+   stable, versioned contract — **DONE.** `documents/modules_design.md` now
+   documents the full schema (including `version`) and states the manifest is a
+   stable, forward-compatible 1.0 contract.
 
 ### Post-1.0 nice-to-have
 - Registry + remote fetch, semver constraints + resolution, lockfiles, build
@@ -262,7 +267,9 @@ backend coverage), each small, none deep.
 4. **Test filtering** + **test backend selection** (run the suite on native, not
    just the AST interpreter).
 5. **Manifest `version` field + schema validation**, and document the manifest as
-   a stable contract.
+   a stable contract — **DONE** (optional semver `version` validated via `L0343`,
+   `lullaby new` default `"0.1.0"`, schema documented as a 1.0 contract in
+   `modules_design.md`).
 6. **Document symbols** in the LSP (cheap outline).
 
 **Correctly post-1.0 (do not block stable):** package registry / remote deps /
