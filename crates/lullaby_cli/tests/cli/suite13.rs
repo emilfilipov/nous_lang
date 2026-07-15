@@ -82,8 +82,95 @@ pub(crate) fn list_get_out_of_bounds_aborts_l0413_on_all_backends() {
 }
 
 #[test]
+pub(crate) fn list_set_out_of_bounds_aborts_l0413_on_all_backends() {
+    assert_aborts_on_all_backends("tests/fixtures/invalid/list_set_out_of_bounds.lby", "L0413");
+}
+
+#[test]
 pub(crate) fn pop_empty_list_aborts_l0413_on_all_backends() {
     assert_aborts_on_all_backends("tests/fixtures/invalid/pop_empty_list.lby", "L0413");
+}
+
+// -- Native parity: a bounds violation TRAPS in native code, never corrupts ----
+//
+// The three interpreters abort out-of-range list `get`/`set`/`pop` with `L0413`
+// (above). Native `list<T>` get/set/pop now bounds-check the index against the
+// list's `len` header and, on violation, emit the same `ud2` bounds-trap array
+// indexing uses — a DEFINED illegal-instruction abort (`STATUS_ILLEGAL_INSTRUCTION`
+// = `0xC000001D`), never a silent wrong value (exit 0) and never a heap-corrupting
+// out-of-bounds read/write (which could access-violate `0xC0000005` or worse,
+// succeed with garbage). This is the native half of the A5 safe-tier guarantee.
+//
+// These emit the fixture native and run it, asserting the clean, defined trap.
+// The programs use only the bump heap (no C-runtime import), so they take the
+// direct-PE path and need no linker; the run+assert is Windows-only (the default
+// `x86_64-pc-windows-msvc` exe is not runnable elsewhere).
+
+/// Emit `fixture` native, run the produced exe, and assert it traps cleanly with
+/// `STATUS_ILLEGAL_INSTRUCTION` (`0xC000001D`) — the defined `ud2` bounds-trap —
+/// rather than exiting 0 or access-violating. On a non-Windows host the run is
+/// skipped (the exe is a Windows PE).
+fn assert_native_list_op_traps(fixture: &str, tag: &str) {
+    let src = workspace_root().join(fixture);
+    let out = std::env::temp_dir().join(format!("lullaby_native_{tag}.exe"));
+    let _ = std::fs::remove_file(&out);
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            src.to_str().expect("src path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(
+        emit.status.success(),
+        "native emit for {fixture} failed: {}",
+        stderr(&emit)
+    );
+
+    if !cfg!(windows) {
+        eprintln!("non-Windows host; skipping native list-op trap run for {fixture}");
+        return;
+    }
+    assert!(
+        out.is_file(),
+        "expected a native exe at {} (main must be native-eligible so the bounds check is emitted)",
+        out.display()
+    );
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe
+        .status
+        .code()
+        .expect("native exit code (Windows returns NTSTATUS)");
+    assert_eq!(
+        exit, 0xC000_001Du32 as i32,
+        "out-of-range native list `{tag}` must trap cleanly with STATUS_ILLEGAL_INSTRUCTION \
+         (0xC000001D), not corrupt memory / access-violate (0xC0000005) or silently \
+         succeed with a wrong value; got {exit:#010x}"
+    );
+}
+
+#[test]
+pub(crate) fn native_list_get_out_of_bounds_traps() {
+    assert_native_list_op_traps(
+        "tests/fixtures/invalid/list_get_out_of_bounds.lby",
+        "list_get_oob",
+    );
+}
+
+#[test]
+pub(crate) fn native_list_set_out_of_bounds_traps() {
+    assert_native_list_op_traps(
+        "tests/fixtures/invalid/list_set_out_of_bounds.lby",
+        "list_set_oob",
+    );
+}
+
+#[test]
+pub(crate) fn native_pop_empty_list_traps() {
+    assert_native_list_op_traps("tests/fixtures/invalid/pop_empty_list.lby", "pop_empty");
 }
 
 #[test]

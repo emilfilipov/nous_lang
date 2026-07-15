@@ -1705,9 +1705,9 @@ pub(crate) fn lower_list_push(
 
 /// Lower `set(l, i, x) -> list<T>` (value-semantic replace): deep-copy `l`, store
 /// `x` into element slot `i` of the copy, leave the fresh list pointer in `rax`.
-/// In-bounds writes match the interpreters; an out-of-range index writes past the
-/// live elements into the (still-allocated) capacity or beyond, consistent with
-/// the native no-bounds-check discipline for arrays.
+/// The index is bounds-checked against the copy's `len` header: an out-of-range
+/// (or negative) index traps with `ud2` — the safe-tier guarantee, matching the
+/// interpreters' `L0413` — instead of writing past the live elements.
 pub(crate) fn lower_list_set(
     ctx: &mut NativeCtx,
     list: &BytecodeExpr,
@@ -1754,6 +1754,17 @@ pub(crate) fn lower_list_set(
     ctx.scratch_next = saved_scratch;
     code.push(0x59); // pop rcx (index)
     code.push(0x5A); // pop rdx (list pointer)
+    // Bounds check (safe-tier guarantee, matching the interpreters' L0413): trap
+    // with `ud2` unless `0 <= index < len`. One UNSIGNED compare of the index in
+    // `rcx` against the copy's `len` header word catches both a negative index and
+    // `index >= len`, so an out-of-range `set` faults deterministically instead of
+    // writing past the live elements. `r10` is scratch here (rax = value to store,
+    // rcx = index, rdx = list ptr — all preserved).
+    code.extend_from_slice(&[0x4C, 0x8B, 0x92]); // mov r10, [rdx + disp32]
+    code.extend_from_slice(&LIST_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x39, 0xD1]); // cmp rcx, r10
+    code.extend_from_slice(&[0x72, 0x02]); // jb +2 (in bounds -> skip the trap)
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2   (out of bounds -> fault)
     // Element slot address: rdx = rdx + LIST_DATA_OFF + rcx*8.
     // lea rdx, [rdx + rcx*8 + LIST_DATA_OFF]
     code.extend_from_slice(&[0x48, 0x8D, 0x94, 0xCA]);
@@ -1774,9 +1785,10 @@ pub(crate) fn lower_list_set(
 
 /// Lower `pop(l) -> list<T>` (value-semantic remove-last): deep-copy `l`,
 /// decrement the copy's `len` (the slot stays allocated, like `Vec::pop`), leave
-/// the fresh list pointer in `rax`. Popping an empty list is `L0413` on the
-/// interpreters; the native path decrements `len` toward `-1`, so the program is
-/// expected to keep the same non-empty precondition the interpreters require.
+/// the fresh list pointer in `rax`. Popping an empty list is a contract violation:
+/// the native path traps with `ud2` when `len <= 0` (before the decrement), the
+/// safe-tier guarantee matching the interpreters' `L0413`, instead of underflowing
+/// `len` toward `-1`.
 pub(crate) fn lower_list_pop(
     ctx: &mut NativeCtx,
     list: &BytecodeExpr,
@@ -1807,6 +1819,12 @@ pub(crate) fn lower_list_pop(
     // mov r8, [rax + LIST_LEN_OFF]
     code.extend_from_slice(&[0x4C, 0x8B, 0x80]);
     code.extend_from_slice(&LIST_LEN_OFF.to_le_bytes());
+    // Non-empty check (safe-tier guarantee, matching the interpreters' L0413): a
+    // SIGNED test of `len` traps with `ud2` when `len <= 0`, so popping an empty
+    // list faults deterministically instead of underflowing `len` toward `-1`.
+    code.extend_from_slice(&[0x4D, 0x85, 0xC0]); // test r8, r8
+    code.extend_from_slice(&[0x7F, 0x02]); // jg +2 (len > 0 -> skip the trap)
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2  (empty -> fault)
     code.extend_from_slice(&[0x49, 0xFF, 0xC8]); // dec r8
     // mov [rax + LIST_LEN_OFF], r8
     code.extend_from_slice(&[0x4C, 0x89, 0x80]);
@@ -1872,6 +1890,17 @@ pub(crate) fn lower_list_get(
     code.push(0x50); // push rax (index)
     lower_native_expr(ctx, list, code)?; // rax = list pointer
     code.push(0x59); // pop rcx (index)
+    // Bounds check (safe-tier guarantee, matching the interpreters' L0413): trap
+    // with `ud2` unless `0 <= index < len`. One UNSIGNED compare of the index in
+    // `rcx` against the list's `len` header word catches both a negative index (a
+    // huge unsigned value) and `index >= len`, so an out-of-range `get` faults
+    // deterministically instead of reading past the live elements. `r10` is a
+    // scratch register free here (rax = list ptr, rcx = index).
+    code.extend_from_slice(&[0x4C, 0x8B, 0x90]); // mov r10, [rax + disp32]
+    code.extend_from_slice(&LIST_LEN_OFF.to_le_bytes());
+    code.extend_from_slice(&[0x4C, 0x39, 0xD1]); // cmp rcx, r10
+    code.extend_from_slice(&[0x72, 0x02]); // jb +2 (in bounds -> skip the trap)
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2   (out of bounds -> fault)
     // rax = [rax + rcx*8 + LIST_DATA_OFF]
     code.extend_from_slice(&[0x48, 0x8B, 0x84, 0xC8]); // mov rax, [rax + rcx*8 + disp32]
     code.extend_from_slice(&LIST_DATA_OFF.to_le_bytes());

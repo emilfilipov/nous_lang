@@ -1,0 +1,9 @@
+# Safe-tier failure: a `set` past the end of a list is a bounds/contract
+# violation that ABORTS with diagnostic L0413 on every backend. An out-of-range
+# index has no live element to overwrite, so it is a bug, not a recoverable value.
+fn main -> i64
+    let xs list<i64> = list_new()
+    xs = push(xs, 1)
+    xs = push(xs, 2)
+    let ys list<i64> = set(xs, 5, 99)
+    len(ys)
