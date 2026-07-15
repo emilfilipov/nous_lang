@@ -1388,6 +1388,10 @@ mod suite10;
 #[path = "cli/suite11.rs"]
 mod suite11;
 
+// -- Explicit i64 overflow arithmetic + checked_div/checked_rem --------------
+#[path = "cli/suite12.rs"]
+mod suite12;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

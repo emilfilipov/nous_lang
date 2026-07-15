@@ -473,6 +473,15 @@ impl<'a> IrRuntime<'a> {
             "checked_add" => overflow_arith(name, args, ArithOp::Add, OverflowMode::Checked),
             "checked_sub" => overflow_arith(name, args, ArithOp::Sub, OverflowMode::Checked),
             "checked_mul" => overflow_arith(name, args, ArithOp::Mul, OverflowMode::Checked),
+            // `checked_div`/`checked_rem` are shadowable by a user function of the
+            // same name (matching the semantic checker's guard), so the builtin only
+            // fires when the program defines no such function.
+            "checked_div" if !self.functions.contains_key("checked_div") => {
+                checked_div_rem(name, args, false)
+            }
+            "checked_rem" if !self.functions.contains_key("checked_rem") => {
+                checked_div_rem(name, args, true)
+            }
             "saturating_add" => overflow_arith(name, args, ArithOp::Add, OverflowMode::Saturating),
             "saturating_sub" => overflow_arith(name, args, ArithOp::Sub, OverflowMode::Saturating),
             "saturating_mul" => overflow_arith(name, args, ArithOp::Mul, OverflowMode::Saturating),

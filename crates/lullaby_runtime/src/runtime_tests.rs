@@ -1324,6 +1324,115 @@ fn overflow_arith_checked_saturating_wrapping() {
 }
 
 #[test]
+fn overflow_arith_on_plain_i64() {
+    // checked_add overflows i64::MAX + 1 -> none.
+    let none = overflow_arith(
+        "checked_add",
+        vec![Value::I64(i64::MAX), Value::I64(1)],
+        ArithOp::Add,
+        OverflowMode::Checked,
+    )
+    .expect("checked_add");
+    assert_eq!(none, option_value(None));
+    // checked_add in range -> some(300).
+    let some = overflow_arith(
+        "checked_add",
+        vec![Value::I64(100), Value::I64(200)],
+        ArithOp::Add,
+        OverflowMode::Checked,
+    )
+    .expect("checked_add");
+    assert_eq!(some, option_value(Some(Value::I64(300))));
+    // saturating_sub clamps to i64::MIN.
+    let sat = overflow_arith(
+        "saturating_sub",
+        vec![Value::I64(i64::MIN), Value::I64(100)],
+        ArithOp::Sub,
+        OverflowMode::Saturating,
+    )
+    .expect("saturating_sub");
+    assert_eq!(sat, Value::I64(i64::MIN));
+    // wrapping_add wraps i64::MAX + 1 -> i64::MIN, matching the default `+`.
+    let wrap = overflow_arith(
+        "wrapping_add",
+        vec![Value::I64(i64::MAX), Value::I64(1)],
+        ArithOp::Add,
+        OverflowMode::Wrapping,
+    )
+    .expect("wrapping_add");
+    assert_eq!(wrap, Value::I64(i64::MIN));
+}
+
+#[test]
+fn checked_div_rem_i64_and_fixed_width() {
+    // i64: divide by zero -> none.
+    assert_eq!(
+        checked_div_rem("checked_div", vec![Value::I64(10), Value::I64(0)], false).expect("div"),
+        option_value(None)
+    );
+    // i64: MIN / -1 overflow -> none.
+    assert_eq!(
+        checked_div_rem(
+            "checked_div",
+            vec![Value::I64(i64::MIN), Value::I64(-1)],
+            false
+        )
+        .expect("div"),
+        option_value(None)
+    );
+    // i64: in range -> some(14).
+    assert_eq!(
+        checked_div_rem("checked_div", vec![Value::I64(100), Value::I64(7)], false).expect("div"),
+        option_value(Some(Value::I64(14)))
+    );
+    // i64: remainder by zero -> none.
+    assert_eq!(
+        checked_div_rem("checked_rem", vec![Value::I64(10), Value::I64(0)], true).expect("rem"),
+        option_value(None)
+    );
+    // i64: MIN % -1 is defined -> some(0) (matches the default `%`).
+    assert_eq!(
+        checked_div_rem(
+            "checked_rem",
+            vec![Value::I64(i64::MIN), Value::I64(-1)],
+            true
+        )
+        .expect("rem"),
+        option_value(Some(Value::I64(0)))
+    );
+    // Fixed-width i8: MIN / -1 overflow (quotient 128 is outside i8) -> none.
+    assert_eq!(
+        checked_div_rem(
+            "checked_div",
+            vec![Value::int(-128, IntKind::I8), Value::int(-1, IntKind::I8)],
+            false,
+        )
+        .expect("div"),
+        option_value(None)
+    );
+    // Fixed-width u8: in range -> some(12).
+    assert_eq!(
+        checked_div_rem(
+            "checked_div",
+            vec![Value::int(100, IntKind::U8), Value::int(8, IntKind::U8)],
+            false,
+        )
+        .expect("div"),
+        option_value(Some(Value::int(12, IntKind::U8)))
+    );
+    // Fixed-width i8: MIN % -1 -> some(0).
+    assert_eq!(
+        checked_div_rem(
+            "checked_rem",
+            vec![Value::int(-128, IntKind::I8), Value::int(-1, IntKind::I8)],
+            true,
+        )
+        .expect("rem"),
+        option_value(Some(Value::int(0, IntKind::I8)))
+    );
+}
+
+#[test]
 fn gcd_is_total_and_non_negative() {
     assert_eq!(gcd_i64(0, 0), 0);
     assert_eq!(gcd_i64(0, 7), 7);

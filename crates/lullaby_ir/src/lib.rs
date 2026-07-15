@@ -18,13 +18,13 @@ use lullaby_runtime::{
     builtin_atomic_add_ordered, builtin_atomic_and_ordered, builtin_atomic_cas_ordered,
     builtin_atomic_load_ordered, builtin_atomic_or_ordered, builtin_atomic_store_ordered,
     builtin_atomic_sub_ordered, builtin_atomic_swap_ordered, builtin_atomic_xor_ordered,
-    builtin_fence, char_find, expect_atomic, expect_bool, expect_chan, expect_future, expect_i64,
-    expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64,
-    get_place, http_exchange, int_cmp, int_div, int_rem, int_shl, int_shr, join_task, list_extreme,
-    list_sum_values, monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes,
-    overflow_arith, process_exit_code, read_stdin_all, read_stdin_line, result_value,
-    scalar_order_keys, set_place, shift_left, shift_right, sleep_millis, sort_scalar_list,
-    value_type_name, wall_now_millis,
+    builtin_fence, char_find, checked_div_rem, expect_atomic, expect_bool, expect_chan,
+    expect_future, expect_i64, expect_list, expect_map, expect_mutex, expect_string, expect_task,
+    extern_call_error, gcd_i64, get_place, http_exchange, int_cmp, int_div, int_rem, int_shl,
+    int_shr, join_task, list_extreme, list_sum_values, monotonic_now_nanos, net_err, new_chan,
+    option_value, os_random_bytes, overflow_arith, process_exit_code, read_stdin_all,
+    read_stdin_line, result_value, scalar_order_keys, set_place, shift_left, shift_right,
+    sleep_millis, sort_scalar_list, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};

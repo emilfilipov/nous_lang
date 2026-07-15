@@ -2891,8 +2891,20 @@ impl<'a> Lowerer<'a> {
                 .ok_or_else(|| {
                     IrLoweringError::new(format!("{name} call missing operand"), Some(span))
                 })?,
-            // checked arithmetic returns `option<T>`.
+            // checked arithmetic returns `option<T>`. `checked_div`/`checked_rem`
+            // (`none` on a zero divisor or the signed `MIN / -1` overflow) join the
+            // family under a shadowing guard so a user function of that name wins
+            // (its return type flows through the `_ =>` user-signature arm).
             "checked_add" | "checked_sub" | "checked_mul" => {
+                let operand = args
+                    .first()
+                    .map(|operand| operand.ty.clone())
+                    .ok_or_else(|| {
+                        IrLoweringError::new(format!("{name} call missing operand"), Some(span))
+                    })?;
+                generic_type("option", std::slice::from_ref(&operand))
+            }
+            "checked_div" | "checked_rem" if !self.signatures.contains_key(name) => {
                 let operand = args
                     .first()
                     .map(|operand| operand.ty.clone())

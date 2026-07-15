@@ -3211,7 +3211,7 @@ fn fixed_width_integer_arithmetic_and_conversions_type_check() {
 }
 
 #[test]
-fn overflow_arith_builtins_type_check_and_reject_i64() {
+fn overflow_arith_builtins_type_check_on_fixed_width_and_i64() {
     // checked/saturating/wrapping on a fixed-width integer type-check; the
     // checked form yields option<T>, the others yield T.
     let ok = concat!(
@@ -3223,13 +3223,33 @@ fn overflow_arith_builtins_type_check_and_reject_i64() {
         "        none -> to_i64(s) + to_i64(w)\n",
     );
     validate_source(ok).expect("overflow arithmetic on u32 type-checks");
-    // i64 is rejected: its default arithmetic already traps on overflow.
-    let bad = concat!("fn main -> i64\n", "    checked_add(5, 6)\n");
-    let diagnostics = validate_source(bad).expect_err("checked_add on i64 rejected");
+    // i64 is accepted too (integer arithmetic wraps by default; these builtins make
+    // overflow handling explicit). checked_div/checked_rem round out the surface.
+    let ok_i64 = concat!(
+        "fn main -> i64\n",
+        "    let s i64 = saturating_add(9223372036854775807, 1)\n",
+        "    let w i64 = wrapping_mul(9223372036854775807, 2)\n",
+        "    match checked_div(10, 0)\n",
+        "        some(v) -> v\n",
+        "        none -> match checked_rem(s, w)\n",
+        "            some(r) -> r\n",
+        "            none -> 0\n",
+    );
+    validate_source(ok_i64).expect("overflow arithmetic on i64 type-checks");
+    // Mismatched operand types are still rejected with L0307.
+    let bad = concat!(
+        "fn main -> i64\n",
+        "    to_i64(wrapping_add(to_u32(1), to_i32(2)))\n"
+    );
+    let diagnostics = validate_source(bad).expect_err("mismatched overflow operands rejected");
     assert!(
         diagnostics.iter().any(|d| d.code == "L0307"),
         "{diagnostics:?}"
     );
+    // Wrong arity is rejected (checked_div takes exactly two operands).
+    let bad_arity = concat!("fn main -> i64\n", "    to_i64(checked_div(5))\n");
+    let arity_diags = validate_source(bad_arity).expect_err("checked_div wrong arity rejected");
+    assert!(!arity_diags.is_empty(), "{arity_diags:?}");
 }
 
 #[test]

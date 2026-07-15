@@ -1257,19 +1257,22 @@ impl<'a> Checker<'a> {
                 self.expect_scalar_builtin_arg(name, 1, &args[0], "f32", scope, function)?;
                 Some(TypeRef::new("f64"))
             }
-            // Overflow-aware arithmetic on a fixed-width integer `T`: both operands
-            // must be the same fixed-width type. `checked_*` yields `option<T>`
-            // (`none` on overflow); `saturating_*`/`wrapping_*` yield `T`. `i64`
-            // is excluded — its default arithmetic already traps on overflow.
+            // Overflow-aware arithmetic on an integer type `T` (`i64` or a
+            // fixed-width kind): both operands must be the same integer type.
+            // `checked_*` yields `option<T>` (`none` on overflow); `saturating_*`/
+            // `wrapping_*` yield `T`. Integer arithmetic wraps by default in Lullaby
+            // (a conscious 1.0 decision — see the type-system doc); these builtins
+            // make overflow handling explicit, `i64` included. `checked_div`/
+            // `checked_rem` join this family below under a shadowing guard.
             "checked_add" | "checked_sub" | "checked_mul" | "saturating_add" | "saturating_sub"
             | "saturating_mul" | "wrapping_add" | "wrapping_sub" | "wrapping_mul" => {
                 self.expect_arg_count(name, args, 2, function)?;
                 let left = self.check_expr(&args[0], scope, function)?;
                 let right = self.check_expr(&args[1], scope, function)?;
-                if !is_fixed_width_int_name(&left.name) || left != right {
+                if (!is_fixed_width_int_name(&left.name) && left.name != "i64") || left != right {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0307",
-                        format!("{name} operands must both be the same fixed-width integer type"),
+                        format!("{name} operands must both be the same integer type (`i64` or a fixed-width integer)"),
                         Some(function.name.clone()),
                         call_span,
                     ));
@@ -1280,6 +1283,28 @@ impl<'a> Checker<'a> {
                 } else {
                     Some(left)
                 }
+            }
+            // `checked_div`/`checked_rem` are newer stdlib names and `checked_div`
+            // in particular is a natural helper spelling, so a user-defined function
+            // of that name shadows the builtin (the guard yields to the `_ =>`
+            // user-call path) — adding these must never break existing user code.
+            // Semantics otherwise mirror the checked family: same integer type `T`
+            // (`i64` or fixed-width), yielding `option<T>` (`none` on a zero divisor
+            // or the signed `MIN / -1` division overflow).
+            "checked_div" | "checked_rem" if !self.signatures.contains_key(name) => {
+                self.expect_arg_count(name, args, 2, function)?;
+                let left = self.check_expr(&args[0], scope, function)?;
+                let right = self.check_expr(&args[1], scope, function)?;
+                if (!is_fixed_width_int_name(&left.name) && left.name != "i64") || left != right {
+                    self.diagnostics.push(SemanticDiagnostic::at(
+                        "L0307",
+                        format!("{name} operands must both be the same integer type (`i64` or a fixed-width integer)"),
+                        Some(function.name.clone()),
+                        call_span,
+                    ));
+                    return None;
+                }
+                Some(option_type(&left))
             }
             "env" => {
                 self.expect_process_arg_count(name, args, 1, call_span, function)?;

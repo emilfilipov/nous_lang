@@ -218,9 +218,12 @@ pub fn expect_fixed_int(name: &str, value: &Value) -> Result<(i64, IntKind), Run
 }
 
 /// Shared implementation of the overflow-aware arithmetic builtins. Both operands
-/// must be the same fixed-width kind (enforced by the type checker); the true
-/// result is computed in `i128` — wide enough that no fixed-width add/sub/mul
-/// overflows it — then resolved per `mode`. Identical on every backend.
+/// must be the same integer kind (enforced by the type checker); the true result
+/// is computed in `i128` — wide enough that no fixed-width add/sub/mul overflows
+/// it — then resolved per `mode`. Plain `i64` is its own full-width `Value::I64`
+/// cell (outside the fixed-width `IntKind` lattice) and takes the dedicated branch
+/// below, using Rust's native `i64` checked/saturating/wrapping methods. Identical
+/// on every backend.
 pub fn overflow_arith(
     name: &str,
     args: Vec<Value>,
@@ -233,6 +236,34 @@ pub fn overflow_arith(
             format!("{name} expects 2 arguments but got {}", args.len()),
         )
     })?;
+    // Plain `i64` — its own full-width `Value::I64` cell, not part of the
+    // fixed-width `IntKind` lattice. The type checker guarantees both operands
+    // share a type, so a single `I64` operand means both are `I64`. Rust's own
+    // `checked_*`/`saturating_*`/`wrapping_*` `i64` methods give the exact result;
+    // `wrapping_*` matches the default `+`/`-`/`*` on `i64`.
+    if let (Value::I64(la), Value::I64(lb)) = (&a, &b) {
+        let (la, lb) = (*la, *lb);
+        return Ok(match mode {
+            OverflowMode::Wrapping => Value::I64(match op {
+                ArithOp::Add => la.wrapping_add(lb),
+                ArithOp::Sub => la.wrapping_sub(lb),
+                ArithOp::Mul => la.wrapping_mul(lb),
+            }),
+            OverflowMode::Saturating => Value::I64(match op {
+                ArithOp::Add => la.saturating_add(lb),
+                ArithOp::Sub => la.saturating_sub(lb),
+                ArithOp::Mul => la.saturating_mul(lb),
+            }),
+            OverflowMode::Checked => option_value(
+                match op {
+                    ArithOp::Add => la.checked_add(lb),
+                    ArithOp::Sub => la.checked_sub(lb),
+                    ArithOp::Mul => la.checked_mul(lb),
+                }
+                .map(Value::I64),
+            ),
+        });
+    }
     let (la, ta) = expect_fixed_int(name, &a)?;
     let (lb, tb) = expect_fixed_int(name, &b)?;
     if ta != tb {
@@ -277,6 +308,62 @@ pub fn overflow_arith(
             }
             _ => option_value(None),
         },
+    })
+}
+
+/// The `checked_div`/`checked_rem` builtins: signedness-aware division and
+/// remainder returning `option<T>`. Yields `none` when the operation is undefined
+/// or overflows `T` — a **zero divisor** (both div and rem), or the signed
+/// `MIN / -1` **division** overflow (whose true quotient `|MIN|` is outside `T`);
+/// otherwise `some(result)`. Remainder by a non-zero divisor is always defined, so
+/// `checked_rem(MIN, -1)` is `some(0)` (the truncated remainder), matching
+/// Lullaby's default `%`. Handles plain `i64` (`Value::I64`) and every fixed-width
+/// kind; both operands share a type (enforced by the type checker). `is_rem`
+/// selects remainder; otherwise division. Identical on every interpreter backend.
+pub fn checked_div_rem(name: &str, args: Vec<Value>, is_rem: bool) -> Result<Value, RuntimeError> {
+    let [a, b]: [Value; 2] = args.try_into().map_err(|args: Vec<Value>| {
+        RuntimeError::new(
+            "L0407",
+            format!("{name} expects 2 arguments but got {}", args.len()),
+        )
+    })?;
+    // Plain `i64`: a zero divisor and (for division) the `i64::MIN / -1` overflow
+    // yield `none`; remainder by a non-zero divisor is always defined, so the
+    // `MIN % -1 == 0` case is `some(0)` (via `wrapping_rem`), consistent with the
+    // default `%` operator rather than Rust's overflow-tied `checked_rem`.
+    if let (Value::I64(la), Value::I64(lb)) = (&a, &b) {
+        let (la, lb) = (*la, *lb);
+        let result = if lb == 0 {
+            None
+        } else if is_rem {
+            Some(la.wrapping_rem(lb))
+        } else {
+            la.checked_div(lb)
+        };
+        return Ok(option_value(result.map(Value::I64)));
+    }
+    let (la, ta) = expect_fixed_int(name, &a)?;
+    let (lb, tb) = expect_fixed_int(name, &b)?;
+    if ta != tb {
+        return Err(RuntimeError::new(
+            "L0407",
+            format!("{name} operands must have the same integer type"),
+        ));
+    }
+    let (la128, lb128) = (ta.value_to_i128(la), ta.value_to_i128(lb));
+    if lb128 == 0 {
+        return Ok(option_value(None));
+    }
+    // Both div and rem are exact in `i128` (divisor non-zero, `i128` is wide
+    // enough). The remainder is always within `T`'s range; the quotient is out of
+    // range only in the signed `MIN / -1` case (e.g. `i8::MIN / -1 == 128`), which
+    // the range check turns into `none`.
+    let exact = if is_rem { la128 % lb128 } else { la128 / lb128 };
+    let (min, max) = ta.range_i128();
+    Ok(if exact >= min && exact <= max {
+        option_value(Some(Value::int(ta.i128_to_cell(exact), ta)))
+    } else {
+        option_value(None)
     })
 }
 

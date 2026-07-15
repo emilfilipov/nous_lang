@@ -1,0 +1,30 @@
+# Checked division and remainder on a fixed-width integer (`i8`): checked_div and
+# checked_rem return option<i8>, none on a zero divisor and (for division) the
+# signed i8::MIN / -1 overflow (whose quotient 128 is outside i8); i8::MIN % -1 is
+# some(0). Self-checking: main evaluates to 14 identically on the AST, IR, and
+# bytecode interpreters.
+
+fn div_or a i8 b i8 -> i64
+    match checked_div(a, b)
+        some(v) -> to_i64(v)
+        none -> 0 - 1
+
+fn rem_or a i8 b i8 -> i64
+    match checked_rem(a, b)
+        some(v) -> to_i64(v)
+        none -> 0 - 1
+
+fn main -> i64
+    # i8::MIN / -1 overflow -> none -> -1
+    let d1 i64 = div_or(to_i8(0 - 128), to_i8(0 - 1))
+    # 100 / 7 -> some(14)
+    let d2 i64 = div_or(to_i8(100), to_i8(7))
+    # divide by zero -> none -> -1
+    let d3 i64 = div_or(to_i8(5), to_i8(0))
+    # 100 % 7 -> some(2)
+    let r1 i64 = rem_or(to_i8(100), to_i8(7))
+    # i8::MIN % -1 -> some(0) (defined; matches default %)
+    let r2 i64 = rem_or(to_i8(0 - 128), to_i8(0 - 1))
+
+    # -1 + 14 + -1 + 2 + 0 = 14
+    d1 + d2 + d3 + r1 + r2

@@ -102,20 +102,30 @@ are built with `to_u64`. A suffix never applies to a base-prefixed float form:
 
 ### Overflow-aware integer arithmetic
 
-The `+ - *` operators on a fixed-width integer wrap by default. When wrapping is
-the wrong behaviour, these builtins give explicit control over overflow. Each
-takes two operands of the **same** fixed-width integer type `T` (not `i64`,
-whose default arithmetic already traps on overflow):
+Integer arithmetic wraps by default in Lullaby: `+ - *` on any integer type
+(`i64` and every fixed-width kind) wrap modulo the type width on overflow. This is
+a conscious 1.0 decision (see the type system's [Integer overflow](lullaby_type_system.md#integer-overflow)
+note). When wrapping is the wrong behaviour, these builtins give explicit,
+per-operation control. Each takes two operands of the **same** integer type `T`
+(`i64` or a fixed-width kind):
 
 | Family | Signature | On overflow |
 |--------|-----------|-------------|
 | `checked_add` / `checked_sub` / `checked_mul` | `(T, T) -> option<T>` | `none` |
+| `checked_div` / `checked_rem` | `(T, T) -> option<T>` | `none` on a zero divisor or (for `checked_div`) the signed `MIN / -1` overflow |
 | `saturating_add` / `saturating_sub` / `saturating_mul` | `(T, T) -> T` | clamps to `T`'s bounds |
 | `wrapping_add` / `wrapping_sub` / `wrapping_mul` | `(T, T) -> T` | wraps modulo the width (explicit form of the default) |
 
 For example, on `u32`: `checked_mul(to_u32(100000), to_u32(100000))` is `none`,
 `saturating_mul(...)` is `4294967295`, and `wrapping_add(to_u32(4294967295), to_u32(1))`
-is `0`. Every backend resolves overflow identically.
+is `0`. On `i64`: `checked_add(9223372036854775807, 1)` is `none`,
+`saturating_add(9223372036854775807, 100)` is `9223372036854775807`, and
+`checked_div(10, 0)` is `none`. Remainder by a non-zero divisor is always defined,
+so `checked_rem` of `i64::MIN` and `-1` is `some(0)` (matching the default `%`).
+Every interpreter backend resolves overflow identically. The native and WASM
+backends lower the fixed-width `checked_*`/`saturating_*`/`wrapping_*` add/sub/mul
+forms directly; the `i64` forms and `checked_div`/`checked_rem` are not yet lowered
+there, so a function using one is cleanly skipped and runs on the interpreters.
 
 ## Character classification
 

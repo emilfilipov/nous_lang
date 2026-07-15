@@ -82,6 +82,24 @@ let pi f64 = 3.14159            # f64 literal
 let text = "hello"              # inferred from the literal
 ```
 
+### Integer overflow
+
+**Integer arithmetic wraps by default.** The `+ - *` operators on every integer
+type — `i64` and each fixed-width kind (`i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`u64`/
+`isize`/`usize`) — wrap modulo the type width on overflow (two's-complement),
+deterministically and identically on every backend. This is a **conscious 1.0
+decision**: wrapping is total (no hidden trap, no build-mode-dependent behaviour),
+matches the machine, and keeps arithmetic branch-free. `/` likewise wraps the sole
+signed-overflow case (`MIN / -1`), and shifts mask the amount to the operand width.
+
+When wrapping is the wrong behaviour, handle overflow **explicitly** with the
+overflow-aware stdlib builtins — `checked_add`/`checked_sub`/`checked_mul`/
+`checked_div`/`checked_rem` (return `option<T>`, `none` on overflow or an undefined
+division), `saturating_add`/`saturating_sub`/`saturating_mul` (clamp to `T`'s
+bounds), and `wrapping_add`/`wrapping_sub`/`wrapping_mul` (the explicit form of the
+default). See the standard library's [Overflow-aware integer
+arithmetic](standard_library.md#overflow-aware-integer-arithmetic).
+
 ### Composite Types
 
 **Structs (record layout):** nominal types with named fields declared `name Type`

@@ -107,15 +107,21 @@ Diagnostics: `L0310`/`L0311` (ptr type), `L0331` (ptr_write/volatile_store value
 | `to_f32` | `to_f32(x f64) -> f32` | Interp; Native/WASM |
 | `to_f64` | `to_f64(x f32) -> f64` | Interp; Native/WASM |
 
-## 4. Overflow-aware arithmetic (9)
+## 4. Overflow-aware arithmetic (11)
 
-Each takes two operands of the *same* fixed-width integer type `T` (not `i64`).
+Each takes two operands of the *same* integer type `T` — `i64` or a fixed-width
+kind. Integer arithmetic wraps by default (a conscious 1.0 decision, A4); these
+builtins make overflow handling explicit. "Native/WASM" means the fixed-width
+add/sub/mul forms are lowered directly; the `i64` forms and
+`checked_div`/`checked_rem` are not yet lowered there and cleanly skip to the
+interpreters (never miscompiled).
 
 | Builtin family | Signature | On overflow | Backends |
 |---|---|---|---|
-| `checked_add`/`checked_sub`/`checked_mul` | `(T, T) -> option<T>` | `none` | Interp; Native/WASM |
-| `saturating_add`/`saturating_sub`/`saturating_mul` | `(T, T) -> T` | clamps | Interp; Native/WASM |
-| `wrapping_add`/`wrapping_sub`/`wrapping_mul` | `(T, T) -> T` | wraps | Interp; Native/WASM |
+| `checked_add`/`checked_sub`/`checked_mul` | `(T, T) -> option<T>` | `none` | Interp (all `T`); Native/WASM (fixed-width) |
+| `checked_div`/`checked_rem` | `(T, T) -> option<T>` | `none` on zero divisor or signed `MIN / -1` div overflow | Interp; Native/WASM skip |
+| `saturating_add`/`saturating_sub`/`saturating_mul` | `(T, T) -> T` | clamps | Interp (all `T`); Native/WASM (fixed-width) |
+| `wrapping_add`/`wrapping_sub`/`wrapping_mul` | `(T, T) -> T` | wraps | Interp (all `T`); Native/WASM (fixed-width) |
 
 ## 5. Character classification (6)
 

@@ -1,0 +1,36 @@
+# Checked division and remainder on `i64`: checked_div/checked_rem return
+# option<i64>, yielding none on a zero divisor and (for division) the signed
+# i64::MIN / -1 overflow; remainder by a non-zero divisor is always defined, so
+# i64::MIN % -1 is some(0) (matching the default `%`). Self-checking: main
+# evaluates to 13 identically on the AST, IR, and bytecode interpreters.
+
+fn div_or a i64 b i64 -> i64
+    match checked_div(a, b)
+        some(v) -> v
+        none -> 0 - 1
+
+fn rem_or a i64 b i64 -> i64
+    match checked_rem(a, b)
+        some(v) -> v
+        none -> 0 - 1
+
+fn main -> i64
+    let max i64 = 9223372036854775807
+    let min i64 = 0 - max - 1
+
+    # checked_div by zero -> none -> -1
+    let d1 i64 = div_or(10, 0)
+    # checked_div i64::MIN / -1 overflow -> none -> -1
+    let d2 i64 = div_or(min, 0 - 1)
+    # checked_div in range (100 / 7) -> some(14)
+    let d3 i64 = div_or(100, 7)
+
+    # checked_rem by zero -> none -> -1
+    let r1 i64 = rem_or(10, 0)
+    # checked_rem i64::MIN % -1 -> some(0) (defined; matches default %)
+    let r2 i64 = rem_or(min, 0 - 1)
+    # checked_rem in range (100 % 7) -> some(2)
+    let r3 i64 = rem_or(100, 7)
+
+    # -1 + -1 + 14 + -1 + 0 + 2 = 13
+    d1 + d2 + d3 + r1 + r2 + r3

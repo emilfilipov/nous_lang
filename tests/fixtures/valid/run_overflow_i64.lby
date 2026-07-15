@@ -1,0 +1,48 @@
+# Explicit overflow arithmetic on the full-width signed integer `i64`. Its
+# `+ - *` wrap by default; these builtins make overflow handling explicit:
+# checked_* (option<i64>, none on overflow), saturating_* (clamp to i64 bounds),
+# wrapping_* (the explicit form of the wrapping default). Self-checking: main
+# evaluates to 297 identically on the AST, IR, and bytecode interpreters.
+
+fn checked_add_or a i64 b i64 -> i64
+    match checked_add(a, b)
+        some(v) -> v
+        none -> 0 - 1
+
+fn checked_sub_or a i64 b i64 -> i64
+    match checked_sub(a, b)
+        some(v) -> v
+        none -> 0 - 1
+
+fn checked_mul_or a i64 b i64 -> i64
+    match checked_mul(a, b)
+        some(v) -> v
+        none -> 0 - 1
+
+fn main -> i64
+    let max i64 = 9223372036854775807
+    let min i64 = 0 - max - 1
+
+    # checked_add overflow (i64::MAX + 1) -> none -> -1
+    let c1 i64 = checked_add_or(max, 1)
+    # checked_sub overflow (i64::MIN - 1) -> none -> -1
+    let c2 i64 = checked_sub_or(min, 1)
+    # checked_mul overflow (i64::MAX * 2) -> none -> -1
+    let c3 i64 = checked_mul_or(max, 2)
+    # checked_add in range (100 + 200) -> some(300)
+    let c4 i64 = checked_add_or(100, 200)
+
+    # saturating_add clamps to i64::MAX; subtracting max leaves 0
+    let s1 i64 = saturating_add(max, 100) - max
+    # saturating_sub clamps to i64::MIN; subtracting min leaves 0
+    let s2 i64 = saturating_sub(min, 100) - min
+    # saturating_mul clamps to i64::MAX; subtracting max leaves 0
+    let s3 i64 = saturating_mul(max, 2) - max
+
+    # wrapping_add: i64::MAX + 1 wraps to i64::MIN; subtracting min leaves 0
+    let w1 i64 = wrapping_add(max, 1) - min
+    # wrapping_mul: i64::MAX * 2 wraps to -2; adding 2 leaves 0
+    let w2 i64 = wrapping_mul(max, 2) + 2
+
+    # -1 + -1 + -1 + 300 + 0 + 0 + 0 + 0 + 0 = 297
+    c1 + c2 + c3 + c4 + s1 + s2 + s3 + w1 + w2
