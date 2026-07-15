@@ -1396,6 +1396,10 @@ mod suite12;
 #[path = "cli/suite13.rs"]
 mod suite13;
 
+// -- FFI callbacks (A3): passing a Lullaby function to C as a C-ABI function pointer
+#[path = "cli/ffi_callbacks.rs"]
+mod ffi_callbacks;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

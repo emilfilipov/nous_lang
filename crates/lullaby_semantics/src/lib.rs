@@ -618,11 +618,13 @@ impl<'a> Checker<'a> {
     /// Check that a body-less `extern fn` has a C-marshallable signature. The
     /// delivered `extern`-call marshalling set is: every fixed-width scalar
     /// (`i8`…`u64`, `isize`/`usize`, `bool`, `char`, `byte`, `f32`, `f64`), a raw
-    /// pointer `ptr<T>` (a machine address, passed/returned by value), and — for a
-    /// **parameter only** — the FFI-only `cstr` marker (a Lullaby `string` is
-    /// materialized into a NUL-terminated buffer across the boundary). A return
-    /// type may additionally be `void`. Anything else — a `string`, `list`/`map`,
-    /// non-`repr(C)` struct/enum, callback (`fn(...) -> R`), array, or a `cstr`
+    /// pointer `ptr<T>` (a machine address, passed/returned by value), a
+    /// **callback** `fn(A...) -> R` whose own signature is C-marshallable (a
+    /// function pointer C can invoke — §7), and — for a **parameter only** — the
+    /// FFI-only `cstr` marker (a Lullaby `string` is materialized into a
+    /// NUL-terminated buffer across the boundary). A return type may additionally be
+    /// `void`. Anything else — a `string`, `list`/`map`, non-`repr(C)` struct/enum,
+    /// a callback whose own signature is *not* C-marshallable, array, or a `cstr`
     /// return — is not yet marshallable and is rejected with `L0424` (the shared
     /// FFI-signature family) rather than silently demoted at native codegen. A
     /// generic extern is rejected (a C symbol is monomorphic).
@@ -643,7 +645,7 @@ impl<'a> Checker<'a> {
                 self.diagnostics.push(SemanticDiagnostic::at(
                     "L0424",
                     format!(
-                        "`extern fn {}` parameter `{}` has type `{}`; an extern parameter must be a C scalar (`i8`…`u64`/`isize`/`usize`/`bool`/`char`/`byte`/`f32`/`f64`), a raw pointer `ptr<T>`, or `cstr` (structs by value, callbacks, `string`, `list`/`map` are not yet marshallable)",
+                        "`extern fn {}` parameter `{}` has type `{}`; an extern parameter must be a C scalar (`i8`…`u64`/`isize`/`usize`/`bool`/`char`/`byte`/`f32`/`f64`), a raw pointer `ptr<T>`, `cstr`, or a callback `fn(...) -> R` whose own parameters/return are C scalars or raw pointers (structs by value, a callback taking a `string`/`list`/struct, `string`, `list`/`map` are not yet marshallable)",
                         function.name, param.name, param.ty.name
                     ),
                     Some(function.name.clone()),
@@ -687,9 +689,36 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether a type is valid as an `extern fn` **parameter**: a C scalar, a raw
-    /// pointer `ptr<T>`, or the FFI-only `cstr` marker (a materialized C string).
+    /// pointer `ptr<T>`, the FFI-only `cstr` marker (a materialized C string), or a
+    /// **callback** — a function pointer `fn(A...) -> R` whose own signature is
+    /// itself C-marshallable (§7). A callback lets a Lullaby top-level function be
+    /// passed to C as a C-ABI function pointer; a callback whose own parameters or
+    /// return are not C-marshallable (e.g. it takes a `string`/`list`/struct) stays
+    /// rejected with `L0424`.
     fn is_extern_param_type(ty: &TypeRef) -> bool {
-        Self::is_ffi_scalar(&ty.name) || ty.name == "cstr" || ty.is_raw_pointer()
+        Self::is_ffi_scalar(&ty.name)
+            || ty.name == "cstr"
+            || ty.is_raw_pointer()
+            || Self::is_marshallable_callback(ty)
+    }
+
+    /// Whether `ty` spells a **callback** (function-pointer) type `fn(A...) -> R`
+    /// whose own signature is C-marshallable, so it can cross the FFI boundary as a
+    /// C function pointer `R (*)(A...)`. Every parameter must be a C scalar or a raw
+    /// pointer, and the return must be `void`, a C scalar, or a raw pointer. A
+    /// callback is invoked *by C*, so — unlike an outbound `extern` parameter — its
+    /// own parameters cannot use the outbound-only `cstr` marker (an inbound C
+    /// string is the deferred `ptr<byte>`/owned-string case) and cannot be a nested
+    /// callback; those forms keep the C boundary's marshalling all-register and
+    /// trampoline-free, matching the top-level-function callback increment (§7).
+    fn is_marshallable_callback(ty: &TypeRef) -> bool {
+        let Some((params, ret)) = ty.function_signature() else {
+            return false;
+        };
+        params
+            .iter()
+            .all(|param| Self::is_ffi_scalar(&param.name) || param.is_raw_pointer())
+            && (ret.is_void() || Self::is_ffi_scalar(&ret.name) || ret.is_raw_pointer())
     }
 
     /// Whether a type is valid as an `extern fn` **return**: `void`, a C scalar, or

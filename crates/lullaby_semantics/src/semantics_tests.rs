@@ -139,14 +139,47 @@ fn rejects_extern_with_nonmarshallable_param() {
 }
 
 #[test]
-fn rejects_extern_callback_parameter() {
-    // A function-pointer (callback) extern parameter is deferred and rejected
-    // with `L0424` — never miscompiled.
-    let source = "extern fn run cb fn(i32) -> i32 -> i32\n\nfn main -> i64\n    0\n";
-    let diagnostics = validate_source(source).expect_err("callback extern rejected");
+fn accepts_marshallable_callback_parameter() {
+    // A callback (function-pointer) extern parameter whose own signature is
+    // C-marshallable (C scalars / raw pointers) is accepted: a Lullaby top-level
+    // function can be passed to C as a C-ABI function pointer (§7). Here the
+    // callback is `fn(i64, i64) -> i64`, and `main` passes the top-level `cmp`.
+    let source = "extern fn run cb fn(i64, i64) -> i64 a i64 b i64 -> i64\n\nfn cmp x i64 y i64 -> i64\n    x - y\n\nfn main -> i64\n    run(cmp, 10, 3)\n";
+    let checked = validate_source(source).expect("marshallable callback extern type-checks");
+    assert!(
+        checked
+            .program
+            .functions
+            .iter()
+            .any(|f| f.name == "run" && f.is_extern),
+        "expected the callback extern registered"
+    );
+}
+
+#[test]
+fn rejects_extern_callback_with_nonmarshallable_signature() {
+    // A callback whose own signature is NOT C-marshallable — here it takes a
+    // `string`, which cannot cross the C boundary as a register argument — stays
+    // rejected with `L0424` (the shared FFI-signature family), never miscompiled.
+    let source = "extern fn run cb fn(string) -> i32 -> i32\n\nfn main -> i64\n    0\n";
+    let diagnostics =
+        validate_source(source).expect_err("non-marshallable callback extern rejected");
     assert!(
         diagnostics.iter().any(|d| d.code == "L0424"),
-        "expected L0424 for a callback extern parameter: {diagnostics:?}"
+        "expected L0424 for a non-marshallable callback signature: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn rejects_extern_callback_return() {
+    // A callback used as an extern *return* (C returning a function pointer to
+    // Lullaby) is the inbound direction, deferred — it stays rejected with
+    // `L0424` rather than compiled.
+    let source = "extern fn getcmp -> fn(i64, i64) -> i64\n\nfn main -> i64\n    0\n";
+    let diagnostics = validate_source(source).expect_err("callback extern return rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0424"),
+        "expected L0424 for a callback extern return: {diagnostics:?}"
     );
 }
 

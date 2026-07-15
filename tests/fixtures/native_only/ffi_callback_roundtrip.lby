@@ -1,0 +1,16 @@
+# FFI callback round-trip (native-only): a Lullaby top-level function is passed to
+# a C function as a C-ABI function pointer. `apply_cmp` is a C function (linked
+# from the test's C driver) that invokes the passed-in callback `cmp(a, b)`. The
+# exported `run_callback` hands the top-level `diff` to C as the callback, so
+# `run_callback(10, 3)` computes `apply_cmp(diff, 10, 3)` = `diff(10, 3)` = 7.
+# Subtraction is non-commutative, so a wrong argument order would yield -7 — the
+# result 7 proves the pointer is invoked with the correct Win64 C calling
+# convention. Interpreters reject the extern call with `L0423`; this is native-only.
+
+extern fn apply_cmp cmp fn(i64, i64) -> i64 a i64 b i64 -> i64
+
+fn diff x i64 y i64 -> i64
+    x - y
+
+export fn run_callback a i64 b i64 -> i64
+    apply_cmp(diff, a, b)

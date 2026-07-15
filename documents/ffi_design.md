@@ -19,11 +19,14 @@ FFI and reject it with a clear diagnostic (see [[interpreter parity]] below).
 Calling C (`extern fn`) and exposing Lullaby to C (`export fn`) are **delivered**
 and recorded in [native_backend_contract.md](native_backend_contract.md). The
 delivered `extern`-call marshalling now spans the full scalar set, **raw pointers
-(`ptr<T>`)**, the **`cstr`** string-argument marker, a **`void`** return, and
-**more than four arguments** (Win64 stack spill) — the FFI reaches beyond scalars
-to the universal OS-API escape hatch. Struct-by-value parameters/returns and
-callbacks (function-pointer parameters) are the deferred FFI tail (§10), rejected
-cleanly at check time with `L0424` rather than shipped unverified. This document
+(`ptr<T>`)**, the **`cstr`** string-argument marker, a **`void`** return,
+**more than four arguments** (Win64 stack spill), and **top-level-function
+callbacks** (passing a Lullaby `fn` to C as a C-ABI function pointer, §7) — the FFI
+reaches beyond scalars to the universal OS-API escape hatch. Struct-by-value
+parameters/returns, the capturing-closure callback form, a callback whose own
+signature is not C-marshallable, and a callback used as an extern *return* are the
+deferred FFI tail (§10), rejected cleanly at check time with `L0424` rather than
+shipped unverified. This document
 is the full design those increments are slices of; sections tagged
 **(delivered)** match shipped behavior, and sections tagged **(planned)**
 specify the intended extension.
@@ -503,6 +506,22 @@ FFI adds link inputs; the object-emission path is unchanged from
 
 ## 7. Callbacks — passing a Lullaby function to C
 
+The **top-level-function** direction is **delivered** (native-only, Win64): an
+`extern fn` parameter may be a callback `fn(A...) -> R` whose own signature is
+C-marshallable, and a Lullaby top-level function passed there is address-taken
+(`lea`, a REL32 relocation to its `.text` symbol) and routed like any pointer
+word — no trampoline. It is sound because a fully-marshallable-signature Lullaby
+function already uses the Win64 C calling convention, and the only callee-saved
+registers the native emitter uses (`rbx`/`rsi`/`rbp`) are saved+restored, so C can
+`call` it directly. Verified end to end by
+`tests/fixtures/native_only/ffi_callback_roundtrip.lby`: a C driver's `apply_cmp`
+invokes a Lullaby `diff` **through a C function pointer**, exiting `7`. The
+semantic gate is `is_marshallable_callback` (`crates/lullaby_semantics/src/lib.rs`);
+the native lowering is the `FfiParam::Callback` arm of `emit_extern_call`
+(`crates/lullaby_ir/src/native_object_expr.rs`). The capturing-**closure** form
+below, a callback whose own signature is not C-marshallable, and a callback used as
+an extern *return* stay rejected with `L0424` (**planned**).
+
 A C API that takes a function pointer (e.g. `qsort`'s comparator) receives a
 Lullaby function value marshalled to a C function pointer.
 
@@ -639,8 +658,10 @@ numbers `L0427`–`L0434` proposed in earlier drafts were subsequently assigned 
 `?` operator, raw-memory layout builtins, atomic ordering), so a future FFI code
 must claim the next genuinely-free number rather than these. Crucially, the
 **unsupported-`extern`/`export`-signature** case (non-marshallable parameter/return:
-`list`/`map`/`string`/non-`repr(C)` struct-by-value/callback, or a generic FFI
-function) is **delivered under `L0424`** — the shared FFI-signature family — not a
+`list`/`map`/`string`/non-`repr(C)` struct-by-value, a callback whose *own*
+signature is not C-marshallable or a callback used as a return, or a generic FFI
+function — a callback whose parameters/return are C scalars/raw pointers is now
+accepted) is **delivered under `L0424`** — the shared FFI-signature family — not a
 new code; `check_extern_signature` in `crates/lullaby_semantics/src/lib.rs` emits
 it. The interior-NUL / inbound-UTF-8 runtime checks below remain unimplemented.
 
@@ -695,14 +716,23 @@ and independently testable, matching the delivered native slices.
    to end against `ucrt`: `strlen(cstr)` (`7`), a `malloc`→`strcpy`→`strlen`
    pointer round-trip (`5`), and a six-`i64` `extern` call linked against a
    six-`i64` `export fn` object (`63`). Non-marshallable extern signatures
-   (struct-by-value, callbacks, `string`/`list`/`map`, generic) are rejected at
-   check time with `L0424`.
+   (struct-by-value, a callback whose own signature is not C-marshallable,
+   `string`/`list`/`map`, generic) are rejected at check time with `L0424`.
+
+6. **Top-level-function callbacks** (§7 first bullet). A Lullaby top-level function
+   whose signature is C-marshallable is passed to a C function as a C-ABI function
+   pointer — address-taken (`lea` + REL32 relocation to its `.text` symbol), no
+   trampoline, sound because such a function already uses the Win64 C convention
+   (callee-saved `rbx`/`rsi`/`rbp` are saved+restored). Verified end to end: a C
+   driver's `apply_cmp` invokes a Lullaby `diff` through a C function pointer,
+   exiting `7` (`ffi_callback_roundtrip.lby`). A callback whose own signature is not
+   C-marshallable, a callback used as an extern *return*, closures, and calling
+   *through* a `fn`-pointer parameter stay rejected/deferred with `L0424`.
 
 **Remaining near-term FFI targets:**
 
 - `repr(C)` structs passed **by pointer** (`ptr<Rect>`) — blocked on `repr(C)`
   parsing first (§5.3).
-- Top-level-function callbacks (§7 first bullet).
 - C-header generation (`--emit-header`, §8).
 - CLI link surface (`-l`/`-L`/static-dynamic, `from`/`symbol`/`abi` clauses,
   manifest `native.link`) (§6.3), with graceful degradation.
@@ -716,12 +746,14 @@ guesswork, so deferred rather than shipped unverified):**
   support in the native emitter *and* on `repr(C)` layout being parseable;
   verifying it needs a discovered C toolchain producing/consuming matching
   structs. Rejected today with `L0424`.
-- **Callbacks** — passing a Lullaby `fn` as a C function pointer (e.g. to
-  `qsort`). The top-level (non-capturing) case is address-taken with no
-  trampoline, but verifying a real callback needs stock C symbols that call back
-  (or a discovered C compiler); the capturing-closure case additionally needs the
-  `user_data` trampoline and lifetime model from
-  [closures_design.md](closures_design.md). Rejected today with `L0424`.
+- **Callbacks beyond the top-level-function case.** The top-level (non-capturing)
+  case is **delivered** (§7). Still deferred: the **capturing-closure** form (needs
+  the `user_data` trampoline and lifetime model from
+  [closures_design.md](closures_design.md)), a callback whose own signature is not
+  C-marshallable, a callback used as an extern *return* (C handing a function
+  pointer back to Lullaby), and calling *through* a `fn`-pointer parameter inside
+  native Lullaby code (an indirect `call reg`). All rejected/demoted with `L0424`
+  today.
 - An inbound owned `cstr`/`owned_cstr`→`string` conversion with the interior-NUL
   and UTF-8 runtime checks (§5.5).
 - System V AMD64 (Linux/macOS) and AArch64 AAPCS64 ABIs and ELF/Mach-O link+run.

@@ -883,18 +883,24 @@ pub(crate) enum FfiScalarClass {
 }
 
 /// One `extern fn` parameter's marshalling class across the Win64 C ABI: a scalar
-/// value (integer/pointer/float, routed by [`FfiScalarClass`]), or a `cstr` — a
+/// value (integer/pointer/float, routed by [`FfiScalarClass`]), a `cstr` — a
 /// Lullaby `string` the boundary materializes into a fresh NUL-terminated C buffer
-/// (`__lullaby_to_cstr`) whose pointer is then routed like any pointer word.
+/// (`__lullaby_to_cstr`) whose pointer is then routed like any pointer word — or a
+/// `Callback`: a Lullaby top-level function passed to C as a C-ABI function
+/// pointer. The callback's address is taken directly (`lea`, no trampoline)
+/// because a fully-marshallable-signature Lullaby function already uses the Win64
+/// C calling convention, and the resulting pointer word routes like any pointer
+/// (§7).
 #[derive(Clone, Copy)]
 enum FfiParam {
     Scalar(FfiScalarClass),
     Cstr,
+    Callback,
 }
 
 impl FfiParam {
-    /// A `cstr` argument occupies a pointer word in an integer register; a scalar
-    /// float occupies an SSE register. This selects the register class at a
+    /// A `cstr`/`Callback` argument occupies a pointer word in an integer register;
+    /// a scalar float occupies an SSE register. This selects the register class at a
     /// given argument position.
     fn is_float(self) -> bool {
         matches!(self, FfiParam::Scalar(FfiScalarClass::Float(_)))
@@ -963,12 +969,20 @@ pub(crate) fn emit_extern_call(
             if param_ty.name == "cstr" {
                 return Ok(FfiParam::Cstr);
             }
+            // A callback (function-pointer) parameter `fn(A...) -> R`: a Lullaby
+            // top-level function is passed to C as a C-ABI function pointer. The
+            // semantic checker already guaranteed the callback's own signature is
+            // C-marshallable (`is_marshallable_callback`), so here we only route the
+            // resulting pointer word; the argument-side address-of is emitted below.
+            if param_ty.is_function() {
+                return Ok(FfiParam::Callback);
+            }
             ffi_scalar_class(&param_ty.name)
                 .map(FfiParam::Scalar)
                 .ok_or_else(|| {
                     format!(
                         "extern `{name}` parameter type `{}` is not a native FFI \
-                         parameter (aggregates/callbacks are deferred)",
+                         parameter (aggregates are deferred)",
                         param_ty.name
                     )
                 })
@@ -1024,6 +1038,45 @@ pub(crate) fn emit_extern_call(
                 lower_native_expr(ctx, arg, code)?; // rax = string record ptr
                 code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
                 emit_call_symbol(ctx, TO_CSTR_SYMBOL, code); // rax = C buffer ptr
+                code.push(0x50); // push rax
+            }
+            FfiParam::Callback => {
+                // A callback argument must be a **bare top-level function name**: a
+                // compiled Lullaby function whose `.text` symbol we take the address
+                // of (`lea rax, [rip + fn]`, a REL32 relocation) and pass as a C
+                // function pointer. This is sound with no trampoline because a
+                // fully-marshallable-signature Lullaby function already uses the
+                // Win64 C calling convention (integer args in rcx/rdx/r8/r9, floats
+                // in xmm0..3 positionally, result in rax/xmm0, callee-saved rbx/rsi/
+                // rbp saved+restored), so C can call it directly (§7).
+                //
+                // Anything else — a closure, a `fn`-typed local/parameter holding a
+                // runtime pointer, or an unknown name — is not an address-takeable
+                // top-level function, so the whole extern caller demotes cleanly to
+                // the interpreters (which reject the extern call with `L0423`)
+                // rather than emitting a wrong pointer.
+                let BytecodeExprKind::Variable(fname) = &arg.kind else {
+                    return Err(format!(
+                        "extern `{name}` callback argument must be a top-level function name \
+                         (closures / function-valued locals are deferred)"
+                    ));
+                };
+                if ctx.locals.contains_key(fname) || !ctx.callable.contains(fname.as_str()) {
+                    return Err(format!(
+                        "extern `{name}` callback argument `{fname}` is not a compiled \
+                         top-level function (only a non-capturing top-level function can be \
+                         passed to C as a callback)"
+                    ));
+                }
+                // lea rax, [rip + fname] ; the 4-byte rel32 is a REL32 relocation
+                // against the callee's `.text` symbol (same model as a `call`).
+                code.extend_from_slice(&[0x48, 0x8D, 0x05]);
+                let site = code.len();
+                code.extend_from_slice(&[0, 0, 0, 0]);
+                ctx.relocations.push(CodeRelocation {
+                    offset: site as u32,
+                    symbol: fname.clone(),
+                });
                 code.push(0x50); // push rax
             }
         }
