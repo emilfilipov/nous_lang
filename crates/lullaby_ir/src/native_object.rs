@@ -2706,19 +2706,21 @@ fn resolve_native_type(
                         "struct `{name}` field `{field_name}` is an f32; f32 struct fields are not in the native subset (an f64 field is fine)"
                     ));
                 }
-                // A heap-value field (`string`/`list`/`map`) inside an aggregate is
+                // A MUTABLE heap-value field (`list`/`map`) inside an aggregate is
                 // deferred: the aggregate copy/pass paths move flat words and would
-                // share (not deep-copy) the referenced heap block, breaking value
-                // semantics for a mutable list/map field. A string field is
-                // immutable but still out of this increment's scope (aggregates of
-                // heap values are deferred), so reject it too — the function skips.
-                if matches!(
-                    native,
-                    NativeType::String | NativeType::List { .. } | NativeType::Map { .. }
-                ) {
+                // SHARE (not deep-copy) the referenced heap block, breaking value
+                // semantics for a mutable list/map field. A `string` field IS
+                // supported: strings are immutable, so the flat word copy that the
+                // struct construction/boundary/`match` paths already emit shares the
+                // record pointer, which IS its value-semantic copy (exactly like a
+                // `string` list element or enum payload). So permit `String` here and
+                // reject only the mutable `List`/`Map` fields — the function then
+                // skips gracefully for those.
+                if matches!(native, NativeType::List { .. } | NativeType::Map { .. }) {
                     return Err(format!(
-                        "struct `{name}` field `{field_name}` is a heap value \
-                         (string/list/map); heap-value struct fields are not in the native subset"
+                        "struct `{name}` field `{field_name}` is a mutable heap value \
+                         (list/map); mutable heap-value struct fields are not in the native \
+                         subset (a `string` field is supported)"
                     ));
                 }
                 fields.push((field_name.clone(), native));
@@ -3086,6 +3088,13 @@ pub(crate) struct NativeCtx<'a> {
     /// loops at different depths use distinct words. `0` when `is_arena` is false or
     /// the function has no loops. See `arena_loop_mark_slot`.
     arena_loop_mark_base: i32,
+    /// Aggregate type names (`struct`/`enum`) that transitively carry a heap
+    /// field/payload (a `string` field, an `option<string>`/user enum with a heap
+    /// payload, etc.). Used by the arena loop-lowering (`arena_loop_reset_mark`) so
+    /// the per-iteration sub-region decision matches the module-level arena
+    /// escape analysis: a loop that stores a heap-carrying aggregate into an
+    /// iteration-outliving location does NOT get a sub-region (default-deny).
+    heap_aggregates: std::collections::HashSet<String>,
 }
 
 /// The native signature of a compiled function: the layout of each parameter and
@@ -3278,6 +3287,7 @@ impl<'a> NativeCtx<'a> {
             is_arena,
             arena_mark_slot,
             arena_loop_mark_base,
+            heap_aggregates: heap_carrying_aggregates(structs, enums),
         })
     }
 
@@ -3845,10 +3855,13 @@ fn expr_has_call(expr: &BytecodeExpr) -> bool {
 // the unchanged RC / free-list codegen (arena and RC coexist). See
 // `documents/native_backend_contract.md`.
 
-/// Whether a type is one of the heap-backed value types the native backend
-/// allocates: `string`, growable `list<…>`/`map<…>`, or a heap `array<string>`.
-/// Scalar `array<T>` is stack-allocated and is intentionally NOT heap here.
-fn arena_type_is_heap(ty: &TypeRef) -> bool {
+/// Whether a type is DIRECTLY one of the heap-backed value types the native
+/// backend allocates: `string`, growable `list<…>`/`map<…>`, or a heap
+/// `array<string>`. Scalar `array<T>` is stack-allocated and is intentionally NOT
+/// heap here. This does NOT account for a `struct`/`enum` that *transitively*
+/// carries a heap field/payload — use [`type_is_heap`] with the module's
+/// heap-carrying-aggregate set for that.
+fn type_is_directly_heap(ty: &TypeRef) -> bool {
     let name = ty.name.as_str();
     name == "string"
         || name.starts_with("list<")
@@ -3856,12 +3869,72 @@ fn arena_type_is_heap(ty: &TypeRef) -> bool {
         || heap_string_array_element(ty).is_some()
 }
 
+/// Whether a type carries a heap value the arena must account for: a directly-heap
+/// type (string/list/map/array<string>) OR a `struct`/`enum` that transitively
+/// contains a heap field/payload (its name is in `heap_aggregates`). A struct with
+/// a `string` field, or an `option<string>`/user enum with a heap payload, is a
+/// heap-carrying value even though its own type name is neither `string` nor a
+/// `list`/`map` — storing it into a location that outlives an iteration lets the
+/// referenced record escape, so the escape analysis MUST treat it as heap.
+fn type_is_heap(ty: &TypeRef, heap_aggregates: &std::collections::HashSet<String>) -> bool {
+    type_is_directly_heap(ty) || heap_aggregates.contains(ty.name.as_str())
+}
+
+/// Compute the set of `struct`/`enum` type names that transitively carry a heap
+/// value (a `string`/`list`/`map`/`array<string>` field or payload, directly or via
+/// a nested aggregate that itself carries heap). Computed as a fixpoint so a struct
+/// whose field is another heap-carrying struct is itself heap-carrying. Used by the
+/// arena escape analysis so that storing a heap-carrying aggregate into a location
+/// that outlives an iteration is correctly recognized as an escape (default-deny).
+fn heap_carrying_aggregates(
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> std::collections::HashSet<String> {
+    let mut heap: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Iterate to a fixpoint: each pass may discover a new heap-carrying aggregate
+    // because one of its fields/payloads references an aggregate marked in a prior
+    // pass. Bounded by the number of aggregate declarations.
+    loop {
+        let mut changed = false;
+        for def in structs {
+            if heap.contains(&def.name) {
+                continue;
+            }
+            if def
+                .fields
+                .iter()
+                .any(|(_, ty)| type_is_directly_heap(ty) || heap.contains(ty.name.as_str()))
+            {
+                heap.insert(def.name.clone());
+                changed = true;
+            }
+        }
+        for def in enums {
+            if heap.contains(&def.name) {
+                continue;
+            }
+            if def.variants.iter().any(|v| {
+                v.payload
+                    .iter()
+                    .any(|ty| type_is_directly_heap(ty) || heap.contains(ty.name.as_str()))
+            }) {
+                heap.insert(def.name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    heap
+}
+
 /// Whether an expression tree references any heap-typed value (an allocation or a
 /// read of a heap value). Used both to require an arena function actually touches
 /// the heap (else the arena is a pointless no-op) and to reject loops that touch
 /// the heap (a function-scoped arena would grow unboundedly across iterations).
-fn expr_touches_heap(expr: &BytecodeExpr) -> bool {
-    if arena_type_is_heap(&expr.ty) {
+fn expr_touches_heap(expr: &BytecodeExpr, heap_aggs: &std::collections::HashSet<String>) -> bool {
+    if type_is_heap(&expr.ty, heap_aggs) {
         return true;
     }
     match &expr.kind {
@@ -3872,33 +3945,41 @@ fn expr_touches_heap(expr: &BytecodeExpr) -> bool {
         | BytecodeExprKind::Variable(_)
         | BytecodeExprKind::Closure { .. } => false,
         BytecodeExprKind::String(_) => true,
-        BytecodeExprKind::Array(elements) => elements.iter().any(expr_touches_heap),
+        BytecodeExprKind::Array(elements) => {
+            elements.iter().any(|e| expr_touches_heap(e, heap_aggs))
+        }
         BytecodeExprKind::Index { target, index } => {
-            expr_touches_heap(target) || expr_touches_heap(index)
+            expr_touches_heap(target, heap_aggs) || expr_touches_heap(index, heap_aggs)
         }
         BytecodeExprKind::Unary { expr, .. } | BytecodeExprKind::Await { expr } => {
-            expr_touches_heap(expr)
+            expr_touches_heap(expr, heap_aggs)
         }
         BytecodeExprKind::Binary { left, right, .. } => {
-            expr_touches_heap(left) || expr_touches_heap(right)
+            expr_touches_heap(left, heap_aggs) || expr_touches_heap(right, heap_aggs)
         }
-        BytecodeExprKind::Call { args, .. } => args.iter().any(expr_touches_heap),
-        BytecodeExprKind::Field { target, .. } => expr_touches_heap(target),
+        BytecodeExprKind::Call { args, .. } => args.iter().any(|a| expr_touches_heap(a, heap_aggs)),
+        BytecodeExprKind::Field { target, .. } => expr_touches_heap(target, heap_aggs),
     }
 }
 
 /// Whether a body references any heap-typed value anywhere.
-fn body_touches_heap(body: &[BytecodeInstruction]) -> bool {
-    body.iter().any(instruction_touches_heap)
+fn body_touches_heap(
+    body: &[BytecodeInstruction],
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
+    body.iter().any(|i| instruction_touches_heap(i, heap_aggs))
 }
 
-fn instruction_touches_heap(instruction: &BytecodeInstruction) -> bool {
+fn instruction_touches_heap(
+    instruction: &BytecodeInstruction,
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
     match instruction {
         BytecodeInstruction::Let { value, .. }
         | BytecodeInstruction::Assign { value, .. }
         | BytecodeInstruction::Return(Some(value))
         | BytecodeInstruction::Expr(value)
-        | BytecodeInstruction::Throw { value, .. } => expr_touches_heap(value),
+        | BytecodeInstruction::Throw { value, .. } => expr_touches_heap(value, heap_aggs),
         BytecodeInstruction::Return(None)
         | BytecodeInstruction::Break(_)
         | BytecodeInstruction::Continue(_)
@@ -3908,14 +3989,13 @@ fn instruction_touches_heap(instruction: &BytecodeInstruction) -> bool {
             else_body,
             ..
         } => {
-            branches
-                .iter()
-                .any(|b| expr_touches_heap(&b.condition) || body_touches_heap(&b.body))
-                || body_touches_heap(else_body)
+            branches.iter().any(|b| {
+                expr_touches_heap(&b.condition, heap_aggs) || body_touches_heap(&b.body, heap_aggs)
+            }) || body_touches_heap(else_body, heap_aggs)
         }
         BytecodeInstruction::While {
             condition, body, ..
-        } => expr_touches_heap(condition) || body_touches_heap(body),
+        } => expr_touches_heap(condition, heap_aggs) || body_touches_heap(body, heap_aggs),
         BytecodeInstruction::For {
             start,
             end,
@@ -3923,18 +4003,25 @@ fn instruction_touches_heap(instruction: &BytecodeInstruction) -> bool {
             body,
             ..
         } => {
-            expr_touches_heap(start)
-                || expr_touches_heap(end)
-                || step.as_ref().is_some_and(expr_touches_heap)
-                || body_touches_heap(body)
+            expr_touches_heap(start, heap_aggs)
+                || expr_touches_heap(end, heap_aggs)
+                || step
+                    .as_ref()
+                    .is_some_and(|s| expr_touches_heap(s, heap_aggs))
+                || body_touches_heap(body, heap_aggs)
         }
-        BytecodeInstruction::Loop { body, .. } => body_touches_heap(body),
+        BytecodeInstruction::Loop { body, .. } => body_touches_heap(body, heap_aggs),
         BytecodeInstruction::Match {
             scrutinee, arms, ..
-        } => expr_touches_heap(scrutinee) || arms.iter().any(|arm| body_touches_heap(&arm.body)),
+        } => {
+            expr_touches_heap(scrutinee, heap_aggs)
+                || arms
+                    .iter()
+                    .any(|arm| body_touches_heap(&arm.body, heap_aggs))
+        }
         BytecodeInstruction::Try {
             body, catch_body, ..
-        } => body_touches_heap(body) || body_touches_heap(catch_body),
+        } => body_touches_heap(body, heap_aggs) || body_touches_heap(catch_body, heap_aggs),
     }
 }
 
@@ -4091,11 +4178,17 @@ fn instruction_loop_nesting(instruction: &BytecodeInstruction) -> usize {
 /// which exact variable a store targets. The common per-iteration-scratch shape
 /// (`let s = <alloc>` used only by `len`, accumulating a SCALAR like
 /// `total += len(s)`) is confined and gets a sub-region.
-fn loop_body_confines_heap(body: &[BytecodeInstruction]) -> bool {
-    !body.iter().any(instruction_heap_escapes)
+fn loop_body_confines_heap(
+    body: &[BytecodeInstruction],
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
+    !body.iter().any(|i| instruction_heap_escapes(i, heap_aggs))
 }
 
-fn instruction_heap_escapes(instruction: &BytecodeInstruction) -> bool {
+fn instruction_heap_escapes(
+    instruction: &BytecodeInstruction,
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
     match instruction {
         // A store of a heap value into a named location (a rebind or a container
         // mutation) can outlive the iteration — an escape. What matters is whether a
@@ -4103,9 +4196,12 @@ fn instruction_heap_escapes(instruction: &BytecodeInstruction) -> bool {
         // type — NOT whether the expression merely READS heap. `total = total +
         // len(s)` stores an `i64` (scalar) even though it reads the heap string `s`,
         // so it does not escape; `acc = acc + "x"` stores a `string`, so it does.
+        // A heap-CARRYING aggregate (a `struct` with a `string` field, an
+        // `option<string>`/user enum with a heap payload) counts as a heap store too
+        // — storing it lets the referenced record escape the iteration.
         BytecodeInstruction::Assign { value, .. }
         | BytecodeInstruction::Throw { value, .. }
-        | BytecodeInstruction::Return(Some(value)) => arena_type_is_heap(&value.ty),
+        | BytecodeInstruction::Return(Some(value)) => type_is_heap(&value.ty, heap_aggs),
         // A `Let` binds a fresh iteration-local (dies each iteration); its value
         // does not escape. Break/Continue/Return(None)/Asm carry no heap value.
         BytecodeInstruction::Let { .. }
@@ -4118,21 +4214,29 @@ fn instruction_heap_escapes(instruction: &BytecodeInstruction) -> bool {
             branches,
             else_body,
             ..
-        } => branches.iter().any(|b| body_heap_escapes(&b.body)) || body_heap_escapes(else_body),
+        } => {
+            branches
+                .iter()
+                .any(|b| body_heap_escapes(&b.body, heap_aggs))
+                || body_heap_escapes(else_body, heap_aggs)
+        }
         BytecodeInstruction::While { body, .. }
         | BytecodeInstruction::For { body, .. }
-        | BytecodeInstruction::Loop { body, .. } => body_heap_escapes(body),
-        BytecodeInstruction::Match { arms, .. } => {
-            arms.iter().any(|arm| body_heap_escapes(&arm.body))
-        }
+        | BytecodeInstruction::Loop { body, .. } => body_heap_escapes(body, heap_aggs),
+        BytecodeInstruction::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| body_heap_escapes(&arm.body, heap_aggs)),
         BytecodeInstruction::Try {
             body, catch_body, ..
-        } => body_heap_escapes(body) || body_heap_escapes(catch_body),
+        } => body_heap_escapes(body, heap_aggs) || body_heap_escapes(catch_body, heap_aggs),
     }
 }
 
-fn body_heap_escapes(body: &[BytecodeInstruction]) -> bool {
-    body.iter().any(instruction_heap_escapes)
+fn body_heap_escapes(
+    body: &[BytecodeInstruction],
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
+    body.iter().any(|i| instruction_heap_escapes(i, heap_aggs))
 }
 
 /// Whether an instruction is a loop (`while`/`for`/`loop`) whose header or body
@@ -4141,13 +4245,16 @@ fn body_heap_escapes(body: &[BytecodeInstruction]) -> bool {
 /// arena region unboundedly within one call, so its presence disqualifies the
 /// function from arena routing (it stays on the RC / free-list path). A heap loop
 /// that IS confined gets a per-iteration sub-region (stage 2) and is fine.
-fn instruction_is_unbounded_heap_loop(instruction: &BytecodeInstruction) -> bool {
+fn instruction_is_unbounded_heap_loop(
+    instruction: &BytecodeInstruction,
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
     let (touches, confined) = match instruction {
         BytecodeInstruction::While {
             condition, body, ..
         } => (
-            expr_touches_heap(condition) || body_touches_heap(body),
-            loop_body_confines_heap(body),
+            expr_touches_heap(condition, heap_aggs) || body_touches_heap(body, heap_aggs),
+            loop_body_confines_heap(body, heap_aggs),
         ),
         BytecodeInstruction::For {
             start,
@@ -4156,15 +4263,18 @@ fn instruction_is_unbounded_heap_loop(instruction: &BytecodeInstruction) -> bool
             body,
             ..
         } => (
-            expr_touches_heap(start)
-                || expr_touches_heap(end)
-                || step.as_ref().is_some_and(expr_touches_heap)
-                || body_touches_heap(body),
-            loop_body_confines_heap(body),
+            expr_touches_heap(start, heap_aggs)
+                || expr_touches_heap(end, heap_aggs)
+                || step
+                    .as_ref()
+                    .is_some_and(|s| expr_touches_heap(s, heap_aggs))
+                || body_touches_heap(body, heap_aggs),
+            loop_body_confines_heap(body, heap_aggs),
         ),
-        BytecodeInstruction::Loop { body, .. } => {
-            (body_touches_heap(body), loop_body_confines_heap(body))
-        }
+        BytecodeInstruction::Loop { body, .. } => (
+            body_touches_heap(body, heap_aggs),
+            loop_body_confines_heap(body, heap_aggs),
+        ),
         // Non-loop statements: recurse into nested bodies below.
         _ => (false, true),
     };
@@ -4176,7 +4286,7 @@ fn instruction_is_unbounded_heap_loop(instruction: &BytecodeInstruction) -> bool
     match instruction {
         BytecodeInstruction::While { body, .. }
         | BytecodeInstruction::For { body, .. }
-        | BytecodeInstruction::Loop { body, .. } => body_has_unbounded_heap_loop(body),
+        | BytecodeInstruction::Loop { body, .. } => body_has_unbounded_heap_loop(body, heap_aggs),
         BytecodeInstruction::If {
             branches,
             else_body,
@@ -4184,23 +4294,30 @@ fn instruction_is_unbounded_heap_loop(instruction: &BytecodeInstruction) -> bool
         } => {
             branches
                 .iter()
-                .any(|b| body_has_unbounded_heap_loop(&b.body))
-                || body_has_unbounded_heap_loop(else_body)
+                .any(|b| body_has_unbounded_heap_loop(&b.body, heap_aggs))
+                || body_has_unbounded_heap_loop(else_body, heap_aggs)
         }
         BytecodeInstruction::Match { arms, .. } => arms
             .iter()
-            .any(|arm| body_has_unbounded_heap_loop(&arm.body)),
+            .any(|arm| body_has_unbounded_heap_loop(&arm.body, heap_aggs)),
         BytecodeInstruction::Try {
             body, catch_body, ..
-        } => body_has_unbounded_heap_loop(body) || body_has_unbounded_heap_loop(catch_body),
+        } => {
+            body_has_unbounded_heap_loop(body, heap_aggs)
+                || body_has_unbounded_heap_loop(catch_body, heap_aggs)
+        }
         _ => false,
     }
 }
 
 /// Whether a body contains any loop that touches the heap but does not confine it
 /// to the iteration (see [`instruction_is_unbounded_heap_loop`]).
-fn body_has_unbounded_heap_loop(body: &[BytecodeInstruction]) -> bool {
-    body.iter().any(instruction_is_unbounded_heap_loop)
+fn body_has_unbounded_heap_loop(
+    body: &[BytecodeInstruction],
+    heap_aggs: &std::collections::HashSet<String>,
+) -> bool {
+    body.iter()
+        .any(|i| instruction_is_unbounded_heap_loop(i, heap_aggs))
 }
 
 /// Compute the set of arena-eligible function names for a module. Default-deny:
@@ -4228,6 +4345,12 @@ fn arena_eligible_functions(
         .map(|f| f.name.as_str())
         .chain(module.extern_functions.iter().map(String::as_str))
         .collect();
+    // Aggregate types that transitively carry a heap field/payload (a struct with a
+    // `string` field, an `option<string>`/user enum with a heap payload). The escape
+    // analysis treats storing one of these into an iteration-outliving location as a
+    // heap escape, so a confined arena sub-region never reclaims a record such an
+    // aggregate still references (default-deny).
+    let heap_aggs = heap_carrying_aggregates(&module.structs, &module.enums);
 
     let mut arena = std::collections::HashSet::new();
     for name in eligible_names {
@@ -4242,7 +4365,7 @@ fn arena_eligible_functions(
             continue;
         };
         // (2) Actually uses the heap.
-        if !body_touches_heap(&function.instructions) {
+        if !body_touches_heap(&function.instructions, &heap_aggs) {
             continue;
         }
         // (3) Leaf w.r.t. user code.
@@ -4252,7 +4375,7 @@ fn arena_eligible_functions(
         // (4) No UNBOUNDED heap loop — every heap-touching loop confines its
         // allocations to the iteration (stage 2 gives it a per-iteration
         // sub-region); a loop whose heap escapes stays on the RC path.
-        if body_has_unbounded_heap_loop(&function.instructions) {
+        if body_has_unbounded_heap_loop(&function.instructions, &heap_aggs) {
             continue;
         }
         arena.insert(name.clone());

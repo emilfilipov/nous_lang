@@ -809,7 +809,7 @@ fn arena_loop_reset_mark(
     body: &[BytecodeInstruction],
     depth: usize,
 ) -> Option<i32> {
-    if ctx.is_arena && touches_heap && loop_body_confines_heap(body) {
+    if ctx.is_arena && touches_heap && loop_body_confines_heap(body, &ctx.heap_aggregates) {
         Some(ctx.arena_loop_mark_slot(depth))
     } else {
         None
@@ -1541,6 +1541,16 @@ pub(crate) fn lower_value_into(
             store_float_local(code, word_slot, width);
             Ok(())
         }
+        // A `string` struct field: evaluate the string expression (a literal, `+`
+        // concat, `to_string`, a field read, …) — `lower_native_expr` leaves the
+        // immutable record pointer in `rax` — and store the flat pointer word. Since
+        // strings are immutable, sharing the pointer IS the field's value-semantic
+        // copy, exactly like a `string` list element or enum payload.
+        NativeType::String => {
+            lower_native_expr(ctx, value, code)?;
+            store_local(code, word_slot);
+            Ok(())
+        }
         _ => lower_aggregate_init(ctx, word_slot, ty, value, code),
     }
 }
@@ -1651,8 +1661,16 @@ pub(crate) fn resolve_place_steps_typed(
         }
     }
 
-    if !matches!(ty, NativeType::I64 | NativeType::F64 | NativeType::F32) {
-        return Err("native access must resolve to an i64 or f64 scalar".to_string());
+    // The final resolved element is a single flat word: an integer cell (`I64`), a
+    // float (`F64`/`F32`), or a `string` — an immutable heap pointer stored in one
+    // word exactly like an `i64` cell (a heap-typed struct field). A `string` field
+    // read loads its pointer word; the strict `resolve_place_steps` caller still
+    // requires `I64`, so string fields never reach the integer store / SIMD paths.
+    if !matches!(
+        ty,
+        NativeType::I64 | NativeType::F64 | NativeType::F32 | NativeType::String
+    ) {
+        return Err("native access must resolve to an i64, f64, or string scalar".to_string());
     }
 
     let place = match dynamic {
@@ -3615,7 +3633,8 @@ pub(crate) fn lower_native_while(
     // rewind to it. Saved once; the mark is invariant because nothing escapes.
     let arena_reset_mark = arena_loop_reset_mark(
         ctx,
-        expr_touches_heap(condition) || body_touches_heap(body),
+        expr_touches_heap(condition, &ctx.heap_aggregates)
+            || body_touches_heap(body, &ctx.heap_aggregates),
         body,
         loops.len(),
     );
@@ -3677,7 +3696,12 @@ pub(crate) fn lower_native_loop(
 ) -> Result<(), String> {
     // Arena stage-2 sub-region: save the entry bump pointer before `top:` when the
     // loop confines its heap to the iteration.
-    let arena_reset_mark = arena_loop_reset_mark(ctx, body_touches_heap(body), body, loops.len());
+    let arena_reset_mark = arena_loop_reset_mark(
+        ctx,
+        body_touches_heap(body, &ctx.heap_aggregates),
+        body,
+        loops.len(),
+    );
     if let Some(mark) = arena_reset_mark {
         emit_arena_loop_save(ctx, mark, code);
     }
@@ -3916,6 +3940,212 @@ pub(crate) fn string_local_borrow_only_stmt(
     }
 }
 
+// -- Heap-field aggregate (`struct` with `string` field) drop analysis -----------
+//
+// A stack `struct` local whose fields are scalars plus one or more immutable
+// `string` fields owns those string records only when each was constructed from a
+// FRESH (owning) string expression. If the local is provably uniquely owned and
+// borrow-only within a loop body — used only via `len(r.Fstring)` header reads and
+// scalar-field reads `r.Fscalar`, never copied / passed / returned / reassigned /
+// field-mutated — then each of its owned string fields is dead at the iteration edge
+// and can be reclaimed by an `rc_dec` per string field (the recursive drop-glue for
+// a heap-field aggregate). This mirrors the plain `string`-local drop exactly, one
+// `rc_dec` per heap field, so it composes with BOTH the RC/free-list path (the
+// `rc_dec` frees the record) and the arena path (in arena mode `rc_free` no-ops and
+// the bump rewind reclaims — no double-free, no leak either way).
+
+/// Whether every use of the heap struct local `name` across `expr` is a pure borrow
+/// that permits dropping its owned string fields. `string_fields` names the local's
+/// `string` fields. `name` may appear ONLY as `len(name.F)` for a `string` field `F`
+/// (a header read that never retains the pointer) or as `name.F` for a SCALAR field
+/// `F` (a scalar read never aliases the heap). A bare `name` (copy/pass/return), a
+/// bare `string`-field read not directly wrapped by `len`, or `name` used anywhere
+/// else lets an owned string pointer escape, so the local is not droppable.
+pub(crate) fn struct_field_borrow_only_expr(
+    name: &str,
+    string_fields: &[&str],
+    expr: &BytecodeExpr,
+) -> bool {
+    match &expr.kind {
+        // A bare mention of `name` (an alias, a copy, a call argument, a return
+        // value) lets the whole struct — and thus its owned string fields — escape.
+        BytecodeExprKind::Variable(v) => v != name,
+        BytecodeExprKind::Integer(_)
+        | BytecodeExprKind::Float(_)
+        | BytecodeExprKind::Bool(_)
+        | BytecodeExprKind::String(_)
+        | BytecodeExprKind::Char(_)
+        | BytecodeExprKind::Closure { .. } => true,
+        BytecodeExprKind::Call { name: fname, args } => {
+            // `len(name.Fstring)` is the one borrow that reads a string field's
+            // header without retaining its pointer.
+            if fname == "len"
+                && args.len() == 1
+                && let BytecodeExprKind::Field { target, field } = &args[0].kind
+                && matches!(&target.kind, BytecodeExprKind::Variable(v) if v == name)
+                && string_fields.contains(&field.as_str())
+            {
+                return true;
+            }
+            args.iter()
+                .all(|a| struct_field_borrow_only_expr(name, string_fields, a))
+        }
+        BytecodeExprKind::Field { target, field } => {
+            // A SCALAR field read `name.Fscalar` is safe (it never aliases the heap).
+            // A `string`-field read reaching here (i.e. NOT the direct `len` arg
+            // handled above) would retain the pointer, so it is rejected.
+            if matches!(&target.kind, BytecodeExprKind::Variable(v) if v == name) {
+                return !string_fields.contains(&field.as_str());
+            }
+            struct_field_borrow_only_expr(name, string_fields, target)
+        }
+        BytecodeExprKind::Binary { left, right, .. } => {
+            struct_field_borrow_only_expr(name, string_fields, left)
+                && struct_field_borrow_only_expr(name, string_fields, right)
+        }
+        BytecodeExprKind::Unary { expr, .. } | BytecodeExprKind::Await { expr } => {
+            struct_field_borrow_only_expr(name, string_fields, expr)
+        }
+        BytecodeExprKind::Index { target, index } => {
+            struct_field_borrow_only_expr(name, string_fields, target)
+                && struct_field_borrow_only_expr(name, string_fields, index)
+        }
+        BytecodeExprKind::Array(elems) => elems
+            .iter()
+            .all(|e| struct_field_borrow_only_expr(name, string_fields, e)),
+    }
+}
+
+/// Whether every use of the struct local `name` across `stmts` (recursing into
+/// nested blocks) is a pure borrow, and `name` is never reassigned, shadowed,
+/// field-mutated, or rebound. Any violation disqualifies the local from dropping.
+pub(crate) fn struct_field_borrow_only_stmts(
+    name: &str,
+    string_fields: &[&str],
+    stmts: &[BytecodeInstruction],
+) -> bool {
+    stmts
+        .iter()
+        .all(|s| struct_field_borrow_only_stmt(name, string_fields, s))
+}
+
+pub(crate) fn struct_field_borrow_only_stmt(
+    name: &str,
+    string_fields: &[&str],
+    stmt: &BytecodeInstruction,
+) -> bool {
+    match stmt {
+        BytecodeInstruction::Let { name: n, value, .. } => {
+            n != name && struct_field_borrow_only_expr(name, string_fields, value)
+        }
+        BytecodeInstruction::Assign {
+            name: n,
+            path,
+            value,
+            ..
+        } => {
+            // Any assignment targeting `name` (a rebind, or a field mutation of
+            // `name`) breaks the unique-ownership assumption (a field mutation would
+            // orphan a string field the drop set no longer tracks).
+            n != name
+                && path.iter().all(|p| match p {
+                    BytecodePlace::Index(e) => {
+                        struct_field_borrow_only_expr(name, string_fields, e)
+                    }
+                    BytecodePlace::Field(_) => true,
+                })
+                && struct_field_borrow_only_expr(name, string_fields, value)
+        }
+        BytecodeInstruction::Return(Some(e)) | BytecodeInstruction::Expr(e) => {
+            struct_field_borrow_only_expr(name, string_fields, e)
+        }
+        BytecodeInstruction::Return(None)
+        | BytecodeInstruction::Break(_)
+        | BytecodeInstruction::Continue(_)
+        | BytecodeInstruction::Asm { .. } => true,
+        BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            branches.iter().all(|b| {
+                struct_field_borrow_only_expr(name, string_fields, &b.condition)
+                    && struct_field_borrow_only_stmts(name, string_fields, &b.body)
+            }) && struct_field_borrow_only_stmts(name, string_fields, else_body)
+        }
+        BytecodeInstruction::While {
+            condition, body, ..
+        } => {
+            struct_field_borrow_only_expr(name, string_fields, condition)
+                && struct_field_borrow_only_stmts(name, string_fields, body)
+        }
+        BytecodeInstruction::For {
+            name: v,
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            v != name
+                && struct_field_borrow_only_expr(name, string_fields, start)
+                && struct_field_borrow_only_expr(name, string_fields, end)
+                && step
+                    .as_ref()
+                    .is_none_or(|s| struct_field_borrow_only_expr(name, string_fields, s))
+                && struct_field_borrow_only_stmts(name, string_fields, body)
+        }
+        BytecodeInstruction::Loop { body, .. } => {
+            struct_field_borrow_only_stmts(name, string_fields, body)
+        }
+        BytecodeInstruction::Match {
+            scrutinee, arms, ..
+        } => {
+            struct_field_borrow_only_expr(name, string_fields, scrutinee)
+                && arms.iter().all(|a| {
+                    let binds = matches!(&a.pattern, BytecodeMatchPattern::Variant { bindings, .. }
+                        if bindings.iter().any(|b| b == name));
+                    !binds && struct_field_borrow_only_stmts(name, string_fields, &a.body)
+                })
+        }
+        BytecodeInstruction::Throw { value, .. } => {
+            struct_field_borrow_only_expr(name, string_fields, value)
+        }
+        BytecodeInstruction::Try {
+            body,
+            catch_name,
+            catch_body,
+            ..
+        } => {
+            catch_name != name
+                && struct_field_borrow_only_stmts(name, string_fields, body)
+                && struct_field_borrow_only_stmts(name, string_fields, catch_body)
+        }
+    }
+}
+
+/// Whether `value` constructs a `struct` whose every `string` field is a fresh
+/// (owning) string allocation, so this scope uniquely owns each string record and
+/// may `rc_dec` it on scope exit. `string_field_words` lists the field-index of each
+/// `string` field; the constructor's argument in that position must be an owning
+/// string alloc (a literal, `+` concat, `to_string`, `substring`/`trim`/`repeat`) —
+/// never a borrowed variable/field, whose pointer another scope still owns.
+pub(crate) fn is_owning_struct_with_strings(
+    value: &BytecodeExpr,
+    struct_name: &str,
+    string_field_words: &[usize],
+) -> bool {
+    let BytecodeExprKind::Call { name, args } = &value.kind else {
+        return false;
+    };
+    if name != struct_name {
+        return false;
+    }
+    string_field_words
+        .iter()
+        .all(|&w| w < args.len() && is_owning_string_alloc(&args[w]))
+}
+
 /// After lowering a loop `body`, emit a drop (free-at-zero) for each heap local
 /// declared directly in `body` that is uniquely owned and only borrowed —
 /// reclaiming the per-iteration allocation on the fallthrough back-edge. Handles
@@ -3964,6 +4194,41 @@ pub(crate) fn collect_loop_body_drops(
             continue;
         };
         let slot = local.slot;
+        // A `struct` local with `string` field(s): the recursive drop-glue for a
+        // heap-field aggregate. Each owned string field is reclaimed by an `rc_dec`
+        // (one per field) at the iteration edges — the same drop shape as a plain
+        // `string` local, so it reuses the `(slot, RC_DEC_SYMBOL)` model with the
+        // slot pointing at each string-field word. Requires: every string field
+        // constructed from a FRESH owning alloc (so this scope uniquely owns each
+        // record), and the local borrow-only afterward (used only via `len(r.F)` /
+        // scalar-field reads, never copied / passed / returned / reassigned).
+        if let NativeType::Struct {
+            name: sname,
+            fields,
+        } = &local.ty
+        {
+            let mut word = 0i32;
+            let mut string_slots: Vec<i32> = Vec::new();
+            let mut string_names: Vec<&str> = Vec::new();
+            let mut string_field_indices: Vec<usize> = Vec::new();
+            for (index, (fname, fty)) in fields.iter().enumerate() {
+                if matches!(fty, NativeType::String) {
+                    string_slots.push(slot + word * 8);
+                    string_names.push(fname.as_str());
+                    string_field_indices.push(index);
+                }
+                word += fty.words() as i32;
+            }
+            if !string_slots.is_empty()
+                && is_owning_struct_with_strings(value, sname, &string_field_indices)
+                && struct_field_borrow_only_stmts(name, &string_names, &body[idx + 1..])
+            {
+                for field_slot in string_slots {
+                    drops.push((idx, field_slot, RC_DEC_SYMBOL));
+                }
+            }
+            continue;
+        }
         // A plain `string` local: fresh alloc, borrow-only (only `len(name)`).
         let is_string = matches!(local.ty, NativeType::String);
         // An `array<string>` local: a `split`/`words` result, borrow-only
@@ -4021,10 +4286,13 @@ pub(crate) fn lower_loop_body_with_drops(
     let drops = collect_loop_body_drops(ctx, body);
     for (j, stmt) in body.iter().enumerate() {
         lower_native_stmt(ctx, stmt, code, loops)?;
-        if let Some(&(_, slot, symbol)) = drops.iter().find(|(idx, _, _)| *idx == j)
-            && let Some(top) = loops.last_mut()
-        {
-            top.live_drops.push((slot, symbol));
+        // Reveal EVERY drop declared by statement `j` (a `struct` local with several
+        // `string` fields contributes one `rc_dec` drop per field, all keyed to the
+        // same declaring index) into the innermost loop's early-exit drop set.
+        for &(_, slot, symbol) in drops.iter().filter(|(idx, _, _)| *idx == j) {
+            if let Some(top) = loops.last_mut() {
+                top.live_drops.push((slot, symbol));
+            }
         }
     }
     Ok(())
@@ -4394,10 +4662,10 @@ pub(crate) fn lower_native_for(
     // seated (so the mark excludes only their one-time temps), before `top:`.
     let arena_reset_mark = arena_loop_reset_mark(
         ctx,
-        expr_touches_heap(start)
-            || expr_touches_heap(end)
-            || step.is_some_and(expr_touches_heap)
-            || body_touches_heap(body),
+        expr_touches_heap(start, &ctx.heap_aggregates)
+            || expr_touches_heap(end, &ctx.heap_aggregates)
+            || step.is_some_and(|s| expr_touches_heap(s, &ctx.heap_aggregates))
+            || body_touches_heap(body, &ctx.heap_aggregates),
         body,
         loops.len(),
     );

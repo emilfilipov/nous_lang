@@ -644,9 +644,19 @@ pub(crate) fn lower_native_expr(
             lower_array_string_index(ctx, target, index, code)
         }
         BytecodeExprKind::Field { .. } | BytecodeExprKind::Index { .. } => {
-            // A struct-field or array-index read yielding an i64 scalar. Resolve
-            // the access to a stack word and load it into rax.
-            let place = resolve_read_place(ctx, expr)?;
+            // A struct-field or array-index read yielding a flat word: an `i64`
+            // scalar OR a `string` field (an immutable heap pointer stored in one
+            // word). Both load the word into `rax` — for a string that is the record
+            // pointer, ready to be used as a string value (e.g. by `len`, a return,
+            // or a call argument). A float element takes the `lower_native_float_expr`
+            // path, so the typed resolver rejecting it here never demotes a float
+            // read (it is handled before this arm is reached).
+            let (place, ty) = resolve_read_place_typed(ctx, expr)?;
+            if !matches!(ty, NativeType::I64 | NativeType::String) {
+                return Err(
+                    "native scalar field/index read must be an i64 or string word".to_string(),
+                );
+            }
             emit_load_place(ctx, &place, code)
         }
         // A string literal used as a general VALUE (not just `len`'s argument):

@@ -1603,14 +1603,35 @@ pub(crate) fn lower_heap_slot_value(
     value: &BytecodeExpr,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
-    if let (NativeType::HeapStruct { name, fields }, BytecodeExprKind::Call { name: cname, args }) =
-        (slot_ty, &value.kind)
-        && cname == name
-    {
-        // A direct constructor: build fresh on the heap (already independent).
-        return lower_heap_struct_construct(ctx, fields, args, code);
+    if let NativeType::HeapStruct { name, fields } = slot_ty {
+        if let BytecodeExprKind::Call { name: cname, args } = &value.kind
+            && cname == name
+        {
+            // A direct constructor: build fresh on the heap (already independent).
+            return lower_heap_struct_construct(ctx, fields, args, code);
+        }
+        // Any other `HeapStruct` source is a stack-flattened struct value (a struct
+        // variable, parameter, or call/`get` result), NOT a `[nwords][field words]`
+        // heap block. `emit_heap_slot_deep_copy` would hand its stack pointer to
+        // `__lullaby_struct_copy`, which reads the word count at `[ptr - 8]` and walks
+        // off into an adjacent frame word (a corrupt scalar + bad string pointer →
+        // SIGSEGV). There is no stack->heap bridge for STORING a struct value into a
+        // heap slot (only the reverse `get`-into-local bridge exists), so demote the
+        // enclosing function to the interpreters (a clean skip via the second-pass
+        // fixpoint) — exactly as the backend did before a struct became a collection
+        // element. Default-deny: never miscompiled, and the inline-constructor path
+        // above (`push(l, Rec("x", 1))`, `map_set(m, k, Rec(…))`, `some(Rec(…))`)
+        // stays intact.
+        return Err(format!(
+            "storing a non-constructor `{name}` struct value into a collection element / \
+             map value / enum payload is not in the native subset: a struct variable, \
+             parameter, or call/`get` result is stack-flattened, not a heap block, so it \
+             cannot be deep-copied into a heap slot (only an inline struct constructor is \
+             supported)"
+        ));
     }
-    // Any other expression yields an existing aggregate pointer; deep-copy it.
+    // A `List`/`Map` slot value is a genuine heap pointer even as a local, so it can be
+    // evaluated and deep-copied in place.
     lower_native_expr(ctx, value, code)?;
     emit_heap_slot_deep_copy(ctx, slot_ty, code);
     Ok(())

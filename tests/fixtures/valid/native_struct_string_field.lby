@@ -1,0 +1,31 @@
+struct Rec
+    name string
+    id i64
+
+fn label r Rec -> string
+    r.name
+
+fn name_len r Rec -> i64
+    len(r.name)
+
+fn relabel r Rec new string -> Rec
+    Rec(new, r.id)
+
+fn main -> i64
+    let a Rec = Rec("service", 7)
+    let b Rec = relabel(a, "gateway")
+    let c string = label(a)
+    # a.name = "service" (7), b.name = "gateway" (7), a.id = 7.
+    # value semantics: relabel returns a fresh Rec; a is unchanged.
+    let ok i64 = 0
+    if name_len(a) == 7
+        ok += 1
+    if len(b.name) == 7
+        ok += 2
+    if a.id == 7
+        ok += 4
+    if len(c) == 7
+        ok += 8
+    if len(label(b)) == 7
+        ok += 16
+    ok

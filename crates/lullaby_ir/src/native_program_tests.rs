@@ -1616,16 +1616,89 @@ fn compiles_fixed_i64_array_with_const_and_dynamic_index() {
 }
 
 #[test]
-fn skips_struct_with_non_i64_field() {
-    // A struct with a `string` field is not an all-i64 native type; a `main`
-    // that constructs it is demoted to skipped, and since nothing else is
-    // eligible the emitter reports `L0339`.
-    let err = emit_native_program(&module_for(
-            "struct Tagged\n    id i64\n    name string\n\nfn main -> i64\n    let t Tagged = Tagged(1, \"x\")\n    return t.id\n",
+fn compiles_struct_with_string_field() {
+    // A struct with an immutable `string` field IS in the native subset: it is
+    // stack-flattened with the string field held as one pointer word, constructed
+    // by evaluating the string expression into that word, read via a field access,
+    // and shared (never deep-copied) on the value-semantic copy since strings are
+    // immutable. `main` builds it, reads the string field, and derives a scalar.
+    let program = emit_native_program(&module_for(
+            "struct Tagged\n    id i64\n    name string\n\nfn main -> i64\n    let t Tagged = Tagged(1, \"hello\")\n    return t.id + len(t.name)\n",
         ))
-        .expect_err("string-field struct is not native");
+        .expect("string-field struct is native");
+    assert_eq!(program.compiled, vec!["main".to_string()]);
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
+}
+
+#[test]
+fn skips_struct_with_mutable_heap_field() {
+    // A struct with a MUTABLE heap field (`list`/`map`) is NOT in the native subset:
+    // the flat word copy the aggregate paths emit would SHARE the mutable heap block
+    // instead of deep-copying it, breaking value semantics. So a `main` constructing
+    // it is demoted to skipped, and with nothing else eligible the emitter reports
+    // `L0339` — a clean skip, never a miscompile.
+    let err = emit_native_program(&module_for(
+            "struct Bag\n    id i64\n    items list<i64>\n\nfn main -> i64\n    let xs list<i64> = list_new()\n    let b Bag = Bag(1, xs)\n    return b.id\n",
+        ))
+        .expect_err("mutable-heap-field struct is not native");
     assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
     assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn skips_struct_with_f32_field() {
+    // An `f32` field is still rejected inside an aggregate: the flat 8-byte word
+    // copy would not keep a 4-byte f32 rounded. (An `f64` field is fine — a full
+    // 8-byte word — and a `string` field is fine — immutable pointer word.)
+    let err = emit_native_program(&module_for(
+            "struct Mixed\n    id i64\n    ratio f32\n\nfn main -> i64\n    let m Mixed = Mixed(1, to_f32(2.0))\n    return m.id\n",
+        ))
+        .expect_err("f32-field struct is not native");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn skips_list_of_struct_string_field_when_pushing_a_variable() {
+    // A `list<struct-with-string-field>` classifies as a native collection type, but
+    // storing a struct *variable* into an element slot has no sound lowering: a struct
+    // value is stack-flattened everywhere except in a collection slot, so a struct
+    // local is a run of frame words, NOT the `[nwords][field words]` heap block that
+    // `__lullaby_struct_copy` deep-copies (it reads the count at `[ptr - 8]` and walks
+    // off into a neighbouring frame word → a corrupt scalar + bad string pointer,
+    // i.e. SIGSEGV). The store path rejects a non-constructor `HeapStruct` value, so
+    // `main` is demoted and — nothing else eligible — the emitter reports `L0339`: a
+    // clean skip, exactly as the backend behaved before a struct-string was a native
+    // type. (This is the reviewer's `min_list` repro.)
+    let err = emit_native_program(&module_for(
+            "struct Rec\n    name string\n    id i64\n\nfn main -> i64\n    let bucket list<Rec> = list_new()\n    let r Rec = Rec(\"hello\", 3)\n    bucket = push(bucket, r)\n    let got Rec = get(bucket, 0)\n    return len(got.name) + got.id\n",
+        ))
+        .expect_err("pushing a struct-string variable into a list is not native");
+    assert_eq!(err.code, NATIVE_NO_ELIGIBLE_CODE);
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn compiles_list_of_struct_string_field_with_inline_constructor() {
+    // The companion positive case: pushing an INLINE constructor into the same
+    // `list<struct-with-string-field>` stays native-eligible — the fresh struct block
+    // is built directly on the heap by `lower_heap_struct_construct` (already an
+    // independent snapshot), so no stack->heap bridge is needed. `main` builds the
+    // list, `get`s the element (the heap->stack bridge), and reads its fields.
+    let program = emit_native_program(&module_for(
+            "struct Rec\n    name string\n    id i64\n\nfn main -> i64\n    let bucket list<Rec> = list_new()\n    bucket = push(bucket, Rec(\"hello\", 3))\n    let got Rec = get(bucket, 0)\n    return len(got.name) + got.id\n",
+        ))
+        .expect("inline struct-string push is native");
+    assert_eq!(program.compiled, vec!["main".to_string()]);
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
 }
 
 #[test]
@@ -2785,19 +2858,46 @@ fn compiles_enum_parameter_and_return_and_match_on_call() {
 }
 
 #[test]
-fn defers_heap_containing_aggregate_parameter() {
-    // A struct field of a heap type (`string`) is not a native scalar-field
-    // aggregate, so a function taking it by value skips gracefully.
+fn compiles_string_field_aggregate_across_boundary() {
+    // A struct with an immutable `string` field crosses a function boundary via the
+    // by-pointer aggregate ABI: the field is a flat pointer word, copied-in by the
+    // callee and shared (never deep-copied) since strings are immutable, so value
+    // semantics hold. A function taking such a struct by value now COMPILES.
     let program = emit_native_program(&module_for(concat!(
         "struct Named\n    id i64\n    label string\n\n",
-        "fn id_of n Named -> i64\n    n.id\n\n",
+        "fn id_and_len n Named -> i64\n    n.id + len(n.label)\n\n",
+        "fn main -> i64\n    id_and_len(Named(7, \"svc\"))\n",
+    )))
+    .expect("emit native program");
+    assert!(
+        program.compiled.contains(&"id_and_len".to_string())
+            && program.compiled.contains(&"main".to_string()),
+        "string-field aggregate boundary must compile: {:?} / {:?}",
+        program.compiled,
+        program.skipped
+    );
+    assert!(
+        program.skipped.is_empty(),
+        "no skips: {:?}",
+        program.skipped
+    );
+}
+
+#[test]
+fn defers_mutable_heap_field_aggregate_parameter() {
+    // A struct field of a MUTABLE heap type (`list`/`map`) is still not a native
+    // aggregate (the flat word copy would share the block), so a function taking it
+    // by value skips gracefully rather than miscompiling.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Bag\n    id i64\n    items list<i64>\n\n",
+        "fn id_of n Bag -> i64\n    n.id\n\n",
         "fn main -> i64\n    7\n",
     )))
     .expect("emit native program");
     assert_eq!(program.compiled, vec!["main".to_string()]);
     assert!(
         program.skipped.iter().any(|s| s.name == "id_of"),
-        "heap-field aggregate parameter must skip: {:?}",
+        "mutable-heap-field aggregate parameter must skip: {:?}",
         program.skipped
     );
 }
@@ -3551,6 +3651,140 @@ fn array_string_loop_temp_uses_recursive_drop() {
             .count()
             >= 2,
         "drop_string_array must rc_dec both each element and the block"
+    );
+}
+
+#[test]
+fn struct_string_field_loop_temp_uses_recursive_drop() {
+    // A uniquely-owned, borrow-only `struct` loop temp with a `string` field gets
+    // the recursive drop-glue: each owned string field is `rc_dec`'d at the loop
+    // edges (the recursive-drop template — `rc_dec` per heap field). The field is a
+    // plain string literal and the local is read only via `len(r.name)`, so the ONLY
+    // source of an `rc_dec` reference in the program is that per-field drop.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn scan n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    let i i64 = 0\n",
+        "    loop\n",
+        "        if i >= n\n",
+        "            break\n",
+        "        let r Rec = Rec(\"rec\", i)\n",
+        "        total = total + len(r.name) + r.id\n",
+        "        i = i + 1\n",
+        "    total\n\n",
+        "fn main -> i64\n    scan(3)\n",
+    )))
+    .expect("emit struct-string loop program");
+    assert!(
+        program.compiled.contains(&"scan".to_string()),
+        "a struct-with-string-field loop function must compile: {:?}",
+        program.skipped
+    );
+    assert!(
+        coff_symbol(&program.bytes, RC_DEC_SYMBOL).is_some_and(|(s, _)| s == 1),
+        "an owned borrow-only struct-string loop temp must be recursively dropped \
+         (rc_dec per string field)"
+    );
+}
+
+#[test]
+fn struct_string_field_reclaim_on_rc_free_list_path() {
+    // The recursive struct-string drop-glue composing with the RC / free-list path:
+    // `sweep` calls a user function (`tick`), so it is NOT arena-eligible (a leaf
+    // requirement fails) and keeps the RC codegen — its per-iteration `rc_dec` of the
+    // struct's `string` field actually frees the record onto the free list, which the
+    // next iteration's alloc reuses (bounded heap). The struct is borrow-only (read
+    // only via `len(r.name)` + the scalar `r.id`), so exactly ONE `rc_dec` fires per
+    // record: no double-free, no leak. Assert the function compiles, is NOT arena
+    // (so `rc_free` really frees), and the per-field `rc_dec` drop is present.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn tick x i64 -> i64\n    x\n\n",
+        "fn sweep n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        let r Rec = Rec(to_string(i) + \"!!!!!!!!!!\", i)\n",
+        "        total = total + len(r.name) + r.id\n",
+        "    tick(total)\n\n",
+        "fn main -> i64\n    sweep(3)\n",
+    )))
+    .expect("emit struct-string RC reclaim program");
+    assert!(
+        program.compiled.contains(&"sweep".to_string()),
+        "the struct-string RC reclaim function must compile: {:?}",
+        program.skipped
+    );
+    assert!(
+        !has_arena_prologue(&program),
+        "a non-leaf function must NOT take the arena path (RC / free-list reclaims)"
+    );
+    assert!(
+        coff_symbol(&program.bytes, RC_DEC_SYMBOL).is_some_and(|(s, _)| s == 1),
+        "the borrow-only struct-string loop temp must be recursively dropped \
+         (one rc_dec per string field) on the RC path"
+    );
+}
+
+#[test]
+fn struct_string_field_reclaim_on_arena_path() {
+    // The recursive struct-string drop-glue composing with the ARENA path:
+    // `build_len` is a provably-local heap-using LEAF (scalar return, no user calls,
+    // no loop) that constructs a `struct` with a fresh `string` field kept local
+    // (read only via `len`), so it is arena-eligible and takes the arena path — its
+    // whole region is reclaimed by the bump-pointer rewind on return. `rc_free`
+    // no-ops in arena mode, so the drop-glue and the arena rewind coexist without a
+    // double-free.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn build_len x i64 -> i64\n",
+        "    let r Rec = Rec(to_string(x) + \"!!!!!!!!!!\", x)\n",
+        "    len(r.name) + r.id\n\n",
+        "fn main -> i64\n    build_len(5)\n",
+    )))
+    .expect("emit struct-string arena reclaim program");
+    assert!(
+        program.compiled.contains(&"build_len".to_string()),
+        "the struct-string arena reclaim function must compile: {:?}",
+        program.skipped
+    );
+    assert!(
+        has_arena_prologue(&program),
+        "a provably-local struct-string heap function must take the arena path"
+    );
+}
+
+#[test]
+fn arena_not_used_when_a_struct_string_escapes_a_confined_loop() {
+    // Default-deny soundness fix: a `struct` value transitively carries heap (its
+    // `string` field), so storing it into an iteration-outliving location is an
+    // ESCAPE. `f` reassigns the outer `acc` (a `Rec`) inside a loop; were the loop
+    // treated as "confined", a per-iteration arena sub-region rewind would reclaim a
+    // record `acc` still references — a use-after-free once a later allocation reuses
+    // the rewound bytes. The escape analysis now recognizes the heap-carrying struct
+    // store, so `f` is NOT arena-routed (no sub-region), keeping it sound.
+    let program = emit_native_program(&module_for(concat!(
+        "struct Rec\n    name string\n    id i64\n\n",
+        "fn f n i64 -> i64\n",
+        "    let acc Rec = Rec(\"start\", 0)\n",
+        "    let total i64 = 0\n",
+        "    for i from 1 to n\n",
+        "        if i == 1\n",
+        "            acc = Rec(to_string(i) + \"Z\", i)\n",
+        "        let scratch string = to_string(i) + \"0123456789\"\n",
+        "        total = total + len(acc.name) + len(scratch)\n",
+        "    total\n\n",
+        "fn main -> i64\n    f(5)\n",
+    )))
+    .expect("emit struct-string escape program");
+    assert!(
+        program.compiled.contains(&"f".to_string()),
+        "the function still compiles (on the RC path): {:?}",
+        program.skipped
+    );
+    assert!(
+        !has_arena_prologue(&program),
+        "a loop storing a heap-carrying struct to an outer var must NOT be arena-confined"
     );
 }
 

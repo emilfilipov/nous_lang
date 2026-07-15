@@ -1835,3 +1835,177 @@ pub(crate) fn native_f32_precision_execution_parity_when_linkable() {
         "native f32 exit code must equal the interpreter result (mod 256)"
     );
 }
+
+/// Functional parity for a **`struct` with a `string` field** (a one-level
+/// heap-typed field). `native_struct_string_field.lby` builds a `Rec { name string,
+/// id i64 }`, reads the string field, derives lengths, passes the struct by value
+/// across function boundaries, and rebuilds it (value semantics: a copy shares the
+/// immutable string pointer). Every function must compile natively (not skip), the
+/// interpreter result agrees across AST/IR/bytecode, and — when a native exe is
+/// produced (direct PE needs no linker) — the exit code equals the interpreter's
+/// `main` result (31).
+#[test]
+pub(crate) fn native_struct_string_field_execution_parity_when_linkable() {
+    let fixture = workspace_root().join("tests/fixtures/valid/native_struct_string_field.lby");
+    let out = std::env::temp_dir().join("lullaby_native_struct_string_field.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+    let emit_out = stdout(&emit);
+    for name in ["label", "name_len", "relabel", "main"] {
+        assert!(
+            emit_out.contains(&format!("compiled {name}")),
+            "expected `{name}` to compile natively (string-field struct): {emit_out}"
+        );
+    }
+
+    for backend in ["ast", "ir", "bytecode"] {
+        let run = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{backend}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(
+            interp, 31,
+            "{backend}: struct-string fixture main computes 31"
+        );
+    }
+
+    if !out.is_file() {
+        eprintln!("no native exe produced; skipping struct-string-field run");
+        return;
+    }
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit,
+        31_i32.rem_euclid(256),
+        "native struct-string exit code must equal the interpreter result (mod 256)"
+    );
+}
+
+/// RC / free-list reclamation of a **struct with a `string` field** allocated per
+/// iteration. `sweep` calls a user function, so it is NOT arena-routed and keeps the
+/// RC codegen: each iteration constructs `Rec(to_string(i) + "…", i)` (allocating one
+/// string record — the concat operands are reclaimed by the ownership-aware concat)
+/// and the borrow-only struct temp's `string` field is `rc_dec`'d on the loop edge,
+/// freeing the record onto the free list for the next iteration to reuse. Over
+/// 300_001 iterations that is far more than the fixed 1 MiB heap, so a correct exit
+/// code equal to the interpreter's result proves the recursive drop reclaims exactly
+/// once (no leak — a leak exhausts the heap; no double-free — that corrupts the free
+/// list). The struct is stack-flattened, so only the string field is heap.
+#[test]
+pub(crate) fn native_struct_string_field_rc_reclaim_execution_parity_when_linkable() {
+    let fixture =
+        workspace_root().join("tests/fixtures/valid/run_rc_struct_string_field_reclaim.lby");
+    let out = std::env::temp_dir().join("lullaby_native_struct_string_rc_reclaim.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(
+        interp, 45_004_838_906,
+        "sum of len(r.name)+r.id over Rec(to_string(i)+\"!!!!!!!!!!\", i) for i in 0..=300000"
+    );
+
+    if !out.is_file() {
+        eprintln!("no native exe produced; skipping struct-string RC reclaim run");
+        return;
+    }
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "native struct-string RC-reclaimed loop must complete with the interpreter's \
+         result (a crash here means the heap exhausted — reclamation regressed)"
+    );
+}
+
+/// Arena reclamation of a **struct with a `string` field**. `build_len` is a
+/// provably-local heap-using LEAF (scalar return, no user calls, no loop) that
+/// constructs a `Rec` with a fresh `string` field kept local (read only via `len`),
+/// so it routes through a function-scoped arena and rewinds the bump pointer on
+/// return. `main` calls it 300_001 times; each call's region — including the struct's
+/// string record — is reclaimed at return, so the process completes in the fixed
+/// 1 MiB heap despite allocating far more in aggregate. `rc_free` no-ops in arena
+/// mode, so the recursive drop-glue and the arena rewind coexist without double-free.
+/// This is the arena analogue of the RC reclaim test above.
+#[test]
+pub(crate) fn native_struct_string_field_arena_reclaim_execution_parity_when_linkable() {
+    let fixture =
+        workspace_root().join("tests/fixtures/valid/run_arena_struct_string_field_reclaim.lby");
+    let out = std::env::temp_dir().join("lullaby_native_struct_string_arena_reclaim.exe");
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(emit.status.success(), "{}", stderr(&emit));
+
+    let run = lullaby()
+        .args(["run", fixture.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    assert!(run.status.success(), "{}", stderr(&run));
+    let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+    assert_eq!(
+        interp, 45_004_838_906,
+        "sum of build_len(i) over Rec(to_string(i)+\"!!!!!!!!!!\", i) for i in 0..=300000"
+    );
+
+    if !out.is_file() {
+        eprintln!("no native exe produced; skipping struct-string arena reclaim run");
+        return;
+    }
+    let exe = Command::new(&out).output().expect("run native exe");
+    let exit = exe.status.code().expect("native exit code");
+    let expected = if cfg!(windows) {
+        interp as i32
+    } else {
+        interp.rem_euclid(256) as i32
+    };
+    assert_eq!(
+        exit, expected,
+        "native struct-string arena-reclaimed loop must complete with the interpreter's \
+         result (a crash here means the per-call arena reset regressed)"
+    );
+}
