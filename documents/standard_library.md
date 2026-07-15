@@ -137,6 +137,7 @@ argument is a compile-time `L0389` type error.
 | Function | Signature | Notes |
 |----------|-----------|-------|
 | `len` | `len(x) -> i64` | length of a `string`, `array<T>`, or `list<T>` |
+| `array_fill` | `array_fill(n i64, value T) -> array<T>` | a new `array<T>` of runtime length `n` with every element equal to `value` (`array_fill(n, 0)` is the natural zeroed buffer for DP tables, matrices, and visited sets); a negative `n` is the runtime error `L0433`, and `0` yields an empty array. Because the length is only known at runtime, a function using `array_fill` is interpreter-tier and the native/WASM backends skip it |
 | `list_new` | `list_new() -> list<T>` | element type inferred from context |
 | `push` | `push(l list<T>, x T) -> list<T>` | append (returns a new list) |
 | `get` | `get(l list<T>, i i64) -> T` | bounds-checked |

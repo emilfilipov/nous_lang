@@ -8,7 +8,7 @@ Input/output (I/O) and concurrency mechanisms in Lullaby are designed to be mini
 
 ## Current I/O And System Subset
 
-The compiler implements a small, flat builtin surface. These names are available as ordinary function calls; dotted `io.*` syntax, stream handles, memory mapping, async, threads, sockets, and IPC remain planned design material below.
+The compiler implements a flat builtin surface — these names are available as ordinary function calls. The dotted `io.*` handle syntax, first-class stream handles, memory mapping, and `async`/`await` sketched in the design sections below are **planned and not implemented in that form**. The table below shows the core streaming/stdin builtins; the full shipped I/O surface (filesystem, process/environment, TCP/UDP sockets, and HTTP) lives in the flat builtins catalogued in [standard_library.md](standard_library.md) and [stdlib_surface_catalog.md](stdlib_surface_catalog.md). Lullaby *does* ship concurrency and networking as flat builtins (`spawn`/`task_join`/`mutex_*`/channels and `tcp_*`/`udp_*`/`http_*`) — they are simply not the handle-based, thread-pool, or socket-object shapes drafted further down.
 
 | Builtin | Type | Behavior |
 | :--- | :--- | :--- |
@@ -62,9 +62,30 @@ fn main -> string
     read_file("target/example.txt")
 ```
 
-## Planned I/O System Design
+## Planned / Not-Yet-Implemented Design Material
 
-## I/O System Design
+> **Everything from here down is forward-looking design, not shipped surface.**
+> The I/O that ships today is the flat builtin set in the
+> [Current I/O And System Subset](#current-io-and-system-subset) section above,
+> plus the filesystem, process/environment, TCP/UDP, and HTTP builtins catalogued
+> in [standard_library.md](standard_library.md) and
+> [stdlib_surface_catalog.md](stdlib_surface_catalog.md).
+>
+> The code samples in the sections below use **illustrative pseudocode that is not
+> valid Lullaby**. Python-style `def` / `async def`, dotted `io.*` and
+> `stream.method()` calls, keyword arguments (`size=4096`, `recursive=true`),
+> `await` / `await_all`, and `end_region` / `end_stream` / `end_if` block
+> terminators do **not** exist in the language. Lullaby is indentation-only (no
+> `def`, no braces, no `end_*` terminators) and calls flat builtins by name
+> (`read_file(path)`, not `io.read(...)`). Read the examples below as sketches of
+> intent, not as compilable code.
+>
+> A few subsections are explicitly marked **"Delivered"** — those describe shipped
+> behavior accurately (standard streams via `print`/`println`/`warn`/`flush` and
+> stdin via `read_line`/`read_all`; non-blocking sockets via `set_nonblocking` plus
+> the `*_nb` builtins). Everything not marked "Delivered" is planned.
+
+## I/O System Design (planned)
 
 ### File Operations
 
@@ -180,7 +201,7 @@ end_region
 
 ## Concurrency System
 
-### Threads and Processes
+### Threads and Processes (planned)
 
 Lullaby provides lightweight concurrency primitives optimized for both performance and LLM comprehension:
 
@@ -236,7 +257,7 @@ else:
 end_if
 ```
 
-### Asynchronous Operations
+### Asynchronous Operations (planned; no `async`/`await` in the language today)
 
 Simple await/async pattern without complexity:
 ```lullaby
@@ -320,7 +341,7 @@ while io_events.has_pending():
 end_while
 ```
 
-## Communication Mechanisms
+## Communication Mechanisms (planned)
 
 ### Inter-Process Communication (IPC)
 
@@ -403,7 +424,7 @@ received_msg = receive_from_peer(thread_b.queue, timeout_ms=100)
 process_message(received_msg)
 ```
 
-## Performance Optimization Strategies
+## Performance Optimization Strategies (planned)
 
 ### I/O Buffering
 ```lullaby
@@ -490,7 +511,9 @@ region streaming_processing allocate
 end_region
 ```
 
-## Design Principles Summary
+## Design Principles Summary (planned design goals)
+
+_These summarize the goals of the planned design above, not shipped behavior. For what ships today see the Current I/O And System Subset section and standard_library.md._
 
 ### I/O System Advantages
 1. **Minimal Syntax**: Single keywords for common operations (read/write/open/close)
@@ -592,9 +615,11 @@ region os_kernel allocate
 end_region
 ```
 
-## Summary
+## Summary (planned design)
 
-The I/O and concurrency system in lullaby provides:
+_This recaps the planned design's intended benefits, not the current shipped surface. The `async`/`await`, thread-pool, and IPC features named below are not implemented today; the shipped I/O is the flat builtin set documented above and in standard_library.md._
+
+The I/O and concurrency system in lullaby aims to provide:
 - **Minimal, readable syntax** for file operations without boilerplate code
 - **Type-safe access** preventing common errors like buffer overflows
 - **Simple async model** using single `await` keyword instead of complex state machines
