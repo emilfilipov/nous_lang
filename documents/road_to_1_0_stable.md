@@ -126,6 +126,22 @@ These are toolchain-completeness items, not language decisions.
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
 | B3 | Stable-grade toolchain | PLANNED | test runner + DWARF + LSP/pkg | — |
 
+## Owner decisions — 2026-07-16
+
+| # | Item | Decision |
+|---|------|----------|
+| C1 | **Actor failure model (stage 4)** | **Result-based, A5 unchanged.** A fallible handler returns `result<R, E>`; a supervisor observes `err` and applies a restart policy. A genuine panic (bounds fail, unwrap-on-`none`, div-by-zero) still **aborts the program** — you do not restart an actor that hit a bug. Erlang-style crash-supervision would require unwinding the language deliberately lacks, copying Erlang's surface without its substrate (isolated cheap processes, no shared state). Pinned by a test so the boundary cannot be softened into a comment. Revisiting this means revisiting **A5 itself**, deliberately. |
+| C2 | **`L0401` overload** | **The concurrency meaning keeps `L0401`** (~31 live emission sites); "call target not found" (~3 sites) takes a new code. Follows the `L0210` precedent: the number stays with the live, most-emitted meaning so the fewest references break. |
+| C3 | **Accepted limitations** | **All funded — no "we'll live with it".** Owner: *"no reason to leave it out… go for making things properly and in the best versions they can possibly be."* See below. |
+
+### C3 — limitations previously accepted, now funded work
+These are all **loud refusals, never miscompiles** — but each was a deferral, and 1.0-stable should mean they are decided, not drifted past. They serialize: #1 and #2 both touch the interpreters, which is a shared bottleneck.
+
+1. **Narrow-element array walking** (`array<i32>`/`array<u8>`) — refused natively: the cell is 8 bytes while `ptr_offset` strides by `size_of(T)`, so a walk desynchronizes. Refusing was correct; the fix is a **narrow-cell array representation** (native + all three interpreters). **Kernel-critical** — byte buffers are pervasive in drivers.
+2. **Cross-frame `addr_of` on the interpreters** (`L0459`) — out-parameters and buffer-passing (*valid C*, per C11 6.2.4p6: a call does not end the caller's block) are refused there because each frame's locals live in its own `Env` on the Rust stack. Native handles them via a real `lea`. Fix = an explicit **frame stack** (interpreter-owned `Vec<Env>` indexed by frame id) across `ir_interpreter.rs`/`interpreter.rs`/`bytecode_vm.rs`, all holding `&mut Env` pervasively, on the hot path. Multi-day and borrow-checker-heavy — funded anyway; as shipped, pointer-taking code cannot be factored into a helper at all on the interpreters.
+3. **Void `export fn`** — `is_exportable_scalar` admits only `i64`/`f64`/`f32`, so a C-callable `void NAME(...)` is `L0424`. Small frontend fix.
+4. **`alloc` is not in the native subset** — the one pointer form that works across frames on every tier demotes the whole program.
+
 ## Delivery progress (updated 2026-07-16)
 
 - **Freestanding `no-runtime` tier — stage 1 SHIPPED** (main `f6186d3`). Module-level
