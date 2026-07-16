@@ -626,7 +626,9 @@ pub(crate) fn collect_loop_body_drops(
             let mut string_field_indices: Vec<usize> = Vec::new();
             for (index, (fname, fty)) in fields.iter().enumerate() {
                 if matches!(fty, NativeType::String) {
-                    string_slots.push(slot + word * 8);
+                    // Field word `word` ascends above word 0, i.e. sits at the
+                    // smaller displacement `slot - 8*word`.
+                    string_slots.push(slot - word * 8);
                     string_names.push(fname.as_str());
                     string_field_indices.push(index);
                 }

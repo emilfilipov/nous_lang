@@ -785,6 +785,64 @@ fn run_interpreters(source: &str) -> (Outcome, Outcome, Outcome) {
     (ast, ir, bc)
 }
 
+/// Whether this host can run a natively-produced `.exe` at all.
+///
+/// The native differential fuzzers used to gate on `rust-lld` + `kernel32.lib`.
+/// That gate is **obsolete**: direct-PE emission is the default for every eligible
+/// executable build, so the CLI writes a runnable image in-house with no external
+/// linker and no import library (see `native_default_direct_pe_runs_without_linker`
+/// in `suite2.rs`). Gating on the linker silently turned all nine native fuzzers
+/// into no-ops on a host without it — a vacuous green.
+///
+/// The honest gate is: can we execute a Windows `.exe`? Whether an individual
+/// program reaches the direct-PE path or the linker path is then asserted
+/// per-program by [`fuzz_native_exit`], which fails loudly if NEITHER produced an
+/// exe and the linker was available — rather than skipping.
+fn native_exe_runnable() -> bool {
+    cfg!(windows)
+}
+
+/// Compile `source` to a real `.exe` and return its exit code, or `None` when the
+/// program legitimately could not be turned into an executable on this host (no
+/// direct-PE image AND no linker). Panics on a native emit failure, so a
+/// regression that makes a previously-compiling program skip is a FAILURE, not a
+/// silent pass.
+fn fuzz_native_exit(source: &str, dir: &std::path::Path, tag: &str) -> Option<i32> {
+    let src_path = dir.join(format!("{tag}.lby"));
+    let exe_path = dir.join(format!("{tag}.exe"));
+    std::fs::write(&src_path, source).expect("write fuzz source");
+    let _ = std::fs::remove_file(&exe_path);
+
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            exe_path.to_str().expect("exe path"),
+            src_path.to_str().expect("src path"),
+        ])
+        .output()
+        .expect("run native");
+    assert!(
+        emit.status.success(),
+        "native emit failed for {tag}:\n{source}\n{}",
+        stderr(&emit)
+    );
+    if !exe_path.is_file() {
+        // No direct-PE image AND the linker could not run. Only excusable when the
+        // link toolchain is genuinely absent; otherwise it is a real failure.
+        if rust_lld_path().is_none() || !kernel32_available() {
+            eprintln!("{tag}: no direct-PE image and no link toolchain; skipping");
+            return None;
+        }
+        panic!(
+            "no exe produced for {tag} despite an available linker:\n{source}\n{}",
+            stdout(&emit)
+        );
+    }
+    let run = Command::new(&exe_path).output().expect("run fuzz exe");
+    Some(run.status.code().expect("native exit code"))
+}
+
 #[test]
 fn fuzz_interpreters_agree() {
     // Cross-check the three engines on a large batch. Always runs (no toolchain
@@ -812,8 +870,8 @@ fn fuzz_native_matches_interpreter_when_linkable() {
     // Compile each generated program to a real `.exe` and check its exit code
     // against the interpreter result — the high-value oracle for the native
     // emitter. Gated on the link toolchain; skips cleanly when absent.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native differential fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native differential fuzz");
         return;
     }
     ensure_msvc_env();
@@ -839,33 +897,9 @@ fn fuzz_native_matches_interpreter_when_linkable() {
             other => panic!("generator produced {other:?} on seed {seed:#x}:\n{source}"),
         };
 
-        let src_path = dir.join(format!("fuzz_{i}.lby"));
-        let exe_path = dir.join(format!("fuzz_{i}.exe"));
-        std::fs::write(&src_path, &source).expect("write fuzz source");
-        let _ = std::fs::remove_file(&exe_path);
-
-        let emit = lullaby()
-            .args([
-                "native",
-                "-o",
-                exe_path.to_str().expect("exe path"),
-                src_path.to_str().expect("src path"),
-            ])
-            .output()
-            .expect("run native");
-        assert!(
-            emit.status.success(),
-            "native emit failed on #{i} (seed {seed:#x}):\n{source}\n{}",
-            stderr(&emit)
-        );
-        assert!(
-            exe_path.is_file(),
-            "no linked exe on #{i} (seed {seed:#x}):\n{source}\n{}",
-            stdout(&emit)
-        );
-
-        let run = Command::new(&exe_path).output().expect("run fuzz exe");
-        let exit = run.status.code().expect("native exit code");
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_{i}")) else {
+            return;
+        };
         // The entry stub forwards main's i64 to ExitProcess; on Windows the full
         // 32-bit value round-trips, so the exit code equals `expected as i32`.
         assert_eq!(
@@ -926,8 +960,8 @@ fn fuzz_array_native_matches_interpreter_when_linkable() {
     // the calling-convention change. Gated on the link toolchain; skips cleanly when
     // absent. This ASSERTS the helper (a fat-pointer array parameter) compiles
     // natively, so a regression that demoted it would fail here, not silently pass.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native array differential fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native array differential fuzz");
         return;
     }
     ensure_msvc_env();
@@ -957,34 +991,9 @@ fn fuzz_array_native_matches_interpreter_when_linkable() {
             other => panic!("array generator produced {other:?} on seed {seed:#x}:\n{source}"),
         };
 
-        let src_path = dir.join(format!("fuzz_arr_{i}.lby"));
-        let exe_path = dir.join(format!("fuzz_arr_{i}.exe"));
-        std::fs::write(&src_path, &source).expect("write fuzz source");
-        let _ = std::fs::remove_file(&exe_path);
-
-        let emit = lullaby()
-            .args([
-                "native",
-                "-o",
-                exe_path.to_str().expect("exe path"),
-                src_path.to_str().expect("src path"),
-            ])
-            .output()
-            .expect("run native");
-        assert!(
-            emit.status.success(),
-            "native emit failed on array-fuzz #{i} (seed {seed:#x}) — the helper's \
-             fat-pointer array parameter must compile:\n{source}\n{}",
-            stderr(&emit)
-        );
-        assert!(
-            exe_path.is_file(),
-            "no linked exe on array-fuzz #{i} (seed {seed:#x}):\n{source}\n{}",
-            stdout(&emit)
-        );
-
-        let run = Command::new(&exe_path).output().expect("run fuzz exe");
-        let exit = run.status.code().expect("native exit code");
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_arr_{i}")) else {
+            return;
+        };
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (fat array) on #{i} (seed {seed:#x}):\n{source}\n\
@@ -1024,8 +1033,8 @@ fn fuzz_string_loop_native_matches_interpreter_when_linkable() {
     // accumulator across `call rc_dec`, or an unbalanced free that corrupts the heap).
     // ASSERTS `main` compiles natively so a regression that demoted it (hiding the
     // drop path) fails loudly rather than silently passing on the interpreter.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native string-loop fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native string-loop fuzz");
         return;
     }
     ensure_msvc_env();
@@ -1051,34 +1060,9 @@ fn fuzz_string_loop_native_matches_interpreter_when_linkable() {
             }
         };
 
-        let src_path = dir.join(format!("fuzz_sl_{i}.lby"));
-        let exe_path = dir.join(format!("fuzz_sl_{i}.exe"));
-        std::fs::write(&src_path, &source).expect("write fuzz source");
-        let _ = std::fs::remove_file(&exe_path);
-
-        let emit = lullaby()
-            .args([
-                "native",
-                "-o",
-                exe_path.to_str().expect("exe path"),
-                src_path.to_str().expect("src path"),
-            ])
-            .output()
-            .expect("run native");
-        assert!(
-            emit.status.success(),
-            "native emit failed on string-loop-fuzz #{i} (seed {seed:#x}):\n{source}\n{}",
-            stderr(&emit)
-        );
-        assert!(
-            exe_path.is_file(),
-            "no linked exe on string-loop-fuzz #{i} (seed {seed:#x}) — main must compile \
-             natively:\n{source}\n{}",
-            stdout(&emit)
-        );
-
-        let run = Command::new(&exe_path).output().expect("run fuzz exe");
-        let exit = run.status.code().expect("native exit code");
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_sl_{i}")) else {
+            return;
+        };
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (string-loop RC drop) on #{i} (seed {seed:#x}):\n{source}\n\
@@ -1117,8 +1101,8 @@ fn fuzz_arena_native_matches_interpreter_when_linkable() {
     // computed value, so ANY divergence here is an arena-induced miscompile (a return
     // value clobbered by the return-edge reset, or an unsound bump-pointer rewind).
     // Gated on the link toolchain; skips cleanly when absent.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native arena fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native arena fuzz");
         return;
     }
     ensure_msvc_env();
@@ -1142,34 +1126,9 @@ fn fuzz_arena_native_matches_interpreter_when_linkable() {
             other => panic!("arena generator produced {other:?} on seed {seed:#x}:\n{source}"),
         };
 
-        let src_path = dir.join(format!("fuzz_arena_{i}.lby"));
-        let exe_path = dir.join(format!("fuzz_arena_{i}.exe"));
-        std::fs::write(&src_path, &source).expect("write fuzz source");
-        let _ = std::fs::remove_file(&exe_path);
-
-        let emit = lullaby()
-            .args([
-                "native",
-                "-o",
-                exe_path.to_str().expect("exe path"),
-                src_path.to_str().expect("src path"),
-            ])
-            .output()
-            .expect("run native");
-        assert!(
-            emit.status.success(),
-            "native emit failed on arena-fuzz #{i} (seed {seed:#x}) — the arena-eligible \
-             helper must compile:\n{source}\n{}",
-            stderr(&emit)
-        );
-        assert!(
-            exe_path.is_file(),
-            "no linked exe on arena-fuzz #{i} (seed {seed:#x}):\n{source}\n{}",
-            stdout(&emit)
-        );
-
-        let run = Command::new(&exe_path).output().expect("run fuzz exe");
-        let exit = run.status.code().expect("native exit code");
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_arena_{i}")) else {
+            return;
+        };
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (arena) on #{i} (seed {seed:#x}):\n{source}\n\
@@ -1211,8 +1170,8 @@ fn fuzz_arena_struct_string_native_matches_interpreter_when_linkable() {
     // reclamation/layout miscompile of the heap-field aggregate. Also asserts the
     // arena-eligible helper compiles natively (a regression that demoted it fails here
     // rather than silently passing). Gated on the link toolchain; skips when absent.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native arena struct-string fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native arena struct-string fuzz");
         return;
     }
     ensure_msvc_env();
@@ -1238,34 +1197,9 @@ fn fuzz_arena_struct_string_native_matches_interpreter_when_linkable() {
             ),
         };
 
-        let src_path = dir.join(format!("fuzz_arena_ss_{i}.lby"));
-        let exe_path = dir.join(format!("fuzz_arena_ss_{i}.exe"));
-        std::fs::write(&src_path, &source).expect("write fuzz source");
-        let _ = std::fs::remove_file(&exe_path);
-
-        let emit = lullaby()
-            .args([
-                "native",
-                "-o",
-                exe_path.to_str().expect("exe path"),
-                src_path.to_str().expect("src path"),
-            ])
-            .output()
-            .expect("run native");
-        assert!(
-            emit.status.success(),
-            "native emit failed on arena-struct-string-fuzz #{i} (seed {seed:#x}) — the \
-             arena-eligible struct-string helper must compile:\n{source}\n{}",
-            stderr(&emit)
-        );
-        assert!(
-            exe_path.is_file(),
-            "no linked exe on arena-struct-string-fuzz #{i} (seed {seed:#x}):\n{source}\n{}",
-            stdout(&emit)
-        );
-
-        let run = Command::new(&exe_path).output().expect("run fuzz exe");
-        let exit = run.status.code().expect("native exit code");
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_arena_ss_{i}")) else {
+            return;
+        };
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (arena struct-string) on #{i} (seed {seed:#x}):\n{source}\n\
@@ -1307,8 +1241,8 @@ fn fuzz_list_struct_string_native_no_crash_when_linkable() {
     // L0339 diagnostic). The ONLY failure is a produced exe whose exit diverges from
     // the interpreter (a real miscompile — including a crash, which surfaces as a
     // non-matching exit code). Gated on the link toolchain; skips when absent.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native list-struct-string fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native list-struct-string fuzz");
         return;
     }
     ensure_msvc_env();
@@ -1393,8 +1327,8 @@ fn fuzz_generic_scalar_native_matches_interpreter_when_linkable() {
     // compile natively AND its `.exe` exit code MUST equal the interpreter result —
     // a monomorphized `Box<i64>` is byte-identical to the erased `Box<i64>` the
     // interpreters run. Gated on the link toolchain; skips cleanly when absent.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native generic-scalar fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native generic-scalar fuzz");
         return;
     }
     ensure_msvc_env();
@@ -1482,8 +1416,8 @@ fn fuzz_method_native_matches_interpreter_when_linkable() {
     // aggregate ABI, copy-in value semantics), so every function MUST compile
     // natively AND its `.exe` exit code MUST equal the interpreter result. A clean
     // skip here would mean method dispatch regressed. Gated on the link toolchain.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native method fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native method fuzz");
         return;
     }
     ensure_msvc_env();
@@ -1641,8 +1575,8 @@ fn fuzz_generic_heap_string_native_matches_interpreter_when_linkable() {
     // (default-deny) — the ONLY failure is a produced exe whose exit diverges (a real
     // miscompile, including a crash from a bad arena reclaim). Gated on the link
     // toolchain; skips cleanly when absent.
-    if rust_lld_path().is_none() || !kernel32_available() {
-        eprintln!("rust-lld/kernel32.lib unavailable; skipping native generic-heap-string fuzz");
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native generic-heap-string fuzz");
         return;
     }
     ensure_msvc_env();

@@ -25,19 +25,45 @@
 //!    relies on. So `addr_of` is lowered **only for an 8-byte scalar** (`i64` /
 //!    `u64` / `isize` / `usize` / `ptr<T>`), where the C width and the cell width
 //!    coincide.
-//! 2. **Native aggregates are laid out at DESCENDING addresses.** Word `k` of a
-//!    struct/array in a frame lives at `[rbp - (slot + 8*k)]` and, through an
-//!    aggregate pointer, at `[ptr - 8*k]` (see `emit_mov_rax_disp_from_rcx`'s
-//!    negative displacements). So `ptr_offset(addr_of(a[0]), 1)` would step
-//!    *backwards* through the array, disagreeing with C, with `size_of`/
-//!    `offset_of`, and with the interpreters' ascending snapshot model — on a
-//!    program the interpreters define. Rather than emit that, `addr_of` of an
-//!    **array element or a whole array** is refused here and the function skips
-//!    cleanly (`L0339`) with a precise reason. A struct-**field** path (`s.f`,
-//!    `s.a.b`) *is* lowered: its address is genuine and a read/write through it
-//!    aliases exactly, and the interpreters snapshot such a field as a
-//!    single-cell region (walking off it is undefined on both tiers, exactly as
-//!    walking off a C `&local` is).
+//! 2. **A pointer must only be taken to storage that actually exists.** A
+//!    register-promoted local lives in `rbx`/`rsi` and has no address (see
+//!    "Register promotion" below); a closure capture lives in the env block, not
+//!    a frame slot; and a fat-pointer array parameter's data pointer aliases the
+//!    *caller's* storage, which the fat-array ABI may only read (a write through
+//!    an address into it would break the read-only assumption that makes the
+//!    no-copy descriptor value-semantically safe). Each of those is refused here
+//!    and the function skips cleanly (`L0339`) with a precise reason.
+//!
+//! # Buffer walking works: the aggregate layout ASCENDS
+//!
+//! Native stack aggregates lay their words out at **ascending** (C-compatible)
+//! addresses: word `k` of a struct/array in a frame lives at `[rbp - (slot -
+//! 8*k)]` and, through an aggregate pointer, at `[ptr + 8*k]` (see
+//! `emit_mov_rax_disp_from_rcx`'s positive displacements). So a field/element at
+//! `offset_of == +8` really sits 8 bytes **higher** in memory, and
+//! `ptr_offset(addr_of(buf[0]), 1)` steps **forward** to `buf[1]` — agreeing with
+//! C, with `size_of`/`offset_of`, and with the interpreters.
+//!
+//! That makes THE kernel idiom — `addr_of(buf[0])` + `ptr_offset` to walk a
+//! buffer — compile and be correct. `addr_of` of an **array element** (constant
+//! or runtime index) and of a **whole array** (decaying to `ptr<element>`) are
+//! both lowered, and compose with `ptr_read`/`ptr_write`/`ptr_cast`.
+//!
+//! `ptr_offset(addr_of(s.lo), 1)` likewise genuinely reaches `s.hi` now. Note the
+//! *interpreters* refuse inter-field walking via their region model (each
+//! `addr_of` place is a single-cell snapshot), so that particular shape is
+//! **native-only** — a program the interpreters do not define, which native is
+//! free to define. Where the interpreters DO define the program (a read/walk
+//! within one array), native agrees with them exactly; the same split applies to
+//! a `ptr_write` through an `addr_of` pointer, which the interpreters refuse with
+//! `L0459` and native implements.
+//!
+//! The nested paths `addr_of(s.arr)` / `addr_of(s.arr[i])` resolve correctly
+//! through the shared path resolver, but are not reachable today for a *separate*
+//! reason: an `array<T>`-typed struct FIELD is not in the native struct layout at
+//! all (`resolve_struct_fields` rejects it, since a bare `array<T>` type carries
+//! no length), so such a struct skips before `addr_of` is ever consulted. That is
+//! a pre-existing layout gap, not a raw-pointer one.
 //!
 //! A pointer obtained from `int_to_ptr` (MMIO, a linker-provided address, an FFI
 //! pointer) addresses **real, C-laid-out memory**, so `ptr_read`/`ptr_write`/
@@ -301,51 +327,103 @@ fn lower_checked(
     }
 }
 
+/// The element type named by an `array<T>` spelling, or `None` for a non-array
+/// type name. Used by the whole-array decay `addr_of(a) -> ptr<T>`.
+fn array_element_name(name: &str) -> Option<&str> {
+    name.strip_prefix("array<")?.strip_suffix('>')
+}
+
 /// `addr_of(place) -> ptr<T>`: the REAL address of the addressed frame word,
-/// `lea rax, [rbp - slot]`.
+/// `lea rax, [rbp - slot]` (or a computed address for a runtime array index).
 ///
-/// Lowered only for a place that resolves to a **single 8-byte scalar word at a
-/// compile-time-constant frame slot**: a scalar local/parameter, or a struct-field
-/// path (`s.f`, `s.a.b`). Every other shape skips cleanly — see the module docs
-/// for why an array element, a whole-array decay, and a narrow/float scalar are
-/// each refused.
+/// Two place shapes are lowered:
+///
+/// * An **8-byte scalar** at an aggregate access path — a scalar local/parameter,
+///   a struct-field path (`s.f`, `s.a.b`), an **array element** (`a[i]`,
+///   `s.arr[i]`, constant or runtime index).
+/// * A **whole array** decaying to a pointer to its element 0 — `addr_of(a)` /
+///   `addr_of(s.arr)` where the place types as `array<T>` and the call types as
+///   `ptr<T>`.
+///
+/// Because the aggregate layout ASCENDS (module docs), a pointer produced here is
+/// C-walkable: `ptr_offset(addr_of(buf[0]), 1)` reaches `buf[1]`. Every other
+/// shape skips cleanly — a narrow/float scalar (the normalized-cell hazard), a
+/// register-promoted local, a closure capture, and a fat-pointer array parameter
+/// (the read-only caller-storage hazard).
 fn lower_addr_of(
     ctx: &mut NativeCtx,
     place: &BytecodeExpr,
     expr_ty: &TypeRef,
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
-    // The addressed place must itself be an 8-byte scalar. This is what rejects a
-    // whole-array decay (`addr_of(a)` where `a array<i64>` types as `ptr<i64>`, so
-    // the call's own type would pass), a narrow `i32`/`byte` cell, and a
-    // float/string/aggregate place.
-    if !is_addressable_word_type(&place.ty.name) {
-        return Err(format!(
-            "`addr_of` of a `{}` place is not lowered natively: the native backend takes the \
-             address of an 8-byte scalar (`i64`/`u64`/`isize`/`usize`/`ptr<T>`) only — a \
-             narrower scalar is stored as a normalized 8-byte cell, so a width-correct store \
-             through its address would corrupt the cell's upper bits",
-            place.ty.name
-        ));
-    }
-    // Defensive agreement between the place's type and the checker-inferred
-    // pointee: `addr_of(x)` must type as `ptr<typeof x>`. A mismatch means an
-    // assumption here no longer holds, so skip rather than emit an address whose
-    // pointee width the reader would get wrong.
-    match raw_pointee_name(&expr_ty.name) {
-        Some(pointee) if pointee == place.ty.name => {}
-        _ => {
-            return Err(format!(
-                "`addr_of` of a `{}` place typed as `{}` is not lowered natively (the pointee \
-                 must be the place's own type)",
-                place.ty.name, expr_ty.name
-            ));
-        }
-    }
+    // The call must type as `ptr<P>` for some pointee `P` (the type checker infers
+    // it); everything below agrees `P` against the place.
+    let pointee = raw_pointee_name(&expr_ty.name)
+        .ok_or_else(|| {
+            format!(
+                "`addr_of` must type as a `ptr<T>` on the native backend, found `{}`",
+                expr_ty.name
+            )
+        })?
+        .to_string();
 
-    // Decompose the place into a root local plus FIELD steps only. An `Index` step
-    // is refused: native aggregates descend in address, so a pointer into an array
-    // element is not C-walkable (module docs, point 2).
+    // Classify the place: an 8-byte scalar addressed directly, or an `array<T>`
+    // decaying to a pointer to its element 0.
+    let decays_from_array = match array_element_name(&place.ty.name) {
+        Some(elem) => {
+            // `addr_of(a)` where `a array<T>` types as `ptr<T>`: the pointee must be
+            // the ELEMENT type, and that element must be an 8-byte cell so a
+            // `ptr_read`/`ptr_write` through it is width-exact.
+            if pointee != elem {
+                return Err(format!(
+                    "`addr_of` of an `{}` place typed as `{}` is not lowered natively (a \
+                     whole-array decay must point at the element type `{elem}`)",
+                    place.ty.name, expr_ty.name
+                ));
+            }
+            if !is_addressable_word_type(elem) {
+                return Err(format!(
+                    "`addr_of` of an `{}` place is not lowered natively: the native backend \
+                     takes the address of an 8-byte element (`i64`/`u64`/`isize`/`usize`/\
+                     `ptr<T>`) only — a narrower element is stored as a normalized 8-byte \
+                     cell, so a width-correct store through its address would corrupt the \
+                     cell's upper bits",
+                    place.ty.name
+                ));
+            }
+            true
+        }
+        None => {
+            // A directly-addressed place must itself be an 8-byte scalar. This is
+            // what rejects a narrow `i32`/`byte` cell and a float/string/struct
+            // place.
+            if !is_addressable_word_type(&place.ty.name) {
+                return Err(format!(
+                    "`addr_of` of a `{}` place is not lowered natively: the native backend \
+                     takes the address of an 8-byte scalar (`i64`/`u64`/`isize`/`usize`/\
+                     `ptr<T>`) only — a narrower scalar is stored as a normalized 8-byte \
+                     cell, so a width-correct store through its address would corrupt the \
+                     cell's upper bits",
+                    place.ty.name
+                ));
+            }
+            // Defensive agreement between the place's type and the checker-inferred
+            // pointee: `addr_of(x)` must type as `ptr<typeof x>`. A mismatch means
+            // an assumption here no longer holds, so skip rather than emit an
+            // address whose pointee width the reader would get wrong.
+            if pointee != place.ty.name {
+                return Err(format!(
+                    "`addr_of` of a `{}` place typed as `{}` is not lowered natively (the \
+                     pointee must be the place's own type)",
+                    place.ty.name, expr_ty.name
+                ));
+            }
+            false
+        }
+    };
+
+    // Decompose the place into a root local plus field/index steps. An `Index` step
+    // is now lowered: the ascending layout makes an element pointer C-walkable.
     let mut steps: Vec<PathStep> = Vec::new();
     let mut cursor = place;
     let root = loop {
@@ -355,19 +433,14 @@ fn lower_addr_of(
                 steps.push(PathStep::Field(field.as_str()));
                 cursor = target;
             }
-            BytecodeExprKind::Index { .. } => {
-                return Err(
-                    "`addr_of` of an array element is not lowered natively: the native frame \
-                     lays an aggregate's words out at DESCENDING addresses, so a pointer into \
-                     an array would walk backwards under `ptr_offset` — disagreeing with C, \
-                     with `size_of`/`offset_of`, and with the interpreters"
-                        .to_string(),
-                );
+            BytecodeExprKind::Index { target, index } => {
+                steps.push(PathStep::Index(index));
+                cursor = target;
             }
             _ => {
                 return Err(
-                    "`addr_of` must address a local variable or a struct field on the native \
-                     backend (a temporary has no stable address)"
+                    "`addr_of` must address a local variable, a struct field, or an array \
+                     element on the native backend (a temporary has no stable address)"
                         .to_string(),
                 );
             }
@@ -387,6 +460,32 @@ fn lower_addr_of(
                 .to_string(),
         );
     }
+    // A fat-pointer array parameter's data pointer aliases the CALLER's storage,
+    // which the no-copy fat-array ABI is only sound for because the parameter is
+    // READ-ONLY. Handing out an address into it would let `ptr_write` mutate the
+    // caller's array, breaking that value-semantic guarantee — so refuse, rather
+    // than silently make a read-only parameter writable.
+    if matches!(ctx.local(root)?.ty, NativeType::FatArray { .. }) {
+        return Err(
+            "`addr_of` into a fat-pointer (runtime-length) array parameter is not lowered \
+             natively: the descriptor shares the caller's storage read-only, so an address \
+             into it could be used to mutate the caller's array"
+                .to_string(),
+        );
+    }
+
+    // A whole-array decay is exactly the address of the array's ELEMENT 0, so
+    // append a synthetic constant index-0 step and let the shared resolver walk it.
+    // The resolver also validates that the place really is a native `Array` and
+    // (via its literal bounds check) that it is non-empty.
+    let zero = BytecodeExpr {
+        kind: BytecodeExprKind::Integer(0),
+        ty: TypeRef::new("i64"),
+        span: place.span,
+    };
+    if decays_from_array {
+        steps.push(PathStep::Index(&zero));
+    }
 
     let (place_slot, ty) = resolve_place_steps_typed(ctx, root, &steps)?;
     if ty != NativeType::I64 {
@@ -395,27 +494,41 @@ fn lower_addr_of(
                 .to_string(),
         );
     }
-    let ScalarPlace::Const { slot } = place_slot else {
-        // Unreachable via the field-only path above (a dynamic place needs an
-        // `Index` step), but kept as a hard gate rather than an `unreachable!`:
-        // an address is only emitted for a slot known at compile time.
-        return Err(
-            "`addr_of` requires a compile-time-constant frame slot on the native backend"
-                .to_string(),
-        );
-    };
-    // A promoted local lives in `rbx`/`rsi` and has no address. `body_takes_address`
-    // disables promotion for any function containing an `addr_of`, so this must not
-    // fire; assert it here so a future change to the promotion gate turns into a
-    // clean skip instead of a silent miscompile (a `lea` of an unread frame slot).
-    if ctx.promoted_reg(slot).is_some() {
-        return Err(
-            "`addr_of` of a register-promoted local has no address (the promotion gate must \
-             exclude address-taken functions)"
-                .to_string(),
-        );
+    match place_slot {
+        ScalarPlace::Const { slot } => {
+            // A promoted local lives in `rbx`/`rsi` and has no address.
+            // `body_takes_address` disables promotion for any function containing an
+            // `addr_of`, so this must not fire; assert it here so a future change to
+            // the promotion gate turns into a clean skip instead of a silent
+            // miscompile (a `lea` of an unread frame slot).
+            if ctx.promoted_reg(slot).is_some() {
+                return Err(
+                    "`addr_of` of a register-promoted local has no address (the promotion \
+                     gate must exclude address-taken functions)"
+                        .to_string(),
+                );
+            }
+            emit_lea_rax_local(code, slot);
+        }
+        // A runtime array index (`addr_of(buf[i])`): compute the element's real
+        // effective address. The shared resolver emits the same UNSIGNED bounds
+        // check an ordinary `buf[i]` read does, so an out-of-range index traps
+        // (`ud2`) exactly as it would on the interpreters (`L0413`) rather than
+        // handing back a pointer to adjacent stack memory. An array root is never
+        // register-promoted (promotion only picks `i64` scalars), so there is no
+        // promotion hazard on this path.
+        place_slot @ ScalarPlace::Dynamic { .. } => {
+            emit_dynamic_addr_into_rcx(ctx, &place_slot, code)?; // rcx = &element
+            code.extend_from_slice(&[0x48, 0x89, 0xC8]); // mov rax, rcx
+        }
+        // Refused above (a fat-array root skips before resolving), but kept as a
+        // hard gate rather than an `unreachable!`.
+        ScalarPlace::FatIndex { .. } => {
+            return Err(
+                "`addr_of` into a fat-pointer array parameter is not lowered natively".to_string(),
+            );
+        }
     }
-    emit_lea_rax_local(code, slot);
     Ok(())
 }
 

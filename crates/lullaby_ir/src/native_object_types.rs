@@ -65,8 +65,9 @@ pub(crate) enum NativeType {
     Array { elem: Box<NativeType>, len: usize },
     /// A **fat-pointer** `array<T>` parameter: a `(data_ptr, length)` descriptor
     /// occupying two frame words — word 0 is a pointer to the caller's element 0
-    /// (the array's highest stack address; elements descend from there like a
-    /// stack array), word 1 is the runtime element count. Used for a **read-only**
+    /// (the array's LOWEST stack address; elements ASCEND from there like a stack
+    /// array, so the data pointer is C-shaped), word 1 is the runtime element
+    /// count (at the descriptor's own `slot - 8`). Used for a **read-only**
     /// scalar-element array parameter whose length is not known at compile time, so
     /// the callee reads the caller's storage in place (no array-body copy) instead
     /// of demoting because the length could not be inferred from a call site. The

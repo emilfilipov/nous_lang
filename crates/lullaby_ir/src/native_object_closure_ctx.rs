@@ -131,10 +131,12 @@ pub(crate) fn collect_native_locals(
                     };
                     let words = native.words() as i32;
                     *next_slot += words * 8;
+                    // ASCENDING layout: word 0 sits at the TOP of the reserved
+                    // displacement range (the aggregate's lowest address).
                     locals.insert(
                         name.clone(),
                         NativeLocal {
-                            slot: *next_slot - (words - 1) * 8,
+                            slot: *next_slot,
                             ty: native,
                         },
                     );
@@ -252,10 +254,11 @@ pub(crate) fn collect_native_locals(
                                 };
                                 let words = bound_ty.words() as i32;
                                 *next_slot += words * 8;
+                                // ASCENDING layout: word 0 at the top of the range.
                                 locals.insert(
                                     binding.clone(),
                                     NativeLocal {
-                                        slot: *next_slot - (words - 1) * 8,
+                                        slot: *next_slot,
                                         ty: bound_ty,
                                     },
                                 );

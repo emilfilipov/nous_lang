@@ -950,8 +950,9 @@ pub(crate) fn lower_native_checked_into(
     emit_mov_reg_reg(code, REG_RCX, REG_RAX); // rcx = b
     code.push(0x58); // pop rax (a)
     emit_overflow_core(code, op, kind);
-    // Payload word = the wrapped result (rax) at base_slot + 8.
-    store_local(code, base_slot + 8);
+    // Payload word = the wrapped result (rax), 8 bytes ABOVE the tag in the
+    // ascending layout, i.e. at displacement `base_slot - 8`.
+    store_local(code, base_slot - 8);
     // Tag word = overflow ? none : some, at base_slot.
     emit_mov_rax_imm(code, some_tag);
     emit_test_reg(code, REG_R8);
@@ -2179,7 +2180,7 @@ pub(crate) fn lower_map_get_into(
     if deep_value {
         emit_heap_slot_deep_copy(ctx, &value_native, code);
     }
-    store_local(code, base_slot + 8); // payload word (base_slot + 8)
+    store_local(code, base_slot - 8); // payload word (8 bytes above the tag)
     // tag word = some_tag at base_slot.
     emit_mov_rax_imm(code, some_tag);
     store_local(code, base_slot);
@@ -2197,7 +2198,8 @@ pub(crate) fn lower_map_get_into(
 
 /// `parse_i64(s) -> result<i64, string>`: evaluate the string operand into `rcx`,
 /// call the `__lullaby_parse_i64` helper (tag in `rax`, payload in `rdx`), and
-/// store the two words into `base_slot` (tag) and `base_slot + 8` (payload). `ok`
+/// store the two words into `base_slot` (tag) and `base_slot - 8` (payload — 8
+/// bytes above the tag in the ascending layout). `ok`
 /// is tag `0` with the parsed `i64` payload; `err` is tag `1` with a freshly-built
 /// error-message string-record pointer payload, matching the `result<T, E>`
 /// variant order (`ok` then `err`) the interpreters use.
@@ -2213,9 +2215,9 @@ pub(crate) fn lower_parse_i64_into(
     lower_native_expr(ctx, arg, code)?; // rax = source string record pointer
     emit_mov_reg_reg(code, REG_RCX, REG_RAX); // rcx = source pointer (arg 0)
     emit_call_symbol(ctx, PARSE_I64_SYMBOL, code); // rax = tag, rdx = payload
-    // Payload word at base_slot + 8: mov [rbp - (base_slot + 8)], rdx.
+    // Payload word (8 bytes above the tag): mov [rbp - (base_slot - 8)], rdx.
     code.extend_from_slice(&[0x48, 0x89, 0x95]);
-    code.extend_from_slice(&(-(base_slot + 8)).to_le_bytes());
+    code.extend_from_slice(&(-(base_slot - 8)).to_le_bytes());
     // Tag word at base_slot (store_local writes rax, the tag).
     store_local(code, base_slot);
     Ok(())

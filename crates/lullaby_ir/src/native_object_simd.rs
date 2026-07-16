@@ -355,7 +355,8 @@ pub(crate) fn emit_sub_rcx_imm(code: &mut Vec<u8>, imm: i32) {
 
 /// A recognized `for i from S to E: acc <op>= a[i]` reduction over an `array<i64>`,
 /// ready to vectorize. Element `k` of the array sits at
-/// `[rbp - array_base_static - 8*k]`, matching the scalar index addressing.
+/// `[rbp - array_base_static + 8*k]` (elements ASCEND), matching the scalar
+/// index addressing.
 pub(crate) struct Reduction {
     acc_slot: i32,
     array_base_static: i32,
@@ -462,7 +463,7 @@ pub(crate) fn detect_reduction(
     }
     Some(Reduction {
         acc_slot: acc_local.slot,
-        array_base_static: base_slot + const_words as i32 * 8,
+        array_base_static: base_slot - const_words as i32 * 8,
         array_len: index_len,
         op,
     })
@@ -559,7 +560,7 @@ pub(crate) fn detect_minmax_reduction(
     }
     Some(MinMaxReduction {
         acc_slot: acc_local.slot,
-        array_base_static: base_slot + const_words as i32 * 8,
+        array_base_static: base_slot - const_words as i32 * 8,
         array_len: index_len,
         op,
     })
@@ -567,7 +568,7 @@ pub(crate) fn detect_minmax_reduction(
 
 /// A recognized `for i from S to E: c[i] = a[i] <op> b[i]` element-wise map over
 /// contiguous `array<i64>`s (`op` is `+ - & | ^`). Element `k` of each array sits
-/// at `[rbp - base - 8*k]`, matching the scalar index addressing.
+/// at `[rbp - base + 8*k]` (ASCENDING), matching the scalar index addressing.
 pub(crate) struct ElementwiseMap {
     dest_base: i32,
     lhs_base: i32,
@@ -609,7 +610,7 @@ pub(crate) fn indexed_i64_base(
     if elem_words != 1 {
         return None;
     }
-    Some((base_slot + const_words as i32 * 8, index_len))
+    Some((base_slot - const_words as i32 * 8, index_len))
 }
 
 /// Like [`indexed_i64_base`] but for a contiguous `array<f64>` element read.
@@ -641,7 +642,7 @@ pub(crate) fn indexed_f64_base(
     if elem_words != 1 {
         return None;
     }
-    Some((base_slot + const_words as i32 * 8, index_len))
+    Some((base_slot - const_words as i32 * 8, index_len))
 }
 
 /// Recognize `for counter from S to E: dest[counter] = lhs[counter] (+|-)
@@ -728,7 +729,7 @@ pub(crate) fn detect_elementwise_map(
         return None;
     }
     Some(ElementwiseMap {
-        dest_base: base_slot + const_words as i32 * 8,
+        dest_base: base_slot - const_words as i32 * 8,
         lhs_base,
         rhs_base,
         min_len: dest_len.min(lhs_len).min(rhs_len),
@@ -739,7 +740,7 @@ pub(crate) fn detect_elementwise_map(
 /// Vectorize an element-wise map `dest[i] = lhs[i] (+|-) rhs[i]` into an SSE2
 /// packed loop (two `i64` lanes per iteration) with a scalar tail for the odd
 /// element. Lane order is preserved because all three arrays share the same
-/// reverse `[rbp - base - 8*k]` addressing, so this is bit-for-bit identical to
+/// ascending `[rbp - base + 8*k]` addressing, so this is bit-for-bit identical to
 /// the scalar loop (and correct under `dest` aliasing `lhs`/`rhs`).
 pub(crate) fn lower_native_vectorized_map(
     ctx: &mut NativeCtx,
@@ -760,11 +761,16 @@ pub(crate) fn lower_native_vectorized_map(
     // indexed inline below without a per-access check).
     emit_loop_bounds_guard(code, i_slot, end_slot, map.min_len);
 
-    // `rcx = &array[i+1]` given `rdx = 8*(i+1)`: rcx = rbp - rdx - base.
-    let block_addr = |code: &mut Vec<u8>, base: i32| {
+    // `rcx = rbp - base + rdx - bias`. Elements ASCEND from element 0 (at
+    // `[rbp - base]`), so the address ADDS the scaled index. `bias` folds a
+    // constant element offset into the SAME `sub rcx, imm32` the base already
+    // needs, costing no extra instruction: the main loop holds `rdx = 8*(i+1)` but
+    // wants `&a[i]` (bias 8), while the scalar remainder holds `rdx = 8*i` and
+    // wants `&a[i]` (bias 0).
+    let block_addr = |code: &mut Vec<u8>, base: i32, bias: i32| {
         code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-        code.extend_from_slice(&[0x48, 0x29, 0xD1]); // sub rcx, rdx
-        emit_sub_rcx_imm(code, base);
+        code.extend_from_slice(&[0x48, 0x01, 0xD1]); // add rcx, rdx
+        emit_sub_rcx_imm(code, base + bias);
     };
 
     // --- main SIMD loop: while i + 1 <= end, map the pair (i, i+1) ---
@@ -776,17 +782,19 @@ pub(crate) fn lower_native_vectorized_map(
     code.extend_from_slice(&[0x0F, 0x8F]); // jg after_main
     let after_main_site = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
+    // The 16-byte block covering (i, i+1) starts at element `i` — the LOWER
+    // address under the ascending layout — so `block_addr` biases by 8.
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3  -> 8*(i+1)
     code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (block offset)
-    block_addr(code, map.lhs_base);
+    block_addr(code, map.lhs_base, 8);
     emit_movdqu_xmm0_from_rcx(code);
-    block_addr(code, map.rhs_base);
+    block_addr(code, map.rhs_base, 8);
     emit_movdqu_xmm1_from_rcx(code);
     match map.kind {
         MapKind::Int(op) => op.emit_packed(code),
         MapKind::Float(op) => op.emit_packed(code),
     }
-    block_addr(code, map.dest_base);
+    block_addr(code, map.dest_base, 8);
     emit_movdqu_rcx_from_xmm0(code);
     load_local(code, i_slot);
     code.extend_from_slice(&[0x48, 0x83, 0xC0, 0x02]); // add rax, 2
@@ -809,28 +817,28 @@ pub(crate) fn lower_native_vectorized_map(
     match map.kind {
         MapKind::Int(op) => {
             // rax = lhs[i]
-            block_addr(code, map.lhs_base);
+            block_addr(code, map.lhs_base, 0);
             code.extend_from_slice(&[0x48, 0x8B, 0x01]); // mov rax, [rcx]
             code.push(0x50); // push rax (lhs)
             // rax = rhs[i]
-            block_addr(code, map.rhs_base);
+            block_addr(code, map.rhs_base, 0);
             code.extend_from_slice(&[0x48, 0x8B, 0x01]); // mov rax, [rcx]
             code.push(0x59); // pop rcx (rcx = lhs)
             op.emit_scalar_tail(code); // rax = lhs <op> rhs
             // dest[i] = rax
             code.push(0x50); // push rax (result)
-            block_addr(code, map.dest_base);
+            block_addr(code, map.dest_base, 0);
             code.push(0x58); // pop rax (result)
             code.extend_from_slice(&[0x48, 0x89, 0x01]); // mov [rcx], rax
         }
         MapKind::Float(op) => {
             // xmm0 = lhs[i] ; xmm1 = rhs[i] ; xmm0 <op>= xmm1 ; dest[i] = xmm0.
-            block_addr(code, map.lhs_base);
+            block_addr(code, map.lhs_base, 0);
             load_float_from_rcx(code, FloatWidth::F64); // movsd xmm0, [rcx]
-            block_addr(code, map.rhs_base);
+            block_addr(code, map.rhs_base, 0);
             emit_movsd_xmm1_from_rcx(code); // movsd xmm1, [rcx]
             op.emit_scalar(code); // addsd/subsd/mulsd xmm0, xmm1
-            block_addr(code, map.dest_base);
+            block_addr(code, map.dest_base, 0);
             store_float_from_rcx(code, FloatWidth::F64); // movsd [rcx], xmm0
         }
     }
@@ -903,11 +911,14 @@ pub(crate) fn lower_native_vectorized_reduction(
     code.extend_from_slice(&[0x0F, 0x8F]); // jg after_main (i+1 > end)
     let after_main_site = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
-    // addr of the 16-byte block = rbp - base - 8*(i+1); rax already holds i+1.
+    // The 16-byte block covering (a[i], a[i+1]) starts at element `i` (the lower
+    // address under the ascending layout): addr = rbp - base + 8*i. rax holds i+1,
+    // so the +8 it carries is folded into the base displacement (`base + 8`) — no
+    // extra instruction versus the previous descending form.
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3  -> 8*(i+1)
     code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-    code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
-    emit_sub_rcx_imm(code, base); // rcx = &a[i+1] (block start; covers a[i+1],a[i])
+    code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
+    emit_sub_rcx_imm(code, base + 8); // rcx = &a[i] (covers a[i],a[i+1])
     emit_movdqu_xmm1_from_rcx(code);
     op.emit_packed(code);
     load_local(code, i_slot);
@@ -928,11 +939,11 @@ pub(crate) fn lower_native_vectorized_reduction(
     code.extend_from_slice(&[0x0F, 0x8F]); // jg done (i > end)
     let done_site = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
-    // load a[i]: addr = rbp - base - 8*i
+    // load a[i]: addr = rbp - base + 8*i
     load_local(code, i_slot);
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3
     code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-    code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
+    code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
     emit_sub_rcx_imm(code, base);
     code.extend_from_slice(&[0x48, 0x8B, 0x01]); // mov rax, [rcx]
     emit_reduce_into_acc(ctx, reduction.acc_slot, op, code);
@@ -987,8 +998,10 @@ pub(crate) fn lower_native_minmax_reduction(
     code.extend_from_slice(&[0, 0, 0, 0]);
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3  -> 8*(i+1)
     code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-    code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
-    emit_sub_rcx_imm(code, base); // rcx = &a[i+1] (block start)
+    code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
+    // rax carries 8*(i+1); fold the +8 into the base so `rcx = &a[i]` (block
+    // start, covers a[i],a[i+1]) with no extra instruction.
+    emit_sub_rcx_imm(code, base + 8);
     emit_movdqu_xmm1_from_rcx(code);
     op.emit_packed(code);
     load_local(code, i_slot);
@@ -1046,12 +1059,12 @@ pub(crate) fn lower_native_minmax_reduction(
 }
 
 /// `rax = a[i]` for a contiguous i64 array whose element 0 sits at `rbp - base`:
-/// addr = rbp - base - 8*i.
+/// addr = rbp - base + 8*i (elements ASCEND from element 0).
 pub(crate) fn emit_load_array_elem(code: &mut Vec<u8>, i_slot: i32, base: i32) {
     load_local(code, i_slot);
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3
     code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-    code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
+    code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
     emit_sub_rcx_imm(code, base);
     code.extend_from_slice(&[0x48, 0x8B, 0x01]); // mov rax, [rcx]
 }
@@ -1159,11 +1172,14 @@ pub(crate) fn lower_native_f64_reduction(
     emit_loop_bounds_guard(code, i_slot, end_slot, red.array_len);
     code.extend_from_slice(&[0x66, 0x0F, 0xEF, 0xC0]); // pxor xmm0, xmm0 (packed acc = 0)
 
-    // `rcx = &array[i+1]` given `rdx = 8*(i+1)`: rcx = rbp - rdx - base.
-    let block_addr = |code: &mut Vec<u8>, base: i32| {
+    // `rcx = rbp - base + rdx - bias` (ASCENDING). As in the map lowering, `bias`
+    // folds a constant element offset into the base's own `sub rcx, imm32`: the
+    // main loop holds `rdx = 8*(i+1)` and wants `&a[i]` (bias 8); the scalar tail
+    // holds `rdx = 8*i` and wants `&a[i]` (bias 0).
+    let block_addr = |code: &mut Vec<u8>, base: i32, bias: i32| {
         code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-        code.extend_from_slice(&[0x48, 0x29, 0xD1]); // sub rcx, rdx
-        emit_sub_rcx_imm(code, base);
+        code.extend_from_slice(&[0x48, 0x01, 0xD1]); // add rcx, rdx
+        emit_sub_rcx_imm(code, base + bias);
     };
 
     // --- main SIMD loop: while i + 1 <= end, accumulate the pair ---
@@ -1175,12 +1191,13 @@ pub(crate) fn lower_native_f64_reduction(
     code.extend_from_slice(&[0x0F, 0x8F]); // jg after_main
     let after_main = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
-    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3
+    // The pair block starts at element `i` (the lower address), so bias by 8.
+    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3  -> 8*(i+1)
     code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax (block offset)
-    block_addr(code, red.lhs_base);
+    block_addr(code, red.lhs_base, 8);
     emit_movdqu_xmm1_from_rcx(code); // xmm1 = a pair
     if let Some(rhs_base) = red.rhs_base {
-        block_addr(code, rhs_base);
+        block_addr(code, rhs_base, 8);
         code.extend_from_slice(&[0xF3, 0x0F, 0x6F, 0x11]); // movdqu xmm2, [rcx] (b pair)
         code.extend_from_slice(&[0x66, 0x0F, 0x59, 0xCA]); // mulpd xmm1, xmm2
     }
@@ -1209,10 +1226,10 @@ pub(crate) fn lower_native_f64_reduction(
     code.extend_from_slice(&[0, 0, 0, 0]);
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3
     code.extend_from_slice(&[0x48, 0x89, 0xC2]); // mov rdx, rax
-    block_addr(code, red.lhs_base);
+    block_addr(code, red.lhs_base, 0);
     load_float_from_rcx(code, FloatWidth::F64); // xmm0 = a[i]
     if let Some(rhs_base) = red.rhs_base {
-        block_addr(code, rhs_base);
+        block_addr(code, rhs_base, 0);
         emit_movsd_xmm1_from_rcx(code); // xmm1 = b[i]
         code.extend_from_slice(&[0xF2, 0x0F, 0x59, 0xC1]); // mulsd xmm0, xmm1
     }

@@ -638,9 +638,15 @@ impl StringPool {
 }
 
 /// A local's stack placement: its `NativeType` layout and the `[rbp - slot]`
-/// displacement of its first word. Additional words follow at `slot - 8`,
-/// `slot - 16`, ... (i.e. lower displacements — the frame grows downward but we
-/// key by positive displacement from `rbp`, so word `k` is at `slot - 8*k`).
+/// displacement of its **word 0** — for an aggregate, its LOWEST address (the
+/// largest displacement of its slot range).
+///
+/// **Aggregate word order is ASCENDING (C-compatible):** word `k` lives at
+/// `[rbp - (slot - 8*k)]` — 8·k bytes *higher* than word 0 — and at `[ptr + 8*k]`
+/// through a word-0 pointer, so the layout agrees with C, `size_of`/`offset_of`,
+/// and the interpreters. The frame itself still grows DOWNWARD per the Win64 ABI;
+/// `plan` reserves `words*8` bytes and points `slot` at the top of that range.
+/// Canonical: `documents/native_backend_contract.md`, "Aggregate word order".
 #[derive(Debug, Clone)]
 pub(crate) struct NativeLocal {
     slot: i32,
@@ -808,10 +814,13 @@ impl<'a> NativeCtx<'a> {
             )?;
             let words = native.words() as i32;
             next_slot += words * 8;
+            // ASCENDING layout: `slot` names word 0 at the aggregate's LOWEST
+            // address, i.e. the TOP of the reserved displacement range, so word k
+            // (at `slot - 8*k`) climbs to higher addresses within the same bytes.
             locals.insert(
                 param.name.clone(),
                 NativeLocal {
-                    slot: next_slot - (words - 1) * 8,
+                    slot: next_slot,
                     ty: native,
                 },
             );
@@ -986,11 +995,18 @@ impl<'a> NativeCtx<'a> {
         self.promoted.get(&slot).copied()
     }
 
-    /// Allocate `words` contiguous scratch words, returning the base slot of the
-    /// first word. Used to spill a temporary enum scrutinee. The cursor advances;
-    /// callers restore it after the match via the returned saved cursor.
+    /// Allocate `words` contiguous scratch words, returning the slot of **word 0**
+    /// of the region. Used to spill a temporary enum scrutinee / aggregate.
+    /// The cursor advances; callers restore it afterwards via the saved cursor.
+    ///
+    /// ASCENDING layout (see [`NativeLocal`]): word 0 sits at the region's lowest
+    /// address, i.e. the LARGEST displacement in the reserved range, so word `k`
+    /// is at `base - 8*k` and stays inside `[scratch_next ..= scratch_next +
+    /// 8*(words-1)]`. For `words == 1` this is exactly the old cursor value, so a
+    /// scalar scratch slot is unchanged.
     fn alloc_scratch(&mut self, words: usize) -> i32 {
-        let base = self.scratch_next;
+        debug_assert!(words > 0, "a scratch region must be at least one word");
+        let base = self.scratch_next + (words as i32 - 1) * 8;
         self.scratch_next += words as i32 * 8;
         base
     }
@@ -1011,14 +1027,15 @@ impl<'a> NativeCtx<'a> {
     }
 }
 
-/// A resolved scalar destination inside an aggregate. A scalar word lives at
-/// `[rbp - disp]` where `disp = base_slot + 8 * (const_words + dynamic_words)`;
-/// `dynamic_words` is `elem_words * index` computed at runtime when the path
-/// crossed a runtime array index, else zero.
+/// A resolved scalar destination inside an aggregate. Aggregate words ASCEND in
+/// memory (see [`NativeLocal`]), so a scalar word lives at `[rbp - disp]` where
+/// `disp = base_slot - 8 * (const_words + dynamic_words)`; `dynamic_words` is
+/// `elem_words * index` computed at runtime when the path crossed a runtime array
+/// index, else zero.
 pub(crate) enum ScalarPlace {
     /// A fully static scalar word at `[rbp - slot]`.
     Const { slot: i32 },
-    /// A dynamic scalar word. `base_slot` is the enclosing local's first word;
+    /// A dynamic scalar word. `base_slot` is the enclosing local's word 0;
     /// `const_words` accumulates the static word offset from field hops and
     /// constant indices; `elem_words` is the per-element word stride of the
     /// dynamic array; `index_len` is the element count of the array the runtime
@@ -1032,9 +1049,10 @@ pub(crate) enum ScalarPlace {
         index: BytecodeExpr,
     },
     /// A scalar word inside a **fat-pointer** array parameter: the element address
-    /// is `data_ptr - 8 * elem_words * index`, where `data_ptr` lives in the frame
-    /// at `[rbp - ptr_slot]` (word 0 of the descriptor) and the runtime element
-    /// count lives at `[rbp - len_slot]` (word 1). The index is bounds-checked
+    /// is `data_ptr + 8 * elem_words * index` (elements ASCEND from element 0,
+    /// exactly like a stack array), where `data_ptr` lives in the frame at
+    /// `[rbp - ptr_slot]` (descriptor word 0) and the runtime element count lives
+    /// at `[rbp - len_slot]` (descriptor word 1, at `ptr_slot - 8`). The index is bounds-checked
     /// against that runtime length before the access (matching the interpreters'
     /// `L0413`). `elem_ty` is the scalar element layout of the loaded word.
     FatIndex {

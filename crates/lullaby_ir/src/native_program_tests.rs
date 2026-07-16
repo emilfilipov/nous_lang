@@ -2893,8 +2893,13 @@ fn compiles_struct_parameter_and_return_with_by_pointer_abi() {
     // A function that TAKES a struct and returns an i64, a function that
     // RETURNS a struct, and a `main` that passes/receives both compile (not
     // skip). The by-pointer argument (`lea rax/rcx, [rbp+disp]` staged into an
-    // argument register) and the hidden-return-pointer copy (`mov [rax-disp],
+    // argument register) and the hidden-return-pointer copy (`mov [rax+disp],
     // rcx` writing result words) must appear in the emitted code.
+    //
+    // The `+disp` is the ASCENDING (C-compatible) aggregate layout: word k of an
+    // aggregate is at `[ptr + 8*k]`, so field `y` (`offset_of == +8`) is written
+    // 8 bytes ABOVE the pointer. See `direction_flip_*` below for the pinned
+    // direction law.
     let program = emit_native_program(&module_for(concat!(
         "struct Point\n    x i64\n    y i64\n\n",
         "fn taxicab p Point -> i64\n    p.x + p.y\n\n",
@@ -2916,12 +2921,22 @@ fn compiles_struct_parameter_and_return_with_by_pointer_abi() {
     assert!(program.skipped.is_empty(), "{:?}", program.skipped);
 
     let text = text_bytes(&program);
-    // Hidden-return-pointer write: `mov [rax - 8], rcx` (48 89 88 F8 FF FF FF)
-    // — `shift` writes result word 1 through the caller-supplied pointer.
+    // Hidden-return-pointer write: `mov [rax + 8], rcx` (48 89 88 08 00 00 00)
+    // — `shift` writes result word 1 (field `y`) through the caller-supplied
+    // pointer, 8 bytes ABOVE word 0. The POSITIVE displacement is the ascending,
+    // C-compatible layout; the old descending layout wrote `[rax - 8]` here.
     assert!(
         text.windows(7)
+            .any(|w| w == [0x48, 0x89, 0x88, 0x08, 0x00, 0x00, 0x00]),
+        "expected a hidden-return-pointer word write (`mov [rax+8], rcx`)"
+    );
+    // ... and NOT the old descending `mov [rax - 8], rcx`, so a regression back
+    // to the reversed layout fails loudly rather than silently.
+    assert!(
+        !text
+            .windows(7)
             .any(|w| w == [0x48, 0x89, 0x88, 0xF8, 0xFF, 0xFF, 0xFF]),
-        "expected a hidden-return-pointer word write (`mov [rax-8], rcx`)"
+        "aggregate words must ASCEND: found a descending `mov [rax-8], rcx`"
     );
     // By-pointer argument: `lea rax, [rbp+disp]` (48 8D 85 ..) stages the
     // address of a materialized aggregate argument copy before it is pushed.

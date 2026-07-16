@@ -1,0 +1,53 @@
+# THE KERNEL IDIOM, in the freestanding (`no-runtime`) tier: walk a fixed buffer
+# with `addr_of(buf[0])` + `ptr_offset`, exactly as C would. This is the shape a
+# kernel uses everywhere — a driver reading a descriptor ring, a memcpy, a page
+# table scan — and it needs the native aggregate layout to place element `k` at
+# `base + 8*k` (ASCENDING, C-compatible), so `ptr_offset(p, +1)` steps FORWARD.
+#
+# Reads and `ptr_offset` walks through an `addr_of` pointer ARE modelled by the
+# interpreters, so every line below is a program all three interpreters define and
+# native must agree with bit-for-bit. (Storing through an `addr_of` pointer is the
+# separate, native-only case the interpreters refuse with `L0459` — see
+# `freestanding_buffer_write.lby`.)
+no-runtime
+
+# Sum a buffer by walking a pointer forward, never re-indexing the array.
+fn walk_sum -> i64
+    let buf array<i64> = [10, 20, 30, 40]
+    let total i64 = 0
+    unsafe
+        let p ptr<i64> = addr_of(buf[0])
+        total = ptr_read(p)
+        total += ptr_read(ptr_offset(p, 1))
+        total += ptr_read(ptr_offset(p, 2))
+        total += ptr_read(ptr_offset(p, 3))
+    total
+
+# A whole-array `addr_of` decays to a pointer at element 0, exactly like C's
+# array-to-pointer decay.
+fn decay_read -> i64
+    let buf array<i64> = [1, 2, 3, 4]
+    unsafe
+        let p ptr<i64> = addr_of(buf)
+        ptr_read(ptr_offset(p, 2))
+
+# A RUNTIME index: the pointer is a computed effective address, still walkable.
+fn walk_from n i64 -> i64
+    let buf array<i64> = [5, 6, 7, 8]
+    unsafe
+        let p ptr<i64> = addr_of(buf[n])
+        ptr_read(p) + ptr_read(ptr_offset(p, 1))
+
+# The size law: `ptr_offset(p, 1) - p == size_of(i64) == 8`. A negative offset
+# walks back, so stepping forward then back is the identity.
+fn size_law -> i64
+    let buf array<i64> = [1, 2]
+    unsafe
+        let p ptr<i64> = addr_of(buf[0])
+        let stride i64 = ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p)
+        let back i64 = ptr_to_int(ptr_offset(ptr_offset(p, 1), -1)) - ptr_to_int(p)
+        stride + back
+
+fn main -> i64
+    # 100 + 3 + 13 + 8 = 124
+    walk_sum() + decay_read() + walk_from(1) + size_law()

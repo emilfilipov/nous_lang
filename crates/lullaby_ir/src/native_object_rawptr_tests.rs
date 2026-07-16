@@ -392,38 +392,152 @@ fn address_taken_scan_sees_nested_addr_of() {
 
 // -- Default-deny: what must skip cleanly -------------------------------------
 
-/// `addr_of` of an ARRAY ELEMENT skips. The native frame lays an aggregate's
-/// words out at DESCENDING addresses (word `k` at `[rbp - (slot + 8k)]`), so a
-/// pointer into an array would walk BACKWARDS under `ptr_offset` — disagreeing
-/// with C, with `size_of`/`offset_of`, and with the interpreters' ascending
-/// snapshot model, on a program the interpreters define. Refused, not guessed.
+// -- Buffer walking: the ascending-layout payoff ------------------------------
+
+/// THE KERNEL IDIOM. `addr_of(a[0])` + `ptr_offset` compiles — the ascending
+/// (C-compatible) aggregate layout makes an element pointer genuinely walkable.
+/// A constant index resolves to a compile-time frame slot, so the address is a
+/// single `lea`.
 #[test]
-fn addr_of_array_element_skips_cleanly() {
-    assert_main_skips_because(
-        concat!(
-            "fn main -> i64\n",
-            "    let a array<i64> = [10, 20, 30]\n",
-            "    unsafe\n",
-            "        let p ptr<i64> = addr_of(a[0])\n",
-            "        ptr_read(ptr_offset(p, 1))\n",
-        ),
-        "DESCENDING",
+fn addr_of_array_element_lowers_as_a_lea() {
+    let text = text_of(concat!(
+        "fn main -> i64\n",
+        "    let a array<i64> = [10, 20, 30]\n",
+        "    unsafe\n",
+        "        let p ptr<i64> = addr_of(a[0])\n",
+        "        ptr_read(ptr_offset(p, 1))\n",
+    ));
+    assert!(
+        contains(&text, &[0x48, 0x8D, 0x85]),
+        "`addr_of(a[0])` must be a real `lea rax, [rbp+disp32]`"
+    );
+    // `ptr_offset(p, 1)` over a `ptr<i64>` strides by 8: `lea rax, [rcx+rax*8]`.
+    assert!(
+        contains(&text, &[0x48, 0x8D, 0x04, 0xC1]),
+        "`ptr_offset` must be the scale-8 `lea rax, [rcx + rax*8]`"
     );
 }
 
-/// A whole-array `addr_of` (which decays to `ptr<element>`) skips for the same
-/// descending-layout reason: the decayed pointer would not be walkable.
+/// A whole-array `addr_of(a)` decays to a `ptr<element>` addressing element 0 —
+/// exactly a C array-to-pointer decay. It resolves through the same path as
+/// `addr_of(a[0])`, so it is a `lea` of the array's element-0 slot.
 #[test]
-fn addr_of_whole_array_skips_cleanly() {
-    assert_main_skips_because(
-        concat!(
-            "fn main -> i64\n",
-            "    let a array<i64> = [10, 20, 30]\n",
-            "    unsafe\n",
-            "        let p ptr<i64> = addr_of(a)\n",
-            "        ptr_read(p)\n",
-        ),
-        "addr_of",
+fn addr_of_whole_array_decays_to_element_zero() {
+    let text = text_of(concat!(
+        "fn main -> i64\n",
+        "    let a array<i64> = [10, 20, 30]\n",
+        "    unsafe\n",
+        "        let p ptr<i64> = addr_of(a)\n",
+        "        ptr_read(p)\n",
+    ));
+    assert!(
+        contains(&text, &[0x48, 0x8D, 0x85]),
+        "a whole-array decay must be a real `lea rax, [rbp+disp32]`"
+    );
+}
+
+/// `addr_of(a[i])` with a RUNTIME index computes a real effective address, and
+/// keeps the same UNSIGNED bounds check an ordinary `a[i]` read emits, so an
+/// out-of-range index traps (`ud2`) rather than handing back a pointer to
+/// adjacent stack memory.
+#[test]
+fn addr_of_runtime_array_element_bounds_checks_and_computes_an_address() {
+    let text = text_of(concat!(
+        "fn walk i i64 -> i64\n",
+        "    let a array<i64> = [10, 20, 30]\n",
+        "    unsafe\n",
+        "        ptr_read(addr_of(a[i]))\n",
+        "\n",
+        "fn main -> i64\n",
+        "    walk(1)\n",
+    ));
+    // The dynamic-place bounds check: `cmp rax, imm32` / `jb +2` / `ud2`.
+    assert!(
+        contains(&text, &[0x72, 0x02, 0x0F, 0x0B]),
+        "a runtime-index `addr_of` must keep the bounds-check trap (`jb +2; ud2`)"
+    );
+    // The ascending element address: `add rcx, rax` (NOT the old `sub rcx, rax`).
+    assert!(
+        contains(&text, &[0x48, 0x01, 0xC1]),
+        "the element address must ADD the scaled index (ascending layout)"
+    );
+}
+
+/// THE DIRECTION FLIP, pinned. `addr_of(s.hi) - addr_of(s.lo)` must be `+8`:
+/// field `hi` (`offset_of == +8`) sits 8 bytes HIGHER than `lo`. Under the old
+/// descending layout this was `-8`.
+///
+/// Both fields resolve to compile-time frame slots, so the law is checked on the
+/// emitted displacements directly: the `lea` for `hi` must use a displacement 8
+/// GREATER (less negative) than the `lea` for `lo`.
+#[test]
+fn direction_flip_struct_fields_ascend() {
+    let text = text_of(concat!(
+        "struct Pair\n    lo i64\n    hi i64\n\n",
+        "fn main -> i64\n",
+        "    let s Pair = Pair(7, 9)\n",
+        "    unsafe\n",
+        "        ptr_to_int(addr_of(s.hi)) - ptr_to_int(addr_of(s.lo))\n",
+    ));
+    // Collect the disp32 of every `lea rax, [rbp+disp32]` (48 8D 85 ..).
+    let mut leas: Vec<i32> = Vec::new();
+    for i in 0..text.len().saturating_sub(6) {
+        if text[i..i + 3] == [0x48, 0x8D, 0x85] {
+            leas.push(i32::from_le_bytes(text[i + 3..i + 7].try_into().unwrap()));
+        }
+    }
+    assert_eq!(
+        leas.len(),
+        2,
+        "expected exactly two field `lea`s (hi, lo), found {leas:?}"
+    );
+    // Source order is `addr_of(s.hi)` then `addr_of(s.lo)`; `hi` must be 8 bytes
+    // ABOVE `lo`, i.e. its rbp-relative displacement is 8 greater.
+    assert_eq!(
+        leas[0] - leas[1],
+        8,
+        "field `hi` (offset_of +8) must sit +8 bytes from `lo`, not {} \
+         — the aggregate layout must ASCEND (C-compatible)",
+        leas[0] - leas[1]
+    );
+}
+
+/// `addr_of` into a fat-pointer (runtime-length) array parameter stays REFUSED.
+/// The descriptor shares the CALLER's storage with no copy, which is only
+/// value-semantically sound because the parameter is read-only; handing out an
+/// address into it would let `ptr_write` mutate the caller's array.
+///
+/// `peek` has no call site, so its `array<i64>` parameter's length is not
+/// inferable and it takes the fat-pointer path — exactly the shape guarded here.
+/// Note an `addr_of` is not an assignment, so the read-only analysis that admits
+/// the fat pointer does NOT see it: this refusal is the only thing standing
+/// between that descriptor and a caller-visible mutation.
+#[test]
+fn addr_of_into_fat_array_parameter_skips_cleanly() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn peek a array<i64> -> i64\n",
+        "    unsafe\n",
+        "        ptr_read(addr_of(a[0]))\n",
+        "\n",
+        "fn main -> i64\n",
+        "    42\n",
+    )))
+    .expect("emit native program");
+    let skip = program
+        .skipped
+        .iter()
+        .find(|s| s.name == "peek")
+        .unwrap_or_else(|| {
+            panic!(
+                "`peek` must skip: an `addr_of` into a fat-array parameter is not sound. \
+                 compiled={:?} skipped={:?}",
+                program.compiled, program.skipped
+            )
+        });
+    assert!(
+        skip.reason.contains("fat-pointer"),
+        "expected the fat-pointer refusal, got: {}",
+        skip.reason
     );
 }
 
@@ -485,9 +599,10 @@ fn ptr_offset_over_unsupported_pointee_skips_cleanly() {
 // -- Struct-field addressing --------------------------------------------------
 
 /// `addr_of(s.f)` of an 8-byte field IS lowered: the address is genuine and a
-/// read/write through it aliases the field exactly. (Only a *walk* across fields
-/// would hit the descending-layout mismatch, and that is undefined on the
-/// interpreters too — see the module docs.)
+/// read/write through it aliases the field exactly. (A *walk* across fields now
+/// works too under the ascending layout — see `direction_flip_struct_fields_ascend`
+/// — but it is native-only, since the interpreters model each `addr_of` place as a
+/// single-cell snapshot region; see the module docs.)
 #[test]
 fn addr_of_struct_field_lowers() {
     let text = text_of(concat!(

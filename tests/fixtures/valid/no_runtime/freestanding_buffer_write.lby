@@ -1,0 +1,37 @@
+# A WRITE-THROUGH buffer walk in the freestanding (`no-runtime`) tier: walk a
+# pointer forward with `ptr_offset` and `ptr_write` each cell, then read the
+# buffer back through ordinary indexing to prove the stores genuinely aliased it.
+#
+# This is a NATIVE-ONLY program by design. The interpreters model `addr_of` as a
+# by-value snapshot, so a store through such a pointer would not update the
+# original place; rather than answer wrongly they REFUSE it at run time with a
+# loud `L0459`. Native is the tier where the store really aliases. So this fixture
+# is asserted for its native exit code only — there is no interpreter result to
+# match, and claiming parity here would be dishonest. (The read/walk half of the
+# surface IS interpreter-defined and IS checked against all three interpreters in
+# `freestanding_buffer_walk.lby`.)
+no-runtime
+
+# Fill a buffer by walking a write pointer forward, then sum it back by index.
+# If the layout descended, `ptr_offset(p, +k)` would write BACKWARDS off the
+# front of the buffer and this would corrupt the frame instead of filling `buf`.
+fn fill_and_sum -> i64
+    let buf array<i64> = [0, 0, 0, 0]
+    unsafe
+        let p ptr<i64> = addr_of(buf[0])
+        ptr_write(p, 1)
+        ptr_write(ptr_offset(p, 1), 2)
+        ptr_write(ptr_offset(p, 2), 4)
+        ptr_write(ptr_offset(p, 3), 8)
+    buf[0] + buf[1] + buf[2] + buf[3]
+
+# A write through a pointer taken at a RUNTIME index, read back by index.
+fn poke_at n i64 -> i64
+    let buf array<i64> = [0, 0, 0]
+    unsafe
+        ptr_write(addr_of(buf[n]), 90)
+    buf[0] + buf[1] + buf[2]
+
+fn main -> i64
+    # 15 + 90 = 105
+    fill_and_sum() + poke_at(1)

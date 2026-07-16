@@ -52,9 +52,11 @@ pub(crate) fn resolve_place_steps_typed(
             return Err("a fat-pointer array parameter supports only a single index".to_string());
         };
         let elem_ty = (**elem).clone();
+        // Descriptor word 1 (the runtime length) is 8 bytes ABOVE word 0 in the
+        // ascending layout, i.e. at the smaller displacement `base_slot - 8`.
         let place = ScalarPlace::FatIndex {
             ptr_slot: base_slot,
-            len_slot: base_slot + 8,
+            len_slot: base_slot - 8,
             elem_words: elem_ty.words() as i64,
             index: (*index).clone(),
         };
@@ -122,9 +124,11 @@ pub(crate) fn resolve_place_steps_typed(
         return Err("native access must resolve to an i64, f64, or string scalar".to_string());
     }
 
+    // ASCENDING layout: word `k` of an aggregate is 8·k bytes HIGHER than word 0,
+    // i.e. at the SMALLER displacement `base_slot - 8*k`.
     let place = match dynamic {
         None => ScalarPlace::Const {
-            slot: base_slot + const_words as i32 * 8,
+            slot: base_slot - const_words as i32 * 8,
         },
         Some((elem_words, index_len, index)) => ScalarPlace::Dynamic {
             base_slot,
@@ -243,7 +247,8 @@ pub(crate) fn emit_load_place(
 }
 
 /// Compute the effective address of a dynamic scalar word into `rcx`:
-/// `rcx = rbp - (base_slot + 8*const_words) - 8*elem_words*index`.
+/// `rcx = rbp - base_slot + 8*const_words + 8*elem_words*index`
+/// (ASCENDING layout — element/field `k` is 8·k bytes ABOVE word 0).
 /// Leaves the stack balanced.
 pub(crate) fn emit_dynamic_addr_into_rcx(
     ctx: &mut NativeCtx,
@@ -251,7 +256,7 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
     code: &mut Vec<u8>,
 ) -> Result<(), String> {
     // A fat-pointer array element addresses off the descriptor's runtime data
-    // pointer, not the frame base: `data_ptr - 8*elem_words*index`, with the index
+    // pointer, not the frame base: `data_ptr + 8*elem_words*index`, with the index
     // bounds-checked against the descriptor's runtime length word.
     if let ScalarPlace::FatIndex {
         ptr_slot,
@@ -273,9 +278,9 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
         code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]);
         // rcx = data_ptr (descriptor word 0)
         emit_mov_rcx_from_slot(code, *ptr_slot);
-        // rcx = rcx - rax  (element i is at data_ptr - 8*elem_words*i; elements
-        // descend from element 0 exactly like the caller's stack array layout).
-        code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
+        // rcx = rcx + rax  (element i is at data_ptr + 8*elem_words*i; elements
+        // ASCEND from element 0 exactly like the caller's stack array layout).
+        code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
         return Ok(());
     }
     let ScalarPlace::Dynamic {
@@ -301,10 +306,12 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
     code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]);
     // rcx = rbp
     code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
-    // rcx = rcx - rax  (subtract the dynamic byte offset)
-    code.extend_from_slice(&[0x48, 0x29, 0xC1]); // sub rcx, rax
-    // rcx = rcx - (base_slot + 8*const_words)  (the static displacement)
-    let static_disp = *base_slot + (*const_words as i32) * 8;
+    // rcx = rcx + rax  (ADD the dynamic byte offset: element `index` is
+    // 8*elem_words*index bytes ABOVE the array's element 0).
+    code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
+    // rcx = rcx - (base_slot - 8*const_words)  (the static displacement of the
+    // indexed array's element 0 within the enclosing local).
+    let static_disp = *base_slot - (*const_words as i32) * 8;
     emit_sub_rcx_imm(code, static_disp);
     Ok(())
 }

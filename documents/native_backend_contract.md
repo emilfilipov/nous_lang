@@ -18,6 +18,7 @@ Implemented now:
 - An extended multi-function native program emitter (`emit_native_program`) for the **i64-scalar subset** with control flow, calls, division, an entry stub, `ExitProcess` import, and COFF relocations, plus a best-effort `rust-lld` link-to-`.exe` behind the `lullaby native` command. See "Extended Native Program Emission And Link-To-Executable" below.
 - **Stack-allocated scalar aggregates** on top of the i64-scalar subset: all-i64 (optionally nested) structs and fixed-length `i64` arrays as function locals, laid out contiguously in the stack frame. See "Stack-Allocated Scalar Structs And Fixed Arrays" below.
 - **The freestanding raw-pointer surface.** `addr_of` / `ptr_read` / `ptr_write` / `volatile_load` / `volatile_store` / `ptr_offset` / `ptr_cast` / `int_to_ptr` / `ptr_to_int` all have native x86-64 codegen, so a kernel-shaped function is native-eligible instead of skipping. `addr_of` is a real `lea`, so `ptr_write(addr_of(x), 5)` genuinely mutates `x` — the aliasing semantics the interpreters cannot model (they refuse the store with `L0459`). See "Raw-Pointer Surface (Freestanding Tier)" below.
+- **ASCENDING (C-compatible) stack-aggregate layout — and with it, BUFFER WALKING.** Word `k` of a stack struct/array/enum sits 8·k bytes **higher** than word 0 (`[rbp - (slot - 8k)]`; `[ptr + 8k]` through a word-0 pointer), so a field/element at `offset_of == +8` really is 8 bytes higher, matching C and the interpreters. `addr_of(pair.hi) - addr_of(pair.lo)` is **+8** (it was −8 under the previous descending layout). This unblocks **THE kernel idiom**: `addr_of(buf[0])` + `ptr_offset` walks a buffer forward and is correct, as are `addr_of(buf[i])` with a runtime index and a whole-array decay `addr_of(buf) -> ptr<element>`. Those shapes were previously *refused* (`L0339`) rather than miscompiled, because a pointer into a descending array would have walked backwards. The frame still grows downward per the Win64 ABI; only intra-aggregate word order changed, so frame sizes and slot ranges are unchanged. See "Aggregate word order (ASCENDING, C-compatible)" below.
 - **First heap step: string constants + a bump heap.** String literals used by `len("...")` are emitted into a read-only `.rdata` section, referenced by REL32 relocations, copied into a `.bss` bump-allocated heap region at runtime, and scanned for their byte length so `main` can derive an i64 from string data. See "First Heap Step: String Constants And Bump Allocator" below.
 - **C-ABI FFI (calling C).** A body-less `extern fn NAME params -> Ret` declares an imported C function; a call lowers to a `call` of an undefined external symbol and links against the C runtime (`ucrt.lib`). Each argument is routed to the register selected by its **position and type** (integer/pointer → `rcx`/`rdx`/`r8`/`r9`; `f32`/`f64` → `xmm0..3`); the return is read from `rax` (integer/pointer, narrow-normalized) or `xmm0` (float). Marshalling now spans **beyond scalars**: a raw pointer `ptr<T>` (a C `T*`, real bump-heap/`malloc` address), the `cstr` parameter marker (a Lullaby `string` → NUL-terminated `const char*` via `__lullaby_to_cstr`), a `void` return, **more than four arguments** (the 5th+ spill onto the stack above the shadow space), and **callbacks** — a Lullaby top-level function passed to a C function as a C-ABI function pointer (a marshallable-signature Lullaby function already uses the Win64 C convention, so its address is taken directly with no trampoline). Struct-by-value parameters, a callback whose own signature is not C-marshallable, and a callback used as an extern *return* are the deferred FFI tail, rejected at check time with `L0424`. Calling an extern on an interpreter is `L0423`. See "C-ABI FFI (calling C)", "Pointer, `cstr`, and >4-argument marshalling", and "FFI callbacks (function pointer to C)" below.
 - **C-ABI FFI (exposing Lullaby to C).** An `export fn NAME params -> Ret` is a normal (bodied) Lullaby function additionally exposed under its plain C name as an externally visible, defined `.text` symbol so C (or another object) can call **into** Lullaby. An export must have a C-marshallable scalar signature from the delivered set `i64`/`f64`/`f32` (`L0424` otherwise); a float parameter arrives in its positional SSE register and a float return leaves in `xmm0`. An export-only program (no `main`) emits a library object with no entry stub. See "C-ABI FFI (exposing Lullaby to C)" below.
@@ -248,6 +249,46 @@ More than four arguments to an `extern`/`export` **C-ABI** call is still deferre
 
 The fixture `tests/fixtures/valid/native_many_args.lby` defines `six` (six `i64` params), `eight` (eight `i64` params), and `scale` (a six-parameter mixed `i64`/`f64` signature), each called from `main` to compute a deterministic `i64` (98). It runs identically on AST/IR/bytecode (auto-discovered parity harness) and is native-compiled, linked, and run by `native_many_args_execution_parity_when_linkable` in `crates/lullaby_cli/tests/cli.rs`, which asserts every `>4`-parameter function compiles (not skipped) and — when linkable — the `.exe` exit code equals the interpreter result (98). Unit tests in `native_program_tests` (`function_with_six_i64_params_compiles_with_stack_args`, `function_with_eight_i64_params_compiles_with_stack_args`, `function_with_mixed_int_float_params_beyond_four_compiles`, `aggregate_return_with_four_params_uses_a_stack_argument`) assert the callee reads its stack parameters from `[rbp+48]`, `[rbp+56]`, … and the caller writes its stack arguments to the outgoing area at `[rsp+0x50]`, `[rsp+0x58]`, ….
 
+## Aggregate word order (ASCENDING, C-compatible) (DELIVERED)
+
+**The canonical statement of the native aggregate layout.** Every other section in
+this document defers to it.
+
+Word `k` of a stack aggregate (struct field, array element, enum payload) lives at
+**`[rbp - (slot - 8*k)]`** — 8·k bytes **higher** in memory than word 0 — and,
+through a pointer to word 0, at **`[ptr + 8*k]`**. A pointer to an aggregate
+addresses its **lowest** byte, exactly like a C struct/array pointer.
+
+| | Address of word `k` | Through a word-0 pointer | `addr_of(s.hi) - addr_of(s.lo)` |
+| :-- | :-- | :-- | :-- |
+| **Now (ascending, C-compatible)** | `[rbp - (slot − 8k)]` | `[ptr + 8k]` | **+8** (agrees with `offset_of`) |
+| Previously (descending) | `[rbp - (slot + 8k)]` | `[ptr − 8k]` | −8 (disagreed with `offset_of`) |
+
+The **frame itself still grows downward** from `rbp`, as the Win64 ABI requires —
+this is only the order of words *within* an aggregate's slot range. The frame plan
+reserves `words*8` bytes per aggregate and points `slot` at the **top** of that
+displacement range, so word 0 is at the range's lowest address and word `words-1`
+at its highest. Frame size and slot ranges are therefore unchanged; only the
+mapping from word index to address reversed.
+
+Why it matters: the layout now agrees with C, with `size_of`/`offset_of`, and with
+the interpreters' ascending model. That is what makes **buffer walking** —
+`addr_of(buf[0])` + `ptr_offset`, THE kernel idiom — compile and be correct
+instead of being refused (see "Raw-Pointer Surface" below). The old descending
+layout forced a default-deny refusal of every array-element/whole-array `addr_of`,
+because such a pointer would have walked *backwards*.
+
+Scope of the convention: it governs **stack** aggregates. Heap blocks (`list`/
+`map`/`HeapStruct` records, string records) were already ascending and are
+unchanged — so the heap→stack seams (e.g. binding a `HeapStruct` payload as a
+stack struct) now step in the *same* direction on both sides.
+
+Pinned by tests, not prose: `direction_flip_struct_fields_ascend` (asserts the two
+field `lea` displacements differ by exactly +8) and
+`compiles_struct_parameter_and_return_with_by_pointer_abi` (asserts the
+hidden-return-pointer word write is `mov [rax+8], rcx` and that the descending
+`mov [rax-8], rcx` does **not** appear), both in `crates/lullaby_ir/src/`.
+
 ## Stack-Allocated Scalar Structs And Fixed Arrays (DELIVERED)
 
 `emit_native_program` additionally lowers **fixed-size aggregates of `i64` laid out on the stack** — no heap, no strings. This extends the eligibility gate: a function using only `i64` scalars, all-`i64` structs, fixed `i64` arrays, and the already-supported control flow/arithmetic/calls is now accepted; a function using strings, heap/growable `list`/`map`, enums, `match`, or floats is still rejected with the existing `L0339` behavior and continues to run on the interpreters.
@@ -255,12 +296,12 @@ The fixture `tests/fixtures/valid/native_many_args.lby` defines `six` (six `i64`
 Supported aggregate features:
 
 - **Struct locals whose fields are all `i64`** (nested all-`i64` structs are allowed). The struct's flattened `i64` fields are laid out contiguously in the frame. Both positional (`Point(3, 4)`) and named (`Point(y: 10, x: 20)`) construction are supported (the IR lowerer already reorders named fields into declared order). Field reads (`p.x`, `l.end.a`) and field mutation (`p.x = ...`, `l.end.a += ...`) resolve the field's stack word and load/store it.
-- **Fixed `i64` arrays** (`array<i64>` of a length known from a literal initializer). The array's element words are laid out contiguously. Index reads (`xs[i]`) and index writes (`xs[i] = ...`, `xs[i] += ...`) are supported with both a **constant index** (folded into a static frame displacement) and a **dynamic (runtime `i64`) index** (address computed as `rbp - (base + 8*const_words) - 8*elem_words*index`). Arrays of all-`i64` structs (`array<Cell>`) are supported too.
+- **Fixed `i64` arrays** (`array<i64>` of a length known from a literal initializer). The array's element words are laid out contiguously. Index reads (`xs[i]`) and index writes (`xs[i] = ...`, `xs[i] += ...`) are supported with both a **constant index** (folded into a static frame displacement) and a **dynamic (runtime `i64`) index** (address computed as `rbp - (base - 8*const_words) + 8*elem_words*index`). Arrays of all-`i64` structs (`array<Cell>`) are supported too.
 - `len(arr)` on a fixed native array folds to a compile-time integer constant (native arrays never grow).
 
 Layout and codegen details:
 
-- Each local is a run of 8-byte words: a scalar is one word, a struct the concatenation of its recursively flattened field words, and an array `len` copies of its element layout. Word `k` of a local whose base slot is `slot` lives at `[rbp - (slot + 8*k)]`. Array lengths enter the layout from the `let` initializer (`array<T>` carries no length in its type), so an array local must be initialized by an array literal.
+- Each local is a run of 8-byte words: a scalar is one word, a struct the concatenation of its recursively flattened field words, and an array `len` copies of its element layout. **Word order is ASCENDING (C-compatible):** word `k` of a local whose base slot is `slot` lives at `[rbp - (slot - 8*k)]` — 8·k bytes **higher** in memory than word 0 — so a field/element at `offset_of == +8` really sits 8 bytes higher, matching C, `size_of`/`offset_of`, and the interpreters. See "Aggregate word order (ASCENDING, C-compatible)" below. Array lengths enter the layout from the `let` initializer (`array<T>` carries no length in its type), so an array local must be initialized by an array literal.
 - Aggregates never occupy a register. Scalar operations resolve an individual scalar word to a `[rbp - disp]` place (static, or dynamically address-computed into `rcx` for a runtime index) and load/store it. Struct/array construction and aggregate-to-aggregate copies materialize each flattened scalar word directly into the destination slots.
 - **Dynamic array indices ARE bounds-checked** in native code: `a[i]` with a runtime index emits one UNSIGNED `cmp` of the index against the array length followed by a `jb` over a `ud2` trap, so an out-of-range (or negative) index **faults deterministically** — a defined `STATUS_ILLEGAL_INSTRUCTION` (`0xC000001D`) abort — instead of reading or writing an adjacent word. This matches the interpreters' `L0413`. A stack array checks against its statically known length (`emit_bounds_check_rax`); a fat-pointer array checks against its runtime length word (`emit_bounds_check_rax_against_slot`); an auto-vectorized `for` loop hoists an equivalent one-time entry guard (`emit_loop_bounds_guard`). A **constant** index is checked at compile time (an out-of-range literal demotes the function to the interpreters rather than emitting an unsafe access). Both emitters live in `crates/lullaby_ir/src/native_object_simd.rs`.
 - **Native `list<T>` `get`/`set`/`pop` are bounds-trapped too.** `get(l, i)` and `set(l, i, v)` compare the index (unsigned) against the list's `len` header word and trap with `ud2` on `i < 0` or `i >= len`; `pop(l)` traps with `ud2` when the list is empty (`len <= 0`) instead of underflowing `len`. These reuse the same defined `0xC000001D` abort array indexing produces, so an out-of-range native list op **aborts deterministically** rather than reading/writing past the live elements or corrupting the length — matching the three interpreters' `L0413` (see `documents/lullaby_error_handling.md`, "Safe-Tier Failure Semantics"). In-bounds ops are unchanged (the check is a compare + conditional trap). The trap emission lives in `crates/lullaby_ir/src/native_object_lowering.rs` (`lower_list_get`/`lower_list_set`/`lower_list_pop`); the native link-and-run parity tests are `native_list_get_out_of_bounds_traps`/`native_list_set_out_of_bounds_traps`/`native_pop_empty_list_traps` in `crates/lullaby_cli/tests/cli/suite13.rs`.
@@ -274,9 +315,9 @@ A fixed `array<T>` carries no length in its type, so the copy-in stack-array ABI
 The native backend now compiles such a helper by passing a **read-only** scalar-element array parameter as a **fat pointer** — a `(data_ptr, length)` descriptor — instead of requiring a compile-time length:
 
 - **Element types.** Scalar integer cells (`i64`/fixed-width/`bool`/`char`/`byte`, one normalized `i64` word) and floats (`f64`/`f32`, read through an XMM register) are supported. An `array<string>` is a distinct heap representation; a nested-aggregate element is not in the fat-pointer subset.
-- **Representation.** A fat-array parameter (`NativeType::FatArray { elem }`) occupies two frame words: word 0 is a pointer to the caller's element 0 (the array's highest stack address — elements descend from there exactly like a stack array), word 1 is the runtime element count. It is **not** a new representation for array literals/locals (those stay stack-flattened with a static length); only the parameter ABI and the callee's access to the parameter change.
+- **Representation.** A fat-array parameter (`NativeType::FatArray { elem }`) occupies two frame words: word 0 is a pointer to the caller's element 0 (the array's **lowest** stack address — elements ASCEND from there exactly like a stack array, so the pointer is C-shaped), word 1 is the runtime element count. It is **not** a new representation for array literals/locals (those stay stack-flattened with a static length); only the parameter ABI and the callee's access to the parameter change.
 - **Call ABI.** The descriptor crosses the boundary **by pointer**, reusing the existing aggregate-by-pointer path: the caller materializes the two descriptor words in scratch (data pointer = address of the argument array's element 0; length = its static length) and passes the descriptor's address in one register/stack argument slot; the callee copies the two words into its frame. No array body is copied — the pointer refers to the caller's storage. This keeps the delicate register/stack argument-position accounting unchanged (a fat array is one effective argument, like any aggregate pointer). The caller side currently supports a bare array **variable** bound to a stack array local as the argument; any other argument shape demotes the caller gracefully.
-- **Callee access.** `len(a)` reads the descriptor's length word. `a[i]` reads `[data_ptr - 8 * elem_words * i]`, and — unlike a stack array's static-length check — bounds-checks the index against the **runtime** length word before the access (one unsigned `cmp rax, [rbp - len_slot]` + `jb` over a `ud2`, matching the interpreters' `L0413`). `for x in a` is the desugaring `for i from 0 to len(a) - 1 { let x = a[i] }`, so it composes from those two.
+- **Callee access.** `len(a)` reads the descriptor's length word. `a[i]` reads `[data_ptr + 8 * elem_words * i]`, and — unlike a stack array's static-length check — bounds-checks the index against the **runtime** length word before the access (one unsigned `cmp rax, [rbp - len_slot]` + `jb` over a `ud2`, matching the interpreters' `L0413`). `for x in a` is the desugaring `for i from 0 to len(a) - 1 { let x = a[i] }`, so it composes from those two.
 - **Value semantics (the correctness crux).** Lullaby arrays have value semantics, so sharing the caller's storage is sound **only when the callee never writes the array**. The parameter is therefore admitted as a fat pointer **only when it is read-only**: the body never assigns `a` (nor `a[i]`/`a.f`), and every use of the parameter variable is either an index-read target (`a[i]`) or the sole argument of `len(a)`. The analysis is **default-deny** — any other use (aliasing `let b = a`, returning it, passing it onward, whole-value arithmetic) disqualifies the fat-pointer path. A read-only fat pointer is bit-for-bit equivalent to the interpreters' eager array copy because the shared storage is never mutated.
 - **Fallback, not preference.** The fat-pointer path is used **only when the length is not inferable** (no call site, or disagreeing call sites). A parameter array whose length *is* inferable keeps the copy-in stack-array path unchanged — so static bounds checks and the `for`-reduction auto-vectorizers still apply to it. A **mutating** array parameter (a sort that writes `a[i]`) is not read-only, so it still requires an inferable length (copy-in) and otherwise demotes; a defensive-copy path for mutating runtime-length parameters is a later increment.
 - **Scope.** Scalar integer-cell and float element types (above). Forwarding a fat parameter as a call argument (`f(a)` where `a` is itself a fat parameter), mutating (copy-in) runtime-length parameters, and runtime-length array **returns/locals** are deferred and skip gracefully.
@@ -430,10 +471,10 @@ The fixtures `tests/fixtures/valid/native_enum_option.lby` (`option<i64>`, some=
 
 The aggregate boundary uses an internal by-pointer convention (all callers and callees are Lullaby, so it need not match the Win64 small-struct-in-register rule, only be self-consistent):
 
-- **Aggregate parameter.** The caller materializes the aggregate into a caller-owned copy (in its frame or a scratch temp) and passes a **pointer** to it in the parameter's integer register (`rcx`/`rdx`/`r8`/`r9`). In its prologue the callee **copies the words in** to its own frame slots (`mov rcx, [rax - 8*k]` / `mov [rbp - slot], rcx`), so mutating the parameter never touches the caller's copy.
-- **Aggregate return.** The caller allocates space for the result and passes its address as an implicit **hidden first argument** (`rcx`), shifting the visible parameters to the following registers. The callee writes the result words through that pointer (`mov [rax - 8*k], rcx`) and returns the pointer in `rax`. `main`'s scalar `i64` return path is unchanged (no hidden pointer).
+- **Aggregate parameter.** The caller materializes the aggregate into a caller-owned copy (in its frame or a scratch temp) and passes a **pointer** to it in the parameter's integer register (`rcx`/`rdx`/`r8`/`r9`). In its prologue the callee **copies the words in** to its own frame slots (`mov rcx, [rax + 8*k]` / `mov [rbp - slot], rcx`), so mutating the parameter never touches the caller's copy.
+- **Aggregate return.** The caller allocates space for the result and passes its address as an implicit **hidden first argument** (`rcx`), shifting the visible parameters to the following registers. The callee writes the result words through that pointer (`mov [rax + 8*k], rcx`) and returns the pointer in `rax`. `main`'s scalar `i64` return path is unchanged (no hidden pointer).
 - **Aggregate call argument.** The caller materializes a fresh copy in a scratch region, `lea`s its address, and passes that pointer per the parameter rule.
-- **Word layout matches locals.** Aggregate words descend in memory (word `k` at the lower address `[base - 8*k]` from the word-0 pointer), matching the existing local layout, so field/element order and offsets are identical to the locals implementation.
+- **Word layout matches locals.** Aggregate words ASCEND in memory (word `k` at the **higher** address `[base + 8*k]` from the word-0 pointer — the same convention C uses), matching the existing local layout, so field/element order and offsets are identical to the locals implementation. A pointer to an aggregate therefore points at its **lowest** address (word 0), exactly like a C struct pointer.
 
 ### Arity and deferral
 
@@ -1160,7 +1201,7 @@ interpreter. Implementation: `crates/lullaby_ir/src/native_object_rawptr.rs`
 
 | Builtin | Lowering |
 | :-- | :-- |
-| `addr_of(place) -> ptr<T>` | `lea rax, [rbp - slot]` — the **real** address of the frame word |
+| `addr_of(place) -> ptr<T>` | `lea rax, [rbp - slot]` — the **real** address of the frame word. A place with a **runtime array index** (`addr_of(a[i])`) instead computes the effective address into `rcx` (bounds-checked, ascending: `rcx = rbp - base + 8*elem_words*i`) and `mov rax, rcx`. A **whole-array** place (`addr_of(a)`) decays to element 0's address, like C |
 | `ptr_read(p) -> T` / `volatile_load(p) -> T` | `mov rcx, rax` then a width- and signedness-correct load: `mov rax,[rcx]` (8), `movsxd rax,dword[rcx]` / `mov eax,[rcx]` (4 signed/unsigned), `movsx`/`movzx rax,word[rcx]` (2), `movsx`/`movzx rax,byte[rcx]` (1) — always renormalizing the 8-byte cell |
 | `ptr_write(p, v)` / `volatile_store(p, v)` | address spilled, value evaluated, `pop rcx`, then an exact-width store: `mov [rcx],rax` / `mov [rcx],eax` / `mov [rcx],ax` / `mov [rcx],al` |
 | `ptr_offset(p, n isize) -> ptr<T>` | one scaled `lea rax, [rcx + rax*size_of(T)]` (SIB scale 1/2/4/8); `n` is signed, so a negative `n` walks back |
@@ -1187,39 +1228,68 @@ intentional and honest: a loud refusal on the tiers that cannot alias, real
 aliasing on the tier that can. Retiring `L0459` (making the interpreter model
 place-backed) is separate work and is **not** part of this increment.
 
-### Default-deny scope — what skips, and why
+### Buffer walking works — the layout is C-compatible
 
-Two properties of the existing native value model bound what can be lowered
-soundly. Both refusals are precise `L0339` skips naming the reason.
+**Native stack aggregates lay their words out at ASCENDING (C-compatible)
+addresses.** Word `k` of a struct/array lives at `[rbp - (slot − 8k)]` — 8·k bytes
+*higher* than word 0 — and through an aggregate pointer at `[ptr + 8k]`. Measured,
+not assumed: for `struct Pair{lo i64, hi i64}`,
+`ptr_to_int(addr_of(pair.hi)) - ptr_to_int(addr_of(pair.lo))` is **+8**, agreeing
+with `offset_of(Pair, "hi") == +8`. (This was **−8** before the layout flip — see
+"Aggregate word order" above.)
+
+So **THE kernel idiom compiles and is correct**: `ptr_offset(addr_of(buf[0]), 1)`
+steps *forward* to `buf[1]`, agreeing with C, with `size_of`/`offset_of`, and with
+the interpreters. `addr_of` is lowered for:
+
+- an **8-byte scalar** local/parameter (`i64`/`u64`/`isize`/`usize`/`ptr<T>`);
+- a **struct-field** path (`s.f`, `s.a.b`);
+- an **array element** — `a[0]`, `a[i]` (constant *or* runtime index; a runtime
+  index keeps the same unsigned bounds-check trap an ordinary `a[i]` read emits,
+  so an out-of-range index faults rather than yielding a stray pointer);
+- a **whole array**, decaying to `ptr<element>` at element 0, exactly like C's
+  array-to-pointer decay.
+
+`ptr_offset(addr_of(s.lo), 1)` now genuinely reaches `s.hi` as well. Note that
+*that* shape is **native-only**: the interpreters model each `addr_of` place as a
+single-cell snapshot region, so an inter-field walk is a program they do not
+define. The parity line is exact and unchanged in spirit:
+**interpreter-defined ⇒ native must match; interpreter-refused ⇒ native may
+define.** A read/walk *within one array* is interpreter-defined and native agrees
+with all three bit-for-bit (`freestanding_buffer_walk.lby` → 124;
+`freestanding_addr_of.lby` → 127). A *store* through an `addr_of` pointer is
+interpreter-refused (`L0459`) and native implements it
+(`freestanding_buffer_write.lby` → 105, native-only by design).
+
+### Default-deny scope — what still skips, and why
+
+Both remaining refusals are precise `L0339` skips naming the reason.
 
 1. **Every Lullaby scalar is a normalized 8-byte cell.** An `i32` local occupies a
    full sign-extended word, not 4 bytes. A width-correct 4-byte store through its
    address would leave the upper half stale and corrupt the cell invariant. So
    `addr_of` is lowered **only for an 8-byte scalar** (`i64`/`u64`/`isize`/`usize`/
-   `ptr<T>`), where the C width and the cell width coincide.
-2. **Native aggregates are laid out at DESCENDING addresses.** Word `k` of a
-   struct/array lives at `[rbp - (slot + 8k)]`, and through an aggregate pointer at
-   `[ptr - 8k]`. Measured, not assumed: for `struct Pair{lo i64, hi i64}`,
-   `ptr_to_int(addr_of(pair.hi)) - ptr_to_int(addr_of(pair.lo))` is **−8**, while
-   `offset_of(Pair, "hi")` is `+8`. So `ptr_offset(addr_of(a[0]), 1)` would step
-   *backwards* through the array — disagreeing with C, with `size_of`/`offset_of`,
-   and with the interpreters' ascending snapshot model, on a program the
-   interpreters *define*. `addr_of` of an **array element** or a **whole array**
-   (the `ptr<element>` decay) is therefore refused.
+   `ptr<T>`), where the C width and the cell width coincide. This also refuses an
+   `array<i32>` element/decay: the cell is 8 bytes but `ptr_offset` strides by
+   `size_of(i32) == 4`, so a walk would desynchronize. Lifting it needs a
+   narrow-cell array representation — separate work, not a layout question.
+2. **A pointer may only be taken to storage that exists, and only where handing it
+   out is sound.** A register-promoted local lives in `rbx`/`rsi` and has no
+   address (the promotion gate excludes any address-taking function — see below);
+   a closure capture lives in the env block, not a frame slot; and a **fat-pointer
+   (runtime-length) array parameter** shares the *caller's* storage with no copy,
+   which is only value-semantically sound because the parameter is read-only —
+   handing out an address into it would let `ptr_write` mutate the caller's array,
+   so it is refused. (An `addr_of` is not an assignment, so the read-only analysis
+   that admits the fat pointer does not see it; this refusal is the only thing
+   standing between that descriptor and a caller-visible mutation.)
 
-`addr_of` of a **struct field** (`s.f`, `s.a.b`) with an 8-byte field **is**
-lowered: its address is genuine and a read/write through it aliases the field
-exactly. Only a *walk across fields* would meet the descending-layout mismatch, and
-that is undefined on the interpreters too (they snapshot a field as a single-cell
-region), so no program defined on both tiers can diverge.
-
-> **Known gap (documented, not silently wrong):** because the native frame is
-> descending, `offset_of`-based pointer arithmetic from an `addr_of(s.f)` pointer
-> does not hold natively. Every shape where that would matter (`addr_of` of an
-> array element / whole array) already refuses; a hand-rolled
-> `int_to_ptr(ptr_to_int(addr_of(s.a)) + offset_of(S, "b"))` is unchecked `unsafe`
-> arithmetic and is the author's responsibility, exactly as in C. Making the native
-> frame lay aggregates out in C order is the real fix and is deferred.
+The nested paths `addr_of(s.arr)` / `addr_of(s.arr[i])` resolve correctly through
+the shared path resolver, but are not reachable today for a *separate* reason: an
+`array<T>`-typed struct **field** is not in the native struct layout at all
+(`resolve_struct_fields` rejects it — a bare `array<T>` type carries no length), so
+such a struct skips before `addr_of` is consulted. A pre-existing layout gap, not a
+raw-pointer one.
 
 Also skipped cleanly: a `bool`/`char` pointee (a raw load could yield a byte
 outside `0..=1` or a non-scalar-value code point, breaking a cell invariant), an
@@ -1331,4 +1401,4 @@ covered by the hand-computed fixtures above.
 
 ## Deferred Native Work
 
-Deferred beyond the current increment: within the raw-pointer surface — `addr_of` of an array element or a whole array (the native frame lays aggregates out at DESCENDING addresses; laying them out in C order is the real fix), `addr_of` of a narrower-than-8-byte scalar (normalized 8-byte cells), a `bool`/`char`/`f64`/`f32` pointee, a struct/array pointee for `ptr_offset`, and `addr_of` of a closure-captured variable — each a precise `L0339` skip today; a `void`-returning function of any kind (a pre-existing, raw-pointer-independent gap that blocks the natural `fn poke p ptr<T> v T` kernel spelling); more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+Deferred beyond the current increment: within the raw-pointer surface — **`addr_of` of an array element and of a whole array are now DELIVERED** (the native frame lays aggregates out at ASCENDING, C-compatible addresses, so a pointer into an array walks forward correctly — buffer walking works; see "Aggregate word order"). Still deferred: `addr_of` of a narrower-than-8-byte scalar (normalized 8-byte cells — this also covers an `array<i32>` element, whose 8-byte cell and 4-byte `ptr_offset` stride would desynchronize), `addr_of` into a fat-pointer (runtime-length) array parameter (the descriptor shares the caller's storage read-only), a `bool`/`char`/`f64`/`f32` pointee, a struct/array pointee for `ptr_offset`, and `addr_of` of a closure-captured variable — each a precise `L0339` skip today; a `void`-returning function of any kind (a pre-existing, raw-pointer-independent gap that blocks the natural `fn poke p ptr<T> v T` kernel spelling); more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.

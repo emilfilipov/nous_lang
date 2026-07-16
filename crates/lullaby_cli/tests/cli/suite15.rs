@@ -445,38 +445,39 @@ fn ptr_write_through_addr_of_is_refused_at_runtime() {
     }
 }
 
-/// The raw-pointer surface HAS native codegen (see the stage-3 tests at the end
-/// of this file), but `addr_of` of an **array element** is deliberately outside
-/// it: the native frame lays an aggregate's words out at DESCENDING addresses, so
-/// a pointer into an array would walk backwards under `ptr_offset` — disagreeing
-/// with C, with `size_of`/`offset_of`, and with the interpreters' ascending
-/// snapshot model, on a program the interpreters define. This fixture walks
-/// `addr_of(a[0])`, so the native command *cleanly skips* it via the `L0339` gate
-/// — a diagnostic naming the skipped function, never a produced-but-wrong
-/// executable. Pinned here rather than left to prose.
+/// The full stage-2 raw-pointer ADDRESSING surface now compiles natively and
+/// agrees with all three interpreters: `addr_of(a[0])` walked with a RUNTIME
+/// `ptr_offset(base, i)` in a `while` loop, the size law, a `ptr<i64>` ->
+/// `ptr<byte>` -> `ptr<i64>` cast round-trip, and an `addr_of` of a struct field.
+///
+/// This shape used to be *refused* (`L0339`) because the native frame laid an
+/// aggregate's words out at DESCENDING addresses, so the pointer would have
+/// walked backwards — disagreeing with C, with `size_of`/`offset_of`, and with
+/// the interpreters, on a program the interpreters define. The layout now ASCENDS
+/// (C-compatible), so the refusal is lifted and the program is simply correct.
 #[test]
-fn addr_of_cleanly_skips_native() {
-    let fixture = workspace_root().join("tests/fixtures/valid/no_runtime/freestanding_addr_of.lby");
-    let output = lullaby()
-        .args([
-            "native",
-            "--verbose",
-            fixture.to_str().expect("fixture path"),
-        ])
-        .output()
-        .expect("run cli");
-    assert!(
-        !output.status.success(),
-        "expected the L0339 no-eligible-function gate: {output:?}"
-    );
-    let errors = stderr(&output);
-    assert!(
-        errors.contains("L0339"),
-        "expected the no-eligible-function skip diagnostic: {errors}"
-    );
-    assert!(
-        errors.contains("skipped main"),
-        "expected `main` to be skipped natively: {errors}"
+fn addr_of_addressing_surface_matches_the_interpreters() {
+    let fixture = "tests/fixtures/valid/no_runtime/freestanding_addr_of.lby";
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = run_backend(fixture, backend);
+        assert!(
+            output.status.success(),
+            "[{backend}] the addr_of addressing surface must run: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output).trim(),
+            "127",
+            "[{backend}] expected 100 + 8 + 10 + 9 = 127"
+        );
+    }
+    let Some(exit) = native_exit_code(fixture, "lullaby_addr_of_surface.exe", &[]) else {
+        return;
+    };
+    assert_eq!(
+        exit, 127,
+        "native must agree with all three interpreters on the addr_of \
+         addressing surface (array walk, size law, ptr_cast, struct field)"
     );
 }
 
@@ -698,5 +699,96 @@ fn native_addr_of_reads_match_the_interpreters() {
     assert_eq!(
         exit, 44,
         "native must agree with all three interpreters on addr_of reads + the size law"
+    );
+}
+
+/// THE KERNEL IDIOM, end to end: `addr_of(buf[0])` + `ptr_offset` walks a fixed
+/// buffer forward, and the produced `.exe` agrees with all three interpreters.
+///
+/// This is the payoff of the ASCENDING (C-compatible) native aggregate layout:
+/// element `k` sits at `base + 8*k`, so `ptr_offset(p, +1)` steps FORWARD to the
+/// next element. Under the previous DESCENDING layout this shape was refused
+/// outright (`L0339`) rather than miscompiled, because the pointer would have
+/// walked backwards — disagreeing with C, with `size_of`/`offset_of`, and with
+/// the interpreters, on a program the interpreters define.
+///
+/// Reads and `ptr_offset` walks through an `addr_of` pointer ARE modelled by the
+/// interpreters, so this is a genuine parity assertion, not a native-only claim.
+#[test]
+fn native_buffer_walk_matches_the_interpreters() {
+    let fixture = "tests/fixtures/valid/no_runtime/freestanding_buffer_walk.lby";
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = run_backend(fixture, backend);
+        assert!(
+            output.status.success(),
+            "[{backend}] the buffer walk must run on the interpreters: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output).trim(),
+            "124",
+            "[{backend}] expected 100 + 3 + 13 + 8 = 124"
+        );
+    }
+    let Some(exit) = native_exit_code(fixture, "lullaby_buffer_walk.exe", &[]) else {
+        return;
+    };
+    assert_eq!(
+        exit, 124,
+        "native must agree with all three interpreters on the buffer walk \
+         (a mismatch means the aggregate layout no longer ascends)"
+    );
+}
+
+/// The same buffer walk under `--freestanding`: a `no-runtime` module walking a
+/// buffer compiles to a direct-PE `.exe` with no C runtime and no external
+/// linker, and still exits 124. This is the kernel-tier delivery shape.
+#[test]
+fn native_freestanding_buffer_walk_runs() {
+    let fixture = "tests/fixtures/valid/no_runtime/freestanding_buffer_walk.lby";
+    let Some(exit) = native_exit_code(
+        fixture,
+        "lullaby_buffer_walk_freestanding.exe",
+        &["--freestanding"],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 124,
+        "a freestanding no-runtime buffer walk must exit 124"
+    );
+}
+
+/// A WRITE-THROUGH buffer walk: `ptr_write` each cell through a forward-walked
+/// pointer, then read the buffer back by index. NATIVE-ONLY by design — the
+/// interpreters refuse an `addr_of` store with `L0459` (their `addr_of` is a
+/// by-value snapshot), so there is no interpreter result to match here and none
+/// is claimed. What IS asserted: the stores genuinely alias the buffer, and they
+/// land on the RIGHT cells (a descending layout would write backwards off the
+/// front of the buffer instead of filling it).
+#[test]
+fn native_buffer_write_through_walk_aliases_the_buffer() {
+    let fixture = "tests/fixtures/valid/no_runtime/freestanding_buffer_write.lby";
+    // The interpreters REFUSE this program — loudly, never a wrong answer. Pin
+    // that, so the honest native-only boundary stays visible and intentional.
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = run_backend(fixture, backend);
+        assert!(
+            !output.status.success(),
+            "[{backend}] an addr_of store must be refused, not answered"
+        );
+        assert!(
+            stderr(&output).contains("L0459"),
+            "[{backend}] expected the L0459 addr_of-store refusal: {}",
+            stderr(&output)
+        );
+    }
+    let Some(exit) = native_exit_code(fixture, "lullaby_buffer_write.exe", &["--freestanding"])
+    else {
+        return;
+    };
+    assert_eq!(
+        exit, 105,
+        "the write-through walk must fill the buffer forward (15) and poke index 1 (90)"
     );
 }

@@ -272,14 +272,15 @@ pub(crate) fn lower_native_expr(
                 return Ok(());
             }
             // `len(a)` over a fat-pointer array parameter reads the descriptor's
-            // runtime length word (`[rbp - (ptr_slot + 8)]`).
+            // runtime length word — descriptor word 1, which in the ASCENDING
+            // layout is 8 bytes above word 0, i.e. at `[rbp - (ptr_slot - 8)]`.
             if name == "len"
                 && args.len() == 1
                 && let BytecodeExprKind::Variable(var) = &args[0].kind
                 && let Ok(local) = ctx.local(var)
                 && let NativeType::FatArray { .. } = &local.ty
             {
-                let len_slot = local.slot + 8;
+                let len_slot = local.slot - 8;
                 load_local(code, len_slot);
                 return Ok(());
             }
@@ -861,12 +862,13 @@ pub(crate) fn emit_native_call_args(
 }
 
 /// Build a fat-pointer array **descriptor** `[data_ptr, length]` in the two scratch
-/// words at `base_slot` (word 0) and `base_slot + 8` (word 1), for a fat-array call
-/// argument. In this increment the argument must be a bare variable bound to a
-/// **stack array local** (the common `let arr array<i64> = [..]; f(arr)` shape);
-/// anything else demotes the caller gracefully. The data pointer is the address of
-/// the array's element 0 (its highest stack word), so the callee reads the caller's
-/// storage in place with no array-body copy.
+/// words at `base_slot` (word 0) and `base_slot - 8` (word 1 — 8 bytes higher in
+/// the ASCENDING layout), for a fat-array call argument. In this increment the
+/// argument must be a bare variable bound to a **stack array local** (the common
+/// `let arr array<i64> = [..]; f(arr)` shape); anything else demotes the caller
+/// gracefully. The data pointer is the address of the array's element 0 (its
+/// LOWEST stack word), so the callee reads the caller's storage in place with no
+/// array-body copy, striding forward exactly as C would.
 pub(crate) fn emit_fat_array_descriptor(
     ctx: &mut NativeCtx,
     base_slot: i32,
@@ -882,12 +884,12 @@ pub(crate) fn emit_fat_array_descriptor(
     };
     let len = *len as i64;
     // Descriptor word 0: data pointer = address of the array's element 0 (its
-    // highest stack word, `[rbp - arr_slot]`).
+    // LOWEST stack word, `[rbp - arr_slot]`, since words ascend from word 0).
     emit_lea_rax_slot(code, local.slot); // rax = rbp - arr_slot
     store_local(code, base_slot); // descriptor word 0 = data_ptr
     // Descriptor word 1: runtime length (a compile-time constant for a stack array).
     emit_mov_rax_imm(code, len);
-    store_local(code, base_slot + 8); // descriptor word 1 = length
+    store_local(code, base_slot - 8); // descriptor word 1 = length
     Ok(())
 }
 
@@ -1229,13 +1231,14 @@ pub(crate) fn lower_aggregate_return(
     let base = ctx.alloc_scratch(ty.words());
     lower_aggregate_init(ctx, base, &ty, expr, code)?;
     // rax = hidden result pointer (the caller-allocated destination, addressing
-    // word 0). Aggregate words descend in memory, so word k is written at
-    // `[rax - 8*k]`, matching the destination's `[rbp - (slot + 8*k)]` layout.
+    // word 0 — the aggregate's LOWEST address). Aggregate words ASCEND in memory,
+    // so word k is written at `[rax + 8*k]`, matching the destination's
+    // `[rbp - (slot - 8*k)]` layout — the same convention C uses.
     emit_mov_rax_from_slot(code, sret_slot);
-    // Copy each word: rcx = [rbp - (base + 8k)]; [rax - 8k] = rcx.
+    // Copy each word: rcx = [rbp - (base - 8k)]; [rax + 8k] = rcx.
     for word in 0..ty.words() as i32 {
-        emit_mov_rcx_from_slot(code, base + word * 8);
-        emit_mov_rax_disp_from_rcx(code, -word * 8);
+        emit_mov_rcx_from_slot(code, base - word * 8);
+        emit_mov_rax_disp_from_rcx(code, word * 8);
     }
     ctx.scratch_next = saved_scratch;
     // Per the ABI, an aggregate return leaves the result pointer in rax.

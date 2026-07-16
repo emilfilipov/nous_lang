@@ -136,22 +136,22 @@ pub(crate) fn lower_native_function(
                 // for `reg < 4`, on the stack otherwise). Copy the aggregate words
                 // into the parameter's frame slots (value semantics: the callee owns
                 // an independent snapshot and never mutates the caller's copy). rax =
-                // source pointer (addresses word 0, the aggregate's highest stack
-                // address). Words descend in memory, so word k is at `[rax - 8*k]`,
-                // matching the caller's `[rbp - (base + 8*k)]` layout. A fat-pointer
-                // array descriptor copies exactly its two words (data pointer at
-                // word 0, runtime length at word 1); the pointer is the caller's
-                // storage, shared read-only.
+                // source pointer (addresses word 0, the aggregate's LOWEST stack
+                // address). Words ASCEND in memory, so word k is at `[rax + 8*k]`,
+                // matching the caller's `[rbp - (base - 8*k)]` layout — the same
+                // convention C uses. A fat-pointer array descriptor copies exactly
+                // its two words (data pointer at word 0, runtime length at word 1);
+                // the pointer is the caller's storage, shared read-only.
                 if on_stack {
                     emit_mov_rax_from_rbp_pos(&mut code, stack_disp);
                 } else {
                     code.extend_from_slice(ARG_TO_RAX[reg]);
                 }
                 for word in 0..local.ty.words() as i32 {
-                    // mov rcx, [rax - 8*word]
-                    emit_mov_rcx_from_rax_disp(&mut code, -word * 8);
-                    // mov [rbp - (slot + 8*word)], rcx
-                    emit_mov_slot_from_rcx(&mut code, local.slot + word * 8);
+                    // mov rcx, [rax + 8*word]
+                    emit_mov_rcx_from_rax_disp(&mut code, word * 8);
+                    // mov [rbp - (slot - 8*word)], rcx
+                    emit_mov_slot_from_rcx(&mut code, local.slot - word * 8);
                 }
             }
             NativeType::I64
@@ -979,10 +979,12 @@ pub(crate) fn lower_aggregate_init(
         lower_list_get(ctx, &args[0], &args[1], code)?; // rax = fresh heap-struct ptr
         code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax (heap ptr)
         for word in 0..fields.len() as i32 {
-            // rax = [rcx + 8*word] ; [rbp - (base + 8*word)] = rax.
+            // rax = [rcx + 8*word] ; [rbp - (base - 8*word)] = rax. The heap block
+            // already ascends; the stack destination now ascends too, so the two
+            // sides step in the same direction.
             code.extend_from_slice(&[0x48, 0x8B, 0x81]); // mov rax, [rcx + disp32]
             code.extend_from_slice(&(word * 8).to_le_bytes());
-            store_local(code, base_slot + word * 8);
+            store_local(code, base_slot - word * 8);
         }
         return Ok(());
     }
@@ -1003,7 +1005,8 @@ pub(crate) fn lower_aggregate_init(
             }
             let stride = elem.words() as i32;
             for (index, element) in elements.iter().enumerate() {
-                let word = base_slot + index as i32 * stride * 8;
+                // Element `index` ascends: 8*stride*index bytes above element 0.
+                let word = base_slot - index as i32 * stride * 8;
                 lower_value_into(ctx, word, elem, element, code)?;
             }
             Ok(())
@@ -1023,10 +1026,12 @@ pub(crate) fn lower_aggregate_init(
             if args.len() != fields.len() {
                 return Err(format!("constructor `{name}` has wrong field count"));
             }
+            // Fields ascend in declaration order (field k at `offset_of == +8*k`
+            // sits 8*k bytes ABOVE field 0), so the displacement DECREASES.
             let mut word = base_slot;
             for (arg, (_, field_ty)) in args.iter().zip(fields.iter()) {
                 lower_value_into(ctx, word, field_ty, arg, code)?;
-                word += field_ty.words() as i32 * 8;
+                word -= field_ty.words() as i32 * 8;
             }
             Ok(())
         }
@@ -1046,8 +1051,8 @@ pub(crate) fn lower_aggregate_init(
             }
             let src_slot = src.slot;
             for word in 0..ty.words() as i32 {
-                load_local(code, src_slot + word * 8);
-                store_local(code, base_slot + word * 8);
+                load_local(code, src_slot - word * 8);
+                store_local(code, base_slot - word * 8);
             }
             Ok(())
         }
@@ -1084,9 +1089,11 @@ pub(crate) fn lower_enum_construction(
     // Tag word: mov the discriminant into rax and store it at word 0.
     emit_mov_rax_imm(code, variant.tag);
     store_local(code, base_slot);
-    // Payload words follow at base_slot + 8, +16, ... in field order. A float
-    // payload word is materialized through xmm0; a scalar through rax.
-    let mut word = base_slot + 8;
+    // Payload words follow at ASCENDING addresses — 8, 16, ... bytes above the tag
+    // — i.e. at the decreasing displacements base_slot - 8, -16, ... in field
+    // order. A float payload word is materialized through xmm0; a scalar through
+    // rax.
+    let mut word = base_slot - 8;
     for (arg, field_ty) in args.iter().zip(variant.payload.iter()) {
         match field_ty {
             // An integer-cell scalar OR a `string` payload is a single flat word:
@@ -1116,7 +1123,7 @@ pub(crate) fn lower_enum_construction(
                 );
             }
         }
-        word += field_ty.words() as i32 * 8;
+        word -= field_ty.words() as i32 * 8;
     }
     Ok(())
 }

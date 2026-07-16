@@ -188,8 +188,9 @@ pub(crate) fn lower_native_match(
                 code.extend_from_slice(&[0, 0, 0, 0]);
 
                 // Bind the matched variant's payload words into the arm locals.
-                // Payload word k lives at base_slot + 8*(1 + prefix_words).
-                let mut payload_word = base_slot + 8;
+                // Payload words ASCEND above the tag, so payload word k lives at the
+                // decreasing displacement `base_slot - 8*(1 + prefix_words)`.
+                let mut payload_word = base_slot - 8;
                 for (binding, field_ty) in bindings.iter().zip(variant.payload.iter()) {
                     let dst = ctx.local_slot(binding)?;
                     match field_ty {
@@ -222,7 +223,9 @@ pub(crate) fn lower_native_match(
                             for word in 0..fields.len() as i32 {
                                 code.extend_from_slice(&[0x48, 0x8B, 0x81]); // mov rax, [rcx+disp32]
                                 code.extend_from_slice(&(word * 8).to_le_bytes());
-                                store_local(code, dst + word * 8);
+                                // The stack struct ascends like the heap block, so
+                                // `[ptr + 8*k]` -> `[rbp - (dst - 8*k)]`.
+                                store_local(code, dst - word * 8);
                             }
                         }
                         // A nested `List`/`Map` payload binds its (deep-copied)
@@ -238,7 +241,7 @@ pub(crate) fn lower_native_match(
                                 .to_string());
                         }
                     }
-                    payload_word += field_ty.words() as i32 * 8;
+                    payload_word -= field_ty.words() as i32 * 8;
                 }
 
                 lower_match_arm_body(ctx, &arm.body, is_value, code, loops)?;

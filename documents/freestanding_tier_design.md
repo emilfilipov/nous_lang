@@ -1119,7 +1119,9 @@ model bound soundness, and both refusals are precise `L0339` skips:
 | `ptr_read`/`ptr_write`/`volatile_*` over an integer/pointer pointee (1/2/4/8) | **compiles** (exact-width, sign/zero-extending) |
 | `ptr_offset` over an integer/pointer pointee; `ptr_cast`; `int_to_ptr`/`ptr_to_int` | **compiles** (scaled `lea`; no-ops) |
 | `ptr<T>` as a parameter / local / return | **compiles** (GPR scalar) |
-| `addr_of` of an **array element** or a **whole array** | **skips** — native aggregates descend in address (measured: `addr_of(pair.hi) − addr_of(pair.lo) == −8` where `offset_of` says `+8`), so the pointer would walk backwards, disagreeing with C, `offset_of`, *and* the interpreters |
+| `addr_of` of an **array element** (`a[0]`, `a[i]`) or a **whole array** (decay to `ptr<element>`) | **compiles** — native stack aggregates now ASCEND in address (measured: `addr_of(pair.hi) − addr_of(pair.lo) == +8`, agreeing with `offset_of`), so `ptr_offset(addr_of(buf[0]), 1)` walks FORWARD, agreeing with C, `offset_of`, *and* the interpreters. **This is the buffer-walk kernel idiom.** A runtime index keeps the ordinary unsigned bounds-check trap |
+| `addr_of` into a **fat-pointer (runtime-length) array parameter** | **skips** — the descriptor shares the *caller's* storage with no copy, sound only because the parameter is read-only; an address into it could be used to mutate the caller's array |
+| `addr_of` of an `array<i32>` element / decay | **skips** — the narrow-cell rule below: the cell is 8 bytes but `ptr_offset` strides by `size_of(i32) == 4`, so a walk would desynchronize |
 | `addr_of` of a narrower-than-8-byte scalar | **skips** — stored as a normalized 8-byte cell; a width-correct store would corrupt its upper half |
 | a `bool`/`char` pointee | **skips** — a raw load could break the cell's value invariant |
 | an `f64`/`f32` pointee | **skips** — the result would have to land in XMM, not `rax` |
@@ -1127,14 +1129,37 @@ model bound soundness, and both refusals are precise `L0339` skips:
 | `addr_of` of a closure-captured variable | **skips** — the capture lives in the env block, not a frame slot |
 | a `void`-returning function (e.g. `fn poke p ptr<T> v T`) | **skips** — a *pre-existing, raw-pointer-independent* native gap (a plain `fn bump n i64` skips identically); it blocks the natural kernel spelling and is the cheapest next win |
 
-The descending-frame layout is the one real gap this increment documents rather
-than closes: `offset_of`-based pointer arithmetic from an `addr_of(s.f)` pointer
-does not hold natively. Every shape where that would silently matter already
-refuses; laying native aggregates out in C order is the proper fix and is deferred.
+**The descending-frame gap this increment documented is now CLOSED.** Native stack
+aggregates lay their words out at ASCENDING (C-compatible) addresses: word `k` sits
+8·k bytes *higher* than word 0 (`[rbp - (slot - 8k)]`; `[ptr + 8k]` through a
+word-0 pointer), so `offset_of`-based pointer arithmetic from an `addr_of(s.f)`
+pointer now DOES hold natively — `ptr_offset(addr_of(pair.lo), 1)` reaches
+`pair.hi`, and `addr_of(pair.hi) - addr_of(pair.lo)` is `+8`, matching
+`offset_of`. The canonical description is
+[native_backend_contract.md](native_backend_contract.md) "Aggregate word order
+(ASCENDING, C-compatible)"; the frame itself still grows downward per the Win64
+ABI. Because the layout is now C-shaped, the array-element / whole-array `addr_of`
+refusals the descending layout forced are **lifted**, which is what unblocks buffer
+walking.
 
-**Verification.** `crates/lullaby_ir/src/native_object_rawptr_tests.rs` (17 unit
+One honest boundary remains, and it is an *interpreter-model* boundary rather than
+a layout one: walking ACROSS struct fields (`ptr_offset(addr_of(s.lo), 1)`, or the
+equivalent hand-rolled `int_to_ptr(ptr_to_int(addr_of(s.a)) + offset_of(S, "b"))`)
+is native-only. The interpreters model each `addr_of` place as a single-cell
+snapshot region, so an inter-field walk is a program they do not define — native is
+free to define it, and does. Where the interpreters DO define a program (a
+read/walk within one array), native matches all three bit-for-bit. Retiring that
+asymmetry means making the interpreters' `addr_of` place-backed — separate work,
+tracked with the `L0459` store refusal in §2.2.
+
+**Verification.** `crates/lullaby_ir/src/native_object_rawptr_tests.rs` (20 unit
 tests over the emitted bytes — a new file, since `native_program_tests.rs` is
-already past the test-file size cap). `crates/lullaby_cli/tests/cli/suite15.rs`
+already past the test-file size cap), including `direction_flip_struct_fields_ascend`
+(pins `addr_of(s.hi) - addr_of(s.lo) == +8` on the emitted `lea` displacements),
+`addr_of_array_element_lowers_as_a_lea`,
+`addr_of_whole_array_decays_to_element_zero`,
+`addr_of_runtime_array_element_bounds_checks_and_computes_an_address`, and
+`addr_of_into_fat_array_parameter_skips_cleanly`. `crates/lullaby_cli/tests/cli/suite15.rs`
 compiles real `.exe`s through the direct-PE writer (no linker, no toolchain gate)
 and asserts exit codes: **5** (the headline aliasing proof), **145** (the promotion
 hazard), **71** (volatile non-elision), **47** (the size law across `i64`/`i32`/
@@ -1144,7 +1169,23 @@ passing a `ptr<i64>` in and returning one out), and **44** on all four tiers
 (native == AST == IR == bytecode for the read/walk shapes the interpreters define).
 Fixtures: `tests/fixtures/native_only/raw_ptr_*.lby` and
 `tests/fixtures/valid/no_runtime/freestanding_native_rawptr.lby` +
-`freestanding_addr_of_reads.lby`. Differential fuzz:
+`freestanding_addr_of_reads.lby`.
+
+**Buffer walking (the ascending-layout payoff).**
+`tests/fixtures/valid/no_runtime/freestanding_buffer_walk.lby` walks a buffer with
+`addr_of(buf[0])` + `ptr_offset`, decays a whole array, walks from a runtime index,
+and checks the size law (including a negative walk back): **124** on native and on
+all three interpreters (`native_buffer_walk_matches_the_interpreters`,
+`native_freestanding_buffer_walk_runs`). `freestanding_addr_of.lby` — previously
+the fixture pinning the *refusal* — now compiles and returns **127** on all four
+tiers (`addr_of_addressing_surface_matches_the_interpreters`): an array walked with
+a runtime `ptr_offset(base, i)` in a `while` loop, the size law, a
+`ptr<i64>`→`ptr<byte>`→`ptr<i64>` cast round-trip, and a struct-field read.
+`freestanding_buffer_write.lby` is the write-through walk: **105** natively, and
+asserted to be *refused* with `L0459` on all three interpreters — native-only by
+design, so no parity is claimed where the interpreters do not define the program.
+
+Differential fuzz:
 `fuzz_raw_pointer_reads_agree_across_interpreters` (150 programs) and
 `fuzz_raw_pointer_reads_native_matches_interpreter` (100 programs) in
 `crates/lullaby_cli/tests/cli/fuzz.rs` require native to either match the
