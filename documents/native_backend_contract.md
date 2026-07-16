@@ -17,6 +17,7 @@ Implemented now:
 - Checked-in object-emission snapshots under `crates/lullaby_ir/tests/snapshots/return_42.coff.json`, `crates/lullaby_ir/tests/snapshots/locals_add.coff.json`, and `crates/lullaby_ir/tests/snapshots/assignments.coff.json`.
 - An extended multi-function native program emitter (`emit_native_program`) for the **i64-scalar subset** with control flow, calls, division, an entry stub, `ExitProcess` import, and COFF relocations, plus a best-effort `rust-lld` link-to-`.exe` behind the `lullaby native` command. See "Extended Native Program Emission And Link-To-Executable" below.
 - **Stack-allocated scalar aggregates** on top of the i64-scalar subset: all-i64 (optionally nested) structs and fixed-length `i64` arrays as function locals, laid out contiguously in the stack frame. See "Stack-Allocated Scalar Structs And Fixed Arrays" below.
+- **The freestanding raw-pointer surface.** `addr_of` / `ptr_read` / `ptr_write` / `volatile_load` / `volatile_store` / `ptr_offset` / `ptr_cast` / `int_to_ptr` / `ptr_to_int` all have native x86-64 codegen, so a kernel-shaped function is native-eligible instead of skipping. `addr_of` is a real `lea`, so `ptr_write(addr_of(x), 5)` genuinely mutates `x` — the aliasing semantics the interpreters cannot model (they refuse the store with `L0459`). See "Raw-Pointer Surface (Freestanding Tier)" below.
 - **First heap step: string constants + a bump heap.** String literals used by `len("...")` are emitted into a read-only `.rdata` section, referenced by REL32 relocations, copied into a `.bss` bump-allocated heap region at runtime, and scanned for their byte length so `main` can derive an i64 from string data. See "First Heap Step: String Constants And Bump Allocator" below.
 - **C-ABI FFI (calling C).** A body-less `extern fn NAME params -> Ret` declares an imported C function; a call lowers to a `call` of an undefined external symbol and links against the C runtime (`ucrt.lib`). Each argument is routed to the register selected by its **position and type** (integer/pointer → `rcx`/`rdx`/`r8`/`r9`; `f32`/`f64` → `xmm0..3`); the return is read from `rax` (integer/pointer, narrow-normalized) or `xmm0` (float). Marshalling now spans **beyond scalars**: a raw pointer `ptr<T>` (a C `T*`, real bump-heap/`malloc` address), the `cstr` parameter marker (a Lullaby `string` → NUL-terminated `const char*` via `__lullaby_to_cstr`), a `void` return, **more than four arguments** (the 5th+ spill onto the stack above the shadow space), and **callbacks** — a Lullaby top-level function passed to a C function as a C-ABI function pointer (a marshallable-signature Lullaby function already uses the Win64 C convention, so its address is taken directly with no trampoline). Struct-by-value parameters, a callback whose own signature is not C-marshallable, and a callback used as an extern *return* are the deferred FFI tail, rejected at check time with `L0424`. Calling an extern on an interpreter is `L0423`. See "C-ABI FFI (calling C)", "Pointer, `cstr`, and >4-argument marshalling", and "FFI callbacks (function pointer to C)" below.
 - **C-ABI FFI (exposing Lullaby to C).** An `export fn NAME params -> Ret` is a normal (bodied) Lullaby function additionally exposed under its plain C name as an externally visible, defined `.text` symbol so C (or another object) can call **into** Lullaby. An export must have a C-marshallable scalar signature from the delivered set `i64`/`f64`/`f32` (`L0424` otherwise); a float parameter arrives in its positional SSE register and a float return leaves in `xmm0`. An export-only program (no `main`) emits a library object with no entry stub. See "C-ABI FFI (exposing Lullaby to C)" below.
@@ -1145,6 +1146,189 @@ image produced) and pin every deferred shape (string capture, higher-order,
 returned, >3 params). A closure-using function is excluded from register promotion
 (a captured scalar must stay addressable in its frame slot).
 
+## Raw-Pointer Surface (Freestanding Tier) (DELIVERED, direct-PE run verified)
+
+The whole `unsafe` raw-pointer surface has native x86-64 codegen, so a function
+using it is **native-eligible** instead of skipping. This is the kernel long-pole:
+before this increment every raw-pointer builtin made its function native-ineligible
+(a clean `L0339` skip), so kernel-shaped code only ran on a tree-walking
+interpreter. Implementation: `crates/lullaby_ir/src/native_object_rawptr.rs`
+(lowering + the address-taken gate), dispatched from the `Call` arm of
+`lower_native_expr` (`native_object_expr.rs`) ahead of the unknown-function gate.
+
+### Codegen per builtin
+
+| Builtin | Lowering |
+| :-- | :-- |
+| `addr_of(place) -> ptr<T>` | `lea rax, [rbp - slot]` — the **real** address of the frame word |
+| `ptr_read(p) -> T` / `volatile_load(p) -> T` | `mov rcx, rax` then a width- and signedness-correct load: `mov rax,[rcx]` (8), `movsxd rax,dword[rcx]` / `mov eax,[rcx]` (4 signed/unsigned), `movsx`/`movzx rax,word[rcx]` (2), `movsx`/`movzx rax,byte[rcx]` (1) — always renormalizing the 8-byte cell |
+| `ptr_write(p, v)` / `volatile_store(p, v)` | address spilled, value evaluated, `pop rcx`, then an exact-width store: `mov [rcx],rax` / `mov [rcx],eax` / `mov [rcx],ax` / `mov [rcx],al` |
+| `ptr_offset(p, n isize) -> ptr<T>` | one scaled `lea rax, [rcx + rax*size_of(T)]` (SIB scale 1/2/4/8); `n` is signed, so a negative `n` walks back |
+| `ptr_cast(p) -> ptr<U>` | no-op (pointee reinterpret only) |
+| `int_to_ptr(n) -> ptr<T>` / `ptr_to_int(p) -> isize` | no-op (an address and an integer are the same GPR word) |
+
+`ptr_cast`/`int_to_ptr`/`ptr_to_int` are byte-for-byte free: a chain of them emits
+exactly the bytes of its operand (pinned by `pointer_identity_ops_emit_no_extra_work`).
+
+A `ptr<T>` was already a pointer-sized scalar in the value model (`resolve_native_type`
+maps it to `NativeType::I64`), so **no eligibility change was needed** for `ptr<T>`
+params/locals/returns — they pass and return in a GPR like any `i64`. This increment
+verifies that end to end (`pointer_values_cross_the_call_abi`, and the
+`freestanding_native_rawptr.lby` fixture passing a `ptr<i64>` in and returning one out).
+
+### `addr_of` produces a REAL address — the semantics only native has
+
+`ptr_write(addr_of(x), 5)` genuinely makes `x == 5`; the fixture
+`tests/fixtures/native_only/raw_ptr_addr_of_alias.lby` compiles via the default
+direct-PE path (no linker) and **exits 5**. The interpreters cannot model this —
+their `addr_of` snapshots the place by value — so they refuse the store at run time
+with `L0459` rather than return the wrong answer (`1`). That asymmetry is
+intentional and honest: a loud refusal on the tiers that cannot alias, real
+aliasing on the tier that can. Retiring `L0459` (making the interpreter model
+place-backed) is separate work and is **not** part of this increment.
+
+### Default-deny scope — what skips, and why
+
+Two properties of the existing native value model bound what can be lowered
+soundly. Both refusals are precise `L0339` skips naming the reason.
+
+1. **Every Lullaby scalar is a normalized 8-byte cell.** An `i32` local occupies a
+   full sign-extended word, not 4 bytes. A width-correct 4-byte store through its
+   address would leave the upper half stale and corrupt the cell invariant. So
+   `addr_of` is lowered **only for an 8-byte scalar** (`i64`/`u64`/`isize`/`usize`/
+   `ptr<T>`), where the C width and the cell width coincide.
+2. **Native aggregates are laid out at DESCENDING addresses.** Word `k` of a
+   struct/array lives at `[rbp - (slot + 8k)]`, and through an aggregate pointer at
+   `[ptr - 8k]`. Measured, not assumed: for `struct Pair{lo i64, hi i64}`,
+   `ptr_to_int(addr_of(pair.hi)) - ptr_to_int(addr_of(pair.lo))` is **−8**, while
+   `offset_of(Pair, "hi")` is `+8`. So `ptr_offset(addr_of(a[0]), 1)` would step
+   *backwards* through the array — disagreeing with C, with `size_of`/`offset_of`,
+   and with the interpreters' ascending snapshot model, on a program the
+   interpreters *define*. `addr_of` of an **array element** or a **whole array**
+   (the `ptr<element>` decay) is therefore refused.
+
+`addr_of` of a **struct field** (`s.f`, `s.a.b`) with an 8-byte field **is**
+lowered: its address is genuine and a read/write through it aliases the field
+exactly. Only a *walk across fields* would meet the descending-layout mismatch, and
+that is undefined on the interpreters too (they snapshot a field as a single-cell
+region), so no program defined on both tiers can diverge.
+
+> **Known gap (documented, not silently wrong):** because the native frame is
+> descending, `offset_of`-based pointer arithmetic from an `addr_of(s.f)` pointer
+> does not hold natively. Every shape where that would matter (`addr_of` of an
+> array element / whole array) already refuses; a hand-rolled
+> `int_to_ptr(ptr_to_int(addr_of(s.a)) + offset_of(S, "b"))` is unchecked `unsafe`
+> arithmetic and is the author's responsibility, exactly as in C. Making the native
+> frame lay aggregates out in C order is the real fix and is deferred.
+
+Also skipped cleanly: a `bool`/`char` pointee (a raw load could yield a byte
+outside `0..=1` or a non-scalar-value code point, breaking a cell invariant), an
+`f64`/`f32` pointee (`ptr_read`'s result would have to land in an XMM register,
+which the integer-`rax` path cannot deliver), a struct/array pointee for
+`ptr_offset` (its C stride is not guessed), and `addr_of` of a closure-captured
+variable (the capture lives in the closure's env block, not an addressable frame
+slot). An unsized pointee is already rejected at check time with `L0431`.
+
+A pointer from `int_to_ptr` (MMIO, a linker-provided address, an FFI pointer)
+addresses **real, C-laid-out memory**, so `ptr_read`/`ptr_write`/`volatile_*`
+through it use the pointee's true C width. That is the kernel-facing path and it is
+exact.
+
+### `volatile_load` / `volatile_store` are genuinely non-eliding
+
+Every builtin here is an `IrExprKind::Call`, and every pass that could touch it
+treats a `Call` as opaque. No pass needed changing — the guarantee was **verified
+and pinned**, not retrofitted:
+
+* The `native` command runs **only** `OptimizationConfig::inlining()`. The inliner
+  (a) only inlines callees whose body is a pure *leaf* expression
+  (`Inliner::is_pure_leaf` rejects any `Call`), and (b) only substitutes arguments
+  that are a bare variable or literal (`is_simple_arg`), so a `volatile_load(p)`
+  argument is never duplicated into two evaluations.
+* The other passes are not in the native pipeline and are safe regardless: CSE's
+  `pure_expr_signature` returns `None` for a `Call`; LICM excludes `Call` from
+  hoisting; copy propagation only aliases `let x = <Variable>` and treats a `Call`
+  as a barrier (`expr_requires_optimizer_barrier`); DCE only drops statements after
+  an unconditional terminator.
+* The native backend's own peepholes (immediate folding, `*`/`/` strength
+  reduction, the SIMD/affine reduction detectors in `native_object_reduce.rs`, and
+  register promotion) match `Integer`/`Variable`/`Binary`/`Index` shapes only —
+  never a `Call`.
+* `native_object_rawptr.rs` caches nothing: each call site emits its own `mov` at
+  its own program point, in order.
+
+Pinned three ways: `repeated_volatile_load_emits_one_load_each` (exactly one load
+per call, no CSE), `volatile_load_in_loop_is_not_hoisted` (per-iteration re-load,
+loop intact), `volatile_reduction_is_not_closed_formed` (a reduction-shaped
+volatile loop is not closed-formed away), and end to end by
+`native_volatile_accesses_are_not_elided`, whose fixture is built so that *any*
+elision changes the exit code (71).
+
+### The register-promotion / address-taken hazard
+
+A promoted local lives in the callee-saved `rbx`/`rsi` and has **no address**, so
+`lea` of its never-read frame slot would make `ptr_write(addr_of(x), 5)` silently
+not update `x` — a miscompile, not a demotion. This is the single biggest risk in
+this surface.
+
+`plan_register_promotion` (`native_object_regalloc.rs`) now **checks
+`body_takes_address` first and refuses to promote anything in a function containing
+an `addr_of`**, so an address-taken local always lives in its frame slot. The gate
+is deliberately whole-function and coarse: promotion only fires for purely-scalar
+functions, so it costs nothing measurable and cannot be defeated by an aliasing
+pattern the analysis failed to see through. `lower_addr_of` additionally re-checks
+`promoted_reg(slot)` and refuses rather than emitting a `lea` of a dead slot, so a
+future change to the promotion gate degrades to a clean skip instead of a silent
+miscompile.
+
+Today a raw-pointer chain *also* fails `expr_reg_promotable` (an `addr_of` call
+types as `ptr<T>`, not `i64`), but that is **incidental** and correctness does not
+depend on it — hence the explicit gate. Pinned structurally by
+`addr_of_defeats_register_promotion` and `address_taken_scan_sees_nested_addr_of`
+(the control body *does* promote, so the test proves something) and behaviourally
+by `native_addr_of_defeats_register_promotion` (exit 145; 45 would be the
+miscompile).
+
+### Arena / RC / escape-analysis interaction: none, by construction
+
+Raw pointers are unchecked and untracked by design. The `addr_of` gate admits only
+an 8-byte **integer/pointer scalar** place, so a `string`, `list`, `map`, `rc`
+handle, or any heap-carrying aggregate can never have its address taken natively —
+the arena/heap-escape analysis in `native_object_eligibility.rs`
+(`instruction_heap_escapes` / `type_is_heap`) never sees an `addr_of` of an
+arena- or RC-managed value, and a `ptr<T>` is a plain `NativeType::I64` word that
+carries no heap classification. There is nothing for the escape analysis to get
+wrong, so no conservative exclusion was needed. Should `addr_of` ever be widened to
+heap-carrying places, that analysis must be revisited first.
+
+### Verification
+
+Unit tests: `crates/lullaby_ir/src/native_object_rawptr_tests.rs` (17 tests — a new
+file rather than growing the already-oversized `native_program_tests.rs`) pin the
+emitted instruction selection per pointee width, the identity ops' zero cost, the
+`ptr_offset` SIB scales, the volatile non-elision byte counts, the promotion gate,
+and every default-deny skip.
+
+End-to-end: `crates/lullaby_cli/tests/cli/suite15.rs` compiles real `.exe`s via the
+direct-PE writer (no linker, no toolchain gate) and asserts exit codes —
+`native_addr_of_write_through_mutates_the_local` (5, the headline),
+`native_addr_of_defeats_register_promotion` (145),
+`native_volatile_accesses_are_not_elided` (71),
+`native_ptr_offset_obeys_the_size_law` (47, covering `i64`/`i32`/`i16`/`byte`/
+`ptr<i64>` strides and a negative walk),
+`native_addr_of_struct_field_writes_through` (42),
+`native_freestanding_module_uses_the_raw_pointer_surface` (42, a `no-runtime`
+module under `--freestanding`), and `native_addr_of_reads_match_the_interpreters`
+(44 on all four tiers).
+
+Differential fuzz: `fuzz_raw_pointer_reads_agree_across_interpreters` (150
+programs) and `fuzz_raw_pointer_reads_native_matches_interpreter` (100 programs)
+in `crates/lullaby_cli/tests/cli/fuzz.rs` generate random `addr_of` read / `ptr_cast`
+chain / size-law / round-trip programs and require native to either match the
+interpreter's exit code exactly or skip cleanly with `L0339` and no exe. The store
+half has no interpreter oracle (the interpreters refuse it with `L0459`), so it is
+covered by the hand-computed fixtures above.
+
 ## Deferred Native Work
 
-Deferred beyond the current increment: more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+Deferred beyond the current increment: within the raw-pointer surface — `addr_of` of an array element or a whole array (the native frame lays aggregates out at DESCENDING addresses; laying them out in C order is the real fix), `addr_of` of a narrower-than-8-byte scalar (normalized 8-byte cells), a `bool`/`char`/`f64`/`f32` pointee, a struct/array pointee for `ptr_offset`, and `addr_of` of a closure-captured variable — each a precise `L0339` skip today; a `void`-returning function of any kind (a pre-existing, raw-pointer-independent gap that blocks the natural `fn poke p ptr<T> v T` kernel spelling); more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.

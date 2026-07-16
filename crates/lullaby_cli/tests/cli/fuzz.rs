@@ -1696,3 +1696,194 @@ fn fuzz_generic_heap_string_native_matches_interpreter_when_linkable() {
         }
     }
 }
+
+// -- Raw-pointer surface differential fuzz ------------------------------------
+//
+// The freestanding raw-pointer surface has native codegen (see
+// `crates/lullaby_ir/src/native_object_rawptr.rs`). Its READ half — `addr_of` of
+// a scalar local / struct field, `ptr_read`, `ptr_cast` chains, `ptr_offset`'s
+// size law, and `ptr_to_int`/`int_to_ptr` round-trips — runs on every tier, so it
+// has a real differential oracle: native must agree with the interpreters exactly.
+//
+// The STORE half (`ptr_write`/`volatile_store` through an `addr_of` pointer) has
+// no interpreter oracle: the interpreters refuse it with a runtime `L0459`
+// because their by-value snapshot model cannot alias. It is covered instead by
+// the fixed, hand-computed fixtures in `suite15.rs`, whose expected exit codes
+// follow from the source by construction.
+
+/// Generate a program that reads a handful of `i64` locals and struct fields
+/// through `addr_of` pointers, mixing in `ptr_cast` chains, size-law terms, and
+/// integer round-trips. Every construct is one the interpreters model, so the
+/// result is a valid cross-tier oracle.
+fn gen_raw_pointer_read_program(seed: u64) -> String {
+    let mut rng = Rng(seed | 1);
+    let mut src = String::new();
+    src.push_str("struct Cell\n    lo i64\n    hi i64\n\n");
+    src.push_str("fn main -> i64\n");
+
+    // A few scalar locals plus one struct, all with small values so the summed
+    // result stays far from overflow.
+    let locals = 2 + rng.below(3) as usize; // 2..=4
+    for i in 0..locals {
+        src.push_str(&format!("    let v{i} i64 = {}\n", rng.range(-50, 50)));
+    }
+    src.push_str(&format!(
+        "    let cell Cell = Cell({}, {})\n",
+        rng.range(-50, 50),
+        rng.range(-50, 50)
+    ));
+    src.push_str("    let acc i64 = 0\n");
+    src.push_str("    unsafe\n");
+
+    let terms = 3 + rng.below(5) as usize; // 3..=7
+    for t in 0..terms {
+        match rng.below(5) {
+            // A plain scalar read through addr_of.
+            0 => {
+                let i = rng.below(locals as u64);
+                src.push_str(&format!("        let p{t} ptr<i64> = addr_of(v{i})\n"));
+                src.push_str(&format!("        acc = acc + ptr_read(p{t})\n"));
+            }
+            // A read through a ptr_cast round-trip (a machine-level no-op).
+            1 => {
+                let i = rng.below(locals as u64);
+                src.push_str(&format!("        let a{t} ptr<i64> = addr_of(v{i})\n"));
+                src.push_str(&format!("        let b{t} ptr<byte> = ptr_cast(a{t})\n"));
+                src.push_str(&format!("        let c{t} ptr<i64> = ptr_cast(b{t})\n"));
+                src.push_str(&format!("        acc = acc + ptr_read(c{t})\n"));
+            }
+            // A struct-field read through addr_of.
+            2 => {
+                let field = if rng.chance(2) { "lo" } else { "hi" };
+                src.push_str(&format!(
+                    "        let f{t} ptr<i64> = addr_of(cell.{field})\n"
+                ));
+                src.push_str(&format!("        acc = acc + ptr_read(f{t})\n"));
+            }
+            // The size law: (p + n) - p == n * size_of(i64) == n * 8.
+            3 => {
+                let i = rng.below(locals as u64);
+                let n = rng.range(-4, 4);
+                let n_src = if n < 0 {
+                    format!("(0 - {})", -n)
+                } else {
+                    n.to_string()
+                };
+                src.push_str(&format!("        let s{t} ptr<i64> = addr_of(v{i})\n"));
+                src.push_str(&format!(
+                    "        acc = acc + (ptr_to_int(ptr_offset(s{t}, {n_src})) - ptr_to_int(s{t}))\n"
+                ));
+            }
+            // A ptr_to_int / int_to_ptr round-trip, then a read back.
+            _ => {
+                let i = rng.below(locals as u64);
+                src.push_str(&format!("        let r{t} ptr<i64> = addr_of(v{i})\n"));
+                src.push_str(&format!("        let n{t} i64 = ptr_to_int(r{t})\n"));
+                src.push_str(&format!("        let q{t} ptr<i64> = int_to_ptr(n{t})\n"));
+                src.push_str(&format!("        acc = acc + ptr_read(q{t})\n"));
+            }
+        }
+    }
+    src.push_str("    acc\n");
+    src
+}
+
+/// Every generated raw-pointer read program must agree across the three
+/// interpreters (the model is self-consistent before native is involved).
+#[test]
+fn fuzz_raw_pointer_reads_agree_across_interpreters() {
+    const PROGRAMS: u64 = 150;
+    let base_seed = 0x51C7_9E20_B3A4_16D9u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_raw_pointer_read_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on raw-pointer-read fuzz #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+/// The differential oracle for the raw-pointer READ surface: each generated
+/// program must EITHER compile natively and exit with exactly the interpreter's
+/// value, OR skip cleanly (no exe, an `L0339` diagnostic). The only failure is a
+/// produced exe whose exit code diverges — a real miscompile.
+///
+/// Uses the direct-PE writer (no linker needed), so there is no toolchain gate —
+/// only a Windows host to execute the image on.
+#[test]
+fn fuzz_raw_pointer_reads_native_matches_interpreter() {
+    if !cfg!(windows) {
+        eprintln!("not a Windows host; skipping the raw-pointer native differential fuzz");
+        return;
+    }
+    const PROGRAMS: u64 = 100;
+    let base_seed = 0x2E64_A11B_7F03_C58Du64;
+    let dir = std::env::temp_dir().join("lullaby_fuzz_native_rawptr");
+    let _ = std::fs::create_dir_all(&dir);
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_raw_pointer_read_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on native raw-pointer fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => panic!("generator produced {other:?} on seed {seed:#x}:\n{source}"),
+        };
+
+        let src_path = dir.join(format!("rawptr_{i}.lby"));
+        let exe_path = dir.join(format!("rawptr_{i}.exe"));
+        std::fs::write(&src_path, &source).expect("write fuzz source");
+        let _ = std::fs::remove_file(&exe_path);
+
+        let emit = lullaby()
+            .args([
+                "native",
+                "-o",
+                exe_path.to_str().expect("exe path"),
+                src_path.to_str().expect("src path"),
+            ])
+            .output()
+            .expect("run native");
+        if !emit.status.success() {
+            // A clean skip is an acceptable outcome (default-deny); it must carry
+            // L0339 and must NOT have produced an executable.
+            let errors = stderr(&emit);
+            assert!(
+                errors.contains("L0339"),
+                "a native raw-pointer failure must be the clean L0339 skip, not a hard error \
+                 (#{i}, seed {seed:#x}):\n{source}\n{errors}"
+            );
+            assert!(
+                !exe_path.is_file(),
+                "a skipped program must not leave an exe (#{i}, seed {seed:#x})"
+            );
+            continue;
+        }
+
+        assert!(exe_path.is_file(), "expected a direct-PE exe for #{i}");
+        let run = std::process::Command::new(&exe_path)
+            .output()
+            .expect("run native exe");
+        let exit = run.status.code().expect("native exit code");
+        // The exe reports `main` through the Windows process exit code, whose
+        // full 32-bit value round-trips, so the exit code equals `expected as i32`
+        // (the same convention as the other native differential fuzzers above).
+        assert_eq!(
+            exit, expected as i32,
+            "native/interpreter divergence on raw-pointer fuzz #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
+    }
+}

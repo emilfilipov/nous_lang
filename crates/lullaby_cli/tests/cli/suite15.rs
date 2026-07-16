@@ -445,11 +445,15 @@ fn ptr_write_through_addr_of_is_refused_at_runtime() {
     }
 }
 
-/// The whole raw-pointer surface is interpreter-only today: no raw-pointer builtin
-/// has native codegen, so a function using `addr_of`/`ptr_offset`/`ptr_cast` is
-/// native-ineligible and the native command *cleanly skips* it via the existing
-/// `L0339` gate — a clean diagnostic naming the skipped function, never a
-/// produced-but-wrong executable. Pinned here rather than left to prose.
+/// The raw-pointer surface HAS native codegen (see the stage-3 tests at the end
+/// of this file), but `addr_of` of an **array element** is deliberately outside
+/// it: the native frame lays an aggregate's words out at DESCENDING addresses, so
+/// a pointer into an array would walk backwards under `ptr_offset` — disagreeing
+/// with C, with `size_of`/`offset_of`, and with the interpreters' ascending
+/// snapshot model, on a program the interpreters define. This fixture walks
+/// `addr_of(a[0])`, so the native command *cleanly skips* it via the `L0339` gate
+/// — a diagnostic naming the skipped function, never a produced-but-wrong
+/// executable. Pinned here rather than left to prose.
 #[test]
 fn addr_of_cleanly_skips_native() {
     let fixture = workspace_root().join("tests/fixtures/valid/no_runtime/freestanding_addr_of.lby");
@@ -494,5 +498,205 @@ fn addr_of_cleanly_skips_wasm() {
         stderr(&output).contains("L0338"),
         "expected the WASM no-eligible-function skip diagnostic: {}",
         stderr(&output)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Freestanding stage 3 — NATIVE raw-pointer codegen.
+//
+// The whole raw-pointer surface now has native x86-64 codegen, so a function
+// using it is native-ELIGIBLE instead of skipping. These tests compile real
+// `.exe`s (the direct-PE writer needs no linker) and check their exit codes.
+//
+// The headline: `ptr_write(addr_of(x), 5)` genuinely mutates `x` on native,
+// which the interpreters cannot model — they refuse the store with a runtime
+// `L0459` (see `ptr_write_through_addr_of_is_refused_at_runtime` above). That
+// asymmetry is intentional and honest: a loud refusal on the tiers that cannot
+// alias, real aliasing on the tier that can. Retiring `L0459` (making the
+// interpreter model place-backed) is separate, parallel work.
+// ---------------------------------------------------------------------------
+
+/// Compile `fixture` to a native `.exe` at `out_name` and return its exit code.
+/// The direct-PE writer produces a runnable image with no external linker and no
+/// CRT, so this needs no toolchain gate — only a Windows host to execute on.
+/// Returns `None` (with a printed note) when the host cannot run a PE image.
+fn native_exit_code(fixture: &str, out_name: &str, extra_args: &[&str]) -> Option<i32> {
+    let path = workspace_root().join(fixture);
+    let out = std::env::temp_dir().join(out_name);
+    let _ = std::fs::remove_file(&out);
+
+    let mut args: Vec<&str> = vec!["native", "--verbose", "-o"];
+    let out_str = out.to_str().expect("out path").to_string();
+    args.push(&out_str);
+    args.extend_from_slice(extra_args);
+    let fixture_str = path.to_str().expect("fixture path").to_string();
+    args.push(&fixture_str);
+
+    let emit = lullaby().args(&args).output().expect("run native");
+    assert!(
+        emit.status.success(),
+        "{fixture} must compile natively (no L0339 skip): {}",
+        stderr(&emit)
+    );
+    assert!(
+        stdout(&emit).contains("compiled main"),
+        "{fixture}: `main` must be native-eligible, not skipped: {}{}",
+        stdout(&emit),
+        stderr(&emit)
+    );
+
+    if !cfg!(windows) {
+        eprintln!("not a Windows host; skipping the run of {out_name}");
+        return None;
+    }
+    assert!(
+        out.is_file(),
+        "expected a direct-PE exe at {}",
+        out.display()
+    );
+    let run = std::process::Command::new(&out)
+        .output()
+        .expect("run native exe");
+    Some(run.status.code().expect("native exit code"))
+}
+
+/// THE headline proof: native `addr_of` produces a REAL address, so a
+/// `ptr_write` through it genuinely mutates the local. `x` starts at 1 and the
+/// process must exit 5.
+///
+/// This is precisely the semantics the interpreters cannot model — they refuse
+/// this exact program with `L0459` rather than return 1. Native is the tier that
+/// aliases correctly.
+#[test]
+fn native_addr_of_write_through_mutates_the_local() {
+    let Some(exit) = native_exit_code(
+        "tests/fixtures/native_only/raw_ptr_addr_of_alias.lby",
+        "lullaby_rawptr_alias.exe",
+        &[],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 5,
+        "ptr_write(addr_of(x), 5) must genuinely mutate `x` on native (1 would mean the \
+         store did not alias)"
+    );
+}
+
+/// The register-promotion / address-taken hazard, proven behaviourally. `acc` is
+/// an otherwise-promotable hot loop accumulator whose address is taken and
+/// written through. Exit 145 means the store landed; 45 would mean `acc` was
+/// promoted into `rbx`/`rsi` and the `lea`'d frame slot was dead — a silent
+/// miscompile.
+#[test]
+fn native_addr_of_defeats_register_promotion() {
+    let Some(exit) = native_exit_code(
+        "tests/fixtures/native_only/raw_ptr_promotion_hazard.lby",
+        "lullaby_rawptr_promotion.exe",
+        &[],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 145,
+        "an address-taken local must live in its frame slot; 45 would mean the promoted-local \
+         miscompile (the store through addr_of was lost)"
+    );
+}
+
+/// `volatile_load`/`volatile_store` are genuinely non-eliding. The fixture is
+/// built so that any folding, hoisting, CSE, or removal changes the answer: a
+/// CSE'd second read or a hoisted loop read gives far less than 71.
+#[test]
+fn native_volatile_accesses_are_not_elided() {
+    let Some(exit) = native_exit_code(
+        "tests/fixtures/native_only/raw_ptr_volatile_no_elision.lby",
+        "lullaby_rawptr_volatile.exe",
+        &[],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 71,
+        "every volatile access must be a real machine load/store: 1 + 2 + (2+12+22+32) = 71"
+    );
+}
+
+/// The pointer size law `ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p) ==
+/// size_of(T)` holds natively for several `T`, and a negative `n` walks back.
+#[test]
+fn native_ptr_offset_obeys_the_size_law() {
+    let Some(exit) = native_exit_code(
+        "tests/fixtures/native_only/raw_ptr_size_law.lby",
+        "lullaby_rawptr_sizelaw.exe",
+        &[],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 47,
+        "size law: 8 (i64) + 4 (i32) + 2 (i16) + 1 (byte) + 8 (ptr<i64>) + 24 (a -3 walk) = 47"
+    );
+}
+
+/// `addr_of(s.f)` write-through and a `ptr_cast` round-trip both land in the
+/// struct itself: hi = 33, lo = 7 + 2 = 9 -> 42.
+#[test]
+fn native_addr_of_struct_field_writes_through() {
+    let Some(exit) = native_exit_code(
+        "tests/fixtures/native_only/raw_ptr_struct_field_write.lby",
+        "lullaby_rawptr_field.exe",
+        &[],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 42,
+        "addr_of(s.f) stores must land in the struct: 33 + 9"
+    );
+}
+
+/// A `no-runtime` module using the raw-pointer surface compiles under
+/// `lullaby native --freestanding` (no CRT linked) and runs. `ptr<T>` values
+/// cross the call ABI in a GPR both as a parameter and as a return value.
+#[test]
+fn native_freestanding_module_uses_the_raw_pointer_surface() {
+    let Some(exit) = native_exit_code(
+        "tests/fixtures/valid/no_runtime/freestanding_native_rawptr.lby",
+        "lullaby_rawptr_freestanding.exe",
+        &["--freestanding"],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 42,
+        "the freestanding raw-pointer module must run: 7 * 6"
+    );
+}
+
+/// Where the interpreters CAN run a shape — reads and `ptr_offset`/`ptr_cast`
+/// walks, but not `addr_of` stores — native must agree with them exactly.
+#[test]
+fn native_addr_of_reads_match_the_interpreters() {
+    let fixture = "tests/fixtures/valid/no_runtime/freestanding_addr_of_reads.lby";
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = run_backend(fixture, backend);
+        assert!(
+            output.status.success(),
+            "[{backend}] addr_of reads must run on the interpreters: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output).trim(),
+            "44",
+            "[{backend}] expected 7 + 9 + 20 + 8 = 44"
+        );
+    }
+    let Some(exit) = native_exit_code(fixture, "lullaby_rawptr_reads.exe", &[]) else {
+        return;
+    };
+    assert_eq!(
+        exit, 44,
+        "native must agree with all three interpreters on addr_of reads + the size law"
     );
 }

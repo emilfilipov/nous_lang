@@ -287,6 +287,17 @@ pub(crate) fn plan_register_promotion(
     locals: &HashMap<String, NativeLocal>,
 ) -> (HashMap<i32, PReg>, Vec<PReg>) {
     let none = (HashMap::new(), Vec::new());
+    // ADDRESS-TAKEN GATE. A promoted local lives in `rbx`/`rsi` and has NO
+    // address, so `lea` of its (never-read) frame slot would make
+    // `ptr_write(addr_of(x), 5)` silently not update `x` — a miscompile, not a
+    // demotion. Any function that takes an address keeps every local in its frame
+    // slot. This is checked FIRST and independently of the type-shape checks
+    // below: today a raw-pointer chain also fails `expr_reg_promotable` (an
+    // `addr_of` call types as `ptr<T>`, not `i64`), but that is incidental, and
+    // correctness here must not depend on it.
+    if body_takes_address(&function.instructions) {
+        return none;
+    }
     if function.return_type.name != "i64" {
         return none;
     }

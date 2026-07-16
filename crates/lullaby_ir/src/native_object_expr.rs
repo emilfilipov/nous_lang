@@ -573,6 +573,15 @@ pub(crate) fn lower_native_expr(
                 ]);
                 return Ok(());
             }
+            // The freestanding-tier raw-pointer surface (`addr_of`/`ptr_read`/
+            // `ptr_write`/`volatile_load`/`volatile_store`/`ptr_offset`/
+            // `ptr_cast`/`int_to_ptr`/`ptr_to_int`). Dispatched before the
+            // unknown-function gate: a raw-pointer name is never a user function,
+            // and a shape this backend cannot lower soundly returns a precise
+            // `Err` here so the enclosing function skips cleanly (`L0339`).
+            if let Some(result) = lower_raw_pointer_call(ctx, name, args, &expr.ty, code) {
+                return result;
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"
