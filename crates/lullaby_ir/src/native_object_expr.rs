@@ -31,6 +31,20 @@ pub(crate) fn lower_native_expr(
             Ok(())
         }
         BytecodeExprKind::Variable(name) => {
+            // Inside a synthesized closure body, a captured free variable resolves
+            // through the env pointer: load the env pointer from its frame slot, then
+            // the captured word at `[env + offset]`. Parameters and any other locals
+            // fall through to the ordinary frame-slot path.
+            if let Some(env) = &ctx.closure_env
+                && let Some(&offset) = env.captures.get(name)
+            {
+                let env_slot = env.env_slot;
+                load_local(code, env_slot); // mov rax, [rbp - env_slot] (env ptr)
+                // mov rax, [rax + offset]  (captured word)
+                code.extend_from_slice(&[0x48, 0x8B, 0x80]);
+                code.extend_from_slice(&offset.to_le_bytes());
+                return Ok(());
+            }
             let slot = ctx.local_slot(name)?;
             match ctx.promoted_reg(slot) {
                 Some(reg) => reg.to_rax(code),
@@ -73,6 +87,14 @@ pub(crate) fn lower_native_expr(
             lower_native_binary(ctx, left, *op, right, code)
         }
         BytecodeExprKind::Call { name, args } => {
+            // A call whose callee name is a closure-bound local is an INDIRECT
+            // closure call: load the env pointer (the block base) into `rcx`, the
+            // arguments into `rdx`/`r8`/`r9`, and `call [env]` (the code pointer at
+            // word 0). Detected before any builtin/name resolution so it never
+            // collides with a top-level function name.
+            if ctx.closure_locals.contains_key(name) {
+                return lower_closure_call(ctx, name, args, code);
+            }
             // Fixed-width integer conversions are emitted inline, not as calls.
             // `to_<T>(x)` normalizes the argument's `i64` cell into `T`'s width
             // (truncate + sign/zero-extend), matching the interpreter's
@@ -152,10 +174,7 @@ pub(crate) fn lower_native_expr(
                 return Ok(());
             }
             // `len(l)` on a growable list loads its `len` header word.
-            if name == "len"
-                && args.len() == 1
-                && supported_list_element(&args[0].ty).is_some()
-            {
+            if name == "len" && args.len() == 1 && supported_list_element(&args[0].ty).is_some() {
                 lower_native_expr(ctx, &args[0], code)?; // list pointer -> rax
                 // mov rax, [rax + LIST_LEN_OFF]
                 emit_mov_rax_from_rax_disp(code, LIST_LEN_OFF);
@@ -163,9 +182,7 @@ pub(crate) fn lower_native_expr(
             }
             // `len(a)` on a heap `array<string>` reads the same `len` header word
             // (it shares the `list<string>` block layout).
-            if name == "len"
-                && args.len() == 1
-                && heap_string_array_element(&args[0].ty).is_some()
+            if name == "len" && args.len() == 1 && heap_string_array_element(&args[0].ty).is_some()
             {
                 lower_native_expr(ctx, &args[0], code)?; // block pointer -> rax
                 emit_mov_rax_from_rax_disp(code, LIST_LEN_OFF);
@@ -206,23 +223,17 @@ pub(crate) fn lower_native_expr(
                 lower_map_new(ctx, code);
                 return Ok(());
             }
-            if name == MAP_SET_BUILTIN
-                && args.len() == 3
-                && supported_map_kv(&args[0].ty).is_some()
+            if name == MAP_SET_BUILTIN && args.len() == 3 && supported_map_kv(&args[0].ty).is_some()
             {
                 lower_map_set(ctx, &args[0], &args[1], &args[2], code)?;
                 return Ok(());
             }
-            if name == MAP_HAS_BUILTIN
-                && args.len() == 2
-                && supported_map_kv(&args[0].ty).is_some()
+            if name == MAP_HAS_BUILTIN && args.len() == 2 && supported_map_kv(&args[0].ty).is_some()
             {
                 lower_map_has(ctx, &args[0], &args[1], code)?;
                 return Ok(());
             }
-            if name == MAP_LEN_BUILTIN
-                && args.len() == 1
-                && supported_map_kv(&args[0].ty).is_some()
+            if name == MAP_LEN_BUILTIN && args.len() == 1 && supported_map_kv(&args[0].ty).is_some()
             {
                 lower_native_expr(ctx, &args[0], code)?; // map pointer -> rax
                 // mov rax, [rax + MAP_LEN_OFF]
@@ -429,7 +440,9 @@ pub(crate) fn lower_native_expr(
                         return Ok(());
                     }
                     OverflowMode::Saturating => {
-                        return lower_native_saturating(ctx, ovf_op, kind, &args[0], &args[1], code);
+                        return lower_native_saturating(
+                            ctx, ovf_op, kind, &args[0], &args[1], code,
+                        );
                     }
                     OverflowMode::Checked => {}
                 }
@@ -678,12 +691,15 @@ pub(crate) fn lower_native_expr(
             emit_call_symbol(ctx, STR_LIT_SYMBOL, code);
             Ok(())
         }
+        // A closure literal (Stage 1): allocate the `[code_ptr][captures…]` heap
+        // block, store the code pointer and captured scalars, and leave the block
+        // pointer in `rax`. Only a Stage-1-supported closure (scalar captures, a
+        // registered layout) lowers here; anything else was already rejected when
+        // its binding local was classified, so the enclosing function skipped.
+        BytecodeExprKind::Closure { id } => lower_closure_literal(ctx, *id, code),
         BytecodeExprKind::Float(_)
         | BytecodeExprKind::Array(_)
-        | BytecodeExprKind::Await { .. }
-        // Closures are not in the native scalar subset: a function that
-        // constructs or calls one is skipped and runs on the interpreters.
-        | BytecodeExprKind::Closure { .. } => {
+        | BytecodeExprKind::Await { .. } => {
             Err("expression is not in the native i64-scalar subset".to_string())
         }
     }

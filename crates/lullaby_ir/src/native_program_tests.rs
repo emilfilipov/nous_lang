@@ -4806,3 +4806,154 @@ fn read_only_array_param_compiles_as_fat_pointer() {
         "expected a fat-array runtime-length bounds check (cmp rax,[rbp-len]; jb+2; ud2)"
     );
 }
+
+// -- Closures (Stage 1: scalar captures, direct non-escaping call) ------------
+
+/// A closure capturing one scalar, created and called directly, compiles: `main`
+/// and the synthesized body `__closure_0` are both in `.text`, the enclosing
+/// function allocates the closure block (`__lullaby_alloc`) and materializes the
+/// code pointer (a `lea` relocation against `__closure_0`), the call is INDIRECT
+/// (`call rax` = `FF D0`), and the program is direct-PE eligible.
+#[test]
+fn native_closure_single_scalar_capture_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let n i64 = 10\n",
+        "    let add_n fn(i64) -> i64 = fn x i64 -> x + n\n",
+        "    add_n(2)\n",
+    )))
+    .expect("closure program compiles");
+    assert!(
+        program.compiled.contains(&"main".to_string()),
+        "main compiles: {:?}",
+        program.skipped
+    );
+    assert!(
+        program.compiled.contains(&"__closure_0".to_string()),
+        "the synthesized closure body is compiled: {:?}",
+        program.compiled
+    );
+    assert!(
+        program.skipped.is_empty(),
+        "nothing skips: {:?}",
+        program.skipped
+    );
+    // Both `main` and `__closure_0` are defined `.text` symbols (section 1).
+    assert_eq!(
+        coff_symbol(&program.bytes, "__closure_0").map(|s| s.0),
+        Some(1)
+    );
+    // The indirect call `call rax` (FF D0) appears in the generated code.
+    let text = text_bytes(&program);
+    assert!(
+        text.windows(2).any(|w| w == [0xFF, 0xD0]),
+        "expected an indirect `call rax` (FF D0) for the closure call"
+    );
+    // Direct-PE eligible (a `main`, no C runtime), so the edit->exe loop is
+    // linker-free even though the program allocates a closure on the heap.
+    assert!(
+        program.pe_image.is_some(),
+        "a closure program with a `main` is direct-PE eligible"
+    );
+}
+
+/// Multiple scalar captures are laid out in the closure block in capture order and
+/// read back correctly (compile check; run parity is covered by the CLI test).
+#[test]
+fn native_closure_multiple_scalar_captures_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let a i64 = 3\n",
+        "    let b i64 = 100\n",
+        "    let scale fn(i64) -> i64 = fn x i64 -> x * a + b\n",
+        "    scale(5)\n",
+    )))
+    .expect("multi-capture closure compiles");
+    assert!(program.compiled.contains(&"main".to_string()));
+    assert!(program.compiled.contains(&"__closure_0".to_string()));
+    assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+}
+
+/// A closure created and called inside a loop compiles (the per-iteration
+/// allocation + call is inside the `for` body).
+#[test]
+fn native_closure_in_loop_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let n i64 = 5\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to 3\n",
+        "        let add_n fn(i64) -> i64 = fn x i64 -> x + n\n",
+        "        total = total + add_n(i)\n",
+        "    total\n",
+    )))
+    .expect("loop closure compiles");
+    assert!(program.compiled.contains(&"main".to_string()));
+    assert!(program.compiled.contains(&"__closure_0".to_string()));
+    assert!(program.skipped.is_empty(), "{:?}", program.skipped);
+}
+
+/// Assert a program's `main` is NOT natively compiled (it skips to the
+/// interpreters): either the whole program errors with `L0339` (no eligible
+/// function) or `main` is listed as skipped.
+fn assert_main_skips(source: &str) {
+    match emit_native_program(&module_for(source)) {
+        Err(error) => assert_eq!(error.code, "L0339", "skip must carry L0339: {source}"),
+        Ok(program) => assert!(
+            !program.compiled.contains(&"main".to_string()),
+            "main must NOT compile for a deferred closure shape: {source}\ncompiled={:?}",
+            program.compiled
+        ),
+    }
+}
+
+/// A closure that captures a `string` is outside the Stage-1 scalar-capture slice
+/// and skips cleanly (never miscompiled).
+#[test]
+fn native_closure_string_capture_skips() {
+    assert_main_skips(concat!(
+        "fn main -> i64\n",
+        "    let label string = \"hi\"\n",
+        "    let f fn(i64) -> i64 = fn x i64 -> x + len(label)\n",
+        "    f(40)\n",
+    ));
+}
+
+/// A closure passed to a higher-order function (`apply(f, x)`) escapes the direct
+/// non-escaping-call slice and skips cleanly.
+#[test]
+fn native_closure_higher_order_skips() {
+    assert_main_skips(concat!(
+        "fn apply f fn(i64) -> i64 v i64 -> i64\n",
+        "    f(v)\n",
+        "fn main -> i64\n",
+        "    let n i64 = 1\n",
+        "    let add_n fn(i64) -> i64 = fn x i64 -> x + n\n",
+        "    apply(add_n, 5)\n",
+    ));
+}
+
+/// A returned/escaping closure (built by a factory and returned) is not in the
+/// slice and skips cleanly.
+#[test]
+fn native_closure_returned_skips() {
+    assert_main_skips(concat!(
+        "fn make base i64 -> fn(i64) -> i64\n",
+        "    fn x i64 -> x + base\n",
+        "fn main -> i64\n",
+        "    let f fn(i64) -> i64 = make(10)\n",
+        "    f(5)\n",
+    ));
+}
+
+/// A closure with more than three parameters (the env pointer consumes `rcx`,
+/// leaving only `rdx`/`r8`/`r9`) is deferred and skips cleanly.
+#[test]
+fn native_closure_too_many_params_skips() {
+    assert_main_skips(concat!(
+        "fn main -> i64\n",
+        "    let n i64 = 1\n",
+        "    let f fn(i64, i64, i64, i64) -> i64 = fn a i64 b i64 c i64 d i64 -> a + b + c + d + n\n",
+        "    f(1, 2, 3, 4)\n",
+    ));
+}

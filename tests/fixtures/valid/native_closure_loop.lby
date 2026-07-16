@@ -1,0 +1,7 @@
+fn main -> i64
+    let n i64 = 5
+    let total i64 = 0
+    for i from 0 to 3
+        let add_n fn(i64) -> i64 = fn x i64 -> x + n
+        total = total + add_n(i)
+    total

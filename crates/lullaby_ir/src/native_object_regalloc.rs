@@ -180,6 +180,11 @@ pub(crate) fn expr_reg_promotable(expr: &BytecodeExpr) -> bool {
                     .iter()
                     .all(|a| a.ty.name == "i64" && expr_reg_promotable(a))
         }
+        // A closure literal allocates a heap block and captures frame locals by
+        // slot; a closure-using function is never register-promoted (a captured
+        // scalar must stay addressable in its frame slot). Excluded explicitly here
+        // in addition to the `closure_locals`-based guard in `NativeCtx::plan`.
+        BytecodeExprKind::Closure { .. } => false,
         _ => false,
     }
 }

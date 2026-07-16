@@ -14,9 +14,9 @@ use crate::object_model::{
     ObjectSymbol, ObjectSymbolKind,
 };
 use crate::{
-    BytecodeExpr, BytecodeExprKind, BytecodeFunction, BytecodeIfBranch, BytecodeInstruction,
-    BytecodeMatchArm, BytecodeMatchPattern, BytecodeModule, BytecodePlace, IntKind, IrEnumDef,
-    IrStructDef,
+    BytecodeClosureDef, BytecodeExpr, BytecodeExprKind, BytecodeFunction, BytecodeIfBranch,
+    BytecodeInstruction, BytecodeMatchArm, BytecodeMatchPattern, BytecodeModule, BytecodePlace,
+    IntKind, IrEnumDef, IrStructDef,
 };
 use crate::{elf_object, macho_object};
 
@@ -308,6 +308,14 @@ pub fn emit_native_program_for_target(
         return crate::aarch64::emit_aarch64_program(module, &target);
     }
 
+    // Native closure layouts (Stage 1): for each closure definition that appears as
+    // a `fn(...)` literal in the module, resolve its native layout (captures, param
+    // count) from the literal's static function type. A closure outside the Stage-1
+    // subset (a non-scalar capture/param/return, or more than three parameters) gets
+    // no layout, so any function binding it skips cleanly. Computed once — it does
+    // not depend on the eligible set.
+    let closure_layouts = compute_module_closure_layouts(module);
+
     // First pass: decide signature eligibility. Calls resolve against the set of
     // names we intend to compile.
     let mut skipped: Vec<NativeSkippedFunction> = Vec::new();
@@ -414,6 +422,7 @@ pub fn emit_native_program_for_target(
                 array_lengths,
                 fast_math,
                 arena_names.contains(name.as_str()),
+                &closure_layouts,
             ) {
                 Ok(l) => lowered.push(l),
                 Err(reason) => {
@@ -431,6 +440,63 @@ pub fn emit_native_program_for_target(
             merge_native_skip(&mut skipped, demoted);
             continue;
         }
+
+        // Synthesize a native `.text` body (`__closure_{id}`) for each closure the
+        // compiled functions reference. A synthesis failure (a body outside the
+        // Stage-1 subset — heap touch, user call, or otherwise non-lowerable) demotes
+        // the referencing function and re-runs the fixpoint, exactly like a top-level
+        // lowering failure: the enclosing function then skips to the interpreters
+        // rather than emitting a dangling `lea __closure_{id}` relocation. On success
+        // the bodies are appended to `lowered` so they are emitted as ordinary `.text`
+        // symbols and the enclosing `lea`/`call` resolves.
+        let mut synth_demoted: Option<NativeSkippedFunction> = None;
+        let mut closure_bodies: Vec<LoweredNativeFunction> = Vec::new();
+        'synth: for name in &eligible_names {
+            let function = module
+                .functions
+                .iter()
+                .find(|f| &f.name == name)
+                .expect("eligible name exists");
+            for id in referenced_closure_ids(function) {
+                if closure_bodies.iter().any(|f| f.name == closure_symbol(id)) {
+                    continue;
+                }
+                let def = module.closures.iter().find(|c| c.id == id);
+                let layout = closure_layouts.get(&id);
+                let result = match (def, layout) {
+                    (Some(def), Some(layout)) => synthesize_closure_body(
+                        def,
+                        layout,
+                        &callable,
+                        &extern_sigs,
+                        &module.structs,
+                        &module.enums,
+                        &mut strings,
+                        &signatures,
+                        &closure_layouts,
+                    ),
+                    _ => Err(format!(
+                        "closure #{id} referenced by `{name}` has no native body/layout"
+                    )),
+                };
+                match result {
+                    Ok(body) => closure_bodies.push(body),
+                    Err(reason) => {
+                        synth_demoted = Some(NativeSkippedFunction {
+                            name: name.clone(),
+                            reason,
+                        });
+                        break 'synth;
+                    }
+                }
+            }
+        }
+        if let Some(demoted) = synth_demoted {
+            eligible_names.retain(|n| n != &demoted.name);
+            merge_native_skip(&mut skipped, demoted);
+            continue;
+        }
+        lowered.extend(closure_bodies);
 
         let has_main = lowered.iter().any(|f| f.name == "main");
         // Whether any compiled function is a C-callable export. An export-only
@@ -532,6 +598,24 @@ pub(crate) struct LoweredNativeFunction {
     /// 1-based source line of the function's declaration (from `BytecodeFunction.span`).
     /// Used only when `--debug` line info is requested; otherwise ignored.
     line: u32,
+}
+
+impl LoweredNativeFunction {
+    /// Build a lowered synthesized closure body (`__closure_{id}`). It has no source
+    /// declaration line (line `0` — closures share their enclosing function's `.lby`
+    /// line and are not separately break-pointable), so `--debug` maps it to line 0.
+    pub(crate) fn new_closure(
+        name: String,
+        code: Vec<u8>,
+        relocations: Vec<CodeRelocation>,
+    ) -> Self {
+        LoweredNativeFunction {
+            name,
+            code,
+            relocations,
+            line: 0,
+        }
+    }
 }
 
 /// A relocation inside a function body: patch a 4-byte REL32 field at `offset`
@@ -657,6 +741,21 @@ pub(crate) struct NativeCtx<'a> {
     /// escape analysis: a loop that stores a heap-carrying aggregate into an
     /// iteration-outliving location does NOT get a sub-region (default-deny).
     heap_aggregates: std::collections::HashSet<String>,
+    /// Closure-bound locals of this function: local name -> the parse-order closure
+    /// `id` its `let` binds. A `Call` whose callee name is here is an indirect
+    /// closure call (env pointer in `rcx`, code pointer at word 0 of the block); the
+    /// local itself holds a pointer word to the closure's `[code_ptr][captures…]`
+    /// heap block. Populated by `collect_native_locals` from a `let` whose value is
+    /// a `Closure { id }` literal.
+    closure_locals: HashMap<String, usize>,
+    /// Native layouts of every Stage-1 closure in the module, keyed by parse-order
+    /// `id`. Used to size a closure literal's block, resolve the `__closure_{id}`
+    /// code symbol, and lay out the captured scalars.
+    closure_layouts: &'a HashMap<usize, ClosureLayout>,
+    /// When this `NativeCtx` lowers a synthesized closure BODY, the env binding: the
+    /// frame slot holding the env pointer (block base) and each captured name's byte
+    /// offset within the env block. `None` for an ordinary top-level function body.
+    closure_env: Option<ClosureEnv>,
 }
 
 /// The native signature of a compiled function: the layout of each parameter and
@@ -691,8 +790,10 @@ impl<'a> NativeCtx<'a> {
         signatures: &'a HashMap<String, NativeSignature>,
         array_lengths: &ArrayLengths,
         is_arena: bool,
+        closure_layouts: &'a HashMap<usize, ClosureLayout>,
     ) -> Result<Self, String> {
         let mut locals: HashMap<String, NativeLocal> = HashMap::new();
+        let mut closure_locals: HashMap<String, usize> = HashMap::new();
         let mut next_slot: i32 = 0;
 
         // Return classification: an aggregate return is written through a hidden
@@ -744,7 +845,23 @@ impl<'a> NativeCtx<'a> {
             signatures,
             &mut locals,
             &mut next_slot,
+            closure_layouts,
+            &mut closure_locals,
         )?;
+
+        // Default-deny closure escape check: every closure-bound local must be used
+        // ONLY as its own `let`'s closure-literal initializer or as the callee of a
+        // direct call `f(args)`. A closure passed to a function, returned, stored,
+        // reassigned, or read as a bare value is a higher-order/escaping use outside
+        // the Stage-1 slice, so the function skips cleanly rather than miscompiling.
+        for name in closure_locals.keys() {
+            if !closure_local_ok(function, name) {
+                return Err(format!(
+                    "closure local `{name}` escapes or is used in an unsupported position \
+                     (native Stage-1 closures support only a direct non-escaping call)"
+                ));
+            }
+        }
 
         // Reserve scratch words for `match` scrutinees that are not plain locals
         // (a call result or freshly-constructed enum is spilled to scratch before
@@ -781,7 +898,16 @@ impl<'a> NativeCtx<'a> {
         // `i64` locals in callee-saved registers. Reserve one frame word per
         // promoted register to spill the caller's value across this function; the
         // promoted locals keep their (now unused) stack slots for simplicity.
-        let (promoted, saved_regs) = plan_register_promotion(function, &locals);
+        // A closure-using function is excluded from register promotion: a captured
+        // scalar must live in its frame slot so the closure-literal lowering can
+        // read it, and the closure-call sequence uses the volatile registers
+        // directly. (The closure `let` already has a `fn(...)` type, which makes the
+        // function non-promotable, so this is belt-and-suspenders — but explicit.)
+        let (promoted, saved_regs) = if closure_locals.is_empty() {
+            plan_register_promotion(function, &locals)
+        } else {
+            (HashMap::new(), Vec::new())
+        };
         let mut saved_reg_slots = Vec::new();
         for reg in saved_regs {
             next_slot += 8;
@@ -862,7 +988,61 @@ impl<'a> NativeCtx<'a> {
                 ));
                 aggs
             },
+            closure_locals,
+            closure_layouts,
+            closure_env: None,
         })
+    }
+
+    /// Build a `NativeCtx` for lowering a synthesized closure BODY (`__closure_{id}`).
+    /// Unlike [`plan`], the frame and env binding are computed by the closure
+    /// synthesizer (`synthesize_closure_body`); this constructor only seats the
+    /// pre-planned locals, env binding, and the shared module state, with every
+    /// arena / register-promotion feature off (a closure body is a scalar leaf).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn for_closure_body(
+        locals: HashMap<String, NativeLocal>,
+        frame_size: i32,
+        scratch_base: i32,
+        closure_env: ClosureEnv,
+        callable: &'a std::collections::HashSet<&'a str>,
+        extern_sigs: &'a HashMap<&'a str, &'a crate::IrExternSignature>,
+        structs: &'a [IrStructDef],
+        enums: &'a [IrEnumDef],
+        strings: &'a mut StringPool,
+        signatures: &'a HashMap<String, NativeSignature>,
+        closure_layouts: &'a HashMap<usize, ClosureLayout>,
+    ) -> Self {
+        Self {
+            locals,
+            frame_size,
+            callable,
+            extern_sigs,
+            relocations: Vec::new(),
+            strings,
+            structs,
+            enums,
+            scratch_next: scratch_base + 8,
+            sret_slot: None,
+            return_ty: NativeType::I64,
+            signatures,
+            promoted: HashMap::new(),
+            saved_reg_slots: Vec::new(),
+            fast_math: false,
+            is_arena: false,
+            arena_mark_slot: 0,
+            arena_loop_mark_base: 0,
+            heap_aggregates: std::collections::HashSet::new(),
+            closure_locals: HashMap::new(),
+            closure_layouts,
+            closure_env: Some(closure_env),
+        }
+    }
+
+    /// Take the relocations accumulated while lowering (used by the closure-body
+    /// synthesizer to build its `LoweredNativeFunction`).
+    pub(crate) fn take_relocations(&mut self) -> Vec<CodeRelocation> {
+        std::mem::take(&mut self.relocations)
     }
 
     /// The frame slot of the arena sub-region mark for a loop at nesting depth
@@ -940,6 +1120,7 @@ pub(crate) enum ScalarPlace {
 /// slots sized by its `NativeType`. `let` locals with an aggregate layout reserve
 /// one word per flattened scalar; `for` counters and their hidden bound/step are
 /// single i64 words.
+#[allow(clippy::too_many_arguments)]
 fn collect_native_locals(
     body: &[BytecodeInstruction],
     structs: &[IrStructDef],
@@ -947,6 +1128,8 @@ fn collect_native_locals(
     signatures: &HashMap<String, NativeSignature>,
     locals: &mut HashMap<String, NativeLocal>,
     next_slot: &mut i32,
+    closure_layouts: &HashMap<usize, ClosureLayout>,
+    closure_locals: &mut HashMap<String, usize>,
 ) -> Result<(), String> {
     for instruction in body {
         match instruction {
@@ -954,6 +1137,39 @@ fn collect_native_locals(
                 name, ty, value, ..
             } => {
                 if !locals.contains_key(name) {
+                    // A closure-bound local (`let f fn(...) = fn x -> …`) is a single
+                    // pointer word to the closure's `[code_ptr][captures…]` heap
+                    // block. Its declared `fn(...)` type is not resolvable by
+                    // `resolve_native_type` (that path rejects function types so a
+                    // closure-as-value elsewhere skips), so classify it here from the
+                    // initializer: a DIRECT `Closure { id }` literal with a Stage-1
+                    // layout is a supported pointer word; anything else (a closure
+                    // returned from a call, an unsupported closure shape) is rejected
+                    // so the function skips cleanly.
+                    if ty.is_function() {
+                        let BytecodeExprKind::Closure { id } = &value.kind else {
+                            return Err(format!(
+                                "closure local `{name}` is not bound to a direct closure literal; \
+                                 native closures are Stage-1 (direct literal, scalar captures)"
+                            ));
+                        };
+                        if !closure_layouts.contains_key(id) {
+                            return Err(format!(
+                                "closure #{id} bound to `{name}` is not in the native Stage-1 \
+                                 subset (non-scalar capture/param/return, or >3 params)"
+                            ));
+                        }
+                        closure_locals.insert(name.clone(), *id);
+                        *next_slot += 8;
+                        locals.insert(
+                            name.clone(),
+                            NativeLocal {
+                                slot: *next_slot,
+                                ty: NativeType::I64,
+                            },
+                        );
+                        continue;
+                    }
                     let native = if ty.name.starts_with("array<") {
                         native_type_of_init(value, structs, enums, signatures)?
                     } else {
@@ -990,7 +1206,16 @@ fn collect_native_locals(
                         }
                     });
                 }
-                collect_native_locals(body, structs, enums, signatures, locals, next_slot)?;
+                collect_native_locals(
+                    body,
+                    structs,
+                    enums,
+                    signatures,
+                    locals,
+                    next_slot,
+                    closure_layouts,
+                    closure_locals,
+                )?;
             }
             BytecodeInstruction::If {
                 branches,
@@ -1005,12 +1230,32 @@ fn collect_native_locals(
                         signatures,
                         locals,
                         next_slot,
+                        closure_layouts,
+                        closure_locals,
                     )?;
                 }
-                collect_native_locals(else_body, structs, enums, signatures, locals, next_slot)?;
+                collect_native_locals(
+                    else_body,
+                    structs,
+                    enums,
+                    signatures,
+                    locals,
+                    next_slot,
+                    closure_layouts,
+                    closure_locals,
+                )?;
             }
             BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
-                collect_native_locals(body, structs, enums, signatures, locals, next_slot)?;
+                collect_native_locals(
+                    body,
+                    structs,
+                    enums,
+                    signatures,
+                    locals,
+                    next_slot,
+                    closure_layouts,
+                    closure_locals,
+                )?;
             }
             BytecodeInstruction::Match {
                 scrutinee, arms, ..
@@ -1064,7 +1309,14 @@ fn collect_native_locals(
                         }
                     }
                     collect_native_locals(
-                        &arm.body, structs, enums, signatures, locals, next_slot,
+                        &arm.body,
+                        structs,
+                        enums,
+                        signatures,
+                        locals,
+                        next_slot,
+                        closure_layouts,
+                        closure_locals,
                     )?;
                 }
             }
@@ -1397,6 +1649,10 @@ pub(crate) use stmt_lowering::*;
 #[path = "native_object_expr.rs"]
 mod expr_lowering;
 pub(crate) use expr_lowering::*;
+
+#[path = "native_object_closure.rs"]
+mod closure;
+pub(crate) use closure::*;
 
 #[path = "native_object_lowering.rs"]
 mod op_lowering;

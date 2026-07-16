@@ -1085,8 +1085,14 @@ pub(crate) fn expr_touches_heap(
         | BytecodeExprKind::Float(_)
         | BytecodeExprKind::Bool(_)
         | BytecodeExprKind::Char(_)
-        | BytecodeExprKind::Variable(_)
-        | BytecodeExprKind::Closure { .. } => false,
+        | BytecodeExprKind::Variable(_) => false,
+        // A closure literal ALLOCATES its `[code_ptr][captures…]` block on the
+        // heap, so it touches the heap — this is what makes an arena-eligible
+        // function recognize a closure-allocating loop and give it a per-iteration
+        // sub-region (the loop-reclaim path). The literal's own static type is a
+        // `fn(...)` (not a heap type), so without this arm the allocation would be
+        // invisible to the escape analysis.
+        BytecodeExprKind::Closure { .. } => true,
         BytecodeExprKind::String(_) => true,
         BytecodeExprKind::Array(elements) => {
             elements.iter().any(|e| expr_touches_heap(e, heap_aggs))
@@ -1171,7 +1177,10 @@ fn instruction_touches_heap(
 /// Whether an expression calls a user-defined or `extern` function (as opposed to
 /// a native builtin). A heap value passed to user code could be retained past the
 /// function's return, so any such call disqualifies arena eligibility.
-fn expr_calls_user(expr: &BytecodeExpr, user_names: &std::collections::HashSet<&str>) -> bool {
+pub(crate) fn expr_calls_user(
+    expr: &BytecodeExpr,
+    user_names: &std::collections::HashSet<&str>,
+) -> bool {
     match &expr.kind {
         BytecodeExprKind::Call { name, args } => {
             user_names.contains(name.as_str())

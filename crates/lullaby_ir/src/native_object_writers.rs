@@ -368,7 +368,12 @@ pub(crate) fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> 
         f.relocations.iter().any(|r| {
             matches!(
                 r.symbol.as_str(),
-                LIST_NEW_SYMBOL
+                // A closure literal allocates its `[code_ptr][captures…]` block by
+                // calling `__lullaby_alloc` directly (not via a list/map/string
+                // helper), so this reference alone must force the heap sections in
+                // the direct-PE path.
+                HEAP_ALLOC_SYMBOL
+                    | LIST_NEW_SYMBOL
                     | LIST_COPY_SYMBOL
                     | LIST_GROW_SYMBOL
                     | STRUCT_COPY_SYMBOL

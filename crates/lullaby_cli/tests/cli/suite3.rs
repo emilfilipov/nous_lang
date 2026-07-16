@@ -2358,3 +2358,113 @@ pub(crate) fn native_generic_scalar_execution_parity_when_linkable() {
          (exit {exit} vs interpreter {expected})"
     );
 }
+
+/// Closures (Stage 1: scalar captures, direct non-escaping call) compile natively
+/// and run byte-identically to the interpreters. Each fixture takes the DEFAULT
+/// native command's direct-PE path (no external linker — the closure heap block is
+/// allocated in-house), so this needs neither `rust-lld` nor `kernel32.lib`. The
+/// `reclaim` fixture allocates a closure per iteration across 100000 iterations;
+/// its correct result (rather than a heap-exhaustion trap) proves the arena
+/// per-iteration sub-region reclaims each closure block — bounded heap.
+#[test]
+pub(crate) fn native_closures_direct_pe_run_parity() {
+    let fixtures = [
+        "native_closure_scalar",
+        "native_closure_multi_capture",
+        "native_closure_loop",
+        "native_closure_reclaim",
+    ];
+    for name in fixtures {
+        let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
+        let out = std::env::temp_dir().join(format!("lullaby_{name}.exe"));
+        let obj = out.with_extension("obj");
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&obj);
+
+        let emit = lullaby()
+            .args([
+                "native",
+                "-o",
+                out.to_str().expect("out path"),
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(emit.status.success(), "{name}: {}", stderr(&emit));
+        let listing = stdout(&emit);
+        assert!(
+            listing.contains("direct PE, no linker"),
+            "{name}: closure build must take the direct-PE path: {listing}"
+        );
+        assert!(
+            !obj.is_file(),
+            "{name}: direct-PE path must not write an object"
+        );
+
+        // Interpreter ground truth for `main`.
+        let run = lullaby()
+            .args(["run", fixture.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{name}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+
+        // Run the in-house `.exe` and compare exit codes (all fixtures return < 256).
+        let exe = Command::new(&out).output().expect("run direct pe exe");
+        let exit = exe.status.code().expect("native exit code");
+        assert_eq!(
+            exit,
+            interp.rem_euclid(256) as i32,
+            "{name}: native closure exit must equal the interpreter result"
+        );
+    }
+}
+
+/// Deferred closure shapes still skip cleanly to the interpreters (`L0339`), never
+/// miscompiled: a `string` capture, a closure passed to a higher-order function
+/// (`apply(f, x)`), and a returned/escaping closure. Each still runs correctly on
+/// the interpreters.
+#[test]
+pub(crate) fn native_closure_deferred_shapes_skip() {
+    // (fixture, interpreter result)
+    let skips = [
+        ("native_closure_string_capture", 42_i64),
+        ("run_closures", 27),
+        ("run_closures_returned", 134),
+    ];
+    for (name, expected) in skips {
+        let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
+
+        // `lullaby native` fails cleanly with L0339 and lists `main` as skipped.
+        let native = lullaby()
+            .args([
+                "native",
+                "--verbose",
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(
+            !native.status.success(),
+            "{name}: a deferred closure program must not compile natively"
+        );
+        let rendered = format!("{}{}", stdout(&native), stderr(&native));
+        assert!(
+            rendered.contains("L0339"),
+            "{name}: expected L0339: {rendered}"
+        );
+        assert!(
+            rendered.contains("skipped main"),
+            "{name}: expected `main` in the skip listing: {rendered}"
+        );
+
+        // It still runs correctly on the interpreters.
+        let run = lullaby()
+            .args(["run", fixture.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        assert!(run.status.success(), "{name}: {}", stderr(&run));
+        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        assert_eq!(interp, expected, "{name}: interpreter computes {expected}");
+    }
+}
