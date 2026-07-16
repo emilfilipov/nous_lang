@@ -1,0 +1,17 @@
+# Transitive sendability: a non-atomic `rc<T>` hidden in a struct field is not
+# sendable, so a struct carrying one cannot cross an actor boundary. -> L0353
+struct Boxed
+    handle rc<i64>
+
+actor Sink
+    state
+        n i64
+
+    on take b Boxed
+        n += 1
+
+fn main -> i64
+    let s Actor<Sink> = spawn Sink()
+    let b Boxed = Boxed(handle: rc_new(5))
+    tell s.take(b)
+    0

@@ -924,6 +924,8 @@ impl<'a> Runtime<'a> {
             "rc_release" => self.builtin_rc_release(args),
             "rc_get" | "ref_get" | "ptr_read" => self.builtin_ref_get(name, args),
             "rc_borrow" => self.builtin_rc_borrow(args),
+            "share" => self.builtin_share(args),
+            "shared_get" => self.builtin_shared_get(args),
             "ptr_write" => self.builtin_store(args),
             "size_of" => Self::builtin_size_of(args),
             "align_of" => Self::builtin_align_of(args),

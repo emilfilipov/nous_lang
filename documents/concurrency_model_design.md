@@ -106,6 +106,83 @@ interpreter, exactly as the §1.2–§1.4 surface specifies. Delivered surface:
   asks and await them in sequence); the structured `join_all`/`select`
   combinators remain stage 5.
 
+## Stage 3 delivery (2026-07-16)
+
+Stage 3 of §5.2 — **message ownership** — is implemented and test-locked on the
+AST interpreter, realizing §2.3 (move vs copy vs immutable-share) and §3.3
+(use-after-send). Delivered:
+
+- **Move-by-default + use-after-send (`L0357`).** A value passed as a
+  bare-variable argument to `tell`/`ask`/`spawn` whose type is a non-copy owned
+  aggregate is **moved** into the message; the sender loses access. A later read,
+  re-send, mutation (a compound assignment or a field/index store on the
+  binding), or closure-capture of that binding is a compile error `L0357`. This
+  is an affine analysis over the sender's body (functions, and actor `init`/
+  handler bodies), the same flavor as the existing resource-lifetime pass. **Path
+  model (as implemented):** straight-line code is order-sensitive and precise; a
+  conditional/`match`/`try` join takes the **union** of moves along its branches
+  (may-move), and each branch is analyzed from the pre-branch state so disjoint
+  branches never cross-contaminate; loop bodies are analyzed once with moves
+  **propagated out** (a move inside a loop is conservatively visible after the
+  loop). A full reassignment (`x = e`) or a fresh `let x = e` **revives** the
+  binding. Default-deny: there is no send-site `copy e` escape yet (stage 4+), so
+  the fix for a genuine keep-after-send is to restructure or use `shared<T>`.
+  *Documented conservative edge:* a move made inside a loop body is not re-checked
+  against a later iteration that reads the binding before the send — matching the
+  existing `L0350` analysis's straight-line loop treatment.
+- **`copy` (type-driven, no keyword).** A value whose type is **trivially
+  copyable** is copied into the message, not moved, so it stays usable after the
+  send. The copy set is: every **scalar** (`i64`/`f64`/`f32`, the fixed-width
+  integer lattice, `bool`, `char`, `byte`), the `Actor<T>` and `shared<T>`
+  **handles** (sending a handle copies the address), and any `struct`/`enum`/
+  `option`/`result` **all of whose parts are transitively copy**. Everything else
+  sendable (`string`, `list`, `map`, `array`, and aggregates containing them) is
+  moved. This makes stage-1/2 programs that reuse a `spawn`ed `Actor<T>` handle
+  after sending it (e.g. passing a logger handle to a `Forwarder` and still
+  `tell`ing the logger) continue to type-check.
+- **`shared<T>` — the atomic-rc immutable share (§3.4).** `share(v) -> shared<T>`
+  wraps a value in a process-global immutable region (freed only at program exit,
+  so it carries no refcount — the "global immutable region until exit" choice of
+  §3.5 / decision 9); `shared_get(s) -> T` reads it (deeply immutable, so there
+  is no `shared_set`). A `shared<T>` is **sendable** (its inner `T` must itself be
+  sendable, so a non-atomic `rc`/`ref`/`ptr` can never hide inside one) **and not
+  consumed** by a send, so one shared value can be handed to several actors. The
+  surface is the `shared<T>` **type form** plus the `share`/`shared_get` builtins,
+  exactly as §3.4 spells it — no new keyword.
+- **Coherence with the sendability closure.** Move/copy/`shared` classification
+  and sendability agree: a sent value is either copied (copy set), moved (owned
+  aggregate), or a sendable `shared<T>`/`Actor<T>` handle — never a silently
+  aliased non-atomic `rc`. The stage-3 change also made the sendability predicate
+  (`L0353`) **fully transitive**: it now recurses into **struct fields** and
+  **enum-variant payloads** (guarded against recursive types via a visited-set),
+  closing a gap where a non-atomic `rc`/`ref`/raw `ptr` wrapped in a struct field
+  or enum payload could smuggle past `L0353` as a `spawn`/`tell`/`ask` argument or
+  reply.
+- **Runtime (AST interpreter).** A "move" needs **no runtime invalidation**: the
+  interpreter already evaluates a message argument to an owned value clone before
+  enqueuing it, so the sender's binding is left physically intact and the static
+  analysis is what forbids its reuse (the "copy-into-B-then-invalidate-A (simple)"
+  path of §3.2, with the invalidation realized statically). `share` allocates into
+  the abstract heap and returns a `shared<T>` handle; sending it copies the
+  address, so several actors read one immutable value with no per-actor refcount
+  traffic.
+- **Tiers.** Ownership analysis runs at check time (all tiers see it). Actors
+  still run on the **AST interpreter only**; the IR/bytecode backends reject an
+  actor program (`L0355`), native/WASM cleanly skip it (`L0339`/`L0338`), and a
+  `no-runtime` module rejects actors and the `shared`/`share`/`shared_get` surface
+  with `L0441`. (`share`/`shared_get` are AST-tier actor-model surface; a program
+  that reaches the IR/bytecode lowerer through them is cleanly rejected there,
+  never miscompiled.)
+- **New diagnostic:** `L0357` (use of a value moved into an actor message).
+  Extended: `L0353` is now fully transitive through struct fields and enum
+  payloads.
+- **Deferred to later stages (unchanged):** a send-site `copy e` escape hatch and
+  true zero-copy allocation handoff on move (stage 4+/8); supervision/failure
+  (stage 4); `join_all`/`select`, back-pressure/`try_tell` (stage 5); native/WASM
+  actor codegen (stage 6); eager `shared<T>` reclamation (stage 8). A future,
+  fully path-insensitive loop re-check for cross-iteration use-after-send is a
+  possible stage-4 hardening.
+
 The rest of this document is the original design proposal (the full model); the
 above is the slice that is live today.
 

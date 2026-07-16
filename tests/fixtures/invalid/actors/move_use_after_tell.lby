@@ -1,0 +1,15 @@
+# Stage-3 message ownership: a `string` is an owned aggregate, moved into the
+# message by `tell`. Reading `m` after the send is a use-after-send. -> L0357
+actor Sink
+    state
+        log string
+
+    on take msg string
+        log = msg
+
+fn main -> i64
+    let s Actor<Sink> = spawn Sink()
+    let m string = "hello"
+    tell s.take(m)
+    println(m)
+    0

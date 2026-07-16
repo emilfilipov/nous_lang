@@ -391,3 +391,79 @@ fn ask_await_program_formats_idempotently() {
     );
     assert_eq!(stdout(&second), formatted, "fmt must be idempotent");
 }
+
+// ---------------------------------------------------------------------------
+// Stage 3 — message ownership: move-by-default + `copy` + `shared` + the
+// use-after-send analysis (`L0357`), plus the transitive-sendability closure
+// (`L0353` now also catches a non-atomic `rc`/`ref`/`ptr` hidden in a struct
+// field or enum payload). All run on the AST interpreter, like stages 1-2.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn move_copy_scalar_is_reusable_after_send() {
+    // A scalar (`i64`) is a *copy* type: sending it copies it, so the sender
+    // keeps its value and may send/read it again with no use-after-send error.
+    let output = run_ast("tests/fixtures/valid/actors/move_reused_scalar_ok.lby");
+    assert!(
+        output.status.success(),
+        "copy-type reuse should run: {}",
+        stderr(&output)
+    );
+    // `main` prints `7`, then the drained `add`/`report` turns total to 14, and
+    // `lullaby run` prints `main`'s `0` return.
+    assert_eq!(stdout(&output), "7\n14\n0\n");
+}
+
+#[test]
+fn shared_handle_is_reusable_across_actors() {
+    // A `shared<T>` handle (the atomic-rc immutable share) is sendable and not
+    // consumed by a send, so it can be handed to several actors. Both readers
+    // read the same immutable `42`.
+    let output = run_ast("tests/fixtures/valid/actors/shared_two_actors.lby");
+    assert!(
+        output.status.success(),
+        "shared reuse should run: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "read 42\nread 42\n0\n");
+}
+
+#[test]
+fn use_after_tell_is_rejected() {
+    // A `string` (owned aggregate) is moved into a `tell`; reading it afterward
+    // is a use-after-send.
+    assert_check_rejects(
+        "tests/fixtures/invalid/actors/move_use_after_tell.lby",
+        "L0357",
+    );
+}
+
+#[test]
+fn use_after_ask_is_rejected() {
+    // Moving a value into an `ask` request consumes it too: a later use is
+    // rejected even after the reply is awaited.
+    assert_check_rejects(
+        "tests/fixtures/invalid/actors/move_use_after_ask.lby",
+        "L0357",
+    );
+}
+
+#[test]
+fn rc_in_struct_field_is_not_sendable() {
+    // Transitive sendability: a non-atomic `rc<T>` hidden in a struct field is
+    // caught by `L0353` when the struct is sent in a `tell`.
+    assert_check_rejects(
+        "tests/fixtures/invalid/actors/rc_in_struct_field.lby",
+        "L0353",
+    );
+}
+
+#[test]
+fn ref_in_enum_payload_reply_is_not_sendable() {
+    // Transitive sendability: a borrowed `ref<T>` hidden in an enum-variant
+    // payload is caught by `L0353` at the `ask` reply handler's declaration.
+    assert_check_rejects(
+        "tests/fixtures/invalid/actors/ref_in_enum_payload_reply.lby",
+        "L0353",
+    );
+}

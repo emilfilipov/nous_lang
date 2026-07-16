@@ -1,0 +1,19 @@
+# Stage-3 message ownership: a `shared<T>` handle (the atomic-rc immutable share)
+# is sendable AND not consumed by a send, so one shared value can be handed to
+# several actors. `cfg` is sent to two readers; each reads the same immutable
+# value with `shared_get`.
+actor Reader
+    state
+        got i64
+
+    on read cfg shared<i64>
+        got = shared_get(cfg)
+        println("read " + to_string(got))
+
+fn main -> i64
+    let cfg shared<i64> = share(42)
+    let a Actor<Reader> = spawn Reader()
+    let b Actor<Reader> = spawn Reader()
+    tell a.read(cfg)
+    tell b.read(cfg)
+    0

@@ -1029,6 +1029,26 @@ impl<'a> Checker<'a> {
                     self.expect_reference("rc_borrow", "rc", &ty, args[0].span, function)?;
                 Some(TypeRef::new(format!("ref<{}>", inner.name)))
             }
+            // `share(v: T) -> shared<T>`: wrap a value in the **atomic-rc immutable
+            // share** — the sendable reference form (concurrency stage 3). Its
+            // inner `T` must itself be sendable, so a `shared<T>` can be handed to
+            // several actors without smuggling a non-atomic `rc`/`ref`/`ptr`
+            // across the boundary. `shared<T>` is part of the actor-model surface
+            // and runs on the AST interpreter, like `spawn`/`tell`/`ask`.
+            "share" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let value_type = self.check_expr(&args[0], scope, function)?;
+                let shared = TypeRef::new(format!("shared<{}>", value_type.name));
+                self.check_sendable(&shared, args[0].span, function, "wrapped in a `shared<T>`");
+                Some(shared)
+            }
+            // `shared_get(s: shared<T>) -> T`: read the immutable value behind a
+            // `shared<T>` handle. Deeply immutable, so there is no `shared_set`.
+            "shared_get" => {
+                self.expect_arg_count(name, args, 1, function)?;
+                let ty = self.check_expr(&args[0], scope, function)?;
+                self.expect_reference("shared_get", "shared", &ty, args[0].span, function)
+            }
             "ref_get" => {
                 self.expect_arg_count(name, args, 1, function)?;
                 let ty = self.check_expr(&args[0], scope, function)?;

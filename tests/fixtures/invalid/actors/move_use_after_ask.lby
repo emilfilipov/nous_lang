@@ -1,0 +1,17 @@
+# Stage-3 message ownership: a `string` moved into an `ask` request may not be
+# used after the send, even after awaiting the reply. -> L0357
+actor Store
+    state
+        n i64
+
+    on put msg string -> i64
+        n += 1
+        n
+
+fn main -> i64
+    let s Actor<Store> = spawn Store()
+    let m string = "data"
+    let f Future<i64> = ask s.put(m)
+    let count i64 = await f
+    println(m)
+    count

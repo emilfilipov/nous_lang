@@ -43,13 +43,18 @@ use crate::{ExpressionType, SemanticDiagnostic};
 /// The heap/runtime type constructors a `no-runtime` module may not name. Each
 /// implies the safe-tier runtime: `list`/`map` grow via the host allocator,
 /// `string` is the growable heap string, `rc`/`ref` are reference-counted
-/// handles, and `Future`/`Actor` are the actor/async concurrency handles.
-const FORBIDDEN_TYPE_CTORS: [&str; 7] = ["list", "map", "string", "rc", "ref", "Future", "Actor"];
+/// handles, `Future`/`Actor` are the actor/async concurrency handles, and
+/// `shared` is the actor-model atomic-rc immutable share.
+const FORBIDDEN_TYPE_CTORS: [&str; 8] = [
+    "list", "map", "string", "rc", "ref", "Future", "Actor", "shared",
+];
 
-/// Host-allocator builtins that are unavailable in `no-runtime`: they allocate
-/// via the host allocator and return/consume a raw `ptr<T>` (an allowed type), so
-/// the type-based gate does not catch them — they are rejected by name.
-const FORBIDDEN_BUILTINS: [&str; 2] = ["alloc", "dealloc"];
+/// Host-allocator / safe-tier builtins that are unavailable in `no-runtime`:
+/// `alloc`/`dealloc` allocate via the host allocator and return/consume a raw
+/// `ptr<T>` (an allowed type), and `share`/`shared_get` are the actor-model
+/// immutable-share operations — none of which the type-based gate catches, so
+/// they are rejected by name.
+const FORBIDDEN_BUILTINS: [&str; 4] = ["alloc", "dealloc", "share", "shared_get"];
 
 /// Enforce the freestanding-tier rules over a `no-runtime` `program`, appending an
 /// `L0441` for every violation to `diagnostics`. `expression_types` is the checker's
