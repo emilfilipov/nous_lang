@@ -23,9 +23,9 @@ use lullaby_runtime::{
     expect_list, expect_map, expect_mutex, expect_string, expect_task, extern_call_error, gcd_i64,
     get_place, http_exchange, int_cmp, int_div, int_rem, int_shl, int_shr, join_task, list_extreme,
     list_sum_values, monotonic_now_nanos, net_err, new_chan, option_value, os_random_bytes,
-    overflow_arith, process_exit_code, read_stdin_all, read_stdin_line, result_value,
-    scalar_order_keys, set_place, shift_left, shift_right, sleep_millis, sort_scalar_list,
-    unmapped_raw, value_type_name, wall_now_millis,
+    overflow_arith, port_io_interpreter_error, process_exit_code, read_stdin_all, read_stdin_line,
+    result_value, scalar_order_keys, set_place, shift_left, shift_right, sleep_millis,
+    sort_scalar_list, unmapped_raw, value_type_name, wall_now_millis,
 };
 use lullaby_semantics::{CheckedProgram, Signature};
 use serde::{Deserialize, Serialize};

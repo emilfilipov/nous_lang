@@ -1,0 +1,8 @@
+# Port I/O is a raw hardware operation: `in`/`out` drive a device directly and
+# cannot be checked by the compiler, so they require an `unsafe` block exactly
+# like the raw-pointer builtins. Outside one: L0330.
+no-runtime
+
+fn main -> i64
+    port_out8(0x20u16, 0x20u8)
+    0

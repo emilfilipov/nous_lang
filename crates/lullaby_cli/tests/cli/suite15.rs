@@ -884,3 +884,232 @@ fn native_buffer_write_through_walk_aliases_the_buffer() {
         "the write-through walk must fill the buffer forward (15) and poke index 1 (90)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Freestanding stage 3: MMIO (delivered by composition) and port-mapped I/O.
+// ---------------------------------------------------------------------------
+
+/// Compile `fixture` under `lullaby native --freestanding` and return the
+/// `--verbose` listing. **The emitted executable is deliberately NOT run** —
+/// every caller here compiles code that touches hardware (an unmapped physical
+/// address, or a privileged `in`/`out`), which faults in a user-mode test
+/// process. Compilation plus the emitted bytes are the evidence; see
+/// `crates/lullaby_ir/src/native_object_portio_tests.rs` for the byte assertions.
+fn compile_freestanding_only(fixture: &str, exe_name: &str) -> String {
+    let path = workspace_root().join(fixture);
+    let out = std::env::temp_dir().join(exe_name);
+    let emit = lullaby()
+        .args([
+            "native",
+            "--freestanding",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            path.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(
+        emit.status.success(),
+        "{fixture} must compile under `native --freestanding`: {}",
+        stderr(&emit)
+    );
+    let listing = stdout(&emit);
+    assert!(
+        listing.contains("freestanding (no-std)"),
+        "{fixture}: expected the freestanding no-CRT notice: {listing}"
+    );
+    assert!(
+        out.is_file(),
+        "{fixture}: expected a direct-PE exe at {}",
+        out.display()
+    );
+    listing
+}
+
+/// **MMIO works, and needs no intrinsics of its own.** The VGA text-buffer poke —
+/// `int_to_ptr(0xB8000)` + `ptr_offset` + `volatile_store` in a void function —
+/// compiles natively in a `no-runtime` module today, purely by composition of the
+/// delivered raw-pointer surface. A device register mapped into the address space
+/// IS memory, so pointers reach it.
+///
+/// This pins that shape so it cannot regress silently. It was working but
+/// untested, which is how a "delivered" capability quietly rots.
+///
+/// **Not executed:** 0xB8000 is not mapped in a user-mode process; writing it
+/// faults. Compilation is the whole claim.
+#[test]
+fn mmio_vga_poke_compiles_freestanding_native() {
+    let listing = compile_freestanding_only(
+        "tests/fixtures/valid/no_runtime/freestanding_mmio_vga.lby",
+        "lullaby_mmio_vga.exe",
+    );
+    for symbol in ["compiled vga_put", "compiled vga_get", "compiled main"] {
+        assert!(
+            listing.contains(symbol),
+            "MMIO composes from int_to_ptr + ptr_offset + volatile_store + void fns, \
+             so `{symbol}` is expected: {listing}"
+        );
+    }
+}
+
+/// Every port builtin — both port forms, all three widths, read and write —
+/// compiles in a `no-runtime` module under `--freestanding`.
+///
+/// **Not executed, and that is not a gap in the testing.** `in`/`out` are
+/// privileged: they raise a general-protection fault at CPL 3 unless IOPL or the
+/// TSS I/O bitmap grants access, and no device sits behind these ports in a test
+/// harness regardless. Running the exe would crash the harness, not verify it.
+/// The correctness evidence for the emitted instructions is the byte-level
+/// assertions in `native_object_portio_tests.rs`.
+#[test]
+fn port_io_compiles_freestanding_native() {
+    let listing = compile_freestanding_only(
+        "tests/fixtures/valid/no_runtime/freestanding_port_io.lby",
+        "lullaby_port_io.exe",
+    );
+    for symbol in [
+        "compiled pic_eoi",
+        "compiled pic_read_mask",
+        "compiled read_word_imm",
+        "compiled write_dword_imm",
+        "compiled serial_write",
+        "compiled serial_read",
+        "compiled serial_ready",
+        "compiled read_word",
+        "compiled write_word",
+        "compiled read_dword",
+        "compiled write_dword",
+        "compiled main",
+    ] {
+        assert!(
+            listing.contains(symbol),
+            "every port-I/O shape must be native-eligible; `{symbol}` is expected: {listing}"
+        );
+    }
+}
+
+/// **The interpreters refuse port I/O — they do not fake it.**
+///
+/// `in`/`out` address the CPU's I/O port space, which the AST/IR/bytecode tiers
+/// do not model. There is no honest value to return, so each refuses with
+/// `L0444` rather than fabricate one: a plausible-but-wrong device read (an
+/// invented `0`, say) would silently mis-drive a PIC/PIT/UART, which is far worse
+/// than a loud refusal.
+///
+/// This is an honest **acceptance divergence**, not a parity claim — native
+/// compiles this program, the interpreters decline to define it — framed exactly
+/// like the cross-frame `addr_of` divergence (`L0459`).
+#[test]
+fn port_io_is_refused_on_every_interpreter() {
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = run_backend(
+            "tests/fixtures/valid/no_runtime/freestanding_port_io.lby",
+            backend,
+        );
+        let errors = stderr(&output);
+        assert!(
+            !output.status.success(),
+            "[{backend}] port I/O must not appear to succeed on an interpreter. \
+             stderr: {errors}"
+        );
+        assert!(
+            errors.contains("L0444"),
+            "[{backend}] expected the L0444 port-I/O native-only refusal. stderr: {errors}"
+        );
+        assert!(
+            errors.contains("port_out8"),
+            "[{backend}] the refusal must name the offending builtin. stderr: {errors}"
+        );
+    }
+}
+
+/// Port I/O is a raw hardware operation and needs an `unsafe` block, reusing the
+/// delivered raw-operation gate `L0330` — no new code, because that is precisely
+/// what `L0330` already means.
+#[test]
+fn port_io_outside_unsafe_is_rejected() {
+    let path = workspace_root().join("tests/fixtures/invalid/port_io/port_io_outside_unsafe.lby");
+    let output = lullaby()
+        .args(["check", path.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    let errors = stderr(&output);
+    assert!(
+        !output.status.success(),
+        "port I/O outside `unsafe` must be rejected. stderr: {errors}"
+    );
+    assert!(
+        errors.contains("L0330"),
+        "expected the L0330 unsafe gate. stderr: {errors}"
+    );
+}
+
+/// A wrong port width or data width is `L0442`.
+///
+/// Both halves matter. A **port** is `u16` — the architectural port space is
+/// exactly `0..=0xFFFF` — and Lullaby has no implicit coercion, so an unsuffixed
+/// `i64` literal is rejected rather than silently truncated. A **data** width is
+/// fixed by the builtin's name, so a `u32` value passed to `port_out8` is a
+/// definite error, not an inference puzzle.
+#[test]
+fn port_io_width_errors_are_rejected() {
+    for (fixture, expected) in [
+        (
+            "tests/fixtures/invalid/port_io/port_number_wrong_width.lby",
+            "u16",
+        ),
+        (
+            "tests/fixtures/invalid/port_io/port_data_wrong_width.lby",
+            "u8",
+        ),
+    ] {
+        let path = workspace_root().join(fixture);
+        let output = lullaby()
+            .args(["check", path.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        let errors = stderr(&output);
+        assert!(
+            !output.status.success(),
+            "{fixture} must be rejected. stderr: {errors}"
+        );
+        assert!(
+            errors.contains("L0442"),
+            "{fixture}: expected the L0442 port-width diagnostic. stderr: {errors}"
+        );
+        assert!(
+            errors.contains(expected),
+            "{fixture}: the diagnostic must name the required width `{expected}`. \
+             stderr: {errors}"
+        );
+    }
+}
+
+/// **`L0441` allows port I/O in a `no-runtime` module.** Port builtins are kernel
+/// core, exactly like `ptr_read`/`volatile_*`: they name only `u8`/`u16`/`u32`,
+/// allocate nothing, and add no hidden control flow, so the freestanding gate
+/// (which rejects heap/runtime *types* and the host-allocator builtins) must not
+/// touch them.
+///
+/// Pinned by observing that the port fixture type-checks clean — no `L0441` — and
+/// that its only complaint at run time is the `L0444` native-only refusal, which
+/// proves it got all the way through the gate to execution.
+#[test]
+fn port_io_is_available_in_a_no_runtime_module() {
+    let path = workspace_root().join("tests/fixtures/valid/no_runtime/freestanding_port_io.lby");
+    let output = lullaby()
+        .args(["check", path.to_str().expect("fixture path")])
+        .output()
+        .expect("run cli");
+    let errors = stderr(&output);
+    assert!(
+        output.status.success(),
+        "a `no-runtime` module using port I/O must type-check: {errors}"
+    );
+    assert!(
+        !errors.contains("L0441"),
+        "the freestanding gate must NOT reject port I/O — it is kernel core, like \
+         `ptr_read`/`volatile_*`. stderr: {errors}"
+    );
+}

@@ -1,0 +1,88 @@
+# Freestanding port-mapped I/O (documents/freestanding_tier_design.md §4): the
+# six `port_in*`/`port_out*` builtins driving a COM1 serial port and the legacy
+# PIC, in a `no-runtime` module.
+#
+# COMPILE-ONLY, AND DELIBERATELY NEVER EXECUTED. `in`/`out` are privileged
+# instructions: they fault (general protection) at CPL 3 unless IOPL/the TSS I/O
+# bitmap grants access, and no device sits behind these ports in a test harness
+# anyway. The tests assert only that `lullaby native --freestanding` EMITS an
+# executable, and separately assert the emitted `in`/`out` byte encodings; the
+# exe is never run. The three interpreters refuse every call here with `L0444`
+# rather than fabricate a device value.
+no-runtime
+
+# --- Immediate-port form (a constant port < 256 encodes as `in/out al, imm8`) ---
+
+# Acknowledge an interrupt: EOI (0x20) to the PIC command port (0x20).
+fn pic_eoi
+    unsafe
+        port_out8(0x20u16, 0x20u8)
+
+# Read the PIC's interrupt mask (port 0x21).
+fn pic_read_mask -> u8
+    unsafe
+        port_in8(0x21u16)
+
+# 16-bit and 32-bit immediate ports, pinning the 0x66 prefix on the imm8 forms.
+fn read_word_imm -> u16
+    unsafe
+        port_in16(0x60u16)
+
+fn write_dword_imm value u32
+    unsafe
+        port_out32(0x70u16, value)
+
+# --- DX-register form (a port above 0xFF, or a runtime port) ---
+
+# COM1 is at 0x3F8 — above 0xFF, so the port must go through DX.
+fn serial_write b u8
+    unsafe
+        port_out8(0x3F8u16, b)
+
+fn serial_read -> u8
+    unsafe
+        port_in8(0x3F8u16)
+
+# A computed (runtime) port: the line-status register is base+5.
+fn serial_ready base u16 -> bool
+    unsafe
+        let lsr u16 = base + 5u16
+        let status u8 = port_in8(lsr)
+        (to_i64(status) & 0x20) != 0
+
+# --- 16-bit and 32-bit widths through DX ---
+
+fn read_word port u16 -> u16
+    unsafe
+        port_in16(port)
+
+fn write_word port u16 value u16
+    unsafe
+        port_out16(port, value)
+
+fn read_dword port u16 -> u32
+    unsafe
+        port_in32(port)
+
+fn write_dword port u16 value u32
+    unsafe
+        port_out32(port, value)
+
+# Reachability root: every port function above is called so that each is compiled
+# into the image. This `main` is NEVER run — see the header.
+fn main -> i64
+    pic_eoi()
+    serial_write(0x41u8)
+    write_word(0x3F8u16, 0u16)
+    write_dword(0x3F8u16, 0u32)
+    write_dword_imm(0u32)
+    let mask u8 = pic_read_mask()
+    let ch u8 = serial_read()
+    let w u16 = read_word(0x3F8u16)
+    let wi u16 = read_word_imm()
+    let d u32 = read_dword(0x3F8u16)
+    let ready bool = serial_ready(0x3F8u16)
+    let ready_bit i64 = 0
+    if ready
+        ready_bit = 1
+    to_i64(mask) + to_i64(ch) + to_i64(w) + to_i64(wi) + to_i64(d) + ready_bit

@@ -948,6 +948,12 @@ impl<'a> Runtime<'a> {
             // no-reordering guarantee is a native-codegen concern.
             "volatile_load" => self.builtin_load(args),
             "volatile_store" => self.builtin_store(args),
+            // Port-mapped I/O is native-only: `in`/`out` are privileged x86
+            // instructions over the CPU's I/O port space, which no interpreter
+            // models. Refuse with `L0444` rather than fabricate a device value.
+            "port_in8" | "port_in16" | "port_in32" | "port_out8" | "port_out16" | "port_out32" => {
+                Err(port_io_interpreter_error(name))
+            }
             "env" => Self::builtin_env(args),
             "os_random" => Self::builtin_os_random(args),
             "args" => self.builtin_args(args),

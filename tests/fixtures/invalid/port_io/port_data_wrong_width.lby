@@ -1,0 +1,9 @@
+# The data width of a port write is fixed by the builtin's NAME: `port_out8`
+# emits an 8-bit `out`, so its value must be `u8`. Passing a `u32` is L0442 —
+# use `port_out32` to write a 32-bit port.
+no-runtime
+
+fn main -> i64
+    unsafe
+        port_out8(0x20u16, 0x20u32)
+    0

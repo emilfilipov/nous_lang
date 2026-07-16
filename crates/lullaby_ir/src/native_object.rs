@@ -1396,6 +1396,10 @@ pub(crate) use expr_lowering::*;
 mod rawptr;
 pub(crate) use rawptr::*;
 
+#[path = "native_object_portio.rs"]
+mod portio;
+pub(crate) use portio::*;
+
 #[path = "native_object_closure.rs"]
 mod closure;
 pub(crate) use closure::*;

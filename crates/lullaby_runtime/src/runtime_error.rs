@@ -89,6 +89,42 @@ pub fn asm_interpreter_error() -> RuntimeError {
     )
 }
 
+/// The error raised when an interpreter encounters a port-mapped I/O builtin
+/// (`port_in8`/`port_in16`/`port_in32`, `port_out8`/`port_out16`/`port_out32`).
+///
+/// `in`/`out` are **privileged x86 instructions**: they address the CPU's I/O
+/// port space, fault with a general-protection fault at CPL 3 unless IOPL/the
+/// TSS permission bitmap allows them, and are meaningless in a hosted process
+/// that has no device behind the port anyway. There is no honest value for an
+/// interpreter to return: the AST/IR/bytecode tiers model an abstract heap, not
+/// a machine's I/O space, so a `port_in8(0x3F8u16)` has no defined answer.
+///
+/// So every interpreter **refuses** with `L0444` rather than invent one. This is
+/// a deliberate, hard-won choice (the same reasoning as `asm`'s `L0425` and
+/// `extern`'s `L0423`): a plausible-but-wrong device read — a fabricated `0`,
+/// say — would silently mis-drive a PIC/PIT/UART and be far worse than a loud
+/// refusal. The result is an honest **acceptance divergence**, not a parity
+/// claim: native compiles port I/O and the interpreters decline to define it,
+/// exactly as with the cross-frame `addr_of` case (`L0459`).
+///
+/// `check` still fully validates the call — arity, the `u16` port width, the
+/// data width (`L0442`), and the enclosing `unsafe` block (`L0330`) — so a
+/// mistyped port builtin is a *compile* error on every tier; only execution is
+/// native-only.
+pub fn port_io_interpreter_error(name: &str) -> RuntimeError {
+    RuntimeError::new(
+        "L0444",
+        format!(
+            "cannot execute the port-mapped I/O builtin `{name}` on an interpreter: `in`/`out` \
+             are privileged x86 instructions addressing the CPU's I/O port space, which the \
+             interpreters do not model — returning a fabricated value would silently mis-drive \
+             the device. Compile with `lullaby native --freestanding` to emit the real \
+             instruction, or use MMIO (`volatile_load`/`volatile_store`), which the \
+             interpreters do define"
+        ),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
     Runtime,

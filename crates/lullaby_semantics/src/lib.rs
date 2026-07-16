@@ -12,6 +12,7 @@ mod semantics_aliases;
 mod semantics_consts;
 mod semantics_generics;
 mod semantics_no_runtime;
+mod semantics_port_io;
 mod semantics_raw_ptr;
 
 // Re-export the generic-inference helpers at the crate root so the public API

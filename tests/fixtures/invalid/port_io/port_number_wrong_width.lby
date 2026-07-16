@@ -1,0 +1,10 @@
+# A port number is a 16-bit unsigned value (`u16`) — the full x86 I/O port space.
+# An unsuffixed integer literal is `i64`, and Lullaby has no implicit coercion, so
+# this is L0442: a silently-truncated port number is exactly the bug this tier
+# cannot afford.
+no-runtime
+
+fn main -> i64
+    unsafe
+        port_out8(0x20, 0x20u8)
+    0

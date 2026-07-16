@@ -1182,6 +1182,13 @@ impl<'a> Checker<'a> {
             "addr_of" => self.check_addr_of(args, call_span, scope, function),
             "ptr_offset" => self.check_ptr_offset(args, call_span, scope, function),
             "ptr_cast" => self.check_ptr_cast(args, call_span, expected, scope, function),
+            // Freestanding port-mapped I/O (stage 3): `port_in8/16/32` and
+            // `port_out8/16/32`. `unsafe`-gated (`L0330`) and width-checked
+            // (`L0442`) in `semantics_port_io.rs`; native-only at run time (the
+            // interpreters refuse them with `L0444`).
+            name if semantics_port_io::is_port_io_builtin(name) => {
+                self.check_port_io(name, args, call_span, scope, function)
+            }
             // `volatile_load(p) -> T` / `volatile_store(p, v)`: raw pointer
             // element read/write with volatile semantics (no elision or
             // reordering). Type-check exactly like `ptr_read`/`ptr_write`; the

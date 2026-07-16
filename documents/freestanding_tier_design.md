@@ -8,7 +8,13 @@ at the end of §10.2. **The raw-pointer addressing surface `addr_of` / `ptr_offs
 whole raw-pointer surface is delivered** (2026-07-16) — a kernel-shaped function is
 now native-eligible instead of skipping, and `addr_of` is a real `lea` so
 `ptr_write(addr_of(x), 5)` genuinely mutates `x`; see §10.5 and the "Raw-Pointer
-Surface" section of [native_backend_contract.md](native_backend_contract.md). This document proposes the concrete, buildable shape of
+Surface" section of [native_backend_contract.md](native_backend_contract.md).
+**MMIO and port-mapped I/O are delivered** (2026-07-16, §4.1) — MMIO composes from
+the delivered `int_to_ptr`/`ptr_offset`/`volatile_store` + void functions with no
+intrinsics of its own, and `port_in8/16/32` / `port_out8/16/32` lower to real x86
+`in`/`out` (native-only; the interpreters refuse them with `L0444` rather than
+fabricate a device value). The **privileged** set of §4 (`read_cr`/`write_cr`,
+`read_msr`/`write_msr`, `halt`/`cli`/`sti`) remains undelivered. This document proposes the concrete, buildable shape of
 Lullaby's **freestanding / `no-runtime` tier** — the capability set that makes 1.0
 a systems language you can write a kernel, boot code, embedded firmware, and FFI
 shims in.
@@ -370,6 +376,16 @@ actually needs language integration — not the full instruction set.
 
 ## 4. Volatile / MMIO, port I/O, and privileged instructions
 
+> **DELIVERED (2026-07-16) — MMIO and port I/O.** The MMIO half of this section
+> needed **no implementation at all**: it composes from the already-delivered
+> `int_to_ptr` + `ptr_offset` + `volatile_store` + void functions, and is now
+> *pinned by a test* rather than merely assumed to work. The port-I/O half —
+> `port_in8/16/32`, `port_out8/16/32` — is implemented and lowers to real x86
+> `in`/`out`. The **privileged** set (`read_cr`/`write_cr`, `read_msr`/`write_msr`,
+> `halt`/`cli`/`sti`, `invlpg`) remains undelivered. See the "MMIO and port-I/O
+> delivery" note at the end of this section (§4.1) for the as-built record,
+> including the diagnostic codes actually assigned.
+
 These are the hardware edge. Volatile load/store already ship (`volatile_load`/
 `volatile_store`, delivered, `unsafe`-gated). Port I/O and privileged-register access
 are new. They are exposed as **`unsafe` intrinsics** (Option C from §3, layered on the
@@ -437,6 +453,116 @@ Intrinsic signatures (proposed):
   the interpreters with `L0444` (mirroring how `asm`/`extern` are native-only), so a
   cross-backend fixture never claims to have "run" them. MMIO via `volatile_*` *is*
   interpretable (delivered) because it maps to the abstract heap.
+
+### 4.1 MMIO and port-I/O delivery (2026-07-16) — the as-built record
+
+Delivered exactly on the Option A recommendation above, with the spellings this
+section already fixed. What follows is what actually shipped, including the two
+places the as-built differs from the proposal.
+
+**MMIO: delivered by composition, no intrinsics added.** This section listed
+`volatile_load`/`volatile_store` as "delivered" and it was right — but the *whole
+MMIO idiom* already worked natively and was simply never tested. The canonical
+VGA poke compiles today in a `no-runtime` module under `lullaby native
+--freestanding` into a **1536-byte direct PE** with no C runtime:
+
+```lby
+no-runtime
+
+fn vga_put off i64 ch i64
+    unsafe
+        let base ptr<i64> = int_to_ptr(753664)   # 0xB8000
+        volatile_store(ptr_offset(base, off), ch)
+```
+
+It needs **no MMIO intrinsics of its own**: a device register mapped into the
+address space *is* memory, so `int_to_ptr` + `ptr_offset` + `volatile_store` +
+void functions compose to reach it. Option C of this section's fork (a
+`volatile`/`mmio` pointer qualifier) therefore remains correctly deferred — there
+is nothing it would unblock. Now pinned by `mmio_vga_poke_compiles_freestanding_native`
+(`crates/lullaby_cli/tests/cli/suite15.rs`) over
+`tests/fixtures/valid/no_runtime/freestanding_mmio_vga.lby`, **compile-only**:
+`0xB8000` is unmapped in a user-mode process, so the exe is emitted and never run.
+
+**Port I/O: delivered as specified.** The six builtins ship with the exact
+spelling and signatures proposed above — plain call syntax, no turbofish, the
+width baked into the name:
+
+```text
+port_in8(port u16)  -> u8       port_out8(port u16, value u8)   -> void
+port_in16(port u16) -> u16      port_out16(port u16, value u16) -> void
+port_in32(port u16) -> u32      port_out32(port u16, value u32) -> void
+```
+
+Port I/O is the one hardware surface pointers **cannot** synthesize: the x86 I/O
+port space is a separate address space that only `in`/`out` reach.
+
+- **Typing.** The port is `u16` (the architectural space is exactly `0..=0xFFFF`,
+  carried in `DX`); the data width is fixed by the builtin's name and is
+  **unsigned** in both directions (a port value is a raw device byte/word/dword
+  with no sign to extend). Lullaby has no implicit coercion, so a literal port is
+  written with the delivered typed-literal suffix — `port_out8(0x3F8u16, b)` — or
+  `to_u16(...)`. That is deliberate: a silently-truncated port number drives the
+  wrong device. Typing lives in `crates/lullaby_semantics/src/semantics_port_io.rs`.
+- **Gating.** `unsafe`-gated reusing **`L0330`**, exactly as §2.2 anticipated
+  ("the raw-pointer operations reuse that same `L0330`"). **Available in
+  `no-runtime`**: `semantics_no_runtime.rs` needed **no change** — its `L0441`
+  gate rejects heap/runtime *types* and host-allocator builtins, and a port
+  builtin names only `u8`/`u16`/`u32`, allocates nothing, and adds no hidden
+  control flow. It is kernel core, like `ptr_read`/`volatile_*`. Pinned by
+  `port_io_is_available_in_a_no_runtime_module`.
+- **Native codegen.** `crates/lullaby_ir/src/native_object_portio.rs` emits both
+  port forms (immediate `imm8` for constant ports `0..=255`, `DX` for the full
+  range) × all three widths × read/write, with the `0x66` operand-size prefix on
+  the 16-bit forms only, and renormalizes each read into the 8-byte cell
+  (zero-extending, via the shared `emit_normalize_rax`). The full encoding table
+  is in [native_backend_contract.md](native_backend_contract.md) §"Port-Mapped
+  I/O". There is no 64-bit port I/O — the architecture caps port access at 32
+  bits, which is why the surface stops at 32.
+- **Verified by bytes, NOT by execution.** `in`/`out` are privileged: they fault
+  (general protection) at CPL 3 unless IOPL/the TSS I/O bitmap allows them, and no
+  device sits behind a port in a test harness. Running one would crash the harness
+  rather than verify it. So `crates/lullaby_ir/src/native_object_portio_tests.rs`
+  (15 tests) asserts all twelve encodings plus the prefix rules, the `imm8`↔`DX`
+  boundary at 255, per-read renormalization, and operand staging;
+  `port_io_compiles_freestanding_native` compiles a real 2560-byte direct PE
+  (compile-only) from `tests/fixtures/valid/no_runtime/freestanding_port_io.lby`.
+
+**Diagnostic codes — two deviations from this document's proposals.** The
+registry's tail had moved on since this document was written (`L0440` was assigned
+to an unrelated `match`-arm error, not the proposed `no-runtime`-without-
+`--freestanding` warning), so the proposed codes were re-checked rather than taken
+on faith:
+
+- **`L0444`** is used as this section proposed — port I/O cannot run on an
+  interpreter — but its scope is **broader than the AArch64 note here suggested**.
+  It is a *runtime* refusal covering every interpreter, and it is also what an
+  AArch64/WASM build ends up raising: those backends do not know the port names,
+  so the function skips cleanly (`L0339` / unsupported-builtin) and falls back to
+  an interpreter, which refuses with `L0444`. One code, one meaning ("port I/O
+  cannot execute here"), no backend edits needed.
+- **`L0442`** is used for **port/data width errors**, not for the `unsafe` gate.
+  §2.2 released it ("was not needed... reserved at most for the undelivered
+  MMIO/port stages"), and this is that stage. A dedicated code lets the message
+  explain *why* the width is fixed and point at the typed-literal suffix, which
+  the generic argument-type codes cannot.
+
+Both are registered in [diagnostic_registry.md](diagnostic_registry.md); the
+`registry_sync.rs` guard enforces it.
+
+**The honest acceptance divergence.** The three interpreters **refuse** port I/O
+with `L0444` rather than invent a device value — a fabricated read would silently
+mis-drive a PIC/PIT/UART, which is far worse than a loud refusal. So **no parity
+is claimed** for port I/O: native compiles it, the interpreters decline to define
+it, framed exactly like the cross-frame `addr_of` divergence in §10.4. MMIO, by
+contrast, *is* interpretable (`volatile_*` maps onto the abstract heap) and keeps
+full four-tier parity.
+
+**Still undelivered in this section:** the privileged set (`read_cr`/`write_cr`,
+`read_msr`/`write_msr`, `halt`/`cli`/`sti`, `invlpg`). Those need either the `asm`
+template (§3) or their own fixed-instruction lowerings, and `read_cr`/`write_cr`
+additionally need a compile-time-constant register number — a check with no
+precedent in the delivered builtins.
 
 ---
 
@@ -1228,14 +1354,23 @@ Differential fuzz:
 `crates/lullaby_cli/tests/cli/fuzz.rs` require native to either match the
 interpreter exactly or skip cleanly with `L0339` and no exe.
 
-**Next freestanding sub-stage.** With addressing native, the highest-value next
-increments are, in order: (1) **native `void`-returning functions** — small,
-pre-existing, and it unblocks the natural `fn poke p ptr<T> v T` kernel spelling
-that every driver wants; (2) **MMIO + port I/O intrinsics** (§4: `port_in8/16/32`,
-`port_out8/16/32`, `read_cr`/`write_cr`, `halt`/`cli`/`sti`), which now have a
-working `volatile_*`/`ptr<T>` foundation to build on; (3) **static-buffer arenas**
-(§5); (4) the **panic fn** (§8); then **interrupt/naked** (§6) and
-**direct-ELF/flat-binary** output (§9.3).
+**Next freestanding sub-stage.** Items (1) and (2) of the list below are now
+**delivered**: native `void`-returning functions landed (2026-07-16), and MMIO +
+port I/O landed on top of them (2026-07-16, §4.1) — MMIO purely by composition,
+port I/O as real `in`/`out`. The privileged set (`read_cr`/`write_cr`,
+`read_msr`/`write_msr`, `halt`/`cli`/`sti`, `invlpg`) is the remainder of §4 and
+is best done *after* the `asm` template (§3), which most of it would lower
+through anyway.
+
+The highest-value next increments are, in order: (1) **static-buffer arenas**
+(§5) — the biggest remaining one, and the feature that makes "most of a kernel
+stays arena-safe" real rather than aspirational; a driver can now talk to
+hardware but still has nowhere bounded to put its data; (2) the **panic fn**
+(§8), which arenas need anyway for their overflow edge (§5's `arena_overflow`),
+making it the natural follow-on rather than a parallel track; (3)
+**interrupt/naked functions** (§6); then **direct-ELF/flat-binary output**
+(§9.3). Sequencing note: (1) and (2) are coupled through the overflow path, and
+(4) is the only one that can be built independently of the others today.
 
 ---
 

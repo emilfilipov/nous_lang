@@ -1521,6 +1521,122 @@ interpreter's exit code exactly or skip cleanly with `L0339` and no exe. The sto
 half has no interpreter oracle (the interpreters refuse it with `L0459`), so it is
 covered by the hand-computed fixtures above.
 
+## MMIO (Freestanding Tier) (DELIVERED by composition — no intrinsics of its own)
+
+**MMIO needs no dedicated intrinsics and never did.** A device register mapped
+into the address space *is* memory, so the delivered raw-pointer surface already
+reaches it. The canonical VGA text-buffer poke compiles natively in a
+`no-runtime` module today, purely by composition:
+
+```lby
+no-runtime
+
+fn vga_put off i64 ch i64
+    unsafe
+        let base ptr<i64> = int_to_ptr(753664)   # 0xB8000
+        volatile_store(ptr_offset(base, off), ch)
+```
+
+`lullaby native --freestanding` emits a **1536-byte direct PE** with no C runtime
+(`compiled vga_put`). It falls out of four delivered pieces composing:
+`int_to_ptr` (a raw pointer to a fixed physical address) + `ptr_offset`
+(element-scaled addressing) + `volatile_store` (a store the optimizer may not
+elide or reorder — see "`volatile_load`/`volatile_store` are genuinely
+non-eliding") + **void-returning functions** (so the natural `fn vga_put …`
+driver spelling needs no dummy return).
+
+Pinned by `mmio_vga_poke_compiles_freestanding_native` (`suite15.rs`) over
+`tests/fixtures/valid/no_runtime/freestanding_mmio_vga.lby`. That test is
+**compile-only**: `0xB8000` is not mapped in a user-mode process, so writing it
+faults; the exe is emitted and never run.
+
+MMIO is *interpretable* — `volatile_*` maps onto the interpreters' abstract heap
+— which is exactly what distinguishes it from port I/O below.
+
+## Port-Mapped I/O (Freestanding Tier) (DELIVERED, native-only, byte-verified)
+
+`port_in8` / `port_in16` / `port_in32` and `port_out8` / `port_out16` /
+`port_out32` lower to real x86 `in`/`out`, so a kernel can drive the legacy
+devices (PIC, PIT, serial, keyboard controller). Implementation:
+`crates/lullaby_ir/src/native_object_portio.rs`, dispatched from the `Call` arm of
+`lower_native_expr` (`native_object_expr.rs`) ahead of the unknown-function gate,
+exactly like the raw-pointer surface.
+
+**This is the one hardware surface pointers cannot synthesize.** Unlike MMIO, the
+x86 I/O port space is a *separate address space*: no load or store reaches it,
+only the `in`/`out` instructions do.
+
+Surface (`documents/freestanding_tier_design.md` §4): the port is `u16` (the
+architectural port space is exactly `0..=0xFFFF`); the data width is fixed by the
+builtin's name and is unsigned. `unsafe`-gated (`L0330`), width-checked
+(`L0442`), and allowed in a `no-runtime` module (`L0441` does not touch them —
+they are kernel core, like `ptr_read`/`volatile_*`).
+
+### Encodings per builtin, width, and port form
+
+`in`/`out` are fixed-operand: the data always lives in `AL`/`AX`/`EAX`, and the
+port is either an **8-bit immediate** (constant ports `0..=255`) or **`DX`** (the
+full 16-bit space). Both forms are emitted. The `0x66` operand-size prefix marks
+the 16-bit forms only — 32-bit is the default operand size in 64-bit mode, and
+8-bit has its own opcodes:
+
+| width | `in` imm8 | `in dx` | `out` imm8 | `out dx` |
+| :-- | :-- | :-- | :-- | :-- |
+|  8 | `E4 ib`    | `EC`    | `E6 ib`    | `EE`    |
+| 16 | `66 E5 ib` | `66 ED` | `66 E7 ib` | `66 EF` |
+| 32 | `E5 ib`    | `ED`    | `E7 ib`    | `EF`    |
+
+- **DX setup** (register form only): `mov edx, eax` (`89 C2`) for a read, or
+  `mov edx, ecx` (`89 CA`) for a write after the port is popped back. A 32-bit
+  move suffices — `DX` is `EDX`'s low half and the instruction ignores the bits
+  above the port, so no masking is needed.
+- **Cell renormalization** (reads): `in` writes *only* `AL`/`AX`/`EAX` and leaves
+  the rest of `RAX` stale, so every read is followed by the shared
+  `emit_normalize_rax` with the **unsigned** `IntKind` — `movzx rax, al`
+  (`48 0F B6 C0`), `movzx rax, ax` (`48 0F B7 C0`), or `mov eax, eax` (`89 C0`).
+  Zero-extension, because a port read is a raw device value with no sign to
+  extend. Reusing the same helper every other narrow-width path uses means an
+  `in` result is indistinguishable from a `to_u8`/`to_u16`/`to_u32` cell.
+- **Operand staging** (`out`, DX form): the port is evaluated first and spilled
+  (`push rax`), then the value, then `pop rcx` — the same idiom `ptr_write` uses,
+  so a call inside either operand cannot clobber the other.
+- There is **no 64-bit port I/O**: the architecture caps port access at 32 bits,
+  which is why the surface stops at `port_in32`/`port_out32`.
+
+### Verification: bytes, not execution
+
+**Port I/O is never executed, and that is not a gap.** `in`/`out` are privileged:
+they raise a general-protection fault at CPL 3 unless IOPL or the TSS
+I/O-permission bitmap grants access, and no device sits behind an arbitrary port
+in a test harness anyway. Running the exe would crash the harness, not verify it.
+
+So the emitted **bytes are the correctness evidence**:
+`crates/lullaby_ir/src/native_object_portio_tests.rs` (15 tests) asserts all
+twelve encodings — both port forms × three widths × read/write — plus the `0x66`
+prefix presence/absence, the `imm8`↔`DX` boundary at port 255, per-read
+renormalization, and the two-operand staging.
+`port_io_compiles_freestanding_native` (`suite15.rs`) compiles
+`tests/fixtures/valid/no_runtime/freestanding_port_io.lby` into a real 2560-byte
+direct PE (compile-only, never run) and asserts every port function is eligible.
+
+### Acceptance divergence: native compiles it, the interpreters refuse it
+
+The AST/IR/bytecode interpreters **reject** every port builtin at run time with
+**`L0444`** rather than fabricate a device value — a fabricated read would
+silently mis-drive a PIC/PIT/UART, far worse than a loud refusal (the same
+reasoning as `asm`'s `L0425` and `extern`'s `L0423`). `check` still fully
+validates the call, so only *execution* is native-only.
+
+This is an honest **acceptance divergence**, framed exactly like the cross-frame
+`addr_of` case: **no parity is claimed where the interpreters do not define the
+program.** Pinned by `port_io_is_refused_on_every_interpreter` (`suite15.rs`).
+
+Port I/O is also **x86-only**. The AArch64 and WASM backends do not know these
+names, so a function using one fails their `callable` lookup and skips cleanly
+(`L0339` / an unsupported-builtin error) — neither backend needed a change. Such
+a program then falls back to an interpreter, which raises the same `L0444`. The
+chain is honest end to end: no target ever invents a port value.
+
 ## Deferred Native Work
 
 Deferred beyond the current increment: within the raw-pointer surface — **`addr_of` of an array element and of a whole array are now DELIVERED** (the native frame lays aggregates out at ASCENDING, C-compatible addresses, so a pointer into an array walks forward correctly — buffer walking works; see "Aggregate word order"). Still deferred: `addr_of` of a narrower-than-8-byte scalar (normalized 8-byte cells — this also covers an `array<i32>` element, whose 8-byte cell and 4-byte `ptr_offset` stride would desynchronize), `addr_of` into a fat-pointer (runtime-length) array parameter (the descriptor shares the caller's storage read-only), a `bool`/`char`/`f64`/`f32` pointee, a struct/array pointee for `ptr_offset`, and `addr_of` of a closure-captured variable — each a precise `L0339` skip today; a `void`-returning function of any kind (a pre-existing, raw-pointer-independent gap that blocks the natural `fn poke p ptr<T> v T` kernel spelling); more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.

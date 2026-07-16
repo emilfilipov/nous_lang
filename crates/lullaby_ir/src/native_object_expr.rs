@@ -583,6 +583,13 @@ pub(crate) fn lower_native_expr(
             if let Some(result) = lower_raw_pointer_call(ctx, name, args, &expr.ty, code) {
                 return result;
             }
+            // The freestanding-tier port-mapped I/O surface (`port_in8/16/32`,
+            // `port_out8/16/32`), lowered to real x86 `in`/`out`. Dispatched
+            // before the unknown-function gate for the same reason as the
+            // raw-pointer surface: a port name is never a user function.
+            if let Some(result) = lower_port_io_call(ctx, name, args, code) {
+                return result;
+            }
             if !ctx.callable.contains(name.as_str()) {
                 return Err(format!(
                     "call to non-i64-scalar or unknown function `{name}`"

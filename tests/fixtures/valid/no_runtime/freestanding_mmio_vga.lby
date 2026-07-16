@@ -1,0 +1,37 @@
+# MMIO in the freestanding tier: writing the VGA text buffer at 0xB8000.
+#
+# This needs NO port-I/O intrinsics and no MMIO intrinsics of its own — it
+# composes entirely from the already-delivered surface:
+#
+#   int_to_ptr(0xB8000)  -> a raw pointer to a fixed physical address
+#   ptr_offset(base, n)  -> element-scaled addressing into the cell array
+#   volatile_store(p, v) -> a store the optimizer may not elide or reorder
+#   fn vga_put ...       -> a void-returning function (no dummy return needed)
+#
+# A device register mapped into the address space IS memory, so pointers reach
+# it. (Port I/O is the opposite case: the x86 I/O port space is a separate
+# address space no load or store can reach, which is why `port_in*`/`port_out*`
+# exist as real `in`/`out` instructions.)
+#
+# COMPILE-ONLY, AND DELIBERATELY NEVER EXECUTED. 0xB8000 is not mapped into a
+# user-mode process; writing it faults. The test asserts only that this compiles
+# natively under `--freestanding` and emits an executable.
+no-runtime
+
+# Write one VGA text cell. The natural driver spelling: a void function taking a
+# raw address, with no dummy return value.
+fn vga_put off i64 ch i64
+    unsafe
+        let base ptr<i64> = int_to_ptr(753664)   # 0xB8000
+        volatile_store(ptr_offset(base, off), ch)
+
+# Read one back (an MMIO load through the same address space).
+fn vga_get off i64 -> i64
+    unsafe
+        let base ptr<i64> = int_to_ptr(753664)
+        volatile_load(ptr_offset(base, off))
+
+# Reachability root. NEVER run — see the header.
+fn main -> i64
+    vga_put(0, 65)
+    vga_get(0)

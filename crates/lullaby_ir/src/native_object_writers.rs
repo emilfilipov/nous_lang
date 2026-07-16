@@ -1469,3 +1469,11 @@ mod native_object_tailvalue_tests;
 #[cfg(test)]
 #[path = "native_object_void_tests.rs"]
 mod native_object_void_tests;
+
+// Port-mapped I/O (`in`/`out`) codegen tests, in their own file for the same
+// size-cap reason. These assert the emitted BYTES because port I/O cannot be
+// executed: `in`/`out` fault at CPL 3, so there is no run-it-and-check-the-exit
+// -code proof available for this surface.
+#[cfg(test)]
+#[path = "native_object_portio_tests.rs"]
+mod native_object_portio_tests;

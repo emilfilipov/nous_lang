@@ -2669,7 +2669,13 @@ impl<'a> Lowerer<'a> {
             | "remove_file" | "remove_dir" | "print" | "println" | "warn" | "wasm_log"
             | "console_log" | "dom_set_text" | "flush" | "sleep_millis" | "assert"
             | "rc_release" | "ptr_write" | "volatile_store" | "region_create" | "tcp_close"
-            | "tcp_shutdown" => TypeRef::new("void"),
+            | "tcp_shutdown" | "port_out8" | "port_out16" | "port_out32" => TypeRef::new("void"),
+            // Port reads yield the unsigned width named by the builtin. (Executing
+            // one is refused with `L0444` in `dispatch_named_call`; the type is
+            // still needed to lower the call node.)
+            "port_in8" => TypeRef::new("u8"),
+            "port_in16" => TypeRef::new("u16"),
+            "port_in32" => TypeRef::new("u32"),
             // Raw-memory layout queries fold to `i64` constants; the pointer
             // cast `ptr_to_int` likewise yields the integer handle.
             "size_of" | "align_of" | "offset_of" | "ptr_to_int" => TypeRef::new("i64"),
