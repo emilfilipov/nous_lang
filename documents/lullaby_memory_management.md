@@ -502,14 +502,25 @@ struct Mixed
   > write through `ptr_offset(addr_of(a[0]), i)` mutates `a[i]`. This matches real
   > `lea`-based native addressing.
   >
-  > **Lifetime — an `addr_of` pointer belongs to its frame.** It is valid only inside
-  > the function and block that own the place. Dereferencing one that has escaped into
-  > another frame (passed into a callee, returned, or stored), or whose block or
-  > function has ended, is **refused at run time with `L0459`** rather than reading
-  > stale storage or writing to the wrong place — each of those is undefined behaviour
-  > in C, so no defined program is affected. Pass or return the *value* instead of its
-  > address, or use an `alloc`-backed `ptr<T>`, which has no frame lifetime and is
-  > unaffected by any of this.
+  > **Limitation — on the interpreters, an `addr_of` pointer is usable only within the
+  > body of the function that took the address.** Pointer-taking code cannot be
+  > factored into a helper there. Dereferencing a pointer from another frame is
+  > **refused at run time with `L0459`** rather than reading or writing the wrong
+  > storage. Two different things are refused, and only one is your program's fault:
+  >
+  > - **Dangling** — using a pointer whose block has ended, or returning `addr_of` of a
+  >   local. A genuine error: undefined behaviour in C, refused everywhere.
+  > - **Passed into a callee** — e.g. `poke(addr_of(x))`. This is **correct code**: the
+  >   out-parameter idiom, well-defined in C (a call does not end the caller's block),
+  >   and the **native backend supports it** for a scalar or struct-field place
+  >   (`addr_of` of an array element is not lowered natively either). The interpreters
+  >   refuse it only because each frame's locals live in that frame's own environment
+  >   and a callee cannot reach its caller's. This is an accepted **acceptance
+  >   divergence** between the tiers — loud on the interpreters, never silent.
+  >
+  > On the interpreters, pass or return the *value* instead of its address, or use an
+  > `alloc`-backed `ptr<T>`, which has no frame lifetime and is unaffected by any of
+  > this.
 
 ### Memory Safety Features
 

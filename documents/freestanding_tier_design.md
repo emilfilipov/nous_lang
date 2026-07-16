@@ -243,7 +243,7 @@ fn poke_and_peek base ptr<u32> -> u32
 - **`ptr_offset(p ptr<T>, n i64) -> ptr<T>`** — element-scaled arithmetic (`p + n*size_of(T)`), the common and least error-prone form.
 - **`ptr_offset_bytes(p ptr<T>, n i64) -> ptr<T>`** — raw byte arithmetic, for unaligned/device layouts. Two names make the scaling *explicit* (the one real footgun in C pointer math).
 - **`ptr_read(p ptr<T>) -> T`** / **`ptr_write(p ptr<T>, v T) -> void`** — deref read/write (delivered).
-- **`addr_of(x) -> ptr<T>`** — address-of an addressable lvalue (local, global, struct field, array element). The value must be *addressable*; taking the address of a temporary is **`L0458`** (the delivered code — see §10.4; the `L0442` this bullet originally proposed was never implemented or registered). **As delivered**, `addr_of` is *place-backed* on the interpreters and genuinely aliases: `ptr_write(addr_of(x), 5)` makes `x == 5`, and a read after an independent write to `x` observes the new value (see §10.4). An `addr_of` pointer is valid only inside the function and block that own the place; dereferencing one that has escaped its frame, or whose block/frame has ended, is refused with **`L0459`** (all of which is undefined behaviour in C).
+- **`addr_of(x) -> ptr<T>`** — address-of an addressable lvalue (local, global, struct field, array element). The value must be *addressable*; taking the address of a temporary is **`L0458`** (the delivered code — see §10.4; the `L0442` this bullet originally proposed was never implemented or registered). **As delivered**, `addr_of` is *place-backed* on the interpreters and genuinely aliases: `ptr_write(addr_of(x), 5)` makes `x == 5`, and a read after an independent write to `x` observes the new value (see §10.4). On the interpreters an `addr_of` pointer is usable only within the body of the function that took the address: dereferencing one whose block or frame has ended (a genuine error — undefined behaviour in C) *or* one merely passed into a callee (valid C, and supported natively — an interpreter-model limitation) is refused with **`L0459`**. See §10.4 for that divergence.
 - **`ptr_cast<U>(p ptr<T>) -> ptr<U>`** — reinterpret the element type (no value conversion). `ptr_to_int`/`int_to_ptr` (delivered) round-trip a pointer to/from an integer address.
 - **`ptr_null<T>() -> ptr<T>`** and **`is_null(p)`** (the latter delivered) — the null pointer and its test. There is no implicit null: a `ptr<T>` is never checked for you (that is the point of `unsafe`), but `is_null` is available where you want it.
 - Interpreter behavior: on the AST/IR/bytecode interpreters a `ptr<T>` from `alloc`/`int_to_ptr` is a heap-slot handle (delivered semantics). **As delivered (§10.4),** `addr_of` introduces a second *byte-addressed* address space so `ptr_offset`/`ptr_read` walk place-backed regions and the size law `ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p) == size_of(T)` holds; `ptr_cast` is the identity on the address (a static-only pointee reinterpretation). Aliasing through an `addr_of` pointer *is* modelled — the region names the original place, so reads and writes update and observe it — for the pointer's frame; an escaped pointer is refused (`L0459`), never approximated. What remains a native-codegen concern is byte-exact *reinterpretation* of storage (reading an `i64`'s bytes through a `ptr<byte>`), since the interpreters address typed cells rather than raw bytes.
@@ -1030,14 +1030,38 @@ and test-locked, extending the delivered `ptr_read`/`ptr_write`/`ptr_to_int`/
   that took the address — passed into a callee, returned, or stored — genuinely cannot
   be resolved; likewise once its block or frame has ended. All such dereferences are
   refused with `L0459`, whose meaning stage 3 **retargets** from "stores are
-  unmodelled" (temporary) to "this `addr_of` pointer is outside its place's lifetime"
-  (a real, permanent safety diagnostic). Every one of these cases is undefined
-  behaviour in C, so no defined program is rejected. This is a deliberate narrowing:
-  stage 2 would *read* a cross-frame pointer from its snapshot, which is a stale read —
-  a silent wrong answer — whenever the place changed after the `addr_of`. Refusing is
-  strictly more honest, and every in-frame use now aliases for real. (This is **not**
-  the `volatile_*` situation: `volatile_load`/`store` are semantically *correct*, with
-  only an unobservable single-threaded optimization barrier unmodelled.)
+  unmodelled" (temporary) to "this `addr_of` pointer is outside its place's lifetime".
+  The refused cases are **not all alike**, and the diagnostics must not pretend they
+  are:
+  - **Dead block / returned frame** — a genuine program error. Returning `&local`, or
+    using a pointer to a block that has ended, is undefined behaviour in C, so
+    refusing forbids no defined program.
+  - **A different, still-live frame** (a pointer passed into a callee) — a
+    **limitation of the interpreter model, not a program error**. This is well-defined
+    C (C11 6.2.4p6 ties a local's lifetime to *its block*; a call does not end the
+    caller's block) and the canonical out-parameter idiom (`scanf("%d", &x)`,
+    `strtol(s, &end, 10)`). **Native supports it** for the places it lowers — an
+    8-byte scalar or a struct-field path — since `addr_of` there is a real `lea`.
+    (Native does not lower `addr_of` of an array element or a whole array, skipping
+    cleanly with `L0339`, so a cross-frame *buffer* walk is unsupported on every tier.) The interpreters cannot, because a callee has no access to its
+    caller's `Env`, so they refuse rather than touch the wrong storage.
+  This is a deliberate narrowing. Stage 2 got *some* cross-frame shapes right by luck
+  (it read the snapshot, which matched whenever the place had not changed since the
+  `addr_of`), but for a genuine stale read (`addr_of(x)`; `x = 99`; `peek(p)`) it
+  silently returned the old value. Loud refusal beats luck-correctness, and every
+  in-frame use now aliases for real. (This is **not** the `volatile_*` situation:
+  `volatile_load`/`store` are semantically *correct*, with only an unobservable
+  single-threaded optimization barrier unmodelled.)
+- **Accepted limitation + acceptance divergence (interpreters only).** As shipped, an
+  `addr_of` pointer is usable **only within the body of the function that took the
+  address** on the AST/IR/bytecode interpreters — pointer-taking code cannot be
+  factored into a helper there. Native has no such limit, so the tiers diverge on
+  *acceptance*: `poke(addr_of(x))` compiles and runs correctly natively while the
+  interpreters refuse it with `L0459` — loudly, never silently, so it can never become
+  a wrong answer. Lifting it needs an explicit interpreter-owned frame stack (every
+  `Env` in one `Vec<Env>` indexed by frame id), a large change across three
+  interpreters that all hold `&mut Env` pervasively on the hot path; deliberately not
+  attempted, since native is the tier that does real pointers.
 - **An unmapped raw address is `L0406`, not `L0459`.** An `int_to_ptr` value that
   merely lands in raw space (an MMIO register, a fixed physical address) is not an
   `addr_of` pointer and the diagnostic must not blame one: it reports an unmapped

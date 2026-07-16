@@ -65,17 +65,44 @@
 //!
 //! All are refused with [`L0459`](../../../documents/diagnostic_registry.md), which
 //! stage 3 **retargets** from "stores are unmodelled" (temporary) to "this `addr_of`
-//! pointer is outside its place's lifetime" (a real, permanent safety diagnostic).
-//! A stale or dangling read is a wrong answer, and a wrong answer is exactly what
-//! this model exists to avoid; an honest, narrow refusal is strictly better. In C
-//! the escaped cases are undefined behaviour, so refusing them forbids no defined
-//! program.
+//! pointer is outside its place's lifetime". A stale or dangling read is a wrong
+//! answer, and a wrong answer is exactly what this model exists to avoid.
 //!
-//! This is the deliberate narrowing stage 3 accepts: stage 2 would *read* a
-//! cross-frame pointer by consulting its snapshot, which is a stale read whenever the
-//! place changed after the `addr_of` — a silent wrong answer. Refusing is strictly
-//! more honest, and every in-frame use (the whole of the required surface, and every
-//! shipped fixture) now aliases for real.
+//! But the three cases are **not** alike, and the diagnostics must not pretend they
+//! are:
+//!
+//! - The **dead-scope** and **returned-frame** cases are genuine program errors —
+//!   returning `&local` or using a pointer to a dead block is undefined behaviour in
+//!   C, so refusing them forbids no defined program.
+//! - The **other-live-frame** case is a **limitation of this interpreter model, not a
+//!   program error**. Passing `&x` into a callee is well-defined C (C11 6.2.4p6 ties
+//!   an automatic object's lifetime to *its block*; a call does not end the caller's
+//!   block), and it is the canonical out-parameter idiom — `scanf("%d", &x)`,
+//!   `strtol(s, &end, 10)`, `qsort`. The **native backend supports it** for the
+//!   places it lowers (an 8-byte scalar or a struct-field path), because `addr_of`
+//!   there is a real `lea`. The interpreters cannot, because a callee has no access
+//!   to its caller's `Env`. (Native does *not* lower `addr_of` of an array element or
+//!   a whole array — it skips cleanly with `L0339` — so a cross-frame *buffer* walk
+//!   is currently unsupported on every tier: natively by a clean skip, here by
+//!   `L0459`.)
+//!
+//! # The accepted limitation, stated plainly
+//!
+//! **On the interpreters, an `addr_of` pointer is usable only within the body of the
+//! function that took the address.** Pointer-taking code cannot be factored into a
+//! helper there. This is an **acceptance divergence**: native compiles and runs
+//! `poke(addr_of(x))` (a scalar out-parameter) correctly while the interpreters refuse
+//! it with `L0459` — loudly, never silently. Lifting it needs an explicit interpreter-owned frame stack
+//! (every `Env` in one `Vec<Env>` indexed by frame id), a large change across three
+//! interpreters that all hold `&mut Env` pervasively on the hot path; it is
+//! deliberately not attempted, since native is the tier that does real pointers.
+//!
+//! Stage 2 got *some* of these cross-frame shapes right by luck: it read the
+//! snapshot, which happened to match whenever the place had not changed since the
+//! `addr_of`. That is not a property worth preserving — for a genuine stale-read
+//! (`addr_of(x)`; `x = 99`; `peek(p)`) it silently returned the old value. Stage 3
+//! trades those lucky answers for a loud refusal, and makes every in-frame use — the
+//! whole of the required surface, and every shipped fixture — alias for real.
 //!
 //! Note this is not the `volatile_*` situation: `volatile_load`/`volatile_store` are
 //! *semantically correct* on the interpreters (only the optimization barrier is
@@ -83,22 +110,37 @@
 
 use crate::{ResolvedPlace, RuntimeError, Value};
 
-/// `L0459` for a raw address whose region exists but belongs to another frame: the
-/// pointer escaped the frame that created it (returned, stored into a heap value, or
-/// merely passed into a callee). Each interpreter frame's bindings live on the Rust
-/// stack, so that place is genuinely unreachable from here; refusing is the only
-/// honest answer, since resolving would mean guessing at storage we cannot see. In C
-/// this is undefined behaviour, so no defined program is forbidden.
+/// `L0459` for a raw address whose region exists but belongs to a *live* frame other
+/// than the current one — most often a pointer passed into a callee.
+///
+/// **This is a limitation of the interpreter model, not a program error.** Passing
+/// `&x` into a callee is perfectly well-defined C: C11 6.2.4p6 ties an automatic
+/// object's lifetime to *its block*, and calling a function does not end the caller's
+/// block, so `x` is alive for the whole call. It is the canonical out-parameter idiom
+/// (`scanf("%d", &x)`, `strtol(s, &end, 10)`). The native backend supports it for the
+/// places it lowers — an 8-byte scalar or a struct-field path — because there
+/// `addr_of` is a real `lea`.
+///
+/// The interpreters cannot, because each frame's bindings live in that frame's own
+/// `Env` on the Rust stack and a callee has no access to its caller's. So the choice
+/// is to refuse or to read the wrong storage — and refusing loudly is the only honest
+/// option. The diagnostic must say *that*, and must not tell the user their correct
+/// code is undefined.
 pub fn escaped_pointer(name: &str) -> RuntimeError {
     RuntimeError::new(
         "L0459",
         format!(
             "this `addr_of` pointer refers to `{name}`, a place in a different function \
-             frame, so it cannot be dereferenced here. An `addr_of` pointer is only \
-             usable inside the function that took the address: the interpreters cannot \
-             reach another frame's locals, and escaping a local's address this way is \
-             undefined behaviour in C too. Pass or return the value itself, or use an \
-             `alloc`-backed `ptr<T>`, which has no frame lifetime"
+             frame, and the interpreters cannot reach another frame's locals, so it \
+             cannot be dereferenced here. This is a limitation of the interpreter \
+             model, not a mistake in your program: passing an address into a function \
+             is valid — it is the out-parameter idiom — and the native backend, where \
+             `addr_of` is a real machine address, supports it for a scalar or \
+             struct-field place. The interpreters refuse it rather than read or write \
+             the wrong storage. To run this on the interpreters, keep the `addr_of` \
+             pointer inside the function that took the address, pass or return the \
+             value itself, or use an `alloc`-backed `ptr<T>`, which has no frame \
+             lifetime and works across frames on every tier"
         ),
     )
 }
@@ -249,9 +291,11 @@ pub enum RawResolve {
         path: Vec<ResolvedPlace>,
         name: String,
     },
-    /// The address belongs to a region created by a *different* frame. The
-    /// interpreters keep each frame's bindings on the Rust stack, so that place is
-    /// unreachable from here: the pointer escaped the frame that created it.
+    /// The address belongs to a region created by a *different*, still-live frame —
+    /// typically a pointer passed into a callee. The place is alive and this is valid
+    /// C (and works natively); the interpreters simply cannot reach another frame's
+    /// bindings, so they refuse rather than resolve it wrongly. See
+    /// [`escaped_pointer`].
     Escaped { name: String },
     /// The address belonged to a region whose frame has since **returned**, so the
     /// place it named no longer exists at all. A pointer that outlived its frame.

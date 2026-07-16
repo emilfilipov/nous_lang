@@ -446,13 +446,22 @@ fn addr_of_aliases_the_place_it_addresses() {
     }
 }
 
-/// The escaping case is **diagnosed, never guessed**. A place-backed address is only
-/// meaningful while its place is reachable; the interpreters keep each frame's locals
-/// in their own environment, so a pointer that leaves the frame that took the address
-/// cannot be resolved. Both shapes of escape — passed into a callee, and returned out
-/// of the defining function — are refused with `L0459` rather than silently reading or
-/// writing the wrong storage. Both are undefined behaviour in C, so no defined program
-/// is forbidden.
+/// A pointer that leaves the frame that took the address is **diagnosed, never
+/// guessed**: the interpreters keep each frame's locals in that frame's own
+/// environment, so such a pointer cannot be resolved, and `L0459` is raised rather
+/// than reading or writing the wrong storage.
+///
+/// The two shapes pinned here are **not** the same kind of thing, and the diagnostics
+/// say so:
+///
+/// - `addr_of_escapes_frame.lby` passes a pointer into a callee. That is **valid C**
+///   (the out-parameter idiom) and the **native backend supports it** for the places
+///   it lowers (an 8-byte scalar or a struct-field path); the
+///   refusal is a limitation of the interpreter model, not a program error. This is a
+///   known acceptance divergence between the tiers — loud on the interpreters, never
+///   silent.
+/// - `addr_of_outlives_frame.lby` returns a pointer to a dead local. That is a
+///   genuine program error (undefined behaviour in C), correctly refused everywhere.
 #[test]
 fn an_addr_of_pointer_that_escapes_its_frame_is_refused() {
     for fixture in [
