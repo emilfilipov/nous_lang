@@ -180,12 +180,17 @@ These are toolchain-completeness items, not language decisions.
        the descriptor over with no builtin involved**.
     3. **Fixed:** before any test code runs, the child takes the descriptor out
        of the stdin slot, duplicates it onto one that cannot be inherited
-       (no-inherit `DuplicateHandle` / `F_DUPFD_CLOEXEC`), closes the inherited
-       original, and reopens the slot onto the null device. The channel then has
+       (no-inherit `DuplicateHandle`; `fcntl(F_DUPFD_CLOEXEC, 3)`), and puts the
+       null device in the slot — `SetStdHandle(STD_INPUT_HANDLE, NUL)` /
+       `dup2(nul, 0)`, which disposes of the original too. The channel then has
        no name a program can reach and no slot a child can inherit — holding
        against spawn routes nobody has thought of, rather than depending on every
        spawning builtin to null its own stdin (which would also be outside the
-       CLI's scope). Bonus: `read_line` regains a clean EOF.
+       CLI's scope). POSIX needs `dup2` rather than close-then-reopen: `File::open`
+       always sets `O_CLOEXEC` and `Command` does no `dup2` for an inherited
+       stdin, so a reopened fd 0 reaches the grandchild *closed* — safe but a
+       footgun (its next `open()` lands on descriptor 0). Bonus: `read_line`
+       regains a clean EOF.
     Validating `done` against `last_reported` is an integrity check, NOT a
     security control — the forger reported every index first, satisfying it, so
     `done` then completed the batch legitimately. Only unreachability works.

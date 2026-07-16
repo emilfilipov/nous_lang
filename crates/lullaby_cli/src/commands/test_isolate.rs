@@ -138,6 +138,14 @@ unsafe extern "system" {
     fn SetStdHandle(std_handle: u32, handle: *mut core::ffi::c_void) -> i32;
 }
 
+// The POSIX counterpart of `SetStdHandle`. Declared directly rather than pulling
+// in a dependency: `dup2` lives in libc, which every unix Rust target already
+// links.
+#[cfg(unix)]
+unsafe extern "C" {
+    fn dup2(oldfd: core::ffi::c_int, newfd: core::ffi::c_int) -> core::ffi::c_int;
+}
+
 /// Take the protocol descriptor **out** of the stdin slot and leave the null
 /// device in its place, before any test code runs.
 ///
@@ -153,11 +161,12 @@ unsafe extern "system" {
 /// So the slot's identity is destroyed rather than merely read:
 ///
 /// 1. reclaim the descriptor the parent put in the stdin slot;
-/// 2. duplicate it onto a descriptor of our own — Windows `try_clone` duplicates
-///    without inheritance, POSIX `try_clone` uses `F_DUPFD_CLOEXEC`, so in both
-///    cases no child can ever receive the duplicate;
-/// 3. close the original, which is the inheritable/inherited one; and
-/// 4. reopen the stdin slot onto the null device.
+/// 2. duplicate it onto a descriptor of our own that no child can receive —
+///    Windows `try_clone` is a `DuplicateHandle` with `bInheritHandle = FALSE`;
+///    POSIX `try_clone` is `fcntl(F_DUPFD_CLOEXEC, 3)`, close-on-exec and never
+///    in a std slot; then
+/// 3. put the null device in the stdin slot, which also disposes of the original:
+///    `SetStdHandle(STD_INPUT_HANDLE, NUL)` on Windows, `dup2(nul, 0)` on POSIX.
 ///
 /// After this the protocol lives on a descriptor with **no name a program can
 /// reach and no standard slot a child can inherit**, so the property holds
@@ -165,6 +174,13 @@ unsafe extern "system" {
 /// that spawns with inherited stdin. Fixing `proc_spawn` to null its stdin would
 /// work today and silently re-break on the next such builtin (and is outside this
 /// crate anyway).
+///
+/// On BOTH platforms a grandchild now inherits the null device as its stdin,
+/// however it is spawned. Getting that right on POSIX needs `dup2` specifically,
+/// not a close-then-reopen: `File::open` always sets `O_CLOEXEC` and `Command`
+/// does no `dup2` for an inherited stdin, so a reopened fd 0 would be *closed* in
+/// the grandchild rather than `/dev/null` — still safe (`>&0` is `EBADF`) but a
+/// footgun, since the grandchild's next `open()` would land on descriptor 0.
 ///
 /// It also makes the "costs nothing" claim actually true: a test's `read_line`
 /// reads the null device and gets a clean EOF, exactly as it did when the runner
@@ -198,21 +214,32 @@ fn take_protocol_channel() -> Option<File> {
 
 #[cfg(unix)]
 fn take_protocol_channel() -> Option<File> {
+    use std::mem::ManuallyDrop;
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let inherited = unsafe { File::from_raw_fd(0) };
-    // `try_clone` -> `F_DUPFD_CLOEXEC`: close-on-exec, so a grandchild (fork+exec)
-    // never inherits the duplicate.
+    // Borrow fd 0 rather than owning it: `dup2` below closes it for us, and an
+    // owning `File` would then close the null device we just installed there.
+    let inherited = ManuallyDrop::new(unsafe { File::from_raw_fd(0) });
+    // `try_clone` -> `fcntl(F_DUPFD_CLOEXEC, 3)`: close-on-exec, so a grandchild
+    // (fork+exec) never inherits the duplicate, and the minimum of 3 means it can
+    // never land in a std slot. Done before the `dup2` below, so fd 0 is free to
+    // overwrite.
     let private = inherited.try_clone().ok()?;
-    // Close fd 0, then reopen it. POSIX guarantees `open` returns the lowest free
-    // descriptor — which is 0 now — and this runs before any test code, while the
-    // process is still single-threaded, so nothing can race us for it.
-    drop(inherited);
+
+    // Replace fd 0 with the null device ATOMICALLY. `dup2` closes the pipe
+    // currently at fd 0 and installs the new descriptor in one step — no window in
+    // which fd 0 is unallocated — and, critically, the descriptor it creates does
+    // NOT carry `O_CLOEXEC`. That matters: `File::open` always sets `O_CLOEXEC`,
+    // and `Command`'s `Stdio::Inherit` performs no `dup2` for stdin, so a
+    // close-then-reopen would leave a grandchild with fd 0 CLOSED rather than
+    // `/dev/null` — safe (`>&0` is EBADF) but a classic footgun, since the
+    // grandchild's next `open()` would land on descriptor 0.
     let nul = File::open("/dev/null").ok()?;
-    if nul.as_raw_fd() != 0 {
+    if unsafe { dup2(nul.as_raw_fd(), 0) } != 0 {
         return None;
     }
-    std::mem::forget(nul);
+    // fd 0 owns its own copy now, so this only closes the temporary.
+    drop(nul);
     Some(private)
 }
 
