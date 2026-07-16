@@ -9,6 +9,18 @@
 //! builds the Mach-O container plus the macOS freestanding entry stub's symbol
 //! (`start`).
 //!
+//! # `--debug` (DWARF)
+//!
+//! With `--debug`, `native_object_dwarf.rs` attaches the DWARF sections and their
+//! relocations to the model before it reaches this writer. Here that means the
+//! `__debug_*` sections are placed in the `__DWARF` segment with `S_ATTR_DEBUG`,
+//! relocations are emitted **per section** rather than only for `__text`, and the
+//! DWARF address fields use `X86_64_RELOC_UNSIGNED` (`r_length` = 3, `r_pcrel` =
+//! 0). Mach-O DWARF needs no section-offset relocations — `ld64` leaves each
+//! object's DWARF intact for `dsymutil` rather than concatenating it — so that
+//! relocation kind never reaches this writer. Without `--debug` the model carries
+//! no debug section or relocation and the bytes are byte-for-byte unchanged.
+//!
 //! # Verification honesty
 //!
 //! This is a Windows host: the emitted object is verified *structurally* (magic,
@@ -17,7 +29,9 @@
 //! verification is deferred to the cross-platform CI of the Phase 9 roadmap.
 //! x86-64 only; ARM64 (`arm64`) Mach-O is a separate future effort.
 
-use crate::object_model::{ObjectModel, ObjectRelocationKind, ObjectSectionKind, ObjectSymbolKind};
+use crate::object_model::{
+    DwarfSection, ObjectModel, ObjectRelocationKind, ObjectSectionKind, ObjectSymbolKind,
+};
 
 // -- Mach-O constants --------------------------------------------------------
 
@@ -56,12 +70,22 @@ const RELOC_SIZE: u64 = 8;
 const S_ZEROFILL: u32 = 0x1;
 /// `S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS` — an executable section.
 const S_TEXT_ATTRS: u32 = 0x8000_0000 | 0x0000_0400;
+/// `S_ATTR_DEBUG` — a debug section. `ld64` does not merge these into the linked
+/// image; it records a per-object `OSO` entry and leaves `dsymutil` to collect
+/// each object's DWARF, which is why the DWARF here needs no section-offset
+/// relocations (see `ObjectRelocationKind::SectionOffset32`).
+const S_ATTR_DEBUG: u32 = 0x0200_0000;
+
+/// The Mach-O segment every DWARF section lives in.
+const DWARF_SEGMENT: &str = "__DWARF";
 
 /// `N_EXT` — external symbol bit.
 const N_EXT: u8 = 0x01;
 /// `N_SECT` — symbol defined in a section.
 const N_SECT: u8 = 0x0e;
 
+/// `X86_64_RELOC_UNSIGNED` — an absolute (non-PC-relative) reference.
+const X86_64_RELOC_UNSIGNED: u32 = 0;
 /// `X86_64_RELOC_SIGNED` — signed 32-bit PC-relative (RIP-relative data ref).
 const X86_64_RELOC_SIGNED: u32 = 1;
 /// `X86_64_RELOC_BRANCH` — a `call`/`jmp` branch relocation.
@@ -80,24 +104,38 @@ struct PlannedSection {
     flags: u32,
     /// The raw bytes (empty for zerofill).
     bytes: Vec<u8>,
-    /// Whether this section owns the `__text` relocations.
-    is_text: bool,
+    /// File offset of this section's `relocation_info` array (0 when it has none).
+    reloff: u32,
+    /// How many relocations this section has.
+    nreloc: u32,
+    /// Index of the originating model section, so the emitter can find its
+    /// relocations again after planning.
+    model_index: usize,
+}
+
+/// The `__DWARF` section name for a DWARF section.
+fn dwarf_sectname(section: DwarfSection) -> &'static str {
+    match section {
+        DwarfSection::Line => "__debug_line",
+        DwarfSection::Info => "__debug_info",
+        DwarfSection::Abbrev => "__debug_abbrev",
+    }
 }
 
 /// Serialize `model` into a relocatable Mach-O x86-64 object.
 pub fn write_macho64(model: &ObjectModel) -> Vec<u8> {
-    let text_index = model.text_section_index();
-    let text_relocs = &model.sections[text_index].relocations;
-    let nreloc = text_relocs.len() as u32;
-
     // -- Plan sections (vm addresses laid out contiguously from 0) ----------
     let mut planned: Vec<PlannedSection> = Vec::new();
     let mut vm_cursor: u64 = 0;
-    for section in &model.sections {
-        let (sectname, segname, align_log2, flags, is_text) = match section.kind {
-            ObjectSectionKind::Text => ("__text", "__TEXT", 4u32, S_TEXT_ATTRS, true),
-            ObjectSectionKind::ReadOnlyData => ("__const", "__TEXT", 0u32, 0u32, false),
-            ObjectSectionKind::Bss => ("__bss", "__DATA", 4u32, S_ZEROFILL, false),
+    for (model_index, section) in model.sections.iter().enumerate() {
+        let (sectname, segname, align_log2, flags) = match section.kind {
+            ObjectSectionKind::Text => ("__text", "__TEXT", 4u32, S_TEXT_ATTRS),
+            ObjectSectionKind::ReadOnlyData => ("__const", "__TEXT", 0u32, 0u32),
+            ObjectSectionKind::Bss => ("__bss", "__DATA", 4u32, S_ZEROFILL),
+            // DWARF is a byte stream, so alignment 1 (log2 = 0).
+            ObjectSectionKind::Debug(dwarf) => {
+                (dwarf_sectname(dwarf), DWARF_SEGMENT, 0u32, S_ATTR_DEBUG)
+            }
         };
         let align = 1u64 << align_log2;
         vm_cursor = align_up(vm_cursor, align);
@@ -115,7 +153,9 @@ pub fn write_macho64(model: &ObjectModel) -> Vec<u8> {
             align: align_log2,
             flags,
             bytes,
-            is_text,
+            reloff: 0, // filled during file layout
+            nreloc: section.relocations.len() as u32,
+            model_index,
         });
         vm_cursor += section.size;
     }
@@ -144,10 +184,17 @@ pub fn write_macho64(model: &ObjectModel) -> Vec<u8> {
     }
     let seg_filesize = file_cursor - seg_fileoff;
 
-    // Relocations follow the section data.
+    // Relocations follow the section data: one `relocation_info` array per
+    // relocated section, in section order. Without `--debug` only `__text` has
+    // any, so this lays out exactly the single array it did before.
     file_cursor = align_up(file_cursor, 8);
-    let reloff = file_cursor as u32;
-    file_cursor += u64::from(nreloc) * RELOC_SIZE;
+    for section in planned.iter_mut() {
+        if section.nreloc == 0 {
+            continue;
+        }
+        section.reloff = file_cursor as u32;
+        file_cursor += u64::from(section.nreloc) * RELOC_SIZE;
+    }
 
     // Symbol table (nlist_64 array) follows the relocations.
     file_cursor = align_up(file_cursor, 8);
@@ -228,13 +275,8 @@ pub fn write_macho64(model: &ObjectModel) -> Vec<u8> {
         push_u64(&mut out, section.size);
         push_u32(&mut out, section.offset);
         push_u32(&mut out, section.align);
-        if section.is_text && nreloc > 0 {
-            push_u32(&mut out, reloff);
-            push_u32(&mut out, nreloc);
-        } else {
-            push_u32(&mut out, 0); // reloff
-            push_u32(&mut out, 0); // nreloc
-        }
+        push_u32(&mut out, section.reloff);
+        push_u32(&mut out, section.nreloc);
         push_u32(&mut out, section.flags);
         push_u32(&mut out, 0); // reserved1
         push_u32(&mut out, 0); // reserved2
@@ -280,27 +322,41 @@ pub fn write_macho64(model: &ObjectModel) -> Vec<u8> {
         out.extend_from_slice(&section.bytes);
     }
 
-    // Relocations for `__text`.
-    pad_to(&mut out, u64::from(reloff));
-    for reloc in text_relocs {
-        let r_type = match reloc.kind {
-            ObjectRelocationKind::Branch => X86_64_RELOC_BRANCH,
-            ObjectRelocationKind::PcRel32 => X86_64_RELOC_SIGNED,
-            // The Mach-O writer is x86-64 only; AArch64 programs are always
-            // emitted as ELF, so an AArch64 branch relocation can never reach a
-            // Mach-O container by construction.
-            ObjectRelocationKind::Aarch64Call26 => {
-                panic!("the Mach-O writer is x86-64 only; AArch64 objects are emitted as ELF")
-            }
-        };
-        // r_pcrel = 1, r_length = 2 (4 bytes), r_extern = 1.
-        let packed: u32 = (reloc.symbol as u32 & 0x00FF_FFFF)
-            | (1 << 24) // r_pcrel
-            | (2 << 25) // r_length = 2
-            | (1 << 27) // r_extern
-            | (r_type << 28);
-        push_u32(&mut out, reloc.offset as u32); // r_address
-        push_u32(&mut out, packed);
+    // Relocations, one array per relocated section (matching the layout above).
+    for section in &planned {
+        if section.nreloc == 0 {
+            continue;
+        }
+        pad_to(&mut out, u64::from(section.reloff));
+        for reloc in &model.sections[section.model_index].relocations {
+            // (r_type, r_pcrel, r_length): the code relocations are 4-byte
+            // PC-relative fixups; the DWARF address relocation is an 8-byte
+            // absolute address (`DW_LNE_set_address` / `DW_AT_low_pc`).
+            let (r_type, r_pcrel, r_length) = match reloc.kind {
+                ObjectRelocationKind::Branch => (X86_64_RELOC_BRANCH, 1, 2),
+                ObjectRelocationKind::PcRel32 => (X86_64_RELOC_SIGNED, 1, 2),
+                ObjectRelocationKind::Absolute64 => (X86_64_RELOC_UNSIGNED, 0, 3),
+                // The Mach-O writer is x86-64 only; AArch64 programs are always
+                // emitted as ELF, so an AArch64 branch relocation can never reach
+                // a Mach-O container by construction.
+                ObjectRelocationKind::Aarch64Call26 => {
+                    panic!("the Mach-O writer is x86-64 only; AArch64 objects are emitted as ELF")
+                }
+                // Section-offset relocations are an ELF-only need: `ld64` keeps
+                // each object's DWARF intact rather than concatenating it, so the
+                // DWARF emitter never attaches one to a Mach-O model.
+                ObjectRelocationKind::SectionOffset32 => {
+                    panic!("Mach-O DWARF is object-local and needs no section-offset relocations")
+                }
+            };
+            let packed: u32 = (reloc.symbol as u32 & 0x00FF_FFFF)
+                | (r_pcrel << 24)
+                | (r_length << 25)
+                | (1 << 27) // r_extern: r_symbolnum is a symbol table index
+                | (r_type << 28);
+            push_u32(&mut out, reloc.offset as u32); // r_address
+            push_u32(&mut out, packed);
+        }
     }
 
     // Symbol table.

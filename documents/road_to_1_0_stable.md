@@ -108,8 +108,9 @@ collections, math, fs, io, time, os, (maybe net) — and mark each item **stable
 **extended/experimental**. Do this near the finish line, informed by dogfooding.
 
 ### B3. "Stable"-grade toolchain — **PARTIALLY SHIPPED**
-Before stamping "stable": a built-in **test runner**, **debug info on Linux/macOS**
-(DWARF — CodeView is Windows-only today), and **LSP + package-manager maturity**.
+Before stamping "stable": a built-in **test runner** (SHIPPED), **debug info on
+Linux/macOS** (DWARF source lines — SHIPPED; CodeView was Windows-only), and
+**LSP + package-manager maturity** (still planned).
 These are toolchain-completeness items, not language decisions.
 
 - **Test runner — SHIPPED; both containment gaps now CLOSED.**
@@ -219,7 +220,13 @@ These are toolchain-completeness items, not language decisions.
   name string. It is **not** scheduled: the convention is specified in
   `language_surface.md` and ships in released binaries, so changing it is a
   breaking surface change and an owner decision.
-- **DWARF debug info + LSP/package-manager maturity — still PLANNED.**
+- **DWARF debug info — SHIPPED (source lines).** `--debug`/`-g` now emits DWARF
+  `.debug_line`/`.debug_info`/`.debug_abbrev` on the ELF and Mach-O targets, at
+  the same per-function granularity CodeView already gave COFF. Verified by
+  decoding the output with `gimli` (an independent DWARF reader) on both formats,
+  and once end-to-end through `rust-lld` → linked binary → `gimli`. Variables,
+  types, and frame/CFI info remain deferred.
+- **LSP/package-manager maturity — still PLANNED.**
 
 ---
 
@@ -233,7 +240,7 @@ These are toolchain-completeness items, not language decisions.
 | A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
 | B1 | Closures native codegen | PLANNED | schedule post-arena | — |
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
-| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolation now COMPLETE — subprocess + process-tree kill + per-test `--timeout` (default 60s) contain stack-overflow, non-terminating AND grandchild-spawning tests, pinned by suite19 (incl. a wall-clock bound), +12ms/+22ms overhead on the all-passing path; results reported on a private pipe whose stdin slot is reopened onto the null device, so it has no name a program can reach and no slot a child can inherit (a nonce in argv was not secret; a reclaimed-but-not-reopened slot was inherited by `proc_spawn` grandchildren); remaining uncontained: machine-wide resource exhaustion (reachable), a descendant that leaves the tree, `spawn`-thread blame misattribution, crash-vs-timeout attribution under a sub-teardown deadline; `test --backend` (AST-only), DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
+| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolation now COMPLETE — subprocess + process-tree kill + per-test `--timeout` (default 60s) contain stack-overflow, non-terminating AND grandchild-spawning tests, pinned by suite19 (incl. a wall-clock bound), +12ms/+22ms overhead on the all-passing path; results reported on a private pipe whose stdin slot is reopened onto the null device, so it has no name a program can reach and no slot a child can inherit (a nonce in argv was not secret; a reclaimed-but-not-reopened slot was inherited by `proc_spawn` grandchildren); remaining uncontained: machine-wide resource exhaustion (reachable), a descendant that leaves the tree, `spawn`-thread blame misattribution, crash-vs-timeout attribution under a sub-teardown deadline. **DWARF source lines SHIPPED** (ELF+Mach-O, `--debug`/`-g`, opt-in and byte-identical without it; decoded independently by `gimli` and by GNU readelf, and linked+decoded end-to-end; suite20 — variables/types/CFI deferred, and CFI is the biggest remaining gap for real debugging). `test --backend` (AST-only) and LSP/pkg maturity remain; a live gdb/lldb session awaits a Linux job (this repo has no CI — the POSIX/ELF paths are verified by inspection, cross-lint and independent decoders, never executed). `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-17 |
 
 ## Owner decisions — 2026-07-16
 

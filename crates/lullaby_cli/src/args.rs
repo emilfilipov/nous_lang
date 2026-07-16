@@ -28,9 +28,10 @@ pub(crate) struct Invocation {
     /// OS import (`kernel32!ExitProcess`) needed to terminate. Ignored by every
     /// command other than `native`.
     pub(crate) freestanding: bool,
-    /// Emit native source-line debug info (`lullaby native --debug` / `-g`). Adds
-    /// a CodeView `.debug$S` section mapping each function's entry offset to its
-    /// `.lby` source line. Ignored by every command other than `native`.
+    /// Emit native source-line debug info (`lullaby native --debug` / `-g`),
+    /// mapping each function's entry offset to its `.lby` source line. The format
+    /// follows the target's object container: a CodeView `.debug$S` section on
+    /// COFF, DWARF on ELF/Mach-O. Ignored by every command other than `native`.
     pub(crate) debug: bool,
     /// The native object-file target triple (`lullaby native --target <triple>`).
     /// `None` selects the default `x86_64-pc-windows-msvc` (COFF). The other
@@ -355,8 +356,9 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 cursor += 1;
             }
             "--debug" | "-g" => {
-                // Native source-line debug info only. Adds a CodeView `.debug$S`
-                // section; without it the object bytes are unchanged.
+                // Native source-line debug info only: a CodeView `.debug$S` section
+                // on COFF, DWARF on ELF/Mach-O. Without it the object bytes are
+                // unchanged on every target.
                 if command != "native" {
                     return Err(usage);
                 }

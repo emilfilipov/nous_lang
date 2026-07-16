@@ -9,9 +9,11 @@
 //! (ELF + `exit` syscall), and macOS (Mach-O + `exit` syscall).
 //!
 //! This module captures the container-neutral part of that image: a list of
-//! sections (`.text`, `.rodata`, `.bss`), a flat symbol table, and per-section
-//! relocations. [`crate::native_object`] builds an [`ObjectModel`] from the
-//! lowered functions with a platform-appropriate freestanding entry stub, and
+//! sections (`.text`, `.rodata`, `.bss`, plus the DWARF `.debug_*` sections when
+//! `--debug` is requested), a flat symbol table, and per-section relocations.
+//! [`crate::native_object`] builds an [`ObjectModel`] from the lowered functions
+//! with a platform-appropriate freestanding entry stub, then (only under
+//! `--debug`) `native_object_dwarf.rs` attaches the debug sections to it, and
 //! [`crate::elf_object`] / [`crate::macho_object`] serialize it into the
 //! respective container.
 //!
@@ -29,9 +31,39 @@
 //! cross-platform CI described in the Phase 9 roadmap. See
 //! `documents/native_backend_contract.md`.
 
-/// The kind of a section in the neutral model. The three kinds map to the
-/// concrete section flags of each container (`SHT_PROGBITS`/`SHT_NOBITS` for
-/// ELF, `S_REGULAR`/`S_ZEROFILL` for Mach-O).
+/// One of the DWARF debug sections the `--debug` path emits. Each maps to a
+/// concrete container section name (`.debug_line` / `__debug_line` in the
+/// `__DWARF` segment, and so on). See `native_object_dwarf.rs` for the contents
+/// and `documents/native_backend_contract.md` for the rationale behind this
+/// particular (minimal, line-table-oriented) set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DwarfSection {
+    /// `.debug_line` — the line-number program: the load-bearing table that maps
+    /// each compiled function's entry address to its `.lby` declaration line.
+    Line,
+    /// `.debug_info` — a single compile unit DIE plus one `DW_TAG_subprogram`
+    /// child per compiled function. Needed for the line table to be reachable: a
+    /// consumer finds `.debug_line` through the CU's `DW_AT_stmt_list`.
+    Info,
+    /// `.debug_abbrev` — the abbreviation table `.debug_info`'s DIEs are encoded
+    /// against.
+    Abbrev,
+}
+
+impl DwarfSection {
+    /// The ELF section name (the Mach-O writer derives `__debug_*` from this).
+    pub fn elf_name(self) -> &'static str {
+        match self {
+            DwarfSection::Line => ".debug_line",
+            DwarfSection::Info => ".debug_info",
+            DwarfSection::Abbrev => ".debug_abbrev",
+        }
+    }
+}
+
+/// The kind of a section in the neutral model. The kinds map to the concrete
+/// section flags of each container (`SHT_PROGBITS`/`SHT_NOBITS` for ELF,
+/// `S_REGULAR`/`S_ZEROFILL`/`S_ATTR_DEBUG` for Mach-O).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectSectionKind {
     /// Executable machine code (`.text` / `__text`). Read + execute.
@@ -42,6 +74,10 @@ pub enum ObjectSectionKind {
     /// Zero-initialized data (`.bss` / `__bss`) — the bump-heap region and its
     /// next-pointer cell. Occupies no bytes in the object file; only a size.
     Bss,
+    /// A DWARF debug section. Non-allocated (it occupies file space but no memory
+    /// image), present only when `--debug` was requested. Without `--debug` no
+    /// section of this kind exists, so the object bytes are unchanged.
+    Debug(DwarfSection),
 }
 
 /// The instruction-set architecture an [`ObjectModel`]'s machine code targets.
@@ -69,6 +105,25 @@ pub enum ObjectRelocationKind {
     /// An AArch64 `bl` call site: patch the 26-bit branch immediate of the
     /// instruction word at `offset` (ELF `R_AARCH64_CALL26` = 283, addend 0).
     Aarch64Call26,
+    /// An 8-byte **absolute** address of the referenced symbol (ELF
+    /// `R_X86_64_64`, Mach-O `X86_64_RELOC_UNSIGNED` with `r_length` = 3 and
+    /// `r_pcrel` = 0). Emitted only by the DWARF path, for `.debug_line`'s
+    /// `DW_LNE_set_address` operand and `.debug_info`'s `DW_AT_low_pc`, which
+    /// name a function's runtime address rather than a displacement.
+    Absolute64,
+    /// A 4-byte **section-relative offset**: the field holds an offset from the
+    /// start of the referenced symbol's section (ELF `R_X86_64_32`, addend 0,
+    /// against an `ObjectSymbolKind::Section` symbol).
+    ///
+    /// Emitted only into `.debug_info` (for its `debug_abbrev_offset` header
+    /// field and the CU's `DW_AT_stmt_list`), and only on ELF. A static linker
+    /// concatenates `.debug_abbrev`/`.debug_line` across objects, so those two
+    /// offsets must be rebased by the linker or they would silently address
+    /// another object's DWARF. Mach-O needs no counterpart: `ld64` does not merge
+    /// DWARF into the linked image (it records per-object `OSO` stabs and leaves
+    /// `dsymutil` to read each object's self-contained DWARF), so the offsets
+    /// stay object-local and correct as written.
+    SectionOffset32,
 }
 
 /// A relocation within one section: patch the 4-byte little-endian field at
@@ -111,6 +166,15 @@ pub enum ObjectSymbolKind {
     Function,
     /// A data object (a string constant or a `.bss` cell).
     Data,
+    /// A **section** symbol: names the start of its defining section rather than
+    /// a program entity (ELF `STT_SECTION`, `STB_LOCAL`, empty `st_name`).
+    ///
+    /// Only the ELF DWARF path creates these, as the referent of a
+    /// [`ObjectRelocationKind::SectionOffset32`]. They are `STB_LOCAL`, so the
+    /// ELF writer must order them ahead of every global symbol (ELF requires all
+    /// locals to precede all globals, with `.symtab`'s `sh_info` pointing at the
+    /// first global).
+    Section,
 }
 
 /// A symbol in the neutral model. Every emitted symbol is global (external) — a

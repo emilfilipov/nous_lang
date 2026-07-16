@@ -107,9 +107,11 @@ pub(crate) fn native_file(
     let (module, _report) = optimize(&module, &OptimizationConfig::inlining());
     let bytecode = lower_to_bytecode(&module);
 
-    // With `--debug`, emit a CodeView `.debug$S` section that maps each compiled
-    // function's entry offset to its `.lby` source declaration line. Without it,
-    // the object bytes are byte-for-byte identical to the default native path.
+    // With `--debug`, emit source-line debug info mapping each compiled function's
+    // entry offset to its `.lby` source declaration line — a CodeView `.debug$S`
+    // section on COFF, DWARF on ELF/Mach-O (the emitter picks by container).
+    // Without it, the object bytes are byte-for-byte identical to the default
+    // native path on every target.
     let debug_options = debug.then(|| DebugOptions {
         source_file: compiled.path.display().to_string(),
     });
@@ -275,8 +277,17 @@ pub(crate) fn native_file(
         );
     }
     if debug {
+        // The debug format follows the object container: CodeView is what the
+        // Windows link+debug toolchain folds into a PDB, DWARF is what Linux/macOS
+        // debuggers read. Both carry the same per-function `.lby` line mapping.
+        let format = match target.object_format {
+            NativeObjectFormat::Coff => "CodeView `.debug$S`",
+            NativeObjectFormat::Elf | NativeObjectFormat::MachO => {
+                "DWARF `.debug_line`/`.debug_info`/`.debug_abbrev`"
+            }
+        };
         println!(
-            "debug info: CodeView `.debug$S` source-line table emitted (per-function `.lby` line mapping)"
+            "debug info: {format} source-line table emitted (per-function `.lby` line mapping)"
         );
     }
     if !is_coff {

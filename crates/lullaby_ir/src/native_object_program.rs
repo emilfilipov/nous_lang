@@ -92,17 +92,28 @@ pub const NATIVE_ENTRY_SYMBOL: &str = "_lullaby_start";
 
 /// Options for emitting native source-line debug info (`lullaby native --debug`).
 ///
-/// When present, the emitter adds a CodeView `.debug$S` section carrying a
-/// per-function line-number table that maps each compiled function's entry code
-/// offset to its `.lby` source declaration line, plus the source file name. A
-/// debugger (or `llvm-pdbutil`) can then place a breakpoint at a function and
-/// show the corresponding source line. Without these options the object bytes are
-/// byte-for-byte unchanged (no `.debug$S` section), so existing snapshot and
-/// structural tests are unaffected.
+/// When present, the emitter adds a per-function line-number table mapping each
+/// compiled function's entry code offset to its `.lby` source declaration line,
+/// plus the source file name, so a debugger can place a breakpoint at a function
+/// and show the corresponding source line.
+///
+/// The **format follows the object container**, since each platform's debug
+/// toolchain reads its own:
+///
+/// - **COFF** → a CodeView `.debug$S` section, which `rust-lld`/`link.exe` fold
+///   into a PDB and `llvm-pdbutil`/WinDbg consume. See `native_object_writers.rs`.
+/// - **ELF / Mach-O** → DWARF (`.debug_line` + `.debug_info` + `.debug_abbrev`),
+///   which gdb/lldb consume. See `native_object_dwarf.rs`.
+///
+/// Both carry the same information (per-function lines) and both are strictly
+/// opt-in: without these options the object bytes are byte-for-byte unchanged on
+/// every target, so existing snapshot and structural tests are unaffected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DebugOptions {
-    /// The `.lby` source file path recorded in the CodeView file table. Shown by a
-    /// debugger as the source file for the compiled functions.
+    /// The `.lby` source file path recorded in the debug info's file table (the
+    /// CodeView string table, or the DWARF line-program file table and the
+    /// compile unit's `DW_AT_name`). Shown by a debugger as the source file for
+    /// the compiled functions.
     pub source_file: String,
 }
 
@@ -378,12 +389,26 @@ pub fn emit_native_program_for_target(
                 (bytes, entry)
             }
             NativeObjectFormat::Elf => {
-                let model = build_object_model(&lowered, &strings, entry_stub, PlatformAbi::Linux);
+                let mut model =
+                    build_object_model(&lowered, &strings, entry_stub, PlatformAbi::Linux);
+                attach_dwarf_line_info(
+                    &mut model,
+                    debug,
+                    &dwarf_function_lines(&lowered),
+                    PlatformAbi::Linux,
+                );
                 let entry = model.entry_symbol.clone().unwrap_or_default();
                 (elf_object::write_elf64(&model), entry)
             }
             NativeObjectFormat::MachO => {
-                let model = build_object_model(&lowered, &strings, entry_stub, PlatformAbi::MacOs);
+                let mut model =
+                    build_object_model(&lowered, &strings, entry_stub, PlatformAbi::MacOs);
+                attach_dwarf_line_info(
+                    &mut model,
+                    debug,
+                    &dwarf_function_lines(&lowered),
+                    PlatformAbi::MacOs,
+                );
                 let entry = model.entry_symbol.clone().unwrap_or_default();
                 (macho_object::write_macho64(&model), entry)
             }

@@ -18,7 +18,7 @@ Overall maturity at a glance:
 | Language Server (LSP) | **Adequate** | Usable core with completion; still needs a shipped editor client |
 | Package manager / project system | **Adequate for 1.0** | Local-path project system is complete and honest; registry is correctly post-1.0 |
 | Test runner | **Adequate-minus** | Real and correct; needs filtering + multi-backend, both small |
-| Debug info | **Incomplete** | Windows-only, function-granularity; Linux/macOS DWARF is a real gap |
+| Debug info | **Adequate-minus** | Function-granularity source lines now on **all three** OSes (CodeView on COFF, DWARF on ELF/Mach-O); per-statement lines, variables/types, and CFI remain |
 
 ---
 
@@ -247,21 +247,27 @@ backend coverage), each small, none deep.
   info beyond what the ABI implies.
 
 ### What is missing
-- **DWARF for Linux/macOS — entirely absent.** ELF/Mach-O objects get no debug
-  section. This is the headline B3 gap: native debugging on the two Unix targets
-  is impossible today (`gdb`/`lldb` see nothing).
+- ~~**DWARF for Linux/macOS — entirely absent.**~~ **RESOLVED 2026-07-17.**
+  `--debug`/`-g` now emits DWARF `.debug_line` + `.debug_info` (with per-function
+  `DW_TAG_subprogram` DIEs) + `.debug_abbrev` on the ELF and Mach-O targets, at
+  the same function granularity CodeView gives COFF. `gdb`/`lldb` can break at a
+  function and show its `.lby` line.
 - **Per-statement line tables** on *all* targets (only function-entry lines
-  exist), so even on Windows you cannot step line-by-line.
+  exist), so you cannot step line-by-line on any OS.
 - **Variable/parameter/type debug info** (locals in the debugger) on all targets.
+- **Frame/CFI info** (`.eh_frame`/`.debug_frame`) on all targets — the largest
+  remaining gap for a real debugging session: a debugger cannot reliably unwind a
+  Lullaby stack.
 
 ### 1.0-required (prioritized)
-1. **DWARF `.debug_line` (per-statement line table) for ELF + Mach-O.** This is
-   the B3 line item and the real bar: line-level stepping + accurate stack traces
-   on Linux/macOS. Substantial native-codegen work — a tracked backlog item, not
-   an audit fix.
-2. **Function-level DWARF symbols** (`.debug_info` with subprograms) so `gdb`/
-   `lldb` show function names and can break on them — parity with today's Windows
-   CodeView, on Unix.
+1. ~~**DWARF line table + function-level subprogram DIEs for ELF + Mach-O.**~~
+   **SHIPPED 2026-07-17** at function granularity — `gdb`/`lldb` now break on a
+   function and show its source line on Linux/macOS, at parity with Windows
+   CodeView. Verified by decoding the emitted DWARF with `gimli` (an independent
+   reader) and once end-to-end through `rust-lld` → linked binary → `gimli`; a
+   live debugger session is deferred to the Phase 9 cross-platform CI.
+2. **Per-statement line records** on all three targets, so stepping is
+   line-by-line rather than function-by-function. Now the top debug-info gap.
 
 ### Post-1.0 nice-to-have
 - Full local-variable/type DWARF (DWARF DIEs for locals), CFI/unwind tables for
@@ -274,7 +280,9 @@ backend coverage), each small, none deep.
 ## Consolidated B3 backlog (what actually gates "stable")
 
 **Must-do for 1.0-stable (roughly ordered by leverage):**
-1. **DWARF line tables (ELF + Mach-O)** — the explicit B3 item; largest effort.
+1. ~~**DWARF line tables (ELF + Mach-O)**~~ — **DONE 2026-07-17** at function
+   granularity (`.debug_line`/`.debug_info`/`.debug_abbrev`, `gimli`-verified).
+   Per-statement records, variables/types, and CFI remain (post-1.0 below).
 2. **A shipped editor client** (VS Code extension + grammar) fronting the LSP.
 3. **LSP completion** — **DONE.** `textDocument/completion` offers keywords,
    in-file declarations + enclosing-function locals/parameters, and imported
@@ -296,6 +304,8 @@ fixtures; full variable-level DWARF + CFI.
 **Bottom line:** the package/project system is the closest to stable-grade and
 appropriately scoped. The LSP and test runner are real and correct but need a
 short, well-defined list of additions (an editor client, completion, cross-file,
-test filtering/backends) to feel 1.0-credible. Debug info is the genuine
-engineering gap: DWARF on Linux/macOS is missing outright and is the load-bearing
-B3 item.
+test filtering/backends) to feel 1.0-credible. Debug info was the genuine
+engineering gap and its load-bearing half is now closed: source-line debug info
+exists on all three OSes (CodeView on Windows, DWARF on Linux/macOS). What
+remains there is depth, not presence — per-statement lines, variables/types, and
+CFI — and only per-statement lines is a plausible 1.0 ask.
