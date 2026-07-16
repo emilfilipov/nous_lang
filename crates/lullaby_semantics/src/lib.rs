@@ -7,6 +7,7 @@ use lullaby_parser::{
     UnaryOp, function_type, generic_type,
 };
 
+mod semantics_actor_ownership;
 mod semantics_aliases;
 mod semantics_consts;
 mod semantics_generics;
@@ -623,6 +624,7 @@ impl<'a> Checker<'a> {
                     TypeRef::new("void"),
                 );
                 self.check_function_body(&init.body, &mut scope, &synth);
+                self.check_message_ownership(&synth.name, &init.body);
             }
             // Each handler: check its parameter types and its body. A reply
             // handler's body must produce a value of the reply type.
@@ -653,6 +655,7 @@ impl<'a> Checker<'a> {
                     return_type.clone(),
                 );
                 let block_type = self.check_function_body(&handler.body, &mut scope, &synth);
+                self.check_message_ownership(&synth.name, &handler.body);
                 if !return_type.is_void() && block_type.as_ref() != Some(&return_type) {
                     self.diagnostics.push(SemanticDiagnostic::at(
                         "L0348",
@@ -917,7 +920,7 @@ impl<'a> Checker<'a> {
     /// the wire is exactly what lets per-actor reference counting stay
     /// non-atomic.
     fn check_sendable(&mut self, ty: &TypeRef, span: Span, function: &Function, context: &str) {
-        if let Some(offender) = first_non_sendable(ty) {
+        if let Some(offender) = self.first_non_sendable(ty) {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0353",
                 format!(
@@ -2018,6 +2021,11 @@ impl<'a> Checker<'a> {
 
         let block_type = self.check_function_body(&function.body, &mut scope, function);
         self.check_lifetimes(function);
+        // Move-by-default use-after-send analysis (concurrency stage 3): a
+        // non-copy value moved into a `tell`/`ask`/`spawn` message may not be used
+        // again (`L0357`). Runs after the body is type-checked so argument types
+        // are recorded.
+        self.check_message_ownership(&function.name, &function.body);
         let return_type = self.effective_return_type(function);
         if return_type.is_void() {
             return;
@@ -3914,30 +3922,6 @@ fn same_orderable_scalar(left: &Option<TypeRef>, right: &Option<TypeRef>) -> boo
 /// The actor name `T` of an `Actor<T>` handle spelling, if `ty` is one.
 fn actor_handle_target(ty: &TypeRef) -> Option<String> {
     ty.generic_arg("Actor").map(|inner| inner.name)
-}
-
-/// The first non-sendable type spelling embedded in `ty`, or `None` when every
-/// part of `ty` is sendable across an actor boundary. A non-atomic `rc<T>`, a
-/// borrowed `ref<T>`, and a raw `ptr<T>` are the non-sendable heads; everything
-/// else (scalars, `string`, `char`, `byte`, `Actor<T>` handles, and structural
-/// containers whose arguments are all sendable) is sendable. The check recurses
-/// into the type arguments of compound spellings so a `list<rc<i64>>` or a
-/// `result<i64, ptr<byte>>` is caught by its offending part.
-fn first_non_sendable(ty: &TypeRef) -> Option<String> {
-    let (head, args) = split_named_type(ty);
-    if matches!(head.as_str(), "rc" | "ref" | "ptr") {
-        return Some(ty.name.clone());
-    }
-    // Legacy `ptr_T` spelling produced by `alloc` is also a raw pointer.
-    if ty.name.starts_with("ptr_") {
-        return Some(ty.name.clone());
-    }
-    for arg in &args {
-        if let Some(offender) = first_non_sendable(arg) {
-            return Some(offender);
-        }
-    }
-    None
 }
 
 /// If `expr` is a resource-freeing call (`dealloc(x)` or `rc_release(x)`) whose

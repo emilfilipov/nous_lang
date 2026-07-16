@@ -1,0 +1,21 @@
+# Stage-3 message ownership: a scalar (`i64`) is a *copy* type, so passing it as
+# a message argument copies it — the sender keeps its value and may reuse it.
+# `n` is sent twice and then read locally, all with no use-after-send error.
+actor Adder
+    state
+        total i64
+
+    on add x i64
+        total += x
+
+    on report
+        println(to_string(total))
+
+fn main -> i64
+    let a Actor<Adder> = spawn Adder()
+    let n i64 = 7
+    tell a.add(n)
+    tell a.add(n)
+    println(to_string(n))
+    tell a.report()
+    0

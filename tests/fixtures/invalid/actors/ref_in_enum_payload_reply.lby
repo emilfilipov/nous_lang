@@ -1,0 +1,17 @@
+# Transitive sendability: a borrowed `ref<T>` hidden in an enum-variant payload
+# is not sendable, so an `ask` reply of that enum type is rejected at the handler
+# declaration. -> L0353
+enum Holder
+    Wrap ref<i64>
+    Empty
+
+actor Leak
+    state
+        n i64
+
+    on grab -> Holder
+        Empty
+
+fn main -> i64
+    let l Actor<Leak> = spawn Leak()
+    0

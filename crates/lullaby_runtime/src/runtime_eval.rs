@@ -2424,6 +2424,36 @@ impl<'a> Runtime<'a> {
             .ok_or_else(|| RuntimeError::new("L0406", format!("invalid pointer `{slot}`")))
     }
 
+    /// `share(v) -> shared<T>`: place `v` in the process-global immutable share
+    /// region and return a `shared<T>` handle to it (concurrency stage 3). The
+    /// region is never freed until the program exits, so the handle carries no
+    /// refcount — it is the atomic-rc immutable share (deeply read-only, so no
+    /// `shared_set` exists). The handle is a `Value::Ptr` into the same abstract
+    /// heap used by `rc`/`alloc`; the type checker keeps `shared` and `rc`/`ptr`
+    /// handles from being confused (each has its own accessor family), and a
+    /// `shared<T>` value crossing an actor boundary is a copy of the address, so
+    /// several actors can read the one immutable value with no per-actor
+    /// refcount traffic.
+    pub(crate) fn builtin_share(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [value]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("share", 1, args.len()))?;
+        self.heap.push(Some(value));
+        Ok(Value::Ptr(self.heap.len() - 1))
+    }
+
+    /// `shared_get(s) -> T`: read the immutable value behind a `shared<T>` handle.
+    pub(crate) fn builtin_shared_get(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let [handle]: [Value; 1] = args
+            .try_into()
+            .map_err(|args: Vec<Value>| Self::wrong_arity("shared_get", 1, args.len()))?;
+        let slot = handle.as_ptr()?;
+        self.heap
+            .get(slot)
+            .and_then(|value| value.clone())
+            .ok_or_else(|| RuntimeError::new("L0406", format!("invalid `shared` handle `{slot}`")))
+    }
+
     pub(crate) fn wrong_arity(name: &str, expected: usize, actual: usize) -> RuntimeError {
         RuntimeError::new(
             "L0405",
