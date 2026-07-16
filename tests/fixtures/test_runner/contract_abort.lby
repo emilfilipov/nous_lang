@@ -1,0 +1,27 @@
+# Test-runner fixture: an A5 contract violation in the MIDDLE of a suite must
+# not terminate the run. `test_b_bounds` trips a bounds failure and `test_d_div`
+# divides by zero. Both must be reported as ordinary failures with the remaining
+# tests still running, for a final `3 passed, 2 failed`.
+#
+# This fixture lives under `tests/fixtures/test_runner/` (not `valid/`) so the
+# top-level fixture harness does not sweep it onto every backend: it has no
+# `main` and is meant to FAIL, by design.
+
+fn test_a_passes -> void
+    assert(1 + 1 == 2)
+
+fn test_b_bounds -> void
+    let xs array<i64> = [1, 2, 3]
+    let bad i64 = xs[99]
+    assert(bad == 0)
+
+fn test_c_passes -> void
+    assert(2 + 2 == 4)
+
+fn test_d_div -> void
+    let zero i64 = 0
+    let bad i64 = 10 / zero
+    assert(bad == 0)
+
+fn test_e_passes -> void
+    assert(3 + 3 == 6)

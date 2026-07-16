@@ -1412,6 +1412,11 @@ mod suite15;
 #[path = "cli/suite16.rs"]
 mod suite16;
 
+// -- The built-in test runner (`lullaby test`): discovery, failure isolation,
+//    deterministic ordering, and `--filter` (road_to_1_0_stable B3)
+#[path = "cli/suite17.rs"]
+mod suite17;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

@@ -1,0 +1,39 @@
+# Test-runner fixture: discovery must select exactly the runnable zero-parameter
+# `test_*` functions, ignore non-test helpers entirely (no output at all), and
+# emit a `skip` line explaining each `test_*` function it cannot run.
+#
+# Lives under `tests/fixtures/test_runner/` so the top-level fixture harness does
+# not sweep it onto every backend: it has no `main`.
+
+# --- not tests: must be silently ignored (no PASS/FAIL/skip line) ---
+
+fn helper_adds a i64 b i64 -> i64
+    a + b
+
+fn not_a_test -> void
+    assert(true)
+
+# `test` is a prefix of `test_`, but this name does not start with `test_`.
+fn testing_helper -> void
+    assert(true)
+
+# --- runnable tests: source order is the run order ---
+
+fn test_one -> void
+    assert(helper_adds(1, 2) == 3)
+
+fn test_two -> bool
+    assert(helper_adds(2, 2) == 4)
+    true
+
+fn test_three -> i64
+    assert(helper_adds(3, 3) == 6)
+    7
+
+# --- test_* functions that CANNOT run: each must produce a `skip` line ---
+
+fn test_skipped_has_params n i64 -> void
+    assert(n == n)
+
+fn test_skipped_bad_return -> string
+    "not a runnable test return type"

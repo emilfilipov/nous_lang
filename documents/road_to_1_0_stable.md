@@ -107,10 +107,36 @@ the *contents* are not enumerated. Define the 1.0 stdlib surface — strings,
 collections, math, fs, io, time, os, (maybe net) — and mark each item **stable** vs
 **extended/experimental**. Do this near the finish line, informed by dogfooding.
 
-### B3. "Stable"-grade toolchain — **PLANNED**
+### B3. "Stable"-grade toolchain — **PARTIALLY SHIPPED**
 Before stamping "stable": a built-in **test runner**, **debug info on Linux/macOS**
 (DWARF — CodeView is Windows-only today), and **LSP + package-manager maturity**.
 These are toolchain-completeness items, not language decisions.
+
+- **Test runner — SHIPPED.** `lullaby test [--verbose] [--filter <substring>]
+  <file.lby | project-dir | lullaby.json>` was already built and specified
+  (`language_surface.md`) ahead of this item's audit; the audit added `--filter`
+  and the regression suite. Discovery is the `test_*` name convention (zero
+  parameters, non-generic, returning `void`/`i64`/`bool`), runs on the AST
+  interpreter in deterministic source order, prints `PASS`/`FAIL` per test with a
+  reason plus an `N passed, M failed` summary, and exits non-zero on any failure.
+  **Failure isolation is real, not documented-away:** A5's abort-without-unwinding
+  governs the *native* tier, while the runner executes on the AST interpreter,
+  which returns contract violations (bounds fail, divide-by-zero) as ordinary
+  runtime errors — so a violating test is reported as a normal `FAIL` and the run
+  continues. Pinned by `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests) over
+  `tests/fixtures/test_runner/`. Consequence to carry forward: a future
+  `--backend native|ir|bytecode` for `test` would need genuine subprocess
+  isolation (native aborts) and new named-function entry points (`lullaby_ir`
+  exposes only `run_main` today) — that is the next production-complete increment,
+  not a flag flip.
+- **Open sub-item — declaration surface (owner call).** The `test_*` convention is
+  implicit magic: a name prefix silently confers semantics, which sits awkwardly
+  with Lullaby's explicitness. A `test "name"` block (Zig-style) would be explicit,
+  terse, natural in an indentation-only language, and would give the runner a real
+  name string. It is **not** scheduled: the convention is specified in
+  `language_surface.md` and ships in released binaries, so changing it is a
+  breaking surface change and an owner decision.
+- **DWARF debug info + LSP/package-manager maturity — still PLANNED.**
 
 ---
 
@@ -124,7 +150,7 @@ These are toolchain-completeness items, not language decisions.
 | A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
 | B1 | Closures native codegen | PLANNED | schedule post-arena | — |
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
-| B3 | Stable-grade toolchain | PLANNED | test runner + DWARF + LSP/pkg | — |
+| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
 
 ## Delivery progress (updated 2026-07-16)
 

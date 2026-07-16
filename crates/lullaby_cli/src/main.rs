@@ -62,7 +62,7 @@ fn run() -> Result<(), String> {
             invocation.optimization,
             invocation.program_args,
         ),
-        CommandName::Test => test_file(invocation.path, invocation.mode),
+        CommandName::Test => test_file(invocation.path, invocation.mode, invocation.filter),
         CommandName::Wasm => wasm_file(invocation.path, invocation.output, invocation.mode),
         CommandName::Native => native_file(
             invocation.path,
@@ -866,7 +866,23 @@ fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
 /// if it returns without a runtime error and fails if it produces one (an
 /// `assert(false)` throw, or any other runtime error). Prints one line per test
 /// plus a summary and exits non-zero if any test failed.
-fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
+///
+/// `filter` is the optional `--filter <substring>` name filter: when present,
+/// only `test_*` functions whose name contains that (case-sensitive) substring
+/// are considered. Filtering happens BEFORE the runnability checks, so filtering
+/// down to one test never emits `skip` lines about unrelated ones. A filter that
+/// matches nothing is reported explicitly (and is not an error) so a typo in the
+/// substring is visible rather than looking like an empty, passing suite.
+///
+/// Tests run in source-declaration order, which is deterministic across runs.
+///
+/// A test that trips an A5 contract violation (bounds fail, divide-by-zero) does
+/// NOT terminate the run: A5's abort-without-unwinding applies to the NATIVE
+/// tier, whereas this runner executes on the AST interpreter, which surfaces
+/// every such violation as an ordinary `RuntimeError` returned by
+/// `run_named_function`. The runner therefore reports it as a normal failure and
+/// continues with the remaining tests. See `crates/lullaby_cli/tests/cli/suite17.rs`.
+fn test_file(path: PathBuf, mode: OutputMode, filter: Option<String>) -> Result<(), String> {
     let compiled = match compile(&path, SourceMode::Library) {
         Ok(compiled) => compiled,
         Err(failure) => {
@@ -880,8 +896,17 @@ fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
 
     let verbose = mode == OutputMode::Verbose;
     let mut names = Vec::new();
+    let mut filtered_out = 0usize;
     for function in &compiled.checked.program.functions {
         if !function.name.starts_with("test_") {
+            continue;
+        }
+        // Apply `--filter` before the runnability checks below, so narrowing to
+        // one test does not print `skip` lines about tests the user excluded.
+        if let Some(substring) = filter.as_deref()
+            && !function.name.contains(substring)
+        {
+            filtered_out += 1;
             continue;
         }
         // Skip test-named functions that cannot be run as a zero-argument entry
@@ -908,7 +933,17 @@ fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
     }
 
     if names.is_empty() {
-        println!("no tests found (define functions named `test_*` with zero parameters)");
+        match filter.as_deref() {
+            // Distinguish a mistyped filter from a genuinely empty suite: both
+            // print `0 passed, 0 failed`, so without this the two look identical.
+            Some(substring) if filtered_out > 0 => println!(
+                "no tests matched filter `{substring}` ({filtered_out} test(s) filtered out)"
+            ),
+            Some(substring) => println!("no tests matched filter `{substring}`"),
+            None => {
+                println!("no tests found (define functions named `test_*` with zero parameters)")
+            }
+        }
         println!("0 passed, 0 failed");
         return Ok(());
     }
@@ -939,7 +974,11 @@ fn test_file(path: PathBuf, mode: OutputMode) -> Result<(), String> {
         }
     }
 
-    println!("{passed} passed, {failed} failed");
+    if filtered_out > 0 {
+        println!("{passed} passed, {failed} failed, {filtered_out} filtered out");
+    } else {
+        println!("{passed} passed, {failed} failed");
+    }
     if failed > 0 {
         // Non-zero exit without an extra diagnostic line: the per-test output and
         // summary already report the failures.
@@ -1500,6 +1539,12 @@ struct Invocation {
     /// scalar fold in the last ULP. Off by default (bit-exact parity preserved);
     /// ignored by every command other than `native`.
     fast_math: bool,
+    /// Case-sensitive substring filter for `lullaby test --filter <substring>`.
+    /// Only discovered `test_*` functions whose name contains the substring run;
+    /// the rest are not reported at all (they are filtered out, not skipped).
+    /// `None` runs every discovered test. Ignored by every command other than
+    /// `test`.
+    filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1597,6 +1642,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     debug: false,
                     native_target: None,
                     fast_math: false,
+                    filter: None,
                 }))
             } else {
                 Err("usage: lullaby --version".to_string())
@@ -1617,6 +1663,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     debug: false,
                     native_target: None,
                     fast_math: false,
+                    filter: None,
                 }))
             } else {
                 Err("usage: lullaby --help".to_string())
@@ -1637,6 +1684,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     debug: false,
                     native_target: None,
                     fast_math: false,
+                    filter: None,
                 }))
             } else {
                 Err("usage: lullaby docs".to_string())
@@ -1657,6 +1705,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     debug: false,
                     native_target: None,
                     fast_math: false,
+                    filter: None,
                 }))
             } else {
                 Err("usage: lullaby examples".to_string())
@@ -1677,6 +1726,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     debug: false,
                     native_target: None,
                     fast_math: false,
+                    filter: None,
                 }))
             } else {
                 Err("usage: lullaby lsp".to_string())
@@ -1699,6 +1749,7 @@ fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, String> {
                     debug: false,
                     native_target: None,
                     fast_math: false,
+                    filter: None,
                 })),
                 _ => Err("usage: lullaby new <name>".to_string()),
             }
@@ -1720,6 +1771,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     let mut debug = false;
     let mut native_target: Option<String> = None;
     let mut fast_math = false;
+    let mut filter: Option<String> = None;
     let mut cursor = 0;
     let usage = command_usage(command);
 
@@ -1808,6 +1860,22 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 debug = true;
                 cursor += 1;
             }
+            "--filter" => {
+                // `test` name-substring filter. Requires a value, rejects a
+                // repeat, and rejects an empty substring (which would be a
+                // no-op filter that reads as an intent to select something).
+                if command != "test" || filter.is_some() {
+                    return Err(usage);
+                }
+                let Some(value) = args.get(cursor + 1) else {
+                    return Err(usage);
+                };
+                if value.is_empty() {
+                    return Err(usage);
+                }
+                filter = Some(value.clone());
+                cursor += 2;
+            }
             "--target" => {
                 // Native object-file target triple only. Selects the container
                 // format: COFF (default), ELF, or Mach-O.
@@ -1884,6 +1952,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         debug,
         native_target,
         fast_math,
+        filter,
     }))
 }
 
@@ -1923,6 +1992,7 @@ fn parse_fmt_command(args: &[String]) -> Result<Option<Invocation>, String> {
         debug: false,
         native_target: None,
         fast_math: false,
+        filter: None,
     }))
 }
 
@@ -1931,7 +2001,7 @@ fn command_usage(command: &str) -> String {
         "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
-        "test" => "usage: lullaby test [--verbose] <file.lby>".to_string(),
+        "test" => "usage: lullaby test [--verbose] [--filter <substring>] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
         "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--fast-math] [--target x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-unknown-linux-gnu] [-o out] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),
@@ -1955,7 +2025,7 @@ fn display_version() -> String {
 
 fn print_help() {
     println!(
-        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--fast-math] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby new <name>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
+        "lullaby {}\n\nusage:\n  lullaby check [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby | project-dir | lullaby.json>\n  lullaby inspect [--verbose|--format json] <file.lbc>\n  lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby | project-dir | lullaby.json> [args...]\n  lullaby run [--verbose|--format json] <file.lbc>\n  lullaby test [--verbose] [--filter <substring>] <file.lby | project-dir | lullaby.json>\n  lullaby wasm [--verbose] [-o out.wasm] <file.lby | project-dir | lullaby.json>\n  lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--fast-math] [--target <triple>] [-o out] <file.lby | project-dir | lullaby.json>\n  lullaby fmt [--write|--check] <file.lby>\n  lullaby new <name>\n  lullaby lsp\n  lullaby docs\n  lullaby examples\n  lullaby --version\n\nA <project-dir> is a directory containing a lullaby.json manifest; you may also\npass the lullaby.json path directly. A project may span multiple src directories\nand depend on other local Lullaby projects.",
         display_version()
     );
 }
