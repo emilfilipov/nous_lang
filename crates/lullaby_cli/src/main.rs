@@ -876,12 +876,18 @@ fn check(path: PathBuf, mode: OutputMode) -> Result<(), String> {
 ///
 /// Tests run in source-declaration order, which is deterministic across runs.
 ///
-/// A test that trips an A5 contract violation (bounds fail, divide-by-zero) does
-/// NOT terminate the run: A5's abort-without-unwinding applies to the NATIVE
-/// tier, whereas this runner executes on the AST interpreter, which surfaces
-/// every such violation as an ordinary `RuntimeError` returned by
-/// `run_named_function`. The runner therefore reports it as a normal failure and
-/// continues with the remaining tests. See `crates/lullaby_cli/tests/cli/suite17.rs`.
+/// A test that fails with a RUNTIME ERROR — including an A5 contract violation
+/// (bounds fail, divide-by-zero) — does NOT terminate the run: A5's
+/// abort-without-unwinding applies to the NATIVE tier, whereas this runner
+/// executes on the AST interpreter, which surfaces every such violation as an
+/// ordinary `RuntimeError` returned by `run_named_function`. The runner reports
+/// it as a normal failure and continues. See `tests/cli/suite17.rs`.
+///
+/// KNOWN GAPS (not runtime errors, so they escape that `Result`): a test that
+/// OVERFLOWS THE STACK aborts this whole process (no summary), and a
+/// NON-TERMINATING test hangs it (there is no per-test timeout). Containing both
+/// needs a subprocess per test plus a deadline — funded follow-up work tracked in
+/// `documents/road_to_1_0_stable.md` B3. Do not describe isolation as total.
 fn test_file(path: PathBuf, mode: OutputMode, filter: Option<String>) -> Result<(), String> {
     let compiled = match compile(&path, SourceMode::Library) {
         Ok(compiled) => compiled,

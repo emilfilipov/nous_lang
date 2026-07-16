@@ -7,15 +7,24 @@
 //! non-zero when any test fails. The declaration surface (the `test_*` name
 //! convention) is specified in `documents/language_surface.md`.
 //!
-//! The load-bearing property pinned here is **failure isolation**: a test that
-//! trips an A5 contract violation (bounds fail, divide-by-zero) must NOT
-//! terminate the run. A5's "abort without unwinding" governs the NATIVE tier; the
-//! runner executes on the AST interpreter, which surfaces every such violation as
-//! an ordinary `RuntimeError` returned by `run_named_function`. So isolation here
-//! is a real property of the execution tier, not a documented-away limitation —
-//! and `test_runner_survives_contract_violations_mid_suite` proves it by pinning a
-//! suite whose 2nd and 4th of 5 tests trip a bounds fail and a divide-by-zero and
-//! asserting the other three still report, with a correct `3 passed, 2 failed`.
+//! The load-bearing property pinned here is **failure isolation for runtime
+//! errors**: a test that trips an A5 contract violation (bounds fail,
+//! divide-by-zero) must NOT terminate the run. A5's "abort without unwinding"
+//! governs the NATIVE tier; the runner executes on the AST interpreter, which
+//! surfaces every such violation as an ordinary `RuntimeError` returned by
+//! `run_named_function`. `test_runner_survives_contract_violations_mid_suite`
+//! proves it by pinning a suite whose 2nd and 4th of 5 tests trip a bounds fail
+//! and a divide-by-zero and asserting the other three still report, with a
+//! correct `3 passed, 2 failed`.
+//!
+//! Isolation is NOT total, and nothing here claims it is. A stack overflow aborts
+//! the runner outright (no summary) and a non-terminating test hangs it (no
+//! per-test timeout) — both escape the interpreter's `Result`, so the in-process
+//! design cannot contain them. Those two shapes are deliberately NOT pinned here:
+//! a test that overflows the stack would abort this test binary, and one that
+//! hangs would stall CI with no timeout to catch it. They become testable once
+//! subprocess isolation + a per-test deadline land (funded; `road_to_1_0_stable.md`
+//! B3), which is the right place to add their regression pins.
 
 use super::{lullaby, stdout, workspace_root};
 

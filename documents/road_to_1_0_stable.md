@@ -112,23 +112,39 @@ Before stamping "stable": a built-in **test runner**, **debug info on Linux/macO
 (DWARF — CodeView is Windows-only today), and **LSP + package-manager maturity**.
 These are toolchain-completeness items, not language decisions.
 
-- **Test runner — SHIPPED.** `lullaby test [--verbose] [--filter <substring>]
-  <file.lby | project-dir | lullaby.json>` was already built and specified
-  (`language_surface.md`) ahead of this item's audit; the audit added `--filter`
+- **Test runner — SHIPPED, with two known containment gaps (fix funded, below).**
+  `lullaby test [--verbose] [--filter <substring>] <file.lby | project-dir |
+  lullaby.json>` was already built and specified (`language_surface.md`) ahead of
+  this item's audit — introduced `f4645f5` (2026-07-07) and shipped in tag
+  `v1.0-preview`, so B3's "test runner" line was stale. The audit added `--filter`
   and the regression suite. Discovery is the `test_*` name convention (zero
-  parameters, non-generic, returning `void`/`i64`/`bool`), runs on the AST
-  interpreter in deterministic source order, prints `PASS`/`FAIL` per test with a
-  reason plus an `N passed, M failed` summary, and exits non-zero on any failure.
-  **Failure isolation is real, not documented-away:** A5's abort-without-unwinding
-  governs the *native* tier, while the runner executes on the AST interpreter,
-  which returns contract violations (bounds fail, divide-by-zero) as ordinary
-  runtime errors — so a violating test is reported as a normal `FAIL` and the run
-  continues. Pinned by `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests) over
-  `tests/fixtures/test_runner/`. Consequence to carry forward: a future
-  `--backend native|ir|bytecode` for `test` would need genuine subprocess
-  isolation (native aborts) and new named-function entry points (`lullaby_ir`
-  exposes only `run_main` today) — that is the next production-complete increment,
-  not a flag flip.
+  parameters, non-generic, returning `void`/`i64`/`bool`) over the **merged**
+  program — so imported modules' `test_*` functions are discovered too — runs on
+  the AST interpreter in deterministic order (source order within a file; loader
+  merge order across modules), prints `PASS`/`FAIL` per test with a reason plus an
+  `N passed, M failed` summary, and exits non-zero on any failure. Pinned by
+  `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests) over
+  `tests/fixtures/test_runner/`.
+  - **Isolation holds for every runtime error** — `assert(false)`, `throw`, A5
+    contract violations (bounds fail, divide-by-zero), `L0423` — each is reported
+    as a `FAIL` and the run continues. The mechanism is the execution tier, not
+    A5: A5's abort-without-unwinding governs the *native* tier, while the runner
+    runs on the AST interpreter, which returns these as ordinary `RuntimeError`s.
+  - **Two gaps — CONFIRMED, verified by measurement.** A **stack overflow**
+    (unbounded recursion) aborts the runner: remaining tests never run and no
+    summary prints (exit is the OS fault code — Windows `0xC00000FD`; platform-
+    specific, do not pin a value). A **non-terminating test hangs forever** —
+    there is **no per-test timeout**. Both escape the interpreter's `Result`, so
+    the in-process design cannot contain them.
+  - **Next increment (FUNDED): subprocess isolation + a per-test timeout.** This
+    is what closes both gaps **on the interpreter today** — it is not merely a
+    prerequisite for a future `--backend`. Run each test in its own subprocess
+    under a per-test deadline; report a crashed child as a `FAIL` and a timed-out
+    child as a timeout `FAIL`, then continue and summarize. It additionally
+    unblocks `--backend native|ir|bytecode` for `test`, which would separately
+    need new named-function entry points (`lullaby_ir` exposes only `run_main`
+    today). A runner that hangs on a non-terminating test does not meet the
+    project's quality bar; this is scheduled work, not an accepted limitation.
 - **Open sub-item — declaration surface (owner call).** The `test_*` convention is
   implicit magic: a name prefix silently confers semantics, which sits awkwardly
   with Lullaby's explicitness. A `test "name"` block (Zig-style) would be explicit,
@@ -150,7 +166,7 @@ These are toolchain-completeness items, not language decisions.
 | A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
 | B1 | Closures native codegen | PLANNED | schedule post-arena | — |
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
-| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
+| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolates every runtime error but a stack-overflow/non-terminating test still takes it down — subprocess+timeout FUNDED next; DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
 
 ## Delivery progress (updated 2026-07-16)
 
