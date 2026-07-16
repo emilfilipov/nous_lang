@@ -189,11 +189,7 @@ impl<'a> MethodExpander<'a> {
         if type_params.len() != type_args.len() {
             return None;
         }
-        let subst: HashMap<String, TypeRef> = type_params
-            .iter()
-            .cloned()
-            .zip(type_args)
-            .collect();
+        let subst: HashMap<String, TypeRef> = type_params.iter().cloned().zip(type_args).collect();
         Some(MethodInstance {
             mangled: mangle_method(&receiver.name, name),
             impl_fn,
