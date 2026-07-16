@@ -1408,6 +1408,10 @@ mod ffi_callbacks;
 #[path = "cli/suite15.rs"]
 mod suite15;
 
+// -- Value-position branch/arm tail parity (the branch-local aggregate miscompile)
+#[path = "cli/suite16.rs"]
+mod suite16;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

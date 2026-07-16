@@ -1821,3 +1821,208 @@ fn fuzz_raw_pointer_reads_native_matches_interpreter() {
         );
     }
 }
+
+/// Generates one program that exercises a **VALUE-POSITION BRANCH/ARM TAIL**: an
+/// aggregate (`option<T>` / `result<T, E>` / a user enum / `option<struct>`) bound
+/// to a local INSIDE an `if`/`elif`/`else` branch or a `match` arm, and yielded as
+/// that branch's/arm's tail expression.
+///
+/// This shape is why the fuzzers missed a real native miscompile: the routing that
+/// decides where a returned value must land (the hidden aggregate result pointer)
+/// was applied only to a function's own tail expression and to `return`, never to a
+/// branch tail. An aggregate-returning function whose value came from a branch tail
+/// wrote its hidden result pointer NOWHERE, so the caller read its own
+/// uninitialized scratch — a wrong tag AND payload for a scalar payload, and a wild
+/// pointer dereference (`0xC0000005`) for `option<struct>`. The generator covers the
+/// four aggregate kinds crossed with four tail shapes at two nesting depths, so the
+/// whole class stays covered rather than the single reported instance.
+///
+/// Every generated program is total and divergence-free: the payloads are small
+/// positive literals, no arithmetic can overflow or divide, and the `match` in
+/// `main` is exhaustive.
+fn gen_branch_tail_program(seed: u64) -> String {
+    let mut rng = Rng(seed | 1);
+    let kind = rng.below(4);
+    let shape = rng.below(4);
+    // Payloads: small positive literals, so every result is a small positive i64
+    // that round-trips through the process exit code unambiguously.
+    let deep = rng.range(1, 40);
+    let mid = rng.range(1, 40);
+    let alt = rng.range(1, 9);
+    // `-5` takes the none/err path, `3` the middle path, `200` the deep path (the
+    // `n > 100` guard in the nested/elif shapes).
+    let arg = [-5i64, 3, 200][rng.below(3) as usize];
+
+    // Per aggregate kind: how to build the "value" variant...
+    let some_of: fn(&str) -> String = match kind {
+        0 => |e| format!("some({e})"),
+        1 => |e| format!("ok({e})"),
+        2 => |e| format!("A({e})"),
+        _ => |e| format!("some(P({e}, 2))"),
+    };
+    // ...and the declarations, return type, "empty" variant, and the `match` arms
+    // `main` reads the result back with.
+    let (decls, ty, none_ctor, arm_some, arm_none): (&str, &str, String, &str, String) = match kind
+    {
+        0 => (
+            "",
+            "option<i64>",
+            "none".to_string(),
+            "some(v) -> 100 + v",
+            format!("none -> {alt}"),
+        ),
+        1 => (
+            "",
+            "result<i64, i64>",
+            format!("err({alt})"),
+            "ok(v) -> 100 + v",
+            "err(e) -> e".to_string(),
+        ),
+        2 => (
+            "enum E\n    A i64\n    B\n\n",
+            "E",
+            "B".to_string(),
+            "A(v) -> 100 + v",
+            format!("B -> {alt}"),
+        ),
+        // `option<struct>`: a HEAP payload. This is the variant that segfaulted —
+        // the unwritten payload word was dereferenced as a struct pointer.
+        _ => (
+            "struct P\n    a i64\n    b i64\n\n",
+            "option<P>",
+            "none".to_string(),
+            "some(p) -> 100 + p.a + p.b",
+            format!("none -> {alt}"),
+        ),
+    };
+
+    let deep_v = some_of(&deep.to_string());
+    let mid_v = some_of(&mid.to_string());
+
+    // The four tail shapes, at increasing nesting depth. In every one the aggregate
+    // is bound to a LOCAL and that local is the branch's/arm's tail expression.
+    let (helper, body) = match shape {
+        // Flat `if`/`else` — the originally reported instance.
+        0 => (
+            String::new(),
+            format!(
+                "    if n > 0\n        let s {ty} = {mid_v}\n        s\n    \
+                 else\n        let e {ty} = {none_ctor}\n        e\n"
+            ),
+        ),
+        // A nested `if` inside the taken branch (depth 2).
+        1 => (
+            String::new(),
+            format!(
+                "    if n > 0\n        if n > 100\n            let a {ty} = {deep_v}\n            a\n        \
+                 else\n            let b {ty} = {mid_v}\n            b\n    \
+                 else\n        let e {ty} = {none_ctor}\n        e\n"
+            ),
+        ),
+        // An `elif` chain.
+        2 => (
+            String::new(),
+            format!(
+                "    if n > 100\n        let a {ty} = {deep_v}\n        a\n    \
+                 elif n > 0\n        let b {ty} = {mid_v}\n        b\n    \
+                 else\n        let e {ty} = {none_ctor}\n        e\n"
+            ),
+        ),
+        // A `match`-ARM tail: the aggregate is built inside an arm of a `match` that
+        // is itself the function's tail.
+        _ => {
+            let from_v = some_of("v");
+            (
+                "fn tag n i64 -> option<i64>\n    if n > 0\n        return some(n)\n    return none\n\n"
+                    .to_string(),
+                format!(
+                    "    match tag(n)\n        some(v) ->\n            let s {ty} = {from_v}\n            s\n        \
+                     none ->\n            let e {ty} = {none_ctor}\n            e\n"
+                ),
+            )
+        }
+    };
+
+    format!(
+        "{decls}{helper}fn pick n i64 -> {ty}\n{body}\nfn main -> i64\n    \
+         match pick({arg})\n        {arm_some}\n        {arm_none}\n"
+    )
+}
+
+#[test]
+fn fuzz_branch_tail_interpreters_agree() {
+    // Cross-check the three engines on branch/arm-local aggregate-tail programs.
+    // Always runs (no toolchain needed).
+    const PROGRAMS: u64 = 400;
+    let base_seed = 0x7F4A_7C15_9E37_79B9u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_branch_tail_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "branch-tail backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "branch-tail generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_branch_tail_native_matches_interpreter_when_linkable() {
+    // THE oracle for this shape: compile each branch/arm-local aggregate-tail
+    // program to a real `.exe` and check its exit code against the interpreters.
+    // Before the value-position routing fix this failed on the very first program
+    // (native returned the caller's stale buffer instead of the built aggregate,
+    // and the `option<struct>` variant crashed with 0xC0000005).
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native branch-tail fuzz");
+        return;
+    }
+    ensure_msvc_env();
+
+    const PROGRAMS: u64 = 96;
+    let base_seed = 0x2D19_2ED0_3D1B_54A3u64;
+    let dir = std::env::temp_dir().join("lullaby_fuzz_branch_tail");
+    let _ = std::fs::create_dir_all(&dir);
+
+    let mut ran = 0u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_branch_tail_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on branch-tail native fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => panic!("generator produced {other:?} on seed {seed:#x}:\n{source}"),
+        };
+
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("branch_tail_{i}")) else {
+            // This host can produce no exe at all (no direct-PE image AND no
+            // linker). `fuzz_native_exit` has already established that and panics
+            // if a linker WAS available, so reaching here is a genuine skip.
+            eprintln!(
+                "branch-tail native fuzz: no exe path on this host; ran {ran} before skipping"
+            );
+            return;
+        };
+        ran += 1;
+        assert_eq!(
+            exit, expected as i32,
+            "NATIVE MISCOMPILE on branch-tail #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
+    }
+    // Report the count so a run can be audited: this oracle is only meaningful if it
+    // actually executed real binaries, and a silent skip would hide exactly the
+    // class of bug it exists to catch. (Direct-PE emission is the default, so on a
+    // Windows host every program produces an exe and this prints the full count.)
+    eprintln!("branch-tail native fuzz: ran {ran}/{PROGRAMS} real exes");
+}

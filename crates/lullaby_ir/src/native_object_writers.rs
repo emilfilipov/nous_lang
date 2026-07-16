@@ -1378,3 +1378,9 @@ mod native_program_tests;
 #[cfg(test)]
 #[path = "native_object_rawptr_tests.rs"]
 mod native_object_rawptr_tests;
+
+// Value-position tail lowering (branch/arm-local aggregate and float tails) has
+// its own codegen tests for the same size-cap reason.
+#[cfg(test)]
+#[path = "native_object_tailvalue_tests.rs"]
+mod native_object_tailvalue_tests;

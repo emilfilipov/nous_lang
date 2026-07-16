@@ -221,23 +221,36 @@ pub(crate) fn lower_native_function(
     // own `ret` — the epilogue restores `rbp` and `rsp` and returns.)
     let tail_is_asm = matches!(instructions.last(), Some(BytecodeInstruction::Asm { .. }));
     // A function whose last statement is a `match` producing the function's value:
-    // each arm leaves its result in `rax`; after the whole match, the epilogue
-    // returns it. (An arm that itself ends in an explicit `return` emits its own
-    // epilogue and never reaches the shared match end.)
+    // each arm's tail is routed to the function's return convention and converges
+    // after the match, where the epilogue returns it. (An arm that itself ends in an
+    // explicit `return` emits its own epilogue and never reaches the shared end.)
     let tail_is_value_match = !function.return_type.is_void()
         && matches!(instructions.last(), Some(BytecodeInstruction::Match { .. }));
     // A function whose last statement is an `if`/`elif`/`else` producing the
-    // function's value (e.g. a body ending in `if c\n a\n else\n b`): each branch
-    // leaves its value in `rax` and converges after the chain, where the epilogue
-    // returns it. Without this the tail `if` lowers as a plain statement and the
-    // fallthrough `xor rax,rax` below overwrites the branch result (returning 0).
-    // Restricted to a scalar-register return (not float/aggregate — those tail
-    // `if`s stay deferred): a value-producing `if` is exhaustive (has an `else`),
-    // so control always reaches the epilogue with `rax` set.
+    // function's value (e.g. a body ending in `if c\n a\n else\n b`): each branch's
+    // tail is routed to the function's return convention (the hidden aggregate
+    // pointer, `xmm0`, or `rax`) and converges after the chain, where the epilogue
+    // returns it. Without this the tail `if` lowers as a plain statement whose
+    // branch tails are evaluated and DISCARDED — for a scalar the fallthrough
+    // `xor rax,rax` below overwrites the result (returning 0), and for an aggregate
+    // or float return nothing ever writes the hidden result pointer / `xmm0`, so the
+    // caller reads its own uninitialized scratch (a silently wrong value, or a wild
+    // pointer dereference for a heap payload).
     let tail_is_value_if = !function.return_type.is_void()
-        && ctx.sret_slot.is_none()
-        && !matches!(ctx.return_ty, NativeType::F64 | NativeType::F32)
         && matches!(instructions.last(), Some(BytecodeInstruction::If { .. }));
+    // Default-deny: a value-position tail `if`/`match` is only lowerable when every
+    // branch/arm provably yields the value (an exhaustive chain whose paths all end
+    // in a tail expression, a `return`, or a nested yielding `if`/`match`). A tail
+    // that can fall through without routing the value is refused here — skipping to
+    // the interpreters — rather than emitted as a function that returns whatever was
+    // already in the caller's buffer.
+    if (tail_is_value_if || tail_is_value_match) && !block_yields_value(instructions) {
+        return Err(
+            "a value-producing tail `if`/`match` whose branches do not all yield a value \
+             is deferred on the native backend"
+                .to_string(),
+        );
+    }
     if tail_is_asm {
         let (head, tail) = instructions.split_at(instructions.len() - 1);
         lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
@@ -250,17 +263,10 @@ pub(crate) fn lower_native_function(
         let (head, tail) = instructions.split_at(instructions.len() - 1);
         lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
         if let BytecodeInstruction::Expr(expr) = &tail[0] {
-            // An aggregate-valued tail expression is the function's by-pointer
-            // result: materialize it through the hidden return pointer. A float
-            // tail expression leaves its value in `xmm0` (the Win64 SSE return
-            // register). A scalar tail expression leaves its value in rax.
-            if ctx.sret_slot.is_some() {
-                lower_aggregate_return(&mut ctx, expr, &mut code)?;
-            } else if matches!(ctx.return_ty, NativeType::F64 | NativeType::F32) {
-                lower_native_float_expr(&mut ctx, expr, &mut code)?;
-            } else {
-                lower_native_expr(&mut ctx, expr, &mut code)?;
-            }
+            // Route the tail to the function's return convention: an aggregate
+            // through the hidden result pointer, a float in `xmm0`, any other
+            // scalar in `rax`.
+            lower_return_value(&mut ctx, expr, &mut code)?;
         }
         emit_arena_reset(&mut ctx, &mut code);
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
@@ -276,11 +282,20 @@ pub(crate) fn lower_native_function(
         emit_arena_reset(&mut ctx, &mut code);
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
     } else if tail_is_value_if {
-        // The tail `if` lowers as a statement; each branch leaves the function's
-        // value in rax and jumps to the convergence point right before this
-        // epilogue, which returns it. Emitting the epilogue here makes the
-        // fallthrough `xor rax,rax` below unreachable (dead safety code).
-        lower_native_stmts(&mut ctx, instructions, &mut code, &mut loops)?;
+        // The tail `if` lowers in value position: each branch routes the function's
+        // value to the return convention and jumps to the convergence point right
+        // before this epilogue, which returns it. Emitting the epilogue here makes
+        // the fallthrough `xor rax,rax` below unreachable (dead safety code).
+        let (head, tail) = instructions.split_at(instructions.len() - 1);
+        lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
+        if let BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        } = &tail[0]
+        {
+            lower_native_if(&mut ctx, branches, else_body, true, &mut code, &mut loops)?;
+        }
         emit_arena_reset(&mut ctx, &mut code);
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
     } else {
@@ -783,15 +798,10 @@ pub(crate) fn lower_native_stmt(
             Ok(())
         }
         BytecodeInstruction::Return(Some(expr)) => {
-            if ctx.sret_slot.is_some() {
-                lower_aggregate_return(ctx, expr, code)?;
-            } else if matches!(ctx.return_ty, NativeType::F64 | NativeType::F32) {
-                // A float return leaves its value in `xmm0` (the Win64 SSE return
-                // register).
-                lower_native_float_expr(ctx, expr, code)?;
-            } else {
-                lower_native_expr(ctx, expr, code)?;
-            }
+            // Route the returned value to the function's convention: an aggregate
+            // through the hidden result pointer, a float in `xmm0`, any other scalar
+            // in `rax`.
+            lower_return_value(ctx, expr, code)?;
             emit_arena_reset(ctx, code);
             emit_native_epilogue(code, ctx.frame_size, &ctx.saved_reg_slots);
             Ok(())
@@ -871,7 +881,7 @@ pub(crate) fn lower_native_stmt(
             branches,
             else_body,
             ..
-        } => lower_native_if(ctx, branches, else_body, code, loops),
+        } => lower_native_if(ctx, branches, else_body, false, code, loops),
         BytecodeInstruction::While {
             condition, body, ..
         } => lower_native_while(ctx, condition, body, code, loops),

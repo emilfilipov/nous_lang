@@ -272,10 +272,163 @@ pub(crate) fn lower_native_match(
     Ok(())
 }
 
-/// Lower one match arm body. When `is_value` is true the arm's tail expression is
-/// the match's result: its value is left in `rax` (an arm ending in an explicit
-/// `return` emits its own epilogue instead). When false the body is a statement
-/// block whose result is discarded.
+/// Route a value-position expression to the function's return convention.
+///
+/// This is the single place that decides *where* a returned value must land, and
+/// it must be used for EVERY value-position tail — the function's own tail
+/// expression, an `if`/`elif`/`else` branch tail, and a `match` arm tail alike:
+///
+///   * an aggregate return (`sret_slot` set) copies the value's words through the
+///     hidden result pointer (`lower_aggregate_return`);
+///   * an `f64`/`f32` return leaves its value in `xmm0`;
+///   * every other native scalar leaves its value in `rax`.
+///
+/// Using the bare integer `lower_native_expr` for a value-position tail is exactly
+/// the miscompile this centralization exists to prevent: for an aggregate return it
+/// loads the enum's tag word into `rax` and never writes the hidden pointer, so the
+/// caller reads its own uninitialized scratch (a silently wrong tag AND payload, or
+/// a wild pointer dereference for a heap payload); for a float return it loads the
+/// f64's bits into `rax` and never writes `xmm0`.
+pub(crate) fn lower_return_value(
+    ctx: &mut NativeCtx,
+    expr: &BytecodeExpr,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    if ctx.sret_slot.is_some() {
+        lower_aggregate_return(ctx, expr, code)
+    } else if matches!(ctx.return_ty, NativeType::F64 | NativeType::F32) {
+        lower_native_float_expr(ctx, expr, code).map(|_| ())
+    } else {
+        lower_native_expr(ctx, expr, code)
+    }
+}
+
+/// Whether `body` leaves the enclosing function's value on every path it can take.
+///
+/// A block yields a value when it ends in a non-void tail expression, in an explicit
+/// `return` (which emits its own epilogue), in an `asm` block (trusted to leave its
+/// value in `rax`, exactly as the function-level tail-`asm` path treats it), or in a
+/// nested `if`/`match` whose every arm/branch itself yields. An `if` chain only
+/// qualifies when it is exhaustive (it has a non-empty `else`), because a missing
+/// `else` lets control fall out of the chain with the value never routed.
+///
+/// This is the default-deny gate for the value-position tail lowering below: a tail
+/// shape that does not provably yield on every path is refused (`L0339`) rather than
+/// lowered into a function that returns whatever happened to be in the caller's
+/// buffer.
+///
+/// **Reachability, honestly (measured, not assumed):** the refusal is nearly
+/// unreachable today, and where it does fire it is redundant rather than
+/// load-bearing. A `Let`/`Assign`/`While`/`For`/diverging-`Loop` tail in a
+/// value-returning function never reaches lowering — semantics rejects it with
+/// `L0301` ("no final return value"), as it does a non-exhaustive tail `if` (a
+/// missing `else`); all four were probed directly. The one shape that DOES reach
+/// this gate is a `throw`/`try` branch tail (it passes `lullaby check`), which the
+/// gate refuses — but `lower_native_stmt` would refuse it a few lines later anyway
+/// with "throw/try is not in the native subset", so the compile-vs-skip decision is
+/// unchanged either way.
+///
+/// The gate is kept deliberately despite that. The miscompile it guards against —
+/// emitting a function that never routes its value — is exactly what shipped while
+/// this reasoning was left implicit in a comment, and a future instruction variant
+/// or a loosened frontend rule would otherwise reintroduce it silently. It is a
+/// safety net, and it is described here as one rather than dressed up as a live
+/// guard.
+pub(crate) fn block_yields_value(body: &[BytecodeInstruction]) -> bool {
+    match body.last() {
+        Some(BytecodeInstruction::Expr(e)) => !e.ty.is_void(),
+        Some(BytecodeInstruction::Return(_)) => true,
+        // An `asm` block is trusted to leave the value in `rax` — the same contract
+        // the function-level tail-`asm` path relies on. `asm` is native-only (the
+        // interpreters reject it with `L0425`), so refusing this shape would not
+        // demote it to an interpreter: it would make the program unbuildable
+        // ANYWHERE, breaking the freestanding/kernel tier.
+        Some(BytecodeInstruction::Asm { .. }) => true,
+        Some(BytecodeInstruction::If {
+            branches,
+            else_body,
+            ..
+        }) => {
+            !else_body.is_empty()
+                && branches.iter().all(|b| block_yields_value(&b.body))
+                && block_yields_value(else_body)
+        }
+        Some(BytecodeInstruction::Match { arms, .. }) => {
+            arms.iter().all(|a| block_yields_value(&a.body))
+        }
+        _ => false,
+    }
+}
+
+/// Lower a block in VALUE position — the enclosing function's result comes from
+/// this block's tail. Mirrors [`block_yields_value`]: a tail expression is routed
+/// through [`lower_return_value`]; a tail `asm` block emits its bytes and is trusted
+/// to leave the value in `rax`; a nested `if`/`match` recurses in value position so
+/// its own branch/arm tails are routed the same way; anything else (notably a block
+/// ending in an explicit `return`, which emits its own epilogue) lowers as ordinary
+/// statements.
+pub(crate) fn lower_value_block(
+    ctx: &mut NativeCtx,
+    body: &[BytecodeInstruction],
+    code: &mut Vec<u8>,
+    loops: &mut Vec<NativeLoop>,
+) -> Result<(), String> {
+    match body.last() {
+        Some(BytecodeInstruction::Expr(e)) if !e.ty.is_void() => {
+            let (head, tail) = body.split_at(body.len() - 1);
+            lower_native_stmts(ctx, head, code, loops)?;
+            let BytecodeInstruction::Expr(expr) = &tail[0] else {
+                unreachable!("tail matched as a non-void Expr above");
+            };
+            lower_return_value(ctx, expr, code)
+        }
+        // A tail `asm` block IS the branch's value: emit its bytes and let control
+        // converge on the shared end, where the caller's epilogue returns `rax`.
+        // This mirrors the function-level tail-`asm` path (which emits the bytes and
+        // then the epilogue) — the programmer's contract is that the block leaves the
+        // result in `rax`, so there is no expression to route.
+        Some(BytecodeInstruction::Asm { .. }) => {
+            let (head, tail) = body.split_at(body.len() - 1);
+            lower_native_stmts(ctx, head, code, loops)?;
+            let BytecodeInstruction::Asm { bytes, .. } = &tail[0] else {
+                unreachable!("tail matched as an Asm above");
+            };
+            code.extend_from_slice(bytes);
+            Ok(())
+        }
+        Some(BytecodeInstruction::If { .. }) => {
+            let (head, tail) = body.split_at(body.len() - 1);
+            lower_native_stmts(ctx, head, code, loops)?;
+            let BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } = &tail[0]
+            else {
+                unreachable!("tail matched as an If above");
+            };
+            lower_native_if(ctx, branches, else_body, true, code, loops)
+        }
+        Some(BytecodeInstruction::Match { .. }) => {
+            let (head, tail) = body.split_at(body.len() - 1);
+            lower_native_stmts(ctx, head, code, loops)?;
+            let BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } = &tail[0]
+            else {
+                unreachable!("tail matched as a Match above");
+            };
+            lower_native_match(ctx, scrutinee, arms, true, code, loops)
+        }
+        _ => lower_native_stmts(ctx, body, code, loops),
+    }
+}
+
+/// Lower one match arm body. When `is_value` is true the arm's tail is the match's
+/// result and is routed to the function's return convention (see
+/// [`lower_value_block`]); an arm ending in an explicit `return` emits its own
+/// epilogue instead. When false the body is a statement block whose result is
+/// discarded.
 pub(crate) fn lower_match_arm_body(
     ctx: &mut NativeCtx,
     body: &[BytecodeInstruction],
@@ -283,13 +436,8 @@ pub(crate) fn lower_match_arm_body(
     code: &mut Vec<u8>,
     loops: &mut Vec<NativeLoop>,
 ) -> Result<(), String> {
-    if is_value && matches!(body.last(), Some(BytecodeInstruction::Expr(e)) if !e.ty.is_void()) {
-        let (head, tail) = body.split_at(body.len() - 1);
-        lower_native_stmts(ctx, head, code, loops)?;
-        if let BytecodeInstruction::Expr(expr) = &tail[0] {
-            lower_native_expr(ctx, expr, code)?;
-        }
-        Ok(())
+    if is_value {
+        lower_value_block(ctx, body, code, loops)
     } else {
         lower_native_stmts(ctx, body, code, loops)
     }
@@ -387,10 +535,17 @@ pub(crate) fn try_emit_fused_i64_condition_branch(
 /// Lower an `if`/`elif`/`else` chain. Each branch: test the condition (fused into
 /// a `cmp`+conditional jump for an `i64` comparison, else `eval into rax` +
 /// `test rax,rax`); `j.. next`; body; `jmp end`. The final else falls through.
+///
+/// When `is_value` is true this chain produces the enclosing function's result:
+/// every branch body — and the `else` — is lowered in value position, so a branch's
+/// tail expression is routed to the function's return convention (the hidden
+/// aggregate pointer, `xmm0`, or `rax`) instead of being evaluated and discarded.
+/// All branches converge on the shared end, where the caller emits the epilogue.
 pub(crate) fn lower_native_if(
     ctx: &mut NativeCtx,
     branches: &[BytecodeIfBranch],
     else_body: &[BytecodeInstruction],
+    is_value: bool,
     code: &mut Vec<u8>,
     loops: &mut Vec<NativeLoop>,
 ) -> Result<(), String> {
@@ -412,7 +567,11 @@ pub(crate) fn lower_native_if(
             }
         };
 
-        lower_native_stmts(ctx, &branch.body, code, loops)?;
+        if is_value {
+            lower_value_block(ctx, &branch.body, code, loops)?;
+        } else {
+            lower_native_stmts(ctx, &branch.body, code, loops)?;
+        }
 
         // jmp end (rel32, patched at the very end).
         code.push(0xE9);
@@ -424,8 +583,13 @@ pub(crate) fn lower_native_if(
         patch_rel32(code, jz_site);
     }
 
-    // Else body (may be empty).
-    lower_native_stmts(ctx, else_body, code, loops)?;
+    // Else body (may be empty). In value position it is the chain's final path and
+    // carries the function's value like any branch.
+    if is_value {
+        lower_value_block(ctx, else_body, code, loops)?;
+    } else {
+        lower_native_stmts(ctx, else_body, code, loops)?;
+    }
 
     // Patch every branch's trailing `jmp end` to land here.
     let end = code.len();
