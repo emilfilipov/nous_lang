@@ -223,12 +223,18 @@ fn branch_local_float_tail_writes_xmm0() {
     );
 }
 
-/// Default-deny: a value-position tail `if` that is NOT exhaustive (no `else`)
-/// cannot route the value on every path, so it must skip cleanly to the
-/// interpreters rather than emit a function that returns the caller's stale
-/// buffer. `pick`'s tail `if` has no `else`, so control can fall out of the chain.
+/// The `block_yields_value` gate must not OVER-refuse: a function that mixes an
+/// early `return` inside an `if` with an ordinary aggregate tail expression is the
+/// normal supported path and must still compile.
+///
+/// (This test was previously misnamed `non_exhaustive_value_tail_if_skips_cleanly`
+/// — it never checked a non-exhaustive tail `if`, and asserted the opposite of what
+/// the name said. A genuinely non-exhaustive value tail `if` cannot be built from
+/// source at all: semantics rejects it with `L0301` before it can reach the
+/// backend, which is why the gate has no source-level negative to point at. See the
+/// reachability note on `block_yields_value`.)
 #[test]
-fn non_exhaustive_value_tail_if_skips_cleanly() {
+fn value_tail_gate_does_not_over_refuse_ordinary_tails() {
     let module = module_for(concat!(
         "fn pick n i64 -> option<i64>\n",
         "    let fallback option<i64> = none\n",
@@ -242,13 +248,59 @@ fn non_exhaustive_value_tail_if_skips_cleanly() {
         "        some(v) -> 100 + v\n",
         "        none -> 0\n",
     ));
-    // This shape ends in a tail *expression* (`fallback`), not a tail `if`, so it is
-    // the ordinary supported path and must compile — the guard must not over-refuse.
     let program = emit_native_program(&module).expect("emit fallback program");
     assert!(
         program.compiled.contains(&"pick".to_string()),
         "an ordinary aggregate tail expression must still compile: {:?}",
         program.skipped
+    );
+}
+
+/// An `asm` block as an `if`-BRANCH tail must compile. `asm` is native-only (the
+/// interpreters reject it with `L0425`), so refusing this shape does not demote it
+/// to an interpreter — it makes the program unbuildable ANYWHERE, breaking the
+/// freestanding/kernel tier.
+///
+/// This is a REGRESSION PIN: adding the `block_yields_value` default-deny gate
+/// without an `Asm` arm silently made this shape `L0339` "no functions were
+/// eligible", even though the function-level tail-`asm` path had always trusted an
+/// `asm` block to leave its value in `rax`. No fixture used an `asm` branch tail, so
+/// the whole test suite stayed green while the shape broke.
+#[test]
+fn asm_branch_tail_compiles_and_emits_its_bytes() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn pick n i64 -> i64\n",
+        "    if n > 0\n",
+        "        unsafe\n",
+        "            asm 72, 199, 192, 42, 0, 0, 0\n",
+        "    else\n",
+        "        unsafe\n",
+        "            asm 72, 199, 192, 7, 0, 0, 0\n",
+        "\n",
+        "fn main -> i64\n",
+        "    pick(1)\n",
+    )))
+    .expect("emit asm branch-tail program");
+    assert!(
+        program.compiled.contains(&"pick".to_string()),
+        "an `asm` branch tail must compile — `asm` is native-only, so refusing it \
+         makes the program unbuildable anywhere: {:?}",
+        program.skipped
+    );
+    // Both branches' verbatim bytes must be present: `mov rax, 42` and `mov rax, 7`.
+    assert!(
+        program
+            .bytes
+            .windows(7)
+            .any(|w| w == [0x48, 0xC7, 0xC0, 42, 0, 0, 0]),
+        "the then-branch `asm` bytes (mov rax, 42) must be emitted verbatim"
+    );
+    assert!(
+        program
+            .bytes
+            .windows(7)
+            .any(|w| w == [0x48, 0xC7, 0xC0, 7, 0, 0, 0]),
+        "the else-branch `asm` bytes (mov rax, 7) must be emitted verbatim"
     );
 }
 
@@ -278,6 +330,30 @@ fn block_yields_value_gate_matches_lowerable_shapes() {
         "an exhaustive if/else whose branches end in tail expressions must yield"
     );
 
+    // An `asm` branch tail yields: the block leaves its value in `rax`, the same
+    // contract the function-level tail-`asm` path relies on.
+    let asm_tail = module_for(concat!(
+        "fn pick n i64 -> i64\n",
+        "    if n > 0\n",
+        "        unsafe\n",
+        "            asm 72, 199, 192, 42, 0, 0, 0\n",
+        "    else\n",
+        "        unsafe\n",
+        "            asm 72, 199, 192, 7, 0, 0, 0\n",
+        "\n",
+        "fn main -> i64\n",
+        "    pick(1)\n",
+    ));
+    let asm_pick = asm_tail
+        .functions
+        .iter()
+        .find(|f| f.name == "pick")
+        .expect("pick present");
+    assert!(
+        block_yields_value(&asm_pick.instructions),
+        "an exhaustive if/else whose branches end in `asm` blocks must yield"
+    );
+
     // A body whose tail is a `while` loop produces no value on any path.
     let non_yielding = module_for(concat!(
         "fn count n i64 -> void\n",
@@ -296,5 +372,37 @@ fn block_yields_value_gate_matches_lowerable_shapes() {
     assert!(
         !block_yields_value(&count.instructions),
         "a body whose tail is a `while` loop must not be treated as yielding"
+    );
+}
+
+/// The one shape that actually reaches the `block_yields_value` refusal: a `throw`
+/// branch tail (it passes `lullaby check`, unlike every other non-yielding tail,
+/// which semantics rejects with `L0301`). It must skip cleanly — never miscompile.
+///
+/// `throw`/`try` is outside the native subset regardless, so `lower_native_stmt`
+/// would refuse this function anyway; the gate simply refuses it earlier. Either
+/// way the compile-vs-skip decision is the same as before the gate existed, which
+/// is what this pins.
+#[test]
+fn throw_branch_tail_skips_cleanly() {
+    // `pick` skips, and `main` demotes through the fixpoint because it calls `pick`,
+    // so nothing is eligible and the emitter reports `L0339` — the clean-skip path,
+    // never a miscompiled `pick`.
+    let err = emit_native_program(&module_for(concat!(
+        "fn pick n i64 -> i64\n",
+        "    if n > 0\n",
+        "        throw \"boom\"\n",
+        "    else\n",
+        "        7\n",
+        "\n",
+        "fn main -> i64\n",
+        "    pick(-1)\n",
+    )))
+    .expect_err("a throw branch tail must not compile");
+    assert_eq!(err.code, "L0339", "the skip must be reported as L0339");
+    assert!(
+        err.skipped.iter().any(|s| s.name == "pick"),
+        "`pick` must be recorded as skipped with a reason: {:?}",
+        err.skipped
     );
 }

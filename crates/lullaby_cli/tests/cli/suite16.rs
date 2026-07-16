@@ -133,3 +133,40 @@ fn native_branch_local_option_struct_tail_does_not_crash() {
         );
     }
 }
+
+/// An `asm` block as an `if`-BRANCH tail must compile AND run. This is the
+/// freestanding/kernel-tier shape: `asm` is native-only (the interpreters reject it
+/// with `L0425`), so refusing it does not demote the program to an interpreter — it
+/// makes the program unbuildable ANYWHERE.
+///
+/// REGRESSION PIN: the `block_yields_value` default-deny gate was first added
+/// without an `Asm` arm, which silently turned this shape into `L0339` "no functions
+/// were eligible" even though the function-level tail-`asm` path had always trusted
+/// an `asm` block to leave its value in `rax`. No fixture used an `asm` branch tail,
+/// so `cargo test --all` stayed green while the shape broke. Both branches are
+/// exercised, so a gate that refused either one fails here.
+#[test]
+fn native_asm_branch_tail_compiles_and_runs() {
+    // `mov rax, 42` / `mov rax, 7` — the branch's value, left in `rax` per the
+    // `asm` contract, returned by the convergence epilogue.
+    let pick = concat!(
+        "fn pick n i64 -> i64\n",
+        "    if n > 0\n",
+        "        unsafe\n",
+        "            asm 72, 199, 192, 42, 0, 0, 0\n",
+        "    else\n",
+        "        unsafe\n",
+        "            asm 72, 199, 192, 7, 0, 0, 0\n",
+        "\n",
+    );
+    for (arg, want) in [("1", 42), ("-1", 7)] {
+        let source = format!("{pick}fn main -> i64\n    pick({arg})\n");
+        if let Some(exit) = native_exit_for(&source, &format!("lullaby_branch_tail_asm_{want}")) {
+            assert_eq!(
+                exit, want,
+                "an `asm` branch tail must leave its value in `rax` and be returned \
+                 by the convergence epilogue (pick({arg}) should exit {want})"
+            );
+        }
+    }
+}

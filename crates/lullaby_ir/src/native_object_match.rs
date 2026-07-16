@@ -306,19 +306,44 @@ pub(crate) fn lower_return_value(
 /// Whether `body` leaves the enclosing function's value on every path it can take.
 ///
 /// A block yields a value when it ends in a non-void tail expression, in an explicit
-/// `return` (which emits its own epilogue), or in a nested `if`/`match` whose every
-/// arm/branch itself yields. An `if` chain only qualifies when it is exhaustive (it
-/// has a non-empty `else`), because a missing `else` lets control fall out of the
-/// chain with the value never routed.
+/// `return` (which emits its own epilogue), in an `asm` block (trusted to leave its
+/// value in `rax`, exactly as the function-level tail-`asm` path treats it), or in a
+/// nested `if`/`match` whose every arm/branch itself yields. An `if` chain only
+/// qualifies when it is exhaustive (it has a non-empty `else`), because a missing
+/// `else` lets control fall out of the chain with the value never routed.
 ///
 /// This is the default-deny gate for the value-position tail lowering below: a tail
-/// shape that does not provably yield on every path is refused (`L0339`, skipping to
-/// the interpreters) rather than lowered into a function that returns whatever
-/// happened to be in the caller's buffer.
+/// shape that does not provably yield on every path is refused (`L0339`) rather than
+/// lowered into a function that returns whatever happened to be in the caller's
+/// buffer.
+///
+/// **Reachability, honestly (measured, not assumed):** the refusal is nearly
+/// unreachable today, and where it does fire it is redundant rather than
+/// load-bearing. A `Let`/`Assign`/`While`/`For`/diverging-`Loop` tail in a
+/// value-returning function never reaches lowering — semantics rejects it with
+/// `L0301` ("no final return value"), as it does a non-exhaustive tail `if` (a
+/// missing `else`); all four were probed directly. The one shape that DOES reach
+/// this gate is a `throw`/`try` branch tail (it passes `lullaby check`), which the
+/// gate refuses — but `lower_native_stmt` would refuse it a few lines later anyway
+/// with "throw/try is not in the native subset", so the compile-vs-skip decision is
+/// unchanged either way.
+///
+/// The gate is kept deliberately despite that. The miscompile it guards against —
+/// emitting a function that never routes its value — is exactly what shipped while
+/// this reasoning was left implicit in a comment, and a future instruction variant
+/// or a loosened frontend rule would otherwise reintroduce it silently. It is a
+/// safety net, and it is described here as one rather than dressed up as a live
+/// guard.
 pub(crate) fn block_yields_value(body: &[BytecodeInstruction]) -> bool {
     match body.last() {
         Some(BytecodeInstruction::Expr(e)) => !e.ty.is_void(),
         Some(BytecodeInstruction::Return(_)) => true,
+        // An `asm` block is trusted to leave the value in `rax` — the same contract
+        // the function-level tail-`asm` path relies on. `asm` is native-only (the
+        // interpreters reject it with `L0425`), so refusing this shape would not
+        // demote it to an interpreter: it would make the program unbuildable
+        // ANYWHERE, breaking the freestanding/kernel tier.
+        Some(BytecodeInstruction::Asm { .. }) => true,
         Some(BytecodeInstruction::If {
             branches,
             else_body,
@@ -337,10 +362,11 @@ pub(crate) fn block_yields_value(body: &[BytecodeInstruction]) -> bool {
 
 /// Lower a block in VALUE position — the enclosing function's result comes from
 /// this block's tail. Mirrors [`block_yields_value`]: a tail expression is routed
-/// through [`lower_return_value`]; a nested `if`/`match` recurses in value position
-/// so its own branch/arm tails are routed the same way; anything else (notably a
-/// block ending in an explicit `return`, which emits its own epilogue) lowers as
-/// ordinary statements.
+/// through [`lower_return_value`]; a tail `asm` block emits its bytes and is trusted
+/// to leave the value in `rax`; a nested `if`/`match` recurses in value position so
+/// its own branch/arm tails are routed the same way; anything else (notably a block
+/// ending in an explicit `return`, which emits its own epilogue) lowers as ordinary
+/// statements.
 pub(crate) fn lower_value_block(
     ctx: &mut NativeCtx,
     body: &[BytecodeInstruction],
@@ -355,6 +381,20 @@ pub(crate) fn lower_value_block(
                 unreachable!("tail matched as a non-void Expr above");
             };
             lower_return_value(ctx, expr, code)
+        }
+        // A tail `asm` block IS the branch's value: emit its bytes and let control
+        // converge on the shared end, where the caller's epilogue returns `rax`.
+        // This mirrors the function-level tail-`asm` path (which emits the bytes and
+        // then the epilogue) — the programmer's contract is that the block leaves the
+        // result in `rax`, so there is no expression to route.
+        Some(BytecodeInstruction::Asm { .. }) => {
+            let (head, tail) = body.split_at(body.len() - 1);
+            lower_native_stmts(ctx, head, code, loops)?;
+            let BytecodeInstruction::Asm { bytes, .. } = &tail[0] else {
+                unreachable!("tail matched as an Asm above");
+            };
+            code.extend_from_slice(bytes);
+            Ok(())
         }
         Some(BytecodeInstruction::If { .. }) => {
             let (head, tail) = body.split_at(body.len() - 1);
