@@ -10,4 +10,5 @@ pub(crate) mod native_link;
 pub(crate) mod project;
 pub(crate) mod run;
 pub(crate) mod test;
+pub(crate) mod test_isolate;
 pub(crate) mod wasm;

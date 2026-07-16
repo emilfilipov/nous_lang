@@ -7,6 +7,7 @@ use lullaby_diagnostics::{DiagnosticPhase, DiagnosticReport};
 use lullaby_lexer::CANONICAL_EXTENSION;
 use lullaby_loader::manifest;
 
+use crate::commands::test_isolate::RUN_BATCH_COMMAND;
 use crate::diagnostics::format_reports;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +51,33 @@ pub(crate) struct Invocation {
     /// `None` runs every discovered test. Ignored by every command other than
     /// `test`.
     pub(crate) filter: Option<String>,
+    /// Per-test wall-clock deadline in seconds for `lullaby test --timeout <secs>`
+    /// (default [`DEFAULT_TEST_TIMEOUT_SECS`]). A test whose isolated process
+    /// outlives the deadline is killed and reported as a timeout failure — this is
+    /// what contains a non-terminating test. `0` disables the deadline, so a hang
+    /// then hangs the runner (opt-in only). Ignored by every command other than
+    /// `test`.
+    pub(crate) timeout_secs: u64,
+    /// Internal (`__run-test-batch` only): the index in the discovered test list
+    /// to resume the batch at, whether to render tracebacks, and the protocol
+    /// nonce. Unused by every user-facing command.
+    pub(crate) batch: Option<BatchArgs>,
 }
+
+/// The internal `__run-test-batch` parameters. See
+/// [`crate::commands::test_isolate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BatchArgs {
+    pub(crate) start: usize,
+    pub(crate) verbose: bool,
+    pub(crate) nonce: String,
+}
+
+/// The default per-test deadline for `lullaby test`, in seconds. Generous enough
+/// that no honest test trips it on a loaded CI machine, short enough that a
+/// non-terminating test is caught in a minute rather than stalling a pipeline
+/// until someone kills it.
+pub(crate) const DEFAULT_TEST_TIMEOUT_SECS: u64 = 60;
 
 impl Default for Invocation {
     fn default() -> Self {
@@ -68,6 +95,8 @@ impl Default for Invocation {
             native_target: None,
             fast_math: false,
             filter: None,
+            timeout_secs: DEFAULT_TEST_TIMEOUT_SECS,
+            batch: None,
         }
     }
 }
@@ -104,6 +133,10 @@ pub(crate) enum CommandName {
     New,
     Run,
     Test,
+    /// Internal: run a contiguous batch of the discovered tests in this process,
+    /// reporting each result on stderr. `lullaby test` re-invokes itself with
+    /// this to isolate the suite. Not public; deliberately absent from `--help`.
+    RunTestBatch,
     Wasm,
     Native,
     Lsp,
@@ -182,6 +215,30 @@ pub(crate) fn parse_invocation(args: Vec<String>) -> Result<Option<Invocation>, 
                 _ => Err("usage: lullaby new <name>".to_string()),
             }
         }
+        // Internal, not user-facing:
+        // `__run-test-batch <path> <start> <verbose:0|1> <nonce> [filter]`.
+        value if value == RUN_BATCH_COMMAND => match &args[1..] {
+            [path, start, verbose, nonce, rest @ ..] if rest.len() <= 1 => {
+                let Ok(start) = start.parse::<usize>() else {
+                    return Err(format!(
+                        "usage: lullaby {RUN_BATCH_COMMAND} <path> <start> <verbose> <nonce> [filter]"
+                    ));
+                };
+                Ok(Some(Invocation {
+                    path: PathBuf::from(path),
+                    filter: rest.first().cloned(),
+                    batch: Some(BatchArgs {
+                        start,
+                        verbose: verbose == "1",
+                        nonce: nonce.clone(),
+                    }),
+                    ..Invocation::bare(CommandName::RunTestBatch)
+                }))
+            }
+            _ => Err(format!(
+                "usage: lullaby {RUN_BATCH_COMMAND} <path> <start> <verbose> <nonce> [filter]"
+            )),
+        },
         "build" | "check" | "compile" | "inspect" | "run" | "test" | "wasm" | "native" => {
             parse_file_command(command, &args[1..])
         }
@@ -214,6 +271,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
     let mut native_target: Option<String> = None;
     let mut fast_math = false;
     let mut filter: Option<String> = None;
+    let mut timeout_secs: Option<u64> = None;
     let mut cursor = 0;
     let usage = command_usage(command);
 
@@ -318,6 +376,21 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
                 filter = Some(value.clone());
                 cursor += 2;
             }
+            "--timeout" => {
+                // `test` per-test deadline in seconds. Requires a value, rejects a
+                // repeat, and rejects a non-numeric value. `0` disables it.
+                if command != "test" || timeout_secs.is_some() {
+                    return Err(usage);
+                }
+                let Some(value) = args
+                    .get(cursor + 1)
+                    .and_then(|value| value.parse::<u64>().ok())
+                else {
+                    return Err(usage);
+                };
+                timeout_secs = Some(value);
+                cursor += 2;
+            }
             "--target" => {
                 // Native object-file target triple only. Selects the container
                 // format: COFF (default), ELF, or Mach-O.
@@ -394,6 +467,7 @@ fn parse_file_command(command: &str, args: &[String]) -> Result<Option<Invocatio
         native_target,
         fast_math,
         filter,
+        timeout_secs: timeout_secs.unwrap_or(DEFAULT_TEST_TIMEOUT_SECS),
         ..Invocation::default()
     }))
 }
@@ -433,7 +507,7 @@ fn command_usage(command: &str) -> String {
         "build" => "usage: lullaby build [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "compile" => "usage: lullaby compile [--optimize none|constant-fold|dead-code|full] [-o output.lbc] [--verbose|--format json] <file.lby>".to_string(),
         "inspect" => "usage: lullaby inspect [--verbose|--format json] <file.lbc>".to_string(),
-        "test" => "usage: lullaby test [--verbose] [--filter <substring>] <file.lby>".to_string(),
+        "test" => "usage: lullaby test [--verbose] [--filter <substring>] [--timeout <seconds>] <file.lby>".to_string(),
         "wasm" => "usage: lullaby wasm [--verbose] [-o out.wasm] <file.lby>".to_string(),
         "native" => "usage: lullaby native [--verbose] [--freestanding|--no-std] [--debug|-g] [--fast-math] [--target x86_64-pc-windows-msvc|x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-unknown-linux-gnu] [-o out] <file.lby>".to_string(),
         "run" => "usage: lullaby run [--backend ast|ir|bytecode] [--optimize none|constant-fold|dead-code|full] [--verbose|--format json] <file.lby> [args...]\n       lullaby run [--verbose|--format json] <file.lbc>".to_string(),

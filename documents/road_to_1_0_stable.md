@@ -112,7 +112,7 @@ Before stamping "stable": a built-in **test runner**, **debug info on Linux/macO
 (DWARF — CodeView is Windows-only today), and **LSP + package-manager maturity**.
 These are toolchain-completeness items, not language decisions.
 
-- **Test runner — SHIPPED, with two known containment gaps (fix funded, below).**
+- **Test runner — SHIPPED; both containment gaps now CLOSED.**
   `lullaby test [--verbose] [--filter <substring>] <file.lby | project-dir |
   lullaby.json>` was already built and specified (`language_surface.md`) ahead of
   this item's audit — introduced `f4645f5` (2026-07-07) and shipped in tag
@@ -123,28 +123,39 @@ These are toolchain-completeness items, not language decisions.
   the AST interpreter in deterministic order (source order within a file; loader
   merge order across modules), prints `PASS`/`FAIL` per test with a reason plus an
   `N passed, M failed` summary, and exits non-zero on any failure. Pinned by
-  `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests) over
-  `tests/fixtures/test_runner/`.
+  `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests, the runner's surface) and
+  `crates/lullaby_cli/tests/cli/suite19.rs` (6 tests, the isolation mechanism)
+  over `tests/fixtures/test_runner/`.
   - **Isolation holds for every runtime error** — `assert(false)`, `throw`, A5
     contract violations (bounds fail, divide-by-zero), `L0423` — each is reported
     as a `FAIL` and the run continues. The mechanism is the execution tier, not
     A5: A5's abort-without-unwinding governs the *native* tier, while the runner
     runs on the AST interpreter, which returns these as ordinary `RuntimeError`s.
-  - **Two gaps — CONFIRMED, verified by measurement.** A **stack overflow**
-    (unbounded recursion) aborts the runner: remaining tests never run and no
-    summary prints (exit is the OS fault code — Windows `0xC00000FD`; platform-
-    specific, do not pin a value). A **non-terminating test hangs forever** —
-    there is **no per-test timeout**. Both escape the interpreter's `Result`, so
-    the in-process design cannot contain them.
-  - **Next increment (FUNDED): subprocess isolation + a per-test timeout.** This
-    is what closes both gaps **on the interpreter today** — it is not merely a
-    prerequisite for a future `--backend`. Run each test in its own subprocess
-    under a per-test deadline; report a crashed child as a `FAIL` and a timed-out
-    child as a timeout `FAIL`, then continue and summarize. It additionally
-    unblocks `--backend native|ir|bytecode` for `test`, which would separately
-    need new named-function entry points (`lullaby_ir` exposes only `run_main`
-    today). A runner that hangs on a non-terminating test does not meet the
-    project's quality bar; this is scheduled work, not an accepted limitation.
+  - **The two gaps — CLOSED (subprocess isolation + per-test timeout).** Both
+    shapes that escape the interpreter's `Result` are now contained, so no test
+    can take the runner down. The suite runs in a **child process** under a
+    **per-test deadline** (`--timeout <seconds>`, default 60s; `0` disables):
+    a **stack overflow** kills the child, which the parent reports as
+    `FAIL ... terminated abnormally` before resuming at the next test; a
+    **non-terminating** test trips the deadline, is killed, and is reported as
+    `FAIL ... timed out after Ns`. In both cases the remaining tests still run and
+    the summary is still correct with a non-zero exit. Exit codes stay
+    unpinned — a stack overflow is `0xC00000FD` on Windows and 127/a signal on
+    POSIX, so only the *observable* (reported as a failure, run continues) is
+    contract. Pinned by `suite19.rs` over `tests/fixtures/test_runner/`
+    (`stack_overflow.lby`, `infinite_loop.lby`); the hang pin passes an explicit
+    short `--timeout`, so a non-terminating test cannot stall CI.
+  - **Design: batch-with-resume, not process-per-test.** A process per test would
+    pay a spawn (~13ms) plus a full recompile per test — ~1.6s on a 100-test
+    suite against ~20ms in-process, a tax on the all-passing path where nothing
+    needs isolating. Instead the child runs the whole remaining suite sequentially
+    in one process (preserving the old in-process semantics exactly), and the
+    parent respawns only when a test actually kills it, resuming at the next
+    index. Measured overhead on the all-passing path is **one** extra spawn +
+    compile regardless of test count: **+12ms on 4 tests, +22ms on 100**.
+  - **Still open here:** `--backend native|ir|bytecode` for `test` (the runner is
+    AST-only) would need new named-function entry points — `lullaby_ir` exposes
+    only `run_main` today. Not a containment gap; a backend-coverage one.
 - **Open sub-item — declaration surface (owner call).** The `test_*` convention is
   implicit magic: a name prefix silently confers semantics, which sits awkwardly
   with Lullaby's explicitness. A `test "name"` block (Zig-style) would be explicit,
@@ -166,7 +177,7 @@ These are toolchain-completeness items, not language decisions.
 | A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
 | B1 | Closures native codegen | PLANNED | schedule post-arena | — |
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
-| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolates every runtime error but a stack-overflow/non-terminating test still takes it down — subprocess+timeout FUNDED next; DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
+| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolation now COMPLETE — subprocess + per-test `--timeout` (default 60s) contain stack-overflow AND non-terminating tests, pinned by suite19, +12ms/+22ms overhead on the all-passing path; `test --backend` (AST-only), DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
 
 ## Owner decisions — 2026-07-16
 

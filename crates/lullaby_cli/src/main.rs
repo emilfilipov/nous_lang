@@ -64,8 +64,23 @@ fn run() -> Result<(), String> {
             invocation.optimization,
             invocation.program_args,
         ),
-        CommandName::Test => {
-            commands::test::test_file(invocation.path, invocation.mode, invocation.filter)
+        CommandName::Test => commands::test::test_file(
+            invocation.path,
+            invocation.mode,
+            invocation.filter,
+            invocation.timeout_secs,
+        ),
+        CommandName::RunTestBatch => {
+            let batch = invocation
+                .batch
+                .expect("__run-test-batch always carries its args");
+            commands::test_isolate::run_batch_child(
+                invocation.path,
+                batch.start,
+                batch.verbose,
+                &batch.nonce,
+                invocation.filter,
+            )
         }
         CommandName::Wasm => {
             commands::wasm::wasm_file(invocation.path, invocation.output, invocation.mode)

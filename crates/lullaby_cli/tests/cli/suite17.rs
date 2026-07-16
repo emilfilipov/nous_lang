@@ -17,14 +17,11 @@
 //! and a divide-by-zero and asserting the other three still report, with a
 //! correct `3 passed, 2 failed`.
 //!
-//! Isolation is NOT total, and nothing here claims it is. A stack overflow aborts
-//! the runner outright (no summary) and a non-terminating test hangs it (no
-//! per-test timeout) — both escape the interpreter's `Result`, so the in-process
-//! design cannot contain them. Those two shapes are deliberately NOT pinned here:
-//! a test that overflows the stack would abort this test binary, and one that
-//! hangs would stall CI with no timeout to catch it. They become testable once
-//! subprocess isolation + a per-test deadline land (funded; `road_to_1_0_stable.md`
-//! B3), which is the right place to add their regression pins.
+//! The two shapes that are NOT runtime errors — a stack overflow and a
+//! non-terminating test — are now contained too, by running the suite in a child
+//! process under a per-test deadline. They are pinned in `suite19.rs`, which is
+//! where the isolation mechanism itself is tested; this suite stays focused on
+//! the runner's surface and its handling of ordinary runtime errors.
 
 use super::{lullaby, stdout, workspace_root};
 
