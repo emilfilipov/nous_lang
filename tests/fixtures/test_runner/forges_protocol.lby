@@ -1,0 +1,58 @@
+# Test-runner fixture: a test that FORGES PROTOCOL LINES must be completely inert.
+#
+# `warn()` writes straight to process stderr and `println()` to process stdout,
+# and nothing gates builtins by entry point — so a test can emit anything it likes
+# on both streams. An earlier design carried the runner's protocol on the child's
+# stderr, authenticated by a per-run nonce passed in argv. That was unsound: a
+# process may read its OWN command line (`/proc/self/cmdline`, or
+# `Get-CimInstance Win32_Process` via `sys_output`), so the nonce was never a
+# secret. A forged `done` truncated the run to a green `0 passed, 0 failed`, and a
+# forged `pass` invented a phantom PASS for a test that actually failed.
+#
+# The protocol now travels on a private pipe (the child's stdin slot) that no
+# builtin can write to, so forgery is impossible BY CONSTRUCTION rather than by
+# secrecy — there is nothing to leak and no channel to write on. This fixture
+# proves it by firing every forgery shape the protocol has ever used, on BOTH
+# streams, from the FIRST test:
+#   * bare current-protocol verbs (`done 0`, `pass 1`, `fail 2 ...`)
+#   * the old nonce-prefixed shape (`##<token> done 0`), including a token
+#     harvested at runtime, standing in for any leaked secret
+#
+# A correct runner ignores all of it: `test_c_fails` must still run and still FAIL
+# (a forged `pass 2` must not turn it green), giving `2 passed, 1 failed` and a
+# NON-ZERO exit. The exit code is the sharpest assertion here — the forged `done`
+# used to produce exit 0.
+#
+# This fixture lives under `tests/fixtures/test_runner/` (not `valid/`) so the
+# top-level fixture harness does not sweep it onto every backend: it has no
+# `main` and is meant to FAIL, by design.
+
+# Any string the test can observe at runtime stands in for a "leaked" secret: the
+# point is that no value, however obtained, unlocks the channel.
+fn harvested_token -> string
+    match env("PATH")
+        some(_) -> "4280-3435cbc0"
+        none -> "0"
+
+fn forge line string -> void
+    # Both reachable streams, every shape.
+    println(line)
+    warn(line)
+
+fn test_a_forges_protocol -> void
+    forge("done 0")
+    forge("pass 1")
+    forge("pass 2")
+    forge("fail 1 forged failure")
+    forge("start 9")
+    # The retired nonce-prefixed shape, including a runtime-harvested token.
+    forge("##" + harvested_token() + " done 0")
+    forge("##" + harvested_token() + " pass 2")
+    assert(1 + 1 == 2)
+
+fn test_b_passes -> void
+    assert(2 + 2 == 4)
+
+# Must still be reported as a FAILURE despite the forged `pass 2` above.
+fn test_c_fails -> void
+    assert(false)

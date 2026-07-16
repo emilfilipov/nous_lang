@@ -1,0 +1,43 @@
+# Test-runner fixture: a test that SPAWNS A LONG-RUNNING GRANDCHILD must not
+# outlive the per-test deadline.
+#
+# `sys_status` runs a real process, and nothing gates builtins by entry point — so
+# a `test_*` function can spawn one. That grandchild both outlives a killed child
+# AND inherits the child's stderr pipe handle, so killing only the child leaves
+# the pipe open and the runner waiting on an EOF that will not come until the
+# grandchild exits. Measured before the fix: `--timeout 3` against this fixture
+# took 14s, tracking the ping duration linearly (`-n 60` -> 60s) — the runner was
+# not bounded by its own deadline at all, which is the whole B3 guarantee.
+#
+# A correct runner kills the process TREE, reports `test_a_spawns_a_long_grandchild`
+# as a timeout failure, still runs the other two, and summarizes `2 passed, 1
+# failed` — all within the deadline, not within the grandchild's lifetime.
+#
+# ~15s of grandchild is deliberate: comfortably longer than the short `--timeout`
+# the suite passes, so a regression to "waits for the grandchild" is unmissable
+# against the asserted wall-clock bound.
+#
+# This fixture lives under `tests/fixtures/test_runner/` (not `valid/`) so the
+# top-level fixture harness does not sweep it onto every backend: it has no
+# `main` and is meant to FAIL, by design.
+
+# `ping` counts with `-n` on Windows and `-c` elsewhere; both send one per second,
+# so either way this is a ~15s process. Not a `test_*` name, so it is not itself
+# discovered as a test.
+fn is_windows -> bool
+    match env("OS")
+        some(name) -> name == "Windows_NT"
+        none -> false
+
+fn test_a_spawns_a_long_grandchild -> void
+    let flag string = "-c"
+    if is_windows()
+        flag = "-n"
+    let code i64 = sys_status("ping", [flag, "15", "127.0.0.1"])
+    assert(code == 0)
+
+fn test_b_passes -> void
+    assert(1 + 1 == 2)
+
+fn test_c_passes -> void
+    assert(2 + 2 == 4)

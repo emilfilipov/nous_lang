@@ -1,0 +1,30 @@
+# Test-runner fixture: a test that OVERFLOWS THE STACK must not kill the run.
+# `test_b_overflows` recurses without a base case, which faults on the guard page
+# and terminates the process running it — this is not a runtime error, so the
+# interpreter's `Result` never sees it.
+#
+# The runner isolates the suite in a child process, so the fault kills the CHILD.
+# The parent observes the abnormal termination, reports `test_b_overflows` as a
+# failure, resumes the batch at the next test, and still summarizes
+# `3 passed, 1 failed`.
+#
+# This fixture lives under `tests/fixtures/test_runner/` (not `valid/`) so the
+# top-level fixture harness does not sweep it onto every backend: it has no
+# `main` and is meant to FAIL, by design.
+
+fn recurse_forever n i64 -> i64
+    # No base case: each frame pushes another until the stack is exhausted.
+    recurse_forever(n + 1)
+
+fn test_a_passes -> void
+    assert(1 + 1 == 2)
+
+fn test_b_overflows -> void
+    let bad i64 = recurse_forever(0)
+    assert(bad == 0)
+
+fn test_c_passes -> void
+    assert(2 + 2 == 4)
+
+fn test_d_passes -> void
+    assert(3 + 3 == 6)

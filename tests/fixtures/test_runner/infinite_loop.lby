@@ -1,0 +1,31 @@
+# Test-runner fixture: a NON-TERMINATING test must not hang the run.
+# `test_b_never_terminates` loops forever, so it produces neither a value nor a
+# runtime error — there is nothing for the interpreter to return and nothing to
+# catch.
+#
+# The runner runs the suite in a child process under a per-test deadline
+# (`--timeout <seconds>`). When the deadline passes, the child is killed,
+# `test_b_never_terminates` is reported as a timeout failure, the batch resumes at
+# the next test, and the run still summarizes `3 passed, 1 failed`.
+#
+# The suite that pins this passes an explicit short `--timeout` so it cannot
+# stall CI waiting out the 60s default.
+#
+# This fixture lives under `tests/fixtures/test_runner/` (not `valid/`) so the
+# top-level fixture harness does not sweep it onto every backend: it has no
+# `main` and is meant to FAIL, by design.
+
+fn test_a_passes -> void
+    assert(1 + 1 == 2)
+
+fn test_b_never_terminates -> void
+    let spin i64 = 0
+    loop
+        # No `break`: this never leaves the loop under its own power.
+        spin += 1
+
+fn test_c_passes -> void
+    assert(2 + 2 == 4)
+
+fn test_d_passes -> void
+    assert(3 + 3 == 6)

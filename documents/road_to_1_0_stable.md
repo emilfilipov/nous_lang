@@ -112,7 +112,7 @@ Before stamping "stable": a built-in **test runner**, **debug info on Linux/macO
 (DWARF — CodeView is Windows-only today), and **LSP + package-manager maturity**.
 These are toolchain-completeness items, not language decisions.
 
-- **Test runner — SHIPPED, with two known containment gaps (fix funded, below).**
+- **Test runner — SHIPPED; both containment gaps now CLOSED.**
   `lullaby test [--verbose] [--filter <substring>] <file.lby | project-dir |
   lullaby.json>` was already built and specified (`language_surface.md`) ahead of
   this item's audit — introduced `f4645f5` (2026-07-07) and shipped in tag
@@ -123,28 +123,95 @@ These are toolchain-completeness items, not language decisions.
   the AST interpreter in deterministic order (source order within a file; loader
   merge order across modules), prints `PASS`/`FAIL` per test with a reason plus an
   `N passed, M failed` summary, and exits non-zero on any failure. Pinned by
-  `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests) over
-  `tests/fixtures/test_runner/`.
+  `crates/lullaby_cli/tests/cli/suite17.rs` (9 tests, the runner's surface) and
+  `crates/lullaby_cli/tests/cli/suite19.rs` (6 tests, the isolation mechanism)
+  over `tests/fixtures/test_runner/`.
   - **Isolation holds for every runtime error** — `assert(false)`, `throw`, A5
     contract violations (bounds fail, divide-by-zero), `L0423` — each is reported
     as a `FAIL` and the run continues. The mechanism is the execution tier, not
     A5: A5's abort-without-unwinding governs the *native* tier, while the runner
     runs on the AST interpreter, which returns these as ordinary `RuntimeError`s.
-  - **Two gaps — CONFIRMED, verified by measurement.** A **stack overflow**
-    (unbounded recursion) aborts the runner: remaining tests never run and no
-    summary prints (exit is the OS fault code — Windows `0xC00000FD`; platform-
-    specific, do not pin a value). A **non-terminating test hangs forever** —
-    there is **no per-test timeout**. Both escape the interpreter's `Result`, so
-    the in-process design cannot contain them.
-  - **Next increment (FUNDED): subprocess isolation + a per-test timeout.** This
-    is what closes both gaps **on the interpreter today** — it is not merely a
-    prerequisite for a future `--backend`. Run each test in its own subprocess
-    under a per-test deadline; report a crashed child as a `FAIL` and a timed-out
-    child as a timeout `FAIL`, then continue and summarize. It additionally
-    unblocks `--backend native|ir|bytecode` for `test`, which would separately
-    need new named-function entry points (`lullaby_ir` exposes only `run_main`
-    today). A runner that hangs on a non-terminating test does not meet the
-    project's quality bar; this is scheduled work, not an accepted limitation.
+  - **The two gaps — CLOSED (subprocess isolation + per-test timeout).** Both
+    shapes that escape the interpreter's `Result` are now contained, so no test
+    can take the runner down. The suite runs in a **child process** under a
+    **per-test deadline** (`--timeout <seconds>`, default 60s; `0` disables):
+    a **stack overflow** kills the child, which the parent reports as
+    `FAIL ... terminated abnormally` before resuming at the next test; a
+    **non-terminating** test trips the deadline, is killed, and is reported as
+    `FAIL ... timed out after Ns`. In both cases the remaining tests still run and
+    the summary is still correct with a non-zero exit. Exit codes stay
+    unpinned — a stack overflow is `0xC00000FD` on Windows and 127/a signal on
+    POSIX, so only the *observable* (reported as a failure, run continues) is
+    contract. Pinned by `suite19.rs` over `tests/fixtures/test_runner/`
+    (`stack_overflow.lby`, `infinite_loop.lby`); the hang pin passes an explicit
+    short `--timeout`, so a non-terminating test cannot stall CI.
+  - **Tree-kill, not child-kill (review finding).** The first cut killed only the
+    child and joined the stderr reader. But `sys_status`/`sys_output`/`proc_spawn`
+    let a `test_*` function spawn real processes, and a grandchild outlives a
+    killed child *and* inherits its stderr pipe handle — so EOF never arrived and
+    the runner waited out the grandchild: `--timeout 3` measured at **14s**,
+    scaling linearly with the grandchild (`ping -n 60` -> 60s). The deadline
+    bounded nothing, which is the exact gap B3 exists to close, reachable from the
+    documented surface. Fixed by killing the process **tree** (`taskkill /T` on
+    Windows; a process-group signal on POSIX, the child being made group leader),
+    by *not* joining the reader (so the deadline holds even if a kill fails), and
+    by having the child signal completion explicitly instead of the parent
+    inferring it from EOF (which a grandchild can defer, stalling even a wholly
+    passing suite). Pinned by a wall-clock bound in `suite19.rs` — the `FAIL` line
+    alone printed on schedule while the run was unbounded, so only elapsed time
+    catches it.
+  - **Unforgeable reporting (review finding, three rounds).** Isolating the
+    *process* is not enough if the *report* can be faked, and this took three
+    attempts. Every escape came through the **OS**, not the language surface —
+    and none was findable by running the suite: `cargo test --all` was green,
+    444 tests, while the hole was open. Only asking "what if the program under
+    test is hostile?" found them.
+    1. The protocol rode on the child's **stderr** with a per-run nonce in
+       `argv`. `warn()` writes to that same stderr, and a process may read its
+       own command line (`/proc/self/cmdline`; `Get-CimInstance Win32_Process`
+       via `sys_output`), so the nonce was never secret. A forged `done`
+       truncated the run to a green `0 passed, 0 failed` + exit 0 — "passes
+       having run nothing", a mode this project has shipped once before.
+    2. Moving it to a **private pipe in the stdin slot** was defeated too:
+       `proc_spawn` spawns with stdin **inherited**, so a grandchild received a
+       writable handle and `cmd /c echo pass 1 >&0` forged a line. The audit
+       that missed this verified no builtin *names* a descriptor (true) and
+       concluded the channel was unreachable — but **process inheritance hands
+       the descriptor over with no builtin involved**.
+    3. **Fixed:** before any test code runs, the child takes the descriptor out
+       of the stdin slot, duplicates it onto one that cannot be inherited
+       (no-inherit `DuplicateHandle`; `fcntl(F_DUPFD_CLOEXEC, 3)`), and puts the
+       null device in the slot — `SetStdHandle(STD_INPUT_HANDLE, NUL)` /
+       `dup2(nul, 0)`, which disposes of the original too. The channel then has
+       no name a program can reach and no slot a child can inherit — holding
+       against spawn routes nobody has thought of, rather than depending on every
+       spawning builtin to null its own stdin (which would also be outside the
+       CLI's scope). POSIX needs `dup2` rather than close-then-reopen: `File::open`
+       always sets `O_CLOEXEC` and `Command` does no `dup2` for an inherited
+       stdin, so a reopened fd 0 reaches the grandchild *closed* — safe but a
+       footgun (its next `open()` lands on descriptor 0). Bonus: `read_line`
+       regains a clean EOF.
+    Validating `done` against `last_reported` is an integrity check, NOT a
+    security control — the forger reported every index first, satisfying it, so
+    `done` then completed the batch legitimately. Only unreachability works.
+    Pinned in `suite19.rs` by an **end-to-end** grandchild forgery (the only kind
+    that would have caught any of the three), a direct `println`/`warn` forgery,
+    and a structural check that no verb reaches stdout/stderr — the last is
+    necessary but not sufficient, and believing otherwise is what let round 2
+    through. Out of scope, stated: a test can `proc_spawn` an arbitrary **native**
+    binary, which could steal a handle out of the process — but that is arbitrary
+    code execution as the user, against which no in-process boundary helps.
+  - **Design: batch-with-resume, not process-per-test.** A process per test would
+    pay a spawn (~13ms) plus a full recompile per test — ~1.6s on a 100-test
+    suite against ~20ms in-process, a tax on the all-passing path where nothing
+    needs isolating. Instead the child runs the whole remaining suite sequentially
+    in one process (preserving the old in-process semantics exactly), and the
+    parent respawns only when a test actually kills it, resuming at the next
+    index. Measured overhead on the all-passing path is **one** extra spawn +
+    compile regardless of test count: **+12ms on 4 tests, +22ms on 100**.
+  - **Still open here:** `--backend native|ir|bytecode` for `test` (the runner is
+    AST-only) would need new named-function entry points — `lullaby_ir` exposes
+    only `run_main` today. Not a containment gap; a backend-coverage one.
 - **Open sub-item — declaration surface (owner call).** The `test_*` convention is
   implicit magic: a name prefix silently confers semantics, which sits awkwardly
   with Lullaby's explicitness. A `test "name"` block (Zig-style) would be explicit,
@@ -166,7 +233,7 @@ These are toolchain-completeness items, not language decisions.
 | A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
 | B1 | Closures native codegen | PLANNED | schedule post-arena | — |
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
-| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolates every runtime error but a stack-overflow/non-terminating test still takes it down — subprocess+timeout FUNDED next; DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
+| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolation now COMPLETE — subprocess + process-tree kill + per-test `--timeout` (default 60s) contain stack-overflow, non-terminating AND grandchild-spawning tests, pinned by suite19 (incl. a wall-clock bound), +12ms/+22ms overhead on the all-passing path; results reported on a private pipe whose stdin slot is reopened onto the null device, so it has no name a program can reach and no slot a child can inherit (a nonce in argv was not secret; a reclaimed-but-not-reopened slot was inherited by `proc_spawn` grandchildren); remaining uncontained: machine-wide resource exhaustion (reachable), a descendant that leaves the tree, `spawn`-thread blame misattribution, crash-vs-timeout attribution under a sub-teardown deadline; `test --backend` (AST-only), DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
 
 ## Owner decisions — 2026-07-16
 

@@ -1,0 +1,58 @@
+# Test-runner fixture: a test that forges protocol lines THROUGH A GRANDCHILD.
+#
+# This is the attack that broke the second transport design. The protocol pipe's
+# write end is handed to the test process in its stdin slot. `proc_spawn` spawns
+# with stdin INHERITED, so a grandchild receives a writable handle to the protocol
+# channel — and `>&0` redirects onto it. No builtin ever names a descriptor; the
+# OS hands one over through process inheritance. Checking the language surface for
+# a "write to fd" builtin proves nothing about that route.
+#
+# Left unfixed, this produced a fully green lie:
+#     PASS test_a_forges_a_green_run
+#     PASS test_b_passes
+#     PASS test_c_fails        <- this test is assert(false)
+#     3 passed, 0 failed       <- EXIT 0
+# Forging every index first also satisfied `last_reported + 1 == names.len()`, so
+# the subsequent `done` completed the batch *legitimately*: validating `done`
+# against forgeable state is not validation.
+#
+# A correct runner reclaims the protocol descriptor and reopens the stdin slot
+# onto the null device before any test runs, so a grandchild inherits a null
+# stdin however it is spawned. `test_c_fails` must then still be reported as a
+# FAILURE, for `2 passed, 1 failed` and a NON-ZERO exit.
+#
+# This fixture lives under `tests/fixtures/test_runner/` (not `valid/`) so the
+# top-level fixture harness does not sweep it onto every backend: it has no
+# `main` and is meant to FAIL, by design.
+
+fn is_windows -> bool
+    match env("OS")
+        some(name) -> name == "Windows_NT"
+        none -> false
+
+# Spawn a grandchild whose stdout is redirected onto handle/fd 0 — the slot the
+# runner's protocol pipe used to occupy, inherited by every grandchild.
+fn shout line string -> void
+    if is_windows()
+        match proc_spawn("cmd", ["/c", "echo " + line + " >&0"])
+            ok(p) -> assert(true)
+            err(e) -> assert(true)
+    else
+        match proc_spawn("sh", ["-c", "echo " + line + " >&0"])
+            ok(p) -> assert(true)
+            err(e) -> assert(true)
+
+fn test_a_forges_a_green_run -> void
+    # Report every index as passing, then complete the batch.
+    shout("pass 0")
+    shout("pass 1")
+    shout("pass 2")
+    shout("done 0")
+    assert(1 + 1 == 2)
+
+fn test_b_passes -> void
+    assert(2 + 2 == 4)
+
+# Must still be reported as a FAILURE despite the forged `pass 2` above.
+fn test_c_fails -> void
+    assert(false)
