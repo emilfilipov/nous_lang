@@ -1,0 +1,20 @@
+# Reads and the size law through an `addr_of` pointer — no store, so every tier
+# runs this identically. (The interpreters only refuse addr_of STORES, L0459.)
+# main = 7 + 9 + 20 + 8 = 44 on the AST/IR/bytecode interpreters and as the
+# native exe's exit code.
+no-runtime
+
+struct Pair
+    lo i64
+    hi i64
+
+fn main -> i64
+    let pair Pair = Pair(7, 9)
+    let x i64 = 20
+    unsafe
+        let lp ptr<i64> = addr_of(pair.lo)
+        let hp ptr<i64> = addr_of(pair.hi)
+        let xp ptr<i64> = addr_of(x)
+        let rp ptr<i64> = ptr_cast(ptr_cast(xp))
+        let law i64 = ptr_to_int(ptr_offset(xp, 1)) - ptr_to_int(xp)
+        ptr_read(lp) + ptr_read(hp) + ptr_read(rp) + law

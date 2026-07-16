@@ -1,0 +1,21 @@
+# `addr_of(s.f)` write-through plus a `ptr_cast` round-trip.
+#
+# The field pointers are real addresses, so both stores land in `pair` itself:
+# hi = 33, lo = 9 -> 42. The `ptr_cast` chain (ptr<i64> -> ptr<byte> -> ptr<i64>)
+# is a pure no-op at machine level and reads the same word back.
+#
+# Native-only: the interpreters refuse the addr_of stores with L0459.
+struct Pair
+    lo i64
+    hi i64
+
+fn main -> i64
+    let pair Pair = Pair(7, 9)
+    unsafe
+        let hp ptr<i64> = addr_of(pair.hi)
+        ptr_write(hp, 33)
+        let lp ptr<i64> = addr_of(pair.lo)
+        let bp ptr<byte> = ptr_cast(lp)
+        let rp ptr<i64> = ptr_cast(bp)
+        ptr_write(rp, ptr_read(rp) + 2)
+    pair.hi + pair.lo

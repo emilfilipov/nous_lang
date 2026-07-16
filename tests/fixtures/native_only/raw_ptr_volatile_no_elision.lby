@@ -1,0 +1,25 @@
+# `volatile_load` / `volatile_store` are genuinely non-eliding: every access is a
+# real machine load/store at its own program point. This is the MMIO correctness
+# requirement — a device register re-read must actually re-read.
+#
+# Chosen so that ANY elision changes the answer:
+#   a = 1                      (first read)
+#   store 2 ; b = 2            (a CSE'd second read would give b == 1)
+#   loop reads 2, 12, 22, 32   (a hoisted read would give 2+2+2+2 == 8)
+# main = 1 + 2 + 68 = 71.
+#
+# Native-only: the interpreters refuse the addr_of store with L0459.
+fn main -> i64
+    let cell i64 = 1
+    let acc i64 = 0
+    let i i64 = 0
+    unsafe
+        let p ptr<i64> = addr_of(cell)
+        let a i64 = volatile_load(p)
+        volatile_store(p, 2)
+        let b i64 = volatile_load(p)
+        while i < 4
+            acc = acc + volatile_load(p)
+            volatile_store(p, volatile_load(p) + 10)
+            i = i + 1
+        a + b + acc

@@ -1373,6 +1373,10 @@ pub(crate) use stmt_lowering::*;
 mod expr_lowering;
 pub(crate) use expr_lowering::*;
 
+#[path = "native_object_rawptr.rs"]
+mod rawptr;
+pub(crate) use rawptr::*;
+
 #[path = "native_object_closure.rs"]
 mod closure;
 pub(crate) use closure::*;

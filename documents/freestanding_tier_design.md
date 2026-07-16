@@ -4,7 +4,11 @@
 is delivered** (2026-07-15) — see §10.2 stage 1 and the "Stage 1 delivery" note
 at the end of §10.2. **The raw-pointer addressing surface `addr_of` / `ptr_offset` /
 `ptr_cast` is delivered** (2026-07-16, §10.2 increment 4) — see §2.2 and the
-"Raw-pointer addressing delivery" note (§10.4). This document proposes the concrete, buildable shape of
+"Raw-pointer addressing delivery" note (§10.4). **Native x86-64 codegen for the
+whole raw-pointer surface is delivered** (2026-07-16) — a kernel-shaped function is
+now native-eligible instead of skipping, and `addr_of` is a real `lea` so
+`ptr_write(addr_of(x), 5)` genuinely mutates `x`; see §10.5 and the "Raw-Pointer
+Surface" section of [native_backend_contract.md](native_backend_contract.md). This document proposes the concrete, buildable shape of
 Lullaby's **freestanding / `no-runtime` tier** — the capability set that makes 1.0
 a systems language you can write a kernel, boot code, embedded firmware, and FFI
 shims in.
@@ -243,7 +247,7 @@ fn poke_and_peek base ptr<u32> -> u32
 - **`ptr_offset(p ptr<T>, n i64) -> ptr<T>`** — element-scaled arithmetic (`p + n*size_of(T)`), the common and least error-prone form.
 - **`ptr_offset_bytes(p ptr<T>, n i64) -> ptr<T>`** — raw byte arithmetic, for unaligned/device layouts. Two names make the scaling *explicit* (the one real footgun in C pointer math).
 - **`ptr_read(p ptr<T>) -> T`** / **`ptr_write(p ptr<T>, v T) -> void`** — deref read/write (delivered).
-- **`addr_of(x) -> ptr<T>`** — address-of an addressable lvalue (local, global, struct field, array element). The value must be *addressable*; taking the address of a temporary is **`L0458`** (the delivered code — see §10.4; the `L0442` this bullet originally proposed was never implemented or registered). **As delivered**, a *store* through an `addr_of` pointer is refused at run time with **`L0459`** on the interpreters (the address is a by-value snapshot, so the write could not alias the original place); reads and `ptr_offset` walks are fully supported. That refusal is temporary and is lifted by the native raw-pointer codegen increment.
+- **`addr_of(x) -> ptr<T>`** — address-of an addressable lvalue (local, global, struct field, array element). The value must be *addressable*; taking the address of a temporary is **`L0458`** (the delivered code — see §10.4; the `L0442` this bullet originally proposed was never implemented or registered). **As delivered**, a *store* through an `addr_of` pointer is refused at run time with **`L0459`** on the interpreters (the address is a by-value snapshot, so the write could not alias the original place); reads and `ptr_offset` walks are fully supported. That refusal is temporary, and it still stands: the native raw-pointer codegen increment (§10.5) made **native** `addr_of` a real `lea` that aliases correctly, but deliberately did NOT touch the interpreter model, so `L0459` still fires on the interpreters. Retiring it requires making the interpreters' `addr_of` place-backed — separate work.
 - **`ptr_cast<U>(p ptr<T>) -> ptr<U>`** — reinterpret the element type (no value conversion). `ptr_to_int`/`int_to_ptr` (delivered) round-trip a pointer to/from an integer address.
 - **`ptr_null<T>() -> ptr<T>`** and **`is_null(p)`** (the latter delivered) — the null pointer and its test. There is no implicit null: a `ptr<T>` is never checked for you (that is the point of `unsafe`), but `is_null` is available where you want it.
 - Interpreter behavior: on the AST/IR/bytecode interpreters a `ptr<T>` from `alloc`/`int_to_ptr` is a heap-slot handle (delivered semantics). **As delivered (§10.4),** `addr_of` introduces a second *byte-addressed* address space so `ptr_offset`/`ptr_read` walk snapshotted regions and the size law `ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p) == size_of(T)` holds; `ptr_cast` is the identity on the address (a static-only pointee reinterpretation). Raw byte-exact aliasing through a pointer remains a native-codegen concern, exactly as `volatile_load`/`volatile_store` already are.
@@ -1048,6 +1052,112 @@ and test-locked, extending the delivered `ptr_read`/`ptr_write`/`ptr_to_int`/
   `tests/fixtures/valid/no_runtime/freestanding_addr_of.lby`,
   `tests/fixtures/valid/raw_ptr_addressing.lby`, and
   `tests/fixtures/invalid/raw_ptr/`.
+
+---
+
+### 10.5 Native raw-pointer codegen delivery (2026-07-16)
+
+**Delivered: the entire raw-pointer surface now has native x86-64 codegen.** This
+was the kernel long-pole. Before this increment, *every* raw-pointer builtin made
+its function native-ineligible (a clean `L0339` skip), so kernel-shaped code only
+ran on a tree-walking interpreter — the freestanding tier targets bare metal, but
+had no bare-metal codegen for its own defining surface. It does now.
+
+The canonical, detailed contract is the **"Raw-Pointer Surface (Freestanding
+Tier)"** section of [native_backend_contract.md](native_backend_contract.md); this
+is the tier-level delivery record. (§2.2's prose describes the *surface*; this
+records what the native backend does with it.)
+
+- **Code.** `crates/lullaby_ir/src/native_object_rawptr.rs` (new): lowering for
+  `addr_of`, `ptr_read`/`ptr_write`, `volatile_load`/`volatile_store`,
+  `ptr_offset`, `ptr_cast`, `int_to_ptr`/`ptr_to_int`, plus the address-taken gate.
+  Dispatched from the `Call` arm of `lower_native_expr`
+  (`native_object_expr.rs`) ahead of the unknown-function gate;
+  `plan_register_promotion` (`native_object_regalloc.rs`) consults
+  `body_takes_address`. No interpreter, runtime, semantics, parser, WASM, or
+  AArch64 file was touched.
+- **`addr_of` is a real `lea`.** `ptr_write(addr_of(x), 5)` genuinely makes
+  `x == 5` — the direct-PE exe exits **5**. This is exactly the semantics the
+  interpreters cannot model: their `addr_of` snapshots the place by value, so they
+  refuse the store at run time with **`L0459`** rather than return `1`.
+- **`L0459` is untouched and still fires on the interpreters.** Retiring it (making
+  the interpreter model place-backed so it aliases too) is separate, parallel work
+  and is deliberately *not* part of this increment. Until it lands, the honest
+  state is: **native aliases correctly; the interpreters loudly refuse the store.**
+  A loud refusal, never a silent wrong answer, on every tier.
+- **`ptr<T>` needed no eligibility change.** It was already a pointer-sized scalar
+  in the native value model (`resolve_native_type` → `NativeType::I64`), so
+  `ptr<T>` parameters, locals, and returns pass and return in a GPR like any `i64`.
+  Verified end to end rather than assumed.
+- **`volatile_*` are genuinely non-eliding, and no pass needed changing.** Every
+  builtin is an `IrExprKind::Call`; the native command runs only the inliner, which
+  rejects any `Call` body and only substitutes bare-variable/literal arguments; CSE,
+  LICM, copy-prop, and DCE all treat a `Call` as opaque; and the backend's own
+  peepholes (immediate folding, strength reduction, the SIMD/affine reduction
+  detectors, register promotion) never match a `Call`. The guarantee was **verified
+  and pinned** — including a test that a reduction-shaped volatile loop is not
+  closed-formed away — not retrofitted.
+- **The register-promotion hazard is gated explicitly.** A promoted local lives in
+  `rbx`/`rsi` and has no address, so a `lea` of its dead frame slot would silently
+  drop the store. `plan_register_promotion` now refuses to promote *any* local in a
+  function containing an `addr_of`. (A raw-pointer chain also happens to fail the
+  existing `expr_reg_promotable` type check, but that is incidental and correctness
+  does not lean on it.) Proven at 145 vs. the 45 the miscompile would give.
+- **Arena/RC interaction: none, by construction.** The `addr_of` gate admits only an
+  8-byte integer/pointer scalar place, so no `string`/`list`/`map`/`rc`/heap-carrying
+  aggregate can have its address taken natively, and the heap-escape/arena analysis
+  never sees one. No conservative exclusion was needed; widening `addr_of` to
+  heap-carrying places would require revisiting that analysis first.
+
+**What compiles vs. what skips (default-deny).** Two properties of the native value
+model bound soundness, and both refusals are precise `L0339` skips:
+
+| Shape | Native |
+| :-- | :-- |
+| `addr_of` of an 8-byte scalar local/param (`i64`/`u64`/`isize`/`usize`/`ptr<T>`) | **compiles** (`lea`) |
+| `addr_of(s.f)` / `addr_of(s.a.b)` of an 8-byte field | **compiles** (`lea`) |
+| `ptr_read`/`ptr_write`/`volatile_*` over an integer/pointer pointee (1/2/4/8) | **compiles** (exact-width, sign/zero-extending) |
+| `ptr_offset` over an integer/pointer pointee; `ptr_cast`; `int_to_ptr`/`ptr_to_int` | **compiles** (scaled `lea`; no-ops) |
+| `ptr<T>` as a parameter / local / return | **compiles** (GPR scalar) |
+| `addr_of` of an **array element** or a **whole array** | **skips** — native aggregates descend in address (measured: `addr_of(pair.hi) − addr_of(pair.lo) == −8` where `offset_of` says `+8`), so the pointer would walk backwards, disagreeing with C, `offset_of`, *and* the interpreters |
+| `addr_of` of a narrower-than-8-byte scalar | **skips** — stored as a normalized 8-byte cell; a width-correct store would corrupt its upper half |
+| a `bool`/`char` pointee | **skips** — a raw load could break the cell's value invariant |
+| an `f64`/`f32` pointee | **skips** — the result would have to land in XMM, not `rax` |
+| a struct/array pointee for `ptr_offset` | **skips** — its C stride is not guessed |
+| `addr_of` of a closure-captured variable | **skips** — the capture lives in the env block, not a frame slot |
+| a `void`-returning function (e.g. `fn poke p ptr<T> v T`) | **skips** — a *pre-existing, raw-pointer-independent* native gap (a plain `fn bump n i64` skips identically); it blocks the natural kernel spelling and is the cheapest next win |
+
+The descending-frame layout is the one real gap this increment documents rather
+than closes: `offset_of`-based pointer arithmetic from an `addr_of(s.f)` pointer
+does not hold natively. Every shape where that would silently matter already
+refuses; laying native aggregates out in C order is the proper fix and is deferred.
+
+**Verification.** `crates/lullaby_ir/src/native_object_rawptr_tests.rs` (17 unit
+tests over the emitted bytes — a new file, since `native_program_tests.rs` is
+already past the test-file size cap). `crates/lullaby_cli/tests/cli/suite15.rs`
+compiles real `.exe`s through the direct-PE writer (no linker, no toolchain gate)
+and asserts exit codes: **5** (the headline aliasing proof), **145** (the promotion
+hazard), **71** (volatile non-elision), **47** (the size law across `i64`/`i32`/
+`i16`/`byte`/`ptr<i64>` plus a negative walk), **42** (`addr_of(s.f)`
+write-through), **42** (a `no-runtime` module under `lullaby native --freestanding`
+passing a `ptr<i64>` in and returning one out), and **44** on all four tiers
+(native == AST == IR == bytecode for the read/walk shapes the interpreters define).
+Fixtures: `tests/fixtures/native_only/raw_ptr_*.lby` and
+`tests/fixtures/valid/no_runtime/freestanding_native_rawptr.lby` +
+`freestanding_addr_of_reads.lby`. Differential fuzz:
+`fuzz_raw_pointer_reads_agree_across_interpreters` (150 programs) and
+`fuzz_raw_pointer_reads_native_matches_interpreter` (100 programs) in
+`crates/lullaby_cli/tests/cli/fuzz.rs` require native to either match the
+interpreter exactly or skip cleanly with `L0339` and no exe.
+
+**Next freestanding sub-stage.** With addressing native, the highest-value next
+increments are, in order: (1) **native `void`-returning functions** — small,
+pre-existing, and it unblocks the natural `fn poke p ptr<T> v T` kernel spelling
+that every driver wants; (2) **MMIO + port I/O intrinsics** (§4: `port_in8/16/32`,
+`port_out8/16/32`, `read_cr`/`write_cr`, `halt`/`cli`/`sti`), which now have a
+working `volatile_*`/`ptr<T>` foundation to build on; (3) **static-buffer arenas**
+(§5); (4) the **panic fn** (§8); then **interrupt/naked** (§6) and
+**direct-ELF/flat-binary** output (§9.3).
 
 ---
 

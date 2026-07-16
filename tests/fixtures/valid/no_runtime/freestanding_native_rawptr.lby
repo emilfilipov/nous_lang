@@ -1,0 +1,35 @@
+# A `no-runtime` module exercising the native raw-pointer surface across a call
+# boundary: a `ptr<T>` crosses in a GPR as a parameter AND as a return value, and
+# `volatile_store`/`volatile_load` drive a struct field standing in for a device
+# register block. Compiles under `lullaby native --freestanding` (no CRT) and
+# runs: 7 * 6 = 42.
+#
+# Native-only: the interpreters refuse the `addr_of` store with L0459.
+no-runtime
+
+struct Regs
+    ctrl i64
+    status i64
+
+fn poke slot ptr<i64> v i64 -> i64
+    unsafe
+        volatile_store(slot, v)
+    0
+
+fn peek slot ptr<i64> -> i64
+    unsafe
+        volatile_load(slot)
+
+fn advance p ptr<i64> n i64 -> ptr<i64>
+    unsafe
+        ptr_offset(p, n)
+
+fn main -> i64
+    let regs Regs = Regs(0, 0)
+    let scratch i64 = 0
+    unsafe
+        let cp ptr<i64> = addr_of(regs.ctrl)
+        let ignored i64 = poke(cp, 7)
+        let sp ptr<i64> = advance(addr_of(scratch), 0)
+        ptr_write(sp, peek(cp) * 6)
+    scratch

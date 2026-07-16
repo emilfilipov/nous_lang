@@ -1371,3 +1371,10 @@ mod tests;
 #[cfg(test)]
 #[path = "native_program_tests.rs"]
 mod native_program_tests;
+
+// The raw-pointer surface's codegen tests live in their own file rather than in
+// `native_program_tests.rs`, which is already well past the test-file size cap
+// (see `documents/large_file_split_plan.md`).
+#[cfg(test)]
+#[path = "native_object_rawptr_tests.rs"]
+mod native_object_rawptr_tests;

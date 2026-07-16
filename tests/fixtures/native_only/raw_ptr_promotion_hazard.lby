@@ -1,0 +1,19 @@
+# The register-promotion / address-taken hazard.
+#
+# `acc` and `i` are exactly the hot, purely-i64 loop locals the native register-
+# promotion pass targets: it would keep them in the callee-saved rbx/rsi, where
+# they have NO address. If promotion still fired here, `addr_of(acc)` would `lea`
+# a dead frame slot, the store would vanish, and main would exit 45. The
+# address-taken gate keeps acc in its frame slot, so the store lands: 45 + 100.
+#
+# Native-only: the interpreters refuse the addr_of store with L0459.
+fn main -> i64
+    let acc i64 = 0
+    let i i64 = 0
+    while i < 10
+        acc = acc + i
+        i = i + 1
+    unsafe
+        let p ptr<i64> = addr_of(acc)
+        ptr_write(p, ptr_read(p) + 100)
+    acc

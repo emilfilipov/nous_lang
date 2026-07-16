@@ -1,0 +1,15 @@
+# THE headline proof that native raw-pointer codegen aliases for real.
+#
+# `addr_of(x)` is a genuine `lea` of `x`'s frame slot, so `ptr_write` through it
+# mutates `x` itself: main exits 5, not 1. The interpreters CANNOT model this —
+# their `addr_of` snapshots the place by value, so they refuse the store at run
+# time with `L0459` rather than return the wrong answer (1). That refusal is
+# honest and intentional; native is the tier that gets this right.
+#
+# Native-only: the interpreters reject this fixture with L0459.
+fn main -> i64
+    let x i64 = 1
+    unsafe
+        let p ptr<i64> = addr_of(x)
+        ptr_write(p, 5)
+    x
