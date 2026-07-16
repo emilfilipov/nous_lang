@@ -1,0 +1,9 @@
+fn main -> i64
+    let step f64 = 1.5
+    let total i64 = 0
+    for i from 1 to 100000
+        let f fn(f64) -> f64 = fn x f64 -> x + step
+        let r f64 = f(0.5)
+        if r > 1.99
+            total = (total + 1) % 251
+    total

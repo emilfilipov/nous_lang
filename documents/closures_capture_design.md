@@ -405,27 +405,51 @@ lowest-risk path. Lambda lifting becomes relevant only for native/WASM codegen
 and is deferred with them.
 
 **Native and WASM backends (honest degradation).** The native x86-64 backend and
-the WASM backend compile only a scalar/heap subset and already **skip** functions
-they cannot lower (recording a reason), so those functions still run on the
-interpreters. Closures are **not** in the compiled subset for this increment:
+the WASM backend compile only a subset and **skip** functions they cannot lower
+(recording a reason), so those functions still run on the interpreters. This
+section described the interpreter-first increment, in which closures were *not*
+compiled at all. That is now **partly superseded on native** — the WASM statement
+still holds.
 
-- The native backend lowers all-`i64` scalar + stack-aggregate functions and a
-  first string-heap step; it has no notion of a heap-allocated closure object or
-  an indirect call through a captured environment.
-- The WASM backend lowers a scalar + linear-memory-heap subset with no function
-  pointers / `call_indirect` table and no closure object layout.
+- **Native (current):** closures ARE compiled, via exactly the closure conversion
+  sketched below — each body is lambda-lifted to a synthesized `__closure_{id}`
+  taking an explicit environment, the environment is a heap block
+  `[code_ptr][captures…]`, and the call is indirect through the code pointer at
+  word 0. The compiled slice is the **scalar** one: integer-cell and float
+  (`f64`/`f32`) captures, parameters, and returns, any parameter count, for a
+  closure created by a direct literal and used only as the callee of a direct call,
+  whose single-expression body is heap-free and calls no user/`extern` code.
+  Everything outside that — a `string`/`list`/`map`/aggregate capture, a
+  higher-order use (`apply(f, x)`), a returned/escaping closure, a mutable/rebound
+  local, a factory-bound closure, or a body that allocates or calls user code —
+  still skips cleanly (`L0339`) and runs on the interpreters, never miscompiled.
+  The authoritative specification is "Closures — Stage 2" in
+  [native_backend_contract.md](native_backend_contract.md); it is the source of
+  truth for the object layout and the call ABI.
+- **WASM (unchanged):** lowers a scalar + linear-memory-heap subset with no
+  function pointers / `call_indirect` table and no closure object layout, so a
+  function that constructs or calls a closure is still recorded skipped and runs on
+  the interpreters. No new `L03xx` code is needed — skipping is the established,
+  non-fatal degradation.
 
-Therefore any function that **constructs or calls a closure value** is recorded
-as *skipped with reason "closures unsupported"* on both compiled backends
-(mirroring how `enum`/`match`, `option`/`result`, and `list`/`map` functions are
-skipped today), and runs on the interpreters. No new `L03xx` backend-error code
-is needed — skipping is the established, non-fatal degradation. When closures are
-eventually compiled, the path is standard **closure conversion**: lambda-lift each
-closure body to a synthesized top-level function taking an explicit environment
-struct, allocate the environment (WASM linear memory / native heap), and call
-indirectly through a function table (`call_indirect` on WASM; a code pointer in
-the environment on native). That is a separate, sizeable ticket; this increment
-is interpreter-first and says so.
+**A closure body is a single expression**, at every level: the grammar is
+`fn PARAMS -> EXPR` (the parser reads the body with `parse_conditional`), and both
+`ExprKind::Closure` and `BytecodeClosureDef` store one expression. There is no
+block-bodied closure form, so "a closure body with locals and control flow" is not
+a deferred backend feature — the language has no such shape, and adding one would
+be a language change, not a codegen one.
+
+**Known bug — an inline conditional in a closure body.** `A if C else B` parses
+inside a closure body, but the IR lowerer desugars a conditional into a hoisted
+`let __cond_N` + `if` statement pushed into the *enclosing statement's* prelude.
+A closure body is an expression with nowhere to hoist to, so those statements
+escape into the enclosing function, where the closure's parameters are not in
+scope. Result: the AST interpreter computes the right answer while the IR
+interpreter and bytecode VM both fail at runtime with `L0403 unknown variable`.
+The native backend refuses the shape (the hoisted parameter is not a native local),
+so it stays consistent with the majority and never miscompiles it. Fixing this is a
+prerequisite for control flow inside a compiled closure body; the same hazard
+should be checked for the postfix `?` desugar, which uses the same hoist buffer.
 
 ## Interaction with concurrency
 
@@ -510,6 +534,9 @@ concurrency paths. Invalid fixtures cover `L0441` (write to a captured name) and
   `L0440`/`L0441`/`L0442`.
 - `parallel_map` and `spawn` accept a `Value::Closure`.
 - Native/WASM: closures are a **skipped** subset (interpreter-only), documented.
+  *(Superseded on native — the scalar slice is now compiled; see "Native and WASM
+  backends" above and "Closures — Stage 2" in
+  [native_backend_contract.md](native_backend_contract.md). WASM still skips.)*
 - Docs: this file, `documents/repository_map.md`, the diagnostic registry rows,
   and a `run_closures.lby` fixture.
 
@@ -517,11 +544,24 @@ concurrency paths. Invalid fixtures cover `L0441` (write to a captured name) and
 
 - **Contextual parameter-type inference** for lambdas
   (`let f fn(i64)->i64 = fn x -> x + 1`).
-- **Multi-statement closure bodies** (an indented block after `->`).
+- **Multi-statement closure bodies** (an indented block after `->`). This is a
+  LANGUAGE gap, not a backend one: the body is a single expression at every level
+  (grammar, AST, IR). Note the inline conditional `A if C else B` — the only
+  intra-body control form the grammar admits today — is currently broken inside a
+  closure body on the IR interpreter and bytecode VM (see "Known bug" above), so
+  that defect should be fixed alongside, or before, any block-body work.
 - **Mutable / shared-cell capture** (a closure that writes back to an enclosing
   local via an explicit shared cell), which lifts the `L0441` restriction.
-- **Native/WASM closure codegen** via closure conversion (lambda lifting +
-  environment structs + `call_indirect`/code-pointer indirect calls).
+- **WASM closure codegen** via closure conversion (lambda lifting + environment
+  structs + a `call_indirect` table). *(The native half of this item is delivered
+  for the scalar slice — same closure conversion, with a code pointer in the
+  environment instead of a table index.)*
+- **Native closure codegen beyond the scalar slice:** heap captures
+  (`string`/`list`/`map`/aggregate — needs the capture words to participate in
+  RC/arena reachability and drop glue), higher-order use (`apply(f, x)`,
+  `sort_by`, `list_map` — needs a uniform calling convention for a closure passed
+  as a value), and returned/escaping closures (needs the environment to outlive the
+  creating frame, so it cannot be arena-rewound).
 - **Closures as first-class *typed* struct fields / generic closure types** beyond
   the erased `fn(T) -> R` spelling.
 - **Cross-thread `Socket` capture** (tied to the separate socket-sharing ticket).

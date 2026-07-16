@@ -38,7 +38,7 @@ Implemented now:
 - **Inherent-method dispatch (`recv.method(args)`).** An inherent/`impl` method call on a receiver whose static type is a concrete user `struct`/`enum` — including a monomorphized generic instantiation (`Box<i64>`, `Box<string>`, `Opt<i64>`) — compiles to a native **direct call** to a synthesized method-instance function. A source `recv.method(args)` reaches the backend as an ordinary UFCS `Call { name: "method", args: [recv, ...] }` (parse-time desugaring); the method bodies live in `BytecodeModule::impls` (keyed by `(base_type, method)`), and the receiver-dispatched names are `BytecodeModule::trait_methods`. A native pre-pass (`crates/lullaby_ir/src/native_object_method.rs`) rewrites each resolvable call to a unique mangled instance name (`$mth$Box_i64_$peek`, `$mth$Counter$bump`) and appends the monomorphized method body (its `self`/param/return/body `TypeRef`s substituted `{T: i64}` via `substitute_type`) to `functions`, so the whole existing pipeline (eligibility, signatures, lowering, emission) treats a method exactly as any function. The `self` receiver is passed by the **existing aggregate ABI** (hidden pointer / copy-in) — no new ABI — so the interpreters' by-value `self` (each call clones the receiver `Value`) is matched bit-for-bit: mutating `self` cannot affect the caller, and a method returning a fresh aggregate leaves the receiver unchanged. **Default-deny:** a bare-`T`/dynamic/trait-object receiver, or an instance whose monomorphized receiver/param/return falls outside the native subset (a deeper-than-one-level heap receiver, a `map<string,…>` param, a generic method body building a closure), is left untouched and skips cleanly through the fixpoint (`L0339`) — never miscompiled. **The WASM backend now mirrors this** (`crates/lullaby_ir/src/wasm_method.rs`, `expand_method_instances`, run by `emit_wasm_module` before generic-type expansion): the same UFCS rewrite over the WASM `IrModule`, the same `substitute_type` monomorphization, the same `$mth$…` mangling, `self` through WASM's existing deep-copied aggregate-argument ABI, and the same default-deny (a bare-`T`/dynamic receiver or an out-of-subset instance skips cleanly with `L0338`). The method-**dispatch** boundary matches native exactly; where the compile-vs-skip set differs it is the pre-existing WASM aggregate-breadth difference (WASM lays out `struct { list }` receivers / `map` params native defers, compiled correctly), not a dispatch difference. See "Inherent-Method Dispatch" below and [wasm_backend_design.md](wasm_backend_design.md) "Inherent-method dispatch".
 - **Fat-pointer array parameters (runtime-length `array<T>`).** A **read-only** scalar-element `array<T>` parameter (an integer cell `i64`/fixed-width/`bool`/`char`/`byte`, or a float `f64`/`f32`) whose length is not known at compile time is passed as a **fat pointer** — a `(data_ptr, length)` descriptor — so the callee reads the caller's storage in place instead of demoting because the length could not be inferred from a call site. `a[i]` (runtime-length bounds-checked; an integer element loads through a GPR, a float element through an XMM register), `len(a)`, and `for x in a` all lower against the descriptor. This closes the single largest native-reach gap (144→29 "no call site to infer its length from" corpus demotions). Value semantics hold because the parameter is read-only; a mutating or length-inferable parameter keeps the copy-in stack-array path. Forwarding a fat parameter as a call argument, mutating runtime-length parameters, and runtime-length returns/locals stay deferred. See "Fat-Pointer Array Parameters (Runtime-Length `array<T>`)" below.
 - **The interim heap-box builtins: `alloc` (delivered), `dealloc` (deliberately skipped).** `alloc` had no native lowering at all, so a heap-box program compiled to **nothing** (`skipped main: call to non-i64-scalar or unknown function 'alloc'`) while every interpreter ran it. It now lowers. **`alloc` is NOT a byte allocator — the name misleads.** The type checker types `alloc(v)` as `ptr_{typeof v}` and the interpreters implement it as `heap.push(Some(value))` returning the cell's INDEX, so **`alloc(8)` is a box holding the value `8`**, and `ptr_read` of it yields `8` — not 8 bytes of uninitialized storage. Native lowering therefore allocates **one 8-byte cell** through the existing `__lullaby_alloc` bump/RC helper (no second allocator; its heap-exhaustion `ud2` guard applies) and stores the initializer into it, returning the cell's real machine address; `ptr_read`/`ptr_write` through it reuse the raw-pointer surface unchanged (`raw_pointee_name` already strips the legacy `ptr_T` spelling alongside `ptr<T>`). **Default-deny:** only an 8-byte cell pointee (`i64`/`u64`/`isize`/`usize`/`ptr<T>`), where the normalized cell width and the C width coincide, so the box's store and the `ptr_read` load agree bit-for-bit; `alloc("s")`/`alloc(true)`/`alloc(1.5)`/`alloc(to_i32(x))` each skip cleanly. **`dealloc` is deliberately NOT lowered** and skips cleanly (`L0339`): the interpreters invalidate the freed cell and *detect* a later use or a double free (`L0406`), which the bump/RC heap cannot reproduce — `rc_free` would make a use-after-free read free-list memory **silently** and a double free push the same block onto the LIFO list twice so two later allocations alias, while a no-op would make a use-after-free succeed. The `L0350` "used after it was freed" check does **not** close the gap: it is name-based and does not survive aliasing (`let q = p` / `dealloc(p)` / `ptr_read(q)` compiles and reaches the backend, failing only at interpreter run time). Skipping costs nothing measurable — the interpreters never reuse a freed cell either (`builtin_alloc` always pushes), so `dealloc` reclaims no interpreter memory. **Reclamation:** nothing frees an `alloc`'d block natively (no drop glue covers it, and the arena is denied — below), so it lives until process exit, bounded by the 1 MiB region whose exhaustion is the defined `ud2` trap — matching the interpreters, whose heap `Vec` also only grows. **The arena interaction (the main risk, defused):** an `alloc`'d cell is manually managed and **invisible** to the arena escape analysis (`type_is_directly_heap` excludes `ptr_*`; `expr_touches_heap` on an `alloc` call only inspects its arguments), so a leaf that mixes `alloc` with a `string` looks arena-eligible and a loop storing a box into an iteration-outliving local looks heap-touching AND confined — earning a per-iteration sub-region whose bump rewind reclaims a live cell. That is a **real, measured use-after-free** (native `92` vs the interpreters' `2116`). **The control for that measurement is gate-removed-on-this-branch, not the base commit** — before `alloc` had native codegen the leaf simply skipped (`L0339`), so this is a hazard the increment *introduces* and then defuses; reproducing it at the base commit is not possible and is the wrong experiment. Rather than teach the analysis raw-pointer provenance (not soundly decidable through `ptr_cast`/`int_to_ptr`, nor across a function boundary), `alloc_defeats_arena` **conservatively excludes any `alloc`-using function from arena eligibility** — it stays on the RC/free-list path where nothing reclaims its boxes; this denies only an optimization, never changing emitted semantics. The scan resolves a `Closure { id }` literal through the module's closure table so an `alloc` inside a closure body (a reachable shape: `fn x i64 -> ptr_read(alloc(x * 2))` type-checks and runs) is not invisible to it; scanning only the function's own body is sound because arena eligibility independently requires a **leaf w.r.t. user code**. **The pointer-identity/arithmetic gate:** `ptr_to_int`, `ptr_offset` **and `ptr_cast`** over an `alloc` box skip cleanly, because the interpreters model the box as a heap-slot INDEX over ONE cell — `ptr_to_int(alloc(7))` is `0` there (a defined program a real address answers differently) and `ptr_offset` over a box is refused outright (`L0406`), while natively it would stride 8 bytes past the one-cell payload into the **next block's `[size]` header** — the word `__lullaby_alloc`'s free-list first-fit scan reads — so a write through it corrupts allocator metadata. **`ptr_cast` must be gated because it LAUNDERS the spelling the gate keys on:** `check_ptr_cast` derives its result type from the caller's annotation (defaulting to `ptr<i64>`), never from the operand, so `let q ptr<i64> = ptr_cast(p)` turns a box into a typed pointer. That gate is complete rather than whack-a-mole — `ptr_cast` is the **only** builtin whose result type ignores its operand (`check_ptr_offset` preserves it, `check_addr_of` derives it from the place, `int_to_ptr` takes an `i64` reachable from a box only via the gated `ptr_to_int`) — and it closes the cross-function laundering route for free through the demotion fixpoint. The gate is type-directed (it keys on the legacy `ptr_T` spelling), so the `ptr<T>` surface — including the `addr_of(buf[0])` + `ptr_offset` buffer-walking kernel idiom and the documented `let bp ptr<byte> = ptr_cast(base)` idiom — is entirely unaffected. **`no-runtime` is unchanged:** `L0441` still rejects both `alloc` and `dealloc` in a freestanding module by design. **The cross-frame headline:** an `alloc` box crosses a frame boundary on **every** tier, and it now does so natively too (at the time of this increment it was the *only* pointer form that did, an `addr_of` pointer being refused cross-frame by the interpreters with `L0459`; the env shelf has since retired that refusal, so both pointer forms now cross frames on all four tiers) — both the out-parameter idiom (`fn poke p ptr_i64 v i64`, a callee writing through a passed box) and a returned allocation (`fn make v i64 -> ptr_i64`) agree across the three interpreters and a real `.exe`. This is what makes the `L0459` hint's "works across frames on every tier" true; see "The Two Pointer Models" below for the one wording nit that remains. Codegen: `crates/lullaby_ir/src/native_object_heapbox.rs`; tests: `native_object_heapbox_tests.rs`, `crates/lullaby_cli/tests/cli/suite17.rs`, and `gen_alloc_arena_program` in `fuzz.rs`.
-- **Closures — Stage 1 (scalar captures, direct non-escaping call).** A closure literal `fn PARAMS -> EXPR` that captures only **integer-cell scalars** (`i64`/fixed-width/`bool`/`char`/`byte`), takes at most three integer-cell scalar parameters, returns an integer-cell scalar, and whose single-expression body is heap-free and calls no user/`extern` function is compiled to native machine code when it is **created by a direct literal** (`let f fn(...) = fn x -> …`) and used **only as the callee of a direct call** (`f(args)`). The closure value is a heap block `[code_ptr][capture words…]` allocated by the shared bump/RC allocator, so it is reclaimed by the arena rewind (a per-iteration sub-region for a non-escaping loop closure — bounded heap) or the RC/free-list path like any other block. The call loads word 0 (the code pointer), puts the env pointer in `rcx`, the arguments in `rdx`/`r8`/`r9`, and issues an indirect `call rax`. **Default-deny — everything else skips cleanly to the interpreters (`L0339`), never miscompiled:** a `string`/`list`/`map`/aggregate or float capture, a closure passed to a higher-order function/builtin (`apply(f, x)`), a returned/escaping closure, a mutable/rebound closure local, a closure bound from a non-literal (a factory result), or more than three parameters. See "Closures — Stage 1" below.
+- **Closures — Stage 2 (scalar completeness: integer AND float captures/parameters/returns, any parameter count, direct non-escaping call).** A closure literal `fn PARAMS -> EXPR` that captures only **native scalars** — an integer cell (`i64`/fixed-width/`bool`/`char`/`byte`) or a float (`f64`/`f32`) — takes any number of native-scalar parameters, returns a native scalar, and whose single-expression body is heap-free and calls no user/`extern` function is compiled to native machine code when it is **created by a direct literal** (`let f fn(...) = fn x -> …`) and used **only as the callee of a direct call** (`f(args)`). The closure value is a heap block `[code_ptr][capture words…]` allocated by the shared bump/RC allocator — one raw word per capture whatever its class — so it is reclaimed by the arena rewind (a per-iteration sub-region for a non-escaping loop closure — bounded heap) or the RC/free-list path like any other block. The call passes the **env pointer as a hidden first argument** in `rcx`, shifting each parameter to effective position `i + 1`, then loads word 0 (the code pointer) and issues an indirect `call rax`. **Default-deny — everything else skips cleanly to the interpreters (`L0339`), never miscompiled:** a `string`/`list`/`map`/aggregate capture, a closure passed to a higher-order function/builtin (`apply(f, x)`), a returned/escaping closure, a mutable/rebound closure local, a closure bound from a non-literal (a factory result), or a body that allocates or calls user/`extern` code. See "Closures — Stage 2" below.
 
 Now implemented (updated): `bool`/`char`/`byte` and the full fixed-width integer
 lattice (`i8`…`u64`, `isize`/`usize`) and `f64`/`f32` floats are lowered as native
@@ -1216,15 +1216,42 @@ differential fuzzers cross-check non-generic + monomorphized generic method
 dispatch (including value semantics and method-call chaining) against the
 interpreters.
 
-## Closures — Stage 1 (Scalar Captures, Direct Non-Escaping Call) (DELIVERED, link-and-run verified)
+## Closures — Stage 2 (Scalar Completeness: Integer AND Float, Any Parameter Count) (DELIVERED, link-and-run verified)
 
 A closure literal `fn PARAMS -> EXPR` lowers (in the interpreters) to a
 `Value::Closure { id, captured }` whose body lives in `BytecodeModule::closures`
 keyed by the parse-order `id`; the `Closure { id }` IR node carries only the id.
-Roadmap item **B1** compiles the **narrow, provably-sound** slice of that model,
+Roadmap item **B1** compiles the **provably-sound scalar slice** of that model,
 default-deny everywhere else. The implementation lives in
 `crates/lullaby_ir/src/native_object_closure.rs` and integrates through the
 existing per-function lowering (`native_object.rs`/`native_object_expr.rs`).
+
+Stage 1 delivered integer-cell captures with at most three parameters. Stage 2
+completes the **scalar** subset: float captures, float parameters and returns, and
+any parameter count (positions past the register file spill to the stack). The
+heap/higher-order/escape work is deliberately NOT here — see "Deferred" below.
+
+### A closure body is a single expression (not a backend limitation)
+
+There is **no multi-statement closure body** to lower: the grammar admits only
+`fn PARAMS -> EXPR` (`expr_parser` parses the body with `parse_conditional`), and
+that shape is preserved all the way down — `ExprKind::Closure { body: Box<Expr> }`
+and `BytecodeClosureDef { body: BytecodeExpr }` each store exactly one expression.
+So "closure bodies with locals and control flow" is not a deferred backend feature;
+the language has no such form.
+
+The one intra-body control form the grammar does admit — the inline conditional
+`A if C else B` — **does not work in a closure body on any backend today**. The IR
+lowerer desugars a conditional into a hoisted `let __cond_N` plus an `if` statement
+pushed into the *enclosing statement's* prelude, but a closure body is an expression
+with nowhere to hoist to, so the statements escape the closure into the enclosing
+function where the closure's parameters are not in scope. The IR interpreter and
+bytecode VM therefore fail at runtime with `L0403 unknown variable`, while the AST
+interpreter (which has no such desugar) computes the right answer. The native
+backend refuses it too — the hoisted parameter is not a native local — so native
+stays **consistent with the interpreters and never miscompiles it**. This is a
+pre-existing IR-lowering bug, tracked separately; unlocking control flow inside a
+closure body is a prerequisite for any future stage that wants it.
 
 ### Supported slice
 
@@ -1232,11 +1259,13 @@ A closure is compiled natively when ALL hold:
 
 - It is **created by a direct literal** — `let f fn(...) = fn x -> …` (the binding
   local's value is a `Closure { id }` node, classified in `collect_native_locals`).
-- It captures only **integer-cell scalars** (`i64`/fixed-width/`bool`/`char`/`byte`).
-  The captured **free-variable set** is the closure body's `Variable` reads minus
-  its parameters, in first-seen order; codegen picks that order.
-- It takes at most **three** integer-cell scalar parameters (the env pointer
-  consumes `rcx`, leaving `rdx`/`r8`/`r9`) and returns an integer-cell scalar.
+- It captures only **native scalars** — an integer cell (`i64`/fixed-width/`bool`/
+  `char`/`byte`) or a float (`f64`/`f32`). The captured **free-variable set** is the
+  closure body's `Variable` reads minus its parameters, in first-seen order; codegen
+  picks that order. `native_closure_scalar` is the single definition of the subset,
+  so the layout, the capture store, the call ABI, and the body prologue cannot
+  disagree about a type's class.
+- It takes **any number** of native-scalar parameters and returns a native scalar.
 - Its single-expression body is **heap-free** and calls **no user/`extern`
   function** (inline scalar builtins are fine), so the closure allocates nothing and
   retains no pointer — keeping the enclosing arena reasoning a true leaf.
@@ -1249,19 +1278,64 @@ A closure is compiled natively when ALL hold:
 
 - **Closure object** = a heap block `[code_ptr][capture0][capture1]…]` allocated by
   the shared `__lullaby_alloc` (reusing the `[size][refcount]` heap machinery). The
-  literal lowering allocates `(1 + n_captures)·8` bytes, stores the captured scalar
-  values at words 1.., and stores the code pointer at word 0 via
-  `lea rax,[rip+__closure_{id}]` + a REL32 relocation against the synthesized body
-  symbol. The block pointer is the closure value.
+  literal lowering allocates `(1 + n_captures)·8` bytes, stores each capture at word
+  `k+1` as **one raw 8-byte word whatever its class** (an integer cell is its own
+  word; an `f64` its full bit pattern; an `f32` its meaningful low four bytes, with
+  the high four undefined but never read — every reader loads an `f32` with `movss`),
+  and stores the code pointer at word 0 via `lea rax,[rip+__closure_{id}]` + a REL32
+  relocation against the synthesized body symbol. The block pointer is the closure
+  value. Because one GPR copy serves every class, the store needs no XMM round-trip.
+  The literal lowering additionally re-derives each capture's class from the
+  enclosing frame local's resolved `NativeType` and refuses on any disagreement with
+  the layout, so a capture can never be stored under one class and read under
+  another.
+
+- **The env pointer is a hidden first argument.** It occupies effective Win64
+  register position 0 (`rcx`) and shifts every visible parameter to position
+  `i + 1` — structurally identical to the hidden `sret` pointer an
+  aggregate-returning call passes. The two therefore share ONE staging and
+  distribution path (`emit_native_call_args_with`, with a `HiddenArg` selecting only
+  how `rcx` is materialized: `lea` for an sret slot, `mov` for the env pointer
+  value). Two consequences follow, and both are silent-corruption hazards:
+
+  - **Float registers are positional, not sequential.** Win64 pairs each XMM with
+    the GPR of the same index (`rcx`/`xmm0`, `rdx`/`xmm1`, `r8`/`xmm2`, `r9`/`xmm3`)
+    and consumes both slots together. So a float parameter's register is fixed by its
+    effective position: in `fn a i64 b f64 -> …`, `a` is position 1 (`rdx`) and `b`
+    is position 2 → **`xmm2`**, *not* "the next unused XMM" (`xmm1`). Getting this
+    wrong reads a stale register and silently corrupts the value.
+  - **A 4th parameter is the 5th argument.** With the env pointer counted, parameter
+    index 3 sits at position 4 and spills to the outgoing stack area at
+    `[rsp + 32 + 8·(pos-4)]`, above the 32-byte shadow space. `max_outgoing_stack_words`
+    counts the hidden env word for exactly this reason (a closure callee name is a
+    LOCAL, never a module signature, so it would otherwise be mistaken for an extern
+    and under-reserve by one word).
+
 - **Synthesized body** `__closure_{id}` — a `.text` function per referenced closure
-  def, receiving the **env pointer** (the block base) in `rcx` and its parameters in
-  `rdx`/`r8`/`r9`, seating them into frame slots, resolving each captured name to
-  `[env + 8·(k+1)]`, and returning the body's scalar value in `rax`. It is chained
-  into the emitted function set (appended to the lowered functions), so the enclosing
-  `lea`/`call` resolves and the direct-PE/COFF writers emit it as an ordinary symbol.
-- **Call** `f(args)`: load the closure local (env pointer), stage the env and
-  arguments, distribute the env to `rcx` and the arguments to `rdx`/`r8`/`r9`, load
-  word 0 (the code pointer) into `rax`, and issue an indirect `call rax` (`FF D0`).
+  def, seating the env pointer from `rcx` and each parameter from its effective
+  position by the **mirror image** of the call's placement: positions 1..3 from
+  `rdx`/`r8`/`r9` or `xmm1`/`xmm2`/`xmm3` by position and class; positions 4+ from the
+  caller's stack. The stack displacement follows from the entry sequence: on entry the
+  return address is at `[rsp]`; after `push rbp; mov rbp,rsp` the saved `rbp` is at
+  `[rbp]`, the return address at `[rbp+8]`, the caller's shadow at `[rbp+16..rbp+48]`,
+  and the first stack argument at **`[rbp+48]`** — so position `pos ≥ 4` reads
+  `[rbp + 48 + 8·(pos-4)]`, exactly the word the caller wrote to
+  `[rsp + 32 + 8·(pos-4)]`. A captured name resolves to `[env + 8·(k+1)]`, loaded
+  through the GPR or XMM file according to its recorded class. The body's value is
+  routed through **`lower_return_value`** — the backend's single value-position
+  routing point — so an integer-cell return lands in `rax` and a float return in
+  `xmm0` by exactly the same rule every other function return follows; no parallel
+  path exists. (`block_yields_value` does not apply: it gates statement blocks, and a
+  closure body is an expression, which always yields.) The body is chained into the
+  emitted function set, so the enclosing `lea`/`call` resolves and the direct-PE/COFF
+  writers emit it as an ordinary symbol.
+
+- **Call** `f(args)`: stage every argument, distribute each to its effective position
+  (register by position+class, or the outgoing stack area), materialize the env
+  pointer into `rcx` **last** (so no argument evaluation can clobber it), then
+  `mov rax,[rcx]` to load word 0 (the code pointer) with the env still live in `rcx`,
+  and issue an indirect `call rax` (`FF D0`). The result is in `rax` (integer cell) or
+  `xmm0` (float).
 
 ### Reclamation soundness
 
@@ -1280,35 +1354,95 @@ closure per iteration across 100000 iterations (32 bytes/block vs the 1 MB heap)
 its correct completion — rather than a heap-exhaustion `ud2` trap around iteration
 ~32k — proves the sub-region reclaims.
 
+**Scalar completeness does not touch this argument.** Admitting float captures and
+more parameters changes only what the capture words *hold* and which registers the
+call uses — not the block's shape (still `[code_ptr][one raw word per capture]`),
+not its allocation site, not its escape properties, and not the body's leaf-ness
+(still heap-free and free of user/`extern` calls). A float is a value, not a
+pointer, so a float capture adds no new reachability edge and needs no drop glue.
+The reclamation reasoning therefore carries over unchanged, and
+`native_closure_float_reclaim.lby` re-proves it empirically for a float-capturing
+closure allocated per iteration.
+
 ### Deferred (skips cleanly to the interpreters, `L0339`)
 
-A `string`/`list`/`map`/aggregate or **float** capture; a closure passed to a
-higher-order function/builtin (`apply(f, x)`, `sort_by`, `list_map`); a
-returned/escaping closure; a mutable/rebound closure local; a closure bound from a
-non-literal (a factory result); a closure body that touches the heap or calls a
-user/`extern` function; and more than three parameters. Each is default-denied at
-classification or synthesis time, so the enclosing function is recorded skipped and
-runs on the interpreters — never miscompiled.
+A `string`/`list`/`map`/aggregate capture; a closure passed to a higher-order
+function/builtin (`apply(f, x)`, `sort_by`, `list_map`); a returned/escaping
+closure; a mutable/rebound closure local; a closure bound from a non-literal (a
+factory result); and a closure body that touches the heap or calls a user/`extern`
+function. Each is default-denied at classification or synthesis time, so the
+enclosing function is recorded skipped and runs on the interpreters — never
+miscompiled.
+
+Also refused, for consistency rather than capability: a body containing an inline
+conditional (see the note above — it is broken on the IR/bytecode engines today, so
+native refusing it keeps all four backends in agreement).
+
+Two class-crossing refusals are worth naming, because they are what stops a float
+from being silently reinterpreted as an integer: reading a **float capture** on the
+integer path, and using a **float-returning closure call** where an integer cell is
+expected (its value is in `xmm0`, so `rax` would be garbage). Each returns an error
+rather than emitting a reinterpretation, so the function skips.
 
 ### Verification
 
-`tests/fixtures/valid/native_closure_scalar.lby` (one scalar capture, direct call →
-`12`), `native_closure_multi_capture.lby` (two captures → `115`),
-`native_closure_loop.lby` (closure created+called in a loop → `26`), and
-`native_closure_reclaim.lby` (100000 per-iteration closures, bounded via the arena
-sub-region → `157`) run identically on the AST/IR/bytecode interpreters (the
-auto-discovering parity harness) and are native-compiled via the DEFAULT direct-PE
-path (no linker) and run by `native_closures_direct_pe_run_parity`
-(`crates/lullaby_cli/tests/cli/suite3.rs`), asserting each `.exe` exit code equals
-the interpreter result. `native_closure_deferred_shapes_skip` pins that a `string`
-capture (`native_closure_string_capture.lby`), a higher-order `apply` closure
-(`run_closures.lby`), and a returned closure (`run_closures_returned.lby`) fail
-native compilation with `L0339` (listing `skipped main`) yet still run correctly on
-the interpreters. Unit tests in `native_program_tests` assert the compiled/skip
-boundary (`__closure_0` compiled, the indirect `call rax` present, the direct-PE
-image produced) and pin every deferred shape (string capture, higher-order,
-returned, >3 params). A closure-using function is excluded from register promotion
-(a captured scalar must stay addressable in its frame slot).
+Every fixture below runs identically on the AST/IR/bytecode interpreters (the
+auto-discovering parity harness), is native-compiled via the DEFAULT direct-PE path
+(no linker), and is **run** by `native_closures_direct_pe_run_parity`
+(`crates/lullaby_cli/tests/cli/suite3.rs`), which asserts the `.exe` exit code equals
+a value **all three interpreters agree on** (so it cannot pass by matching one engine
+that is itself wrong):
+
+| Fixture | Shape | → |
+| :--- | :--- | :--- |
+| `native_closure_scalar.lby` | one integer capture, direct call | `12` |
+| `native_closure_multi_capture.lby` | two integer captures | `115` |
+| `native_closure_loop.lby` | closure created+called in a loop | `26` |
+| `native_closure_reclaim.lby` | 100000 per-iteration closures (arena sub-region) | `157` |
+| `native_closure_float_capture.lby` | `f64` captures + `f64` param/return | `42` |
+| `native_closure_mixed_capture.lby` | mixed `i64`+`f64` env block; float at position 2 → `xmm2` | `29` |
+| `native_closure_four_params.lby` | 4 params — first stack spill | `63` |
+| `native_closure_six_params.lby` | 6 params — three register, three stack | `120` |
+| `native_closure_float_spill.lby` | float args spilled to the stack | `45` |
+| `native_closure_f32.lby` | `f32` capture + `f32` param/return | `6` |
+| `native_closure_combo.lby` | mixed env + interleaved classes + spill | `128` |
+| `native_closure_float_reclaim.lby` | per-iteration FLOAT-capturing closures (bounded) | `102` |
+
+**These fixtures are proven non-vacuous by bug injection.** Injecting the
+sequential-XMM bug (the body reading `xmm{pos-1}` instead of `xmm{pos}`) makes
+`mixed_capture`, `float_spill`, and `combo` fail; injecting a wrong stack-spill
+displacement (`40` instead of `48`) makes `four_params`, `six_params`, `float_spill`,
+and `combo` fail — exactly the >3-parameter fixtures, which is the correct blast
+radius. Note a closure with a **single float parameter cannot pin the XMM rule**: the
+caller stages that argument through `xmm0`, so a body wrongly reading `xmm0` still
+sees the right value and passes. Only interleaved/multi-float shapes break that
+coincidence, which is why the fixture set includes them.
+
+`native_closure_deferred_shapes_skip` pins each escape hatch — a `string` capture
+(`native_closure_string_capture.lby`), a higher-order `apply` closure
+(`run_closures.lby`), a returned closure (`run_closures_returned.lby`), and, re-pinned
+with FLOAT-capturing closures so scalar completeness cannot have quietly admitted
+them, `native_closure_float_hof.lby`, `native_closure_float_body_call.lby`,
+`native_closure_float_rebind.lby`, and `native_closure_factory_bound.lby`. Each fails
+native compilation with `L0339` (listing `skipped main`) yet still runs correctly on
+the interpreters.
+
+**Differential fuzzing** (`crates/lullaby_cli/tests/cli/fuzz_closure.rs`, a submodule
+of `fuzz.rs`) generates closure shapes across the subset — float captures, `f32`/`f64`,
+interleaved integer/float parameter classes, parameter counts past the register file,
+and a genuinely mixed capture block. `fuzz_closure_interpreters_agree` cross-checks 600
+programs on all three engines (establishing the oracle's ground truth), and
+`fuzz_closure_native_matches_interpreter_when_linkable` compiles and RUNS 128 real
+`.exe`s against it, reporting the count so a silent skip cannot hide a regression (all
+128 compile natively; a drop in that number means the generator drifted into producing
+skipping programs and stopped testing codegen). The fuzzer is likewise proven to have
+teeth: the sequential-XMM injection fails it at program #9 and the spill-offset
+injection at program #1.
+
+Unit tests in `native_program_tests` assert the compiled/skip boundary (`__closure_0`
+compiled, the indirect `call rax` present, the direct-PE image produced) and pin the
+deferred shapes. A closure-using function is excluded from register promotion (a
+captured scalar must stay addressable in its frame slot).
 
 ## The Two Pointer Models (`ptr<T>` vs the interim `ptr_T`) — findings for an owner decision
 

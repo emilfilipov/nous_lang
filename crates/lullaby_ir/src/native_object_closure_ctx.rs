@@ -23,11 +23,17 @@ impl<'a> NativeCtx<'a> {
     /// closure synthesizer (`synthesize_closure_body`); this constructor only seats the
     /// pre-planned locals, env binding, and the shared module state, with every
     /// arena / register-promotion feature off (a closure body is a scalar leaf).
+    ///
+    /// `return_ty` is the closure's scalar return class. It is what
+    /// `lower_return_value` reads to route the body's value to `rax` (an integer
+    /// cell) or `xmm0` (a float), so it must be the layout's real return class.
+    /// `sret_slot` stays `None`: a closure return is a scalar, never an aggregate.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn for_closure_body(
         locals: HashMap<String, NativeLocal>,
         frame_size: i32,
         scratch_base: i32,
+        return_ty: NativeType,
         closure_env: ClosureEnv,
         callable: &'a std::collections::HashSet<&'a str>,
         extern_sigs: &'a HashMap<&'a str, &'a crate::IrExternSignature>,
@@ -48,7 +54,7 @@ impl<'a> NativeCtx<'a> {
             enums,
             scratch_next: scratch_base + 8,
             sret_slot: None,
-            return_ty: NativeType::I64,
+            return_ty,
             signatures,
             promoted: HashMap::new(),
             saved_reg_slots: Vec::new(),
@@ -96,21 +102,21 @@ pub(crate) fn collect_native_locals(
                     // block. Its declared `fn(...)` type is not resolvable by
                     // `resolve_native_type` (that path rejects function types so a
                     // closure-as-value elsewhere skips), so classify it here from the
-                    // initializer: a DIRECT `Closure { id }` literal with a Stage-1
+                    // initializer: a DIRECT `Closure { id }` literal with a native
                     // layout is a supported pointer word; anything else (a closure
-                    // returned from a call, an unsupported closure shape) is rejected
-                    // so the function skips cleanly.
+                    // returned from a factory call, an unsupported closure shape) is
+                    // rejected so the function skips cleanly.
                     if ty.is_function() {
                         let BytecodeExprKind::Closure { id } = &value.kind else {
                             return Err(format!(
                                 "closure local `{name}` is not bound to a direct closure literal; \
-                                 native closures are Stage-1 (direct literal, scalar captures)"
+                                 a factory-bound or otherwise indirect closure is deferred"
                             ));
                         };
                         if !closure_layouts.contains_key(id) {
                             return Err(format!(
-                                "closure #{id} bound to `{name}` is not in the native Stage-1 \
-                                 subset (non-scalar capture/param/return, or >3 params)"
+                                "closure #{id} bound to `{name}` is not in the native closure \
+                                 subset (a non-scalar capture, parameter, or return type)"
                             ));
                         }
                         closure_locals.insert(name.clone(), *id);

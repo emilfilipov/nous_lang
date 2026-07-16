@@ -31,18 +31,11 @@ pub(crate) fn lower_native_expr(
             Ok(())
         }
         BytecodeExprKind::Variable(name) => {
-            // Inside a synthesized closure body, a captured free variable resolves
-            // through the env pointer: load the env pointer from its frame slot, then
-            // the captured word at `[env + offset]`. Parameters and any other locals
-            // fall through to the ordinary frame-slot path.
-            if let Some(env) = &ctx.closure_env
-                && let Some(&offset) = env.captures.get(name)
-            {
-                let env_slot = env.env_slot;
-                load_local(code, env_slot); // mov rax, [rbp - env_slot] (env ptr)
-                // mov rax, [rax + offset]  (captured word)
-                code.extend_from_slice(&[0x48, 0x8B, 0x80]);
-                code.extend_from_slice(&offset.to_le_bytes());
+            // Inside a synthesized closure body a captured free variable resolves
+            // through the env pointer, not a frame slot (see
+            // `lower_closure_int_capture`). Parameters and any other locals fall
+            // through to the ordinary frame-slot path below.
+            if lower_closure_int_capture(ctx, name, code)? {
                 return Ok(());
             }
             let slot = ctx.local_slot(name)?;
@@ -88,12 +81,13 @@ pub(crate) fn lower_native_expr(
         }
         BytecodeExprKind::Call { name, args } => {
             // A call whose callee name is a closure-bound local is an INDIRECT
-            // closure call: load the env pointer (the block base) into `rcx`, the
-            // arguments into `rdx`/`r8`/`r9`, and `call [env]` (the code pointer at
-            // word 0). Detected before any builtin/name resolution so it never
-            // collides with a top-level function name.
+            // closure call: the env pointer (the block base) goes into `rcx` as the
+            // hidden first argument, the visible arguments shift to effective
+            // positions 1.., and `call [env]` dispatches through the code pointer at
+            // word 0 (see `lower_closure_int_call`). Detected before any builtin/name
+            // resolution so it never collides with a top-level function name.
             if ctx.closure_locals.contains_key(name) {
-                return lower_closure_call(ctx, name, args, code);
+                return lower_closure_int_call(ctx, name, args, code);
             }
             // Fixed-width integer conversions are emitted inline, not as calls.
             // `to_<T>(x)` normalizes the argument's `i64` cell into `T`'s width
@@ -717,9 +711,9 @@ pub(crate) fn lower_native_expr(
             emit_call_symbol(ctx, STR_LIT_SYMBOL, code);
             Ok(())
         }
-        // A closure literal (Stage 1): allocate the `[code_ptr][captures…]` heap
+        // A closure literal: allocate the `[code_ptr][captures…]` heap
         // block, store the code pointer and captured scalars, and leave the block
-        // pointer in `rax`. Only a Stage-1-supported closure (scalar captures, a
+        // pointer in `rax`. Only a natively-supported closure (scalar captures, a
         // registered layout) lowers here; anything else was already rejected when
         // its binding local was classified, so the enclosing function skipped.
         BytecodeExprKind::Closure { id } => lower_closure_literal(ctx, *id, code),
@@ -729,200 +723,6 @@ pub(crate) fn lower_native_expr(
             Err("expression is not in the native i64-scalar subset".to_string())
         }
     }
-}
-
-// -- Internal call argument ABI (registers + stack spill) --------------------
-//
-// A compiled Lullaby callee receives its first four **effective** arguments in
-// the Win64 registers (`rcx`/`rdx`/`r8`/`r9` for integer/pointer/aggregate-copy
-// pointers; `xmm0..3` positionally for floats) and its 5th+ arguments on the
-// stack, pushed above the callee's 32-byte shadow space. When the callee returns
-// an aggregate, its hidden result pointer consumes register 0, shifting the
-// visible arguments down by one effective position. `emit_native_call_args`
-// stages every visible argument onto the machine stack, then distributes each to
-// its register or outgoing stack slot before the `call`.
-
-/// Load the staged word at machine-stack offset `disp` into effective integer
-/// register `pos` (`rcx`/`rdx`/`r8`/`r9`).
-const GPR_ARG_INDEX: [u8; 4] = [0, 1, 2, 3];
-
-/// Stage a call's arguments and place them into the Win64 argument registers and
-/// (for a 5th+ argument) the outgoing stack area, then leave the machine stack as
-/// the emitter found it so the `call` sees the reserved outgoing area intact.
-///
-/// `sret` is the caller-allocated destination slot when the callee returns an
-/// aggregate (its address is passed as the hidden first argument, register 0),
-/// otherwise `None`. A scalar argument stages its value word; a float argument
-/// stages its raw float word; an aggregate argument stages a *pointer* to a fresh
-/// caller-owned copy in scratch (value semantics). After staging all `n` words on
-/// the stack (argument `i` at `[rsp + 8*(n-1-i)]`), the first four effective
-/// positions load into registers and each later position is copied into the
-/// outgoing area at `[rsp + 8*n + 32 + 8*(pos-4)]` (which becomes
-/// `[rsp' + 32 + 8*(pos-4)]` once the staging words are discarded).
-pub(crate) fn emit_native_call_args(
-    ctx: &mut NativeCtx,
-    callee: &str,
-    args: &[BytecodeExpr],
-    sret: Option<i32>,
-    code: &mut Vec<u8>,
-) -> Result<(), String> {
-    // The callee's parameter layouts (when it is a compiled function) tell us
-    // which arguments are aggregates or floats. An `extern`/builtin call has no
-    // aggregate/float parameters on this path (guarded elsewhere), so treat a
-    // missing signature as all-scalar-integer.
-    let param_tys: Vec<Option<NativeType>> = match ctx.signatures.get(callee) {
-        Some(sig) => sig.params.iter().map(|t| Some(t.clone())).collect(),
-        None => args.iter().map(|_| None).collect(),
-    };
-    // Fast path: a single scalar integer/pointer argument with no hidden
-    // aggregate-return pointer. Staging exists only to keep an already-placed
-    // register from being clobbered while a *later* argument is evaluated — with
-    // one argument there is nothing to clobber, so evaluate it straight into the
-    // first argument register (`rcx`) instead of the stack round-trip.
-    let single_agg_or_float = matches!(
-        param_tys.first(),
-        Some(Some(t)) if t.is_aggregate()
-            || matches!(t, NativeType::F64 | NativeType::F32 | NativeType::FatArray { .. })
-    );
-    if sret.is_none() && args.len() == 1 && !single_agg_or_float {
-        // `f(reg ± const)` (the recursive `fib(n - 1)` / `fib(n - 2)` idiom):
-        // compute the argument with a single `lea rcx, [reg ± imm]`, exactly as C
-        // does, instead of `mov rax, reg; add/sub rax, imm; mov rcx, rax`.
-        if let Some((reg, disp)) = promoted_reg_plus_const(ctx, &args[0]) {
-            emit_lea_rcx_reg_disp(code, reg, disp);
-            return Ok(());
-        }
-        lower_native_expr(ctx, &args[0], code)?; // arg → rax
-        code.extend_from_slice(&[0x48, 0x89, 0xC1]); // mov rcx, rax
-        return Ok(());
-    }
-    // Stage every argument onto the machine stack as one 8-byte word, left to
-    // right, so evaluating a later argument cannot clobber an already-placed
-    // register. Reset the scratch cursor so each call reuses the shared region.
-    let saved_scratch = ctx.scratch_next;
-    for (arg, param_ty) in args.iter().zip(param_tys.iter()) {
-        match param_ty {
-            Some(ty) if ty.is_aggregate() => {
-                // Materialize the argument aggregate into scratch, then push its
-                // address (the callee copies-in from this snapshot).
-                let base = ctx.alloc_scratch(ty.words());
-                lower_aggregate_init(ctx, base, ty, arg, code)?;
-                emit_lea_rax_slot(code, base); // rax = &scratch copy
-                code.push(0x50); // push rax
-            }
-            Some(NativeType::FatArray { .. }) => {
-                // A fat-pointer array argument: build a two-word `(data_ptr, length)`
-                // descriptor in scratch and push its address (the callee copies the
-                // two descriptor words in, then reads the array through the shared
-                // data pointer). The data pointer is the caller's array storage, so
-                // no array body is copied — value-semantically safe because the
-                // callee parameter is read-only.
-                let base = ctx.alloc_scratch(2);
-                emit_fat_array_descriptor(ctx, base, arg, code)?;
-                emit_lea_rax_slot(code, base); // rax = &descriptor
-                code.push(0x50); // push rax
-            }
-            Some(NativeType::F64) | Some(NativeType::F32) => {
-                // A float argument evaluates into `xmm0`; spill it as one raw word.
-                lower_native_float_expr(ctx, arg, code)?;
-                code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]); // sub rsp, 8
-                code.extend_from_slice(&[0xF2, 0x0F, 0x11, 0x04, 0x24]); // movsd [rsp], xmm0
-            }
-            _ => {
-                // A scalar integer/pointer argument: evaluate into rax and push it.
-                lower_native_expr(ctx, arg, code)?;
-                code.push(0x50); // push rax
-            }
-        }
-    }
-    ctx.scratch_next = saved_scratch;
-
-    let n = args.len();
-    let hidden = usize::from(sret.is_some());
-    // Distribute each staged word to its effective position. Register positions
-    // (< 4) load into the GPR/XMM chosen by position and class; stack positions
-    // (>= 4) copy into the outgoing area above the shadow space.
-    for (i, param_ty) in param_tys.iter().enumerate() {
-        let staged_disp = 8 * (n - 1 - i) as i32; // arg i at [rsp + staged_disp]
-        let pos = i + hidden;
-        let is_float = matches!(param_ty, Some(NativeType::F64) | Some(NativeType::F32));
-        if pos < 4 {
-            if is_float {
-                emit_load_xmm_from_rsp_disp(code, pos as u8, staged_disp);
-            } else {
-                emit_load_gpr_from_rsp_disp(code, GPR_ARG_INDEX[pos], staged_disp);
-            }
-        } else {
-            // Copy the staged word into the outgoing stack slot. After the staging
-            // words are discarded (`add rsp, 8*n`), the slot at
-            // `[rsp + 8*n + 32 + 8*(pos-4)]` becomes `[rsp' + 32 + 8*(pos-4)]`,
-            // exactly where the callee reads its `(pos-4)`-th stack parameter from
-            // `[rbp + 16 + 8*(pos-4)]`.
-            let out_disp = 8 * n as i32 + 32 + 8 * (pos as i32 - 4);
-            // mov rax, [rsp + staged_disp] ; mov [rsp + out_disp], rax.
-            code.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24]); // mov rax, [rsp + disp32]
-            code.extend_from_slice(&staged_disp.to_le_bytes());
-            code.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]); // mov [rsp + disp32], rax
-            code.extend_from_slice(&out_disp.to_le_bytes());
-        }
-    }
-    // The hidden aggregate-return pointer occupies register 0 (`rcx`).
-    if let Some(dest_slot) = sret {
-        emit_lea_rcx_slot(code, dest_slot);
-    }
-    // Discard the staging words; the outgoing area and shadow space remain.
-    if n > 0 {
-        emit_add_rsp(code, 8 * n as i32);
-    }
-    Ok(())
-}
-
-/// Build a fat-pointer array **descriptor** `[data_ptr, length]` in the two scratch
-/// words at `base_slot` (word 0) and `base_slot - 8` (word 1 — 8 bytes higher in
-/// the ASCENDING layout), for a fat-array call argument. In this increment the
-/// argument must be a bare variable bound to a **stack array local** (the common
-/// `let arr array<i64> = [..]; f(arr)` shape); anything else demotes the caller
-/// gracefully. The data pointer is the address of the array's element 0 (its
-/// LOWEST stack word), so the callee reads the caller's storage in place with no
-/// array-body copy, striding forward exactly as C would.
-pub(crate) fn emit_fat_array_descriptor(
-    ctx: &mut NativeCtx,
-    base_slot: i32,
-    arg: &BytecodeExpr,
-    code: &mut Vec<u8>,
-) -> Result<(), String> {
-    let BytecodeExprKind::Variable(name) = &arg.kind else {
-        return Err("a fat-pointer array argument must be an array variable".to_string());
-    };
-    let local = ctx.local(name)?.clone();
-    let NativeType::Array { len, .. } = &local.ty else {
-        return Err("a fat-pointer array argument must reference a stack array local".to_string());
-    };
-    let len = *len as i64;
-    // Descriptor word 0: data pointer = address of the array's element 0 (its
-    // LOWEST stack word, `[rbp - arr_slot]`, since words ascend from word 0).
-    emit_lea_rax_slot(code, local.slot); // rax = rbp - arr_slot
-    store_local(code, base_slot); // descriptor word 0 = data_ptr
-    // Descriptor word 1: runtime length (a compile-time constant for a stack array).
-    emit_mov_rax_imm(code, len);
-    store_local(code, base_slot - 8); // descriptor word 1 = length
-    Ok(())
-}
-
-/// The marshalling class of one C-ABI scalar crossing the FFI boundary: an
-/// integer/pointer value (Win64 GPR `rcx`/`rdx`/`r8`/`r9`, an optional
-/// re-normalization on a narrow return) or a float value (`f64`/`f32` in the SSE
-/// registers `xmm0..3`, returned in `xmm0`). Positional routing (§4.1) chooses
-/// the register for argument N by N's *position and type*: a float at position N
-/// consumes `xmm N`, an integer at position N consumes integer register N, and
-/// each position consumes exactly one slot in exactly one sequence.
-#[derive(Clone, Copy)]
-pub(crate) enum FfiScalarClass {
-    /// An integer/pointer scalar; `Some(kind)` needs a narrow-return normalization
-    /// in `rax`, `None` already fills the 64-bit cell (`i64`/`u64`/`isize`/`usize`).
-    Int(Option<IntKind>),
-    /// An `f64`/`f32` float scalar routed through the SSE registers.
-    Float(FloatWidth),
 }
 
 /// One `extern fn` parameter's marshalling class across the Win64 C ABI: a scalar

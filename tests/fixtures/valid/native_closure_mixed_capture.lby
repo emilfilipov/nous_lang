@@ -1,0 +1,7 @@
+fn main -> i64
+    let k i64 = 7
+    let w f64 = 3.0
+    let f fn(i64, f64) -> bool = fn a i64 b f64 -> b + w > 7.5 and a * k > 20
+    if f(3, 5.0)
+        return 29
+    return 0

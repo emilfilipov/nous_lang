@@ -1,0 +1,10 @@
+fn apply f fn(f64) -> f64 v f64 -> f64
+    f(v)
+
+fn main -> i64
+    let s f64 = 2.0
+    let g fn(f64) -> f64 = fn x f64 -> x * s
+    let r f64 = apply(g, 3.0)
+    if r > 5.99
+        return 61
+    return 0

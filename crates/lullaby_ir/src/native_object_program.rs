@@ -173,9 +173,9 @@ pub fn emit_native_program_for_target(
     let expanded_module = expand_method_instances(module);
     let module = &expanded_module;
 
-    // Native closure layouts (Stage 1): for each closure definition that appears as
+    // Native closure layouts: for each closure definition that appears as
     // a `fn(...)` literal in the module, resolve its native layout (captures, param
-    // count) from the literal's static function type. A closure outside the Stage-1
+    // count) from the literal's static function type. A closure outside the supported
     // subset (a non-scalar capture/param/return, or more than three parameters) gets
     // no layout, so any function binding it skips cleanly. Computed once — it does
     // not depend on the eligible set.
@@ -308,7 +308,7 @@ pub fn emit_native_program_for_target(
 
         // Synthesize a native `.text` body (`__closure_{id}`) for each closure the
         // compiled functions reference. A synthesis failure (a body outside the
-        // Stage-1 subset — heap touch, user call, or otherwise non-lowerable) demotes
+        // subset — heap touch, user call, or otherwise non-lowerable) demotes
         // the referencing function and re-runs the fixpoint, exactly like a top-level
         // lowering failure: the enclosing function then skips to the interpreters
         // rather than emitting a dangling `lea __closure_{id}` relocation. On success

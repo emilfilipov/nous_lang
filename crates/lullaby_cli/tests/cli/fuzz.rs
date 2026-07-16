@@ -2181,3 +2181,9 @@ fn fuzz_branch_tail_native_matches_interpreter_when_linkable() {
 // `Outcome`, `run_interpreters`, and `fuzz_native_exit` via `use super::*`.
 #[path = "fuzz_alloc.rs"]
 mod fuzz_alloc;
+
+// The closure-ABI fuzzers (float captures, positional XMM registers, and >3-parameter
+// stack spills) live in their own file for the same reason, and as a submodule for the
+// same access to `Rng`/`Outcome`/`run_interpreters`/`fuzz_native_exit`.
+#[path = "fuzz_closure.rs"]
+mod fuzz_closure;

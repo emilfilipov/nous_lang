@@ -1,25 +1,36 @@
-//! Native codegen for closures — Stage 1 (scalar captures, direct non-escaping
+//! Native codegen for closures — Stage 2 (**scalar completeness**: integer AND
+//! float captures/parameters/returns, any parameter count, direct non-escaping
 //! call). Split out of native_object.rs; sees the parent's items via
 //! `use super::*`.
 //!
 //! A closure literal `fn PARAMS -> EXPR` lowers (in the interpreters) to a
 //! `Value::Closure { id, captured }` whose body lives in `BytecodeModule::closures`
-//! keyed by the parse-order `id`. The native backend compiles the **narrow,
-//! provably-sound** slice of that model:
+//! keyed by the parse-order `id`. The native backend compiles the **provably-sound
+//! scalar slice** of that model:
 //!
 //! - The closure is created by a direct literal (`let f fn(...) = fn x -> ...`),
-//!   captures only **integer-cell scalars** (`i64`/fixed-width/`bool`/`char`/
-//!   `byte`), takes at most three integer-cell scalar parameters, returns an
-//!   integer-cell scalar, and its single-expression body neither touches the heap
-//!   nor calls a user/`extern` function.
+//!   captures only **native scalars** — an integer cell (`i64`/fixed-width/`bool`/
+//!   `char`/`byte`) or a float (`f64`/`f32`) — takes any number of native-scalar
+//!   parameters, returns a native scalar, and its single-expression body neither
+//!   touches the heap nor calls a user/`extern` function.
 //! - The closure local is used **only** as the callee of a direct call
 //!   (`f(args)`); it is never passed to a function, returned, reassigned, stored,
 //!   or read as a bare value.
 //!
-//! Everything else — a `string`/`list`/`map`/aggregate capture, a float capture,
-//! a closure passed to a higher-order function, a returned/escaping closure, a
-//! mutable capture, or more than three parameters — makes the enclosing function
-//! **skip cleanly to the interpreters** (`L0339`), never miscompiled.
+//! Everything else — a `string`/`list`/`map`/aggregate capture, a closure passed to
+//! a higher-order function, a returned/escaping closure, a mutable capture, a
+//! closure bound from a non-literal (a factory result) — makes the enclosing
+//! function **skip cleanly to the interpreters** (`L0339`), never miscompiled.
+//!
+//! A closure body is a **single expression** by construction all the way down
+//! (`expr_parser` parses it with `parse_conditional`; `ExprKind::Closure` and
+//! `BytecodeClosureDef` both store one `Expr`/`BytecodeExpr`), so there is no
+//! multi-statement closure body for this backend to lower — the shape does not
+//! exist in the language. The one intra-body control form the grammar admits, the
+//! inline conditional `A if C else B`, is desugared by the IR lowerer into hoisted
+//! statements that escape the closure body, which the IR interpreter and bytecode
+//! VM reject at runtime (`L0403`); this backend refuses it too (the hoisted
+//! parameter is not a native local), so native stays consistent with them.
 //!
 //! ## Object layout and call ABI
 //!
@@ -29,12 +40,22 @@
 //! RC/free-list path exactly like any other heap block. Word 0 holds the address of
 //! the synthesized closure-body function `__closure_{id}` (materialized with a
 //! `lea rax,[rip+__closure_{id}]` + REL32 relocation); words 1.. hold the captured
-//! scalar values in capture order.
+//! scalar values in capture order — one raw 8-byte word each, whatever the class
+//! (a float capture stores its raw IEEE-754 bits; an `f32` occupies the low four
+//! bytes of its word, and every reader loads it with `movss`, so the undefined high
+//! four bytes are never observed).
 //!
-//! A direct call `f(args)` loads word 0 (the code pointer), puts the **env pointer**
-//! (the block base) in `rcx`, the arguments in `rdx`/`r8`/`r9` (Win64), and issues
-//! an indirect `call rax`. The synthesized body seats `rcx` (env) and its
-//! parameters into frame slots; a captured name resolves to `[env + 8*(k+1)]`.
+//! A direct call `f(args)` puts the **env pointer** (the block base) in `rcx`,
+//! then places each argument at its Win64 **effective position** `i + 1` — the env
+//! pointer is the hidden first argument, exactly as an aggregate return's hidden
+//! `sret` pointer is elsewhere in this backend, so the two share one staging and
+//! distribution path ([`emit_native_call_args_with`]). Positions 1..3 land in
+//! `rdx`/`r8`/`r9` (integer) or `xmm1`/`xmm2`/`xmm3` (float) — **positionally**, so
+//! a float at position 2 takes `xmm2`, never "the next unused XMM"; positions 4+
+//! spill to the outgoing stack area. The call then loads word 0 (the code pointer)
+//! into `rax` and issues an indirect `call rax`. The synthesized body seats `rcx`
+//! (env) and its parameters into frame slots by the mirror-image rule; a captured
+//! name resolves to `[env + 8*(k+1)]`.
 
 use super::*;
 
@@ -45,36 +66,67 @@ pub(crate) fn closure_symbol(id: usize) -> String {
 
 /// Whether a source type is an integer-cell native scalar — `i64`, a fixed-width
 /// integer (`i8`…`usize`, stored as a normalized `i64` cell), or `bool`/`char`/
-/// `byte`. These are the only capture/parameter/return types Stage 1 supports; a
-/// float (`f64`/`f32`), a heap value (`string`/`list`/`map`), or an aggregate is
-/// deferred so the enclosing function skips cleanly.
+/// `byte`.
 pub(crate) fn is_i64_cell_scalar(ty: &TypeRef) -> bool {
     let name = ty.name.as_str();
     name == "i64" || fixed_int_kind(name).is_some() || matches!(name, "bool" | "char" | "byte")
 }
 
-/// The resolved native layout of a Stage-1 closure: its parse-order `id`, its
-/// captured free variables (name + integer-cell layout, in capture order), and its
-/// parameter/return layouts. A closure with any non-supported piece has no layout
-/// (`compute_closure_layout` returns `None`), so an enclosing function referencing
-/// it skips gracefully.
+/// Classify a source type as a **native closure scalar** — the capture, parameter,
+/// and return types this backend can lower — or `None` for anything else (a heap
+/// value `string`/`list`/`map`, an aggregate, a nested `fn(...)`), which makes the
+/// enclosing function skip cleanly (`L0339`).
+///
+/// Exactly one 8-byte word each: an integer cell normalizes into an `i64` word; a
+/// float keeps its raw IEEE-754 bits (an `f32` in the low four bytes). This is the
+/// single place the scalar subset is defined, so the layout, the literal store, the
+/// call ABI, and the body prologue can never disagree about a type's class.
+pub(crate) fn native_closure_scalar(ty: &TypeRef) -> Option<NativeType> {
+    if is_i64_cell_scalar(ty) {
+        return Some(NativeType::I64);
+    }
+    match FloatWidth::from_type_name(ty.name.as_str()) {
+        Some(FloatWidth::F64) => Some(NativeType::F64),
+        Some(FloatWidth::F32) => Some(NativeType::F32),
+        None => None,
+    }
+}
+
+/// The [`FloatWidth`] of a native closure scalar, or `None` when it is an integer
+/// cell. Drives the register class (GPR vs XMM) at every ABI boundary.
+pub(crate) fn closure_scalar_float_width(ty: &NativeType) -> Option<FloatWidth> {
+    match ty {
+        NativeType::F64 => Some(FloatWidth::F64),
+        NativeType::F32 => Some(FloatWidth::F32),
+        _ => None,
+    }
+}
+
+/// The resolved native layout of a closure: its captured free variables (name +
+/// scalar class, in capture order) and its parameter/return layouts. A closure with
+/// any non-supported piece has no layout (`compute_closure_layout` returns `None`),
+/// so an enclosing function referencing it skips gracefully.
 #[derive(Debug, Clone)]
 pub(crate) struct ClosureLayout {
-    /// Captured free variables in capture (first-seen) order: `(name, layout)`.
-    /// Each is a single integer-cell word stored at env offset `8*(index+1)`.
+    /// Captured free variables in capture (first-seen) order: `(name, class)`.
+    /// Each is a single raw word stored at env offset `8*(index+1)`.
     pub(crate) captures: Vec<(String, NativeType)>,
-    /// Parameter count (all integer-cell scalars; at most three).
-    pub(crate) param_count: usize,
-    /// The closure's parameter names, in order (from the closure def).
-    pub(crate) param_names: Vec<String>,
+    /// The closure's parameters in order: `(name, class)`. Any count — positions
+    /// past the three register slots left by the env pointer spill to the stack.
+    pub(crate) params: Vec<(String, NativeType)>,
+    /// The closure's return class (a native scalar: integer cell in `rax`, or a
+    /// float in `xmm0`).
+    pub(crate) ret: NativeType,
 }
 
 /// A closure body's env binding while it is being lowered: the frame slot holding
 /// the env pointer (block base; word 0 is the code pointer, captures follow) and
-/// each captured name's byte offset within the env block.
+/// each captured name's byte offset within the env block plus its scalar class
+/// (the class picks the GPR vs XMM load, so a float capture can never be read
+/// through the integer path).
 pub(crate) struct ClosureEnv {
     pub(crate) env_slot: i32,
-    pub(crate) captures: HashMap<String, i32>,
+    pub(crate) captures: HashMap<String, (i32, NativeType)>,
 }
 
 /// Collect a closure body's **free variables** — the `Variable` reads that are not
@@ -110,41 +162,40 @@ fn free_variables(body: &BytecodeExpr, params: &[String]) -> Vec<(String, TypeRe
     out
 }
 
-/// Compute the Stage-1 native layout of a closure definition, or `None` if any
-/// piece is outside the supported slice (a non-scalar capture/param/return, more
-/// than three params). The body's lowerability (heap-free, no user calls, actually
-/// compilable) is verified separately by [`synthesize_closure_body`]; a failure
-/// there demotes the enclosing function, so a layout existing here does not on its
-/// own promise the body compiles.
+/// Compute the native layout of a closure definition, or `None` if any piece is
+/// outside the supported scalar slice (a heap/aggregate capture, parameter, or
+/// return). The body's lowerability (heap-free, no user calls, actually compilable)
+/// is verified separately by [`synthesize_closure_body`]; a failure there demotes
+/// the enclosing function, so a layout existing here does not on its own promise
+/// the body compiles.
 pub(crate) fn compute_closure_layout(
     def: &BytecodeClosureDef,
     fn_signature: &(Vec<TypeRef>, TypeRef),
 ) -> Option<ClosureLayout> {
     let (param_types, ret_ty) = fn_signature;
-    // Parameters: at most three integer-cell scalars (the env pointer consumes
-    // `rcx`, leaving `rdx`/`r8`/`r9` for arguments).
-    if param_types.len() > 3 || def.params.len() != param_types.len() {
+    // The literal's static `fn(...)` type must agree with the def's parameter
+    // names; a mismatch means the two were built from different nodes, so refuse.
+    if def.params.len() != param_types.len() {
         return None;
     }
-    if !param_types.iter().all(is_i64_cell_scalar) {
-        return None;
+    // Parameters: every one a native scalar. Any COUNT is fine — the env pointer
+    // takes the first integer register slot and positions past the fourth spill to
+    // the outgoing stack area, exactly as an ordinary call's 5th+ argument does.
+    let mut params = Vec::new();
+    for (name, ty) in def.params.iter().zip(param_types.iter()) {
+        params.push((name.clone(), native_closure_scalar(ty)?));
     }
-    // Return: an integer-cell scalar (leaves the closure body in `rax`).
-    if !is_i64_cell_scalar(ret_ty) {
-        return None;
-    }
-    // Captures: every free variable must be an integer-cell scalar.
+    // Return: a native scalar (an integer cell in `rax`, a float in `xmm0`).
+    let ret = native_closure_scalar(ret_ty)?;
+    // Captures: every free variable must be a native scalar.
     let mut captures = Vec::new();
     for (name, ty) in free_variables(&def.body, &def.params) {
-        if !is_i64_cell_scalar(&ty) {
-            return None;
-        }
-        captures.push((name, NativeType::I64));
+        captures.push((name, native_closure_scalar(&ty)?));
     }
     Some(ClosureLayout {
         captures,
-        param_count: param_types.len(),
-        param_names: def.params.clone(),
+        params,
+        ret,
     })
 }
 
@@ -458,7 +509,18 @@ fn collect_closure_types_in_expr(
 /// `[code_ptr][captures…]` heap block, store the code pointer (a
 /// `lea rax,[rip+__closure_{id}]` REL32 relocation) and each captured scalar, and
 /// leave the block pointer in `rax`. The captures are read from the enclosing
-/// function's frame locals of the same name (which must be integer-cell scalars).
+/// function's frame locals of the same name.
+///
+/// Each capture is copied as one **raw 8-byte word** through `rax`, whatever its
+/// class: an integer cell is its own word, an `f64` its full bit pattern, an `f32`
+/// its meaningful low four bytes (the high four are undefined but never read — the
+/// body loads an `f32` capture with `movss`). So one GPR copy serves every scalar
+/// class and no XMM round-trip is needed here.
+///
+/// The layout's class for each capture came from the IR `Variable` node's static
+/// type; this re-derives the class from the enclosing frame local's resolved
+/// `NativeType` and refuses on any disagreement, so a capture can never be stored
+/// under one class and read back under another.
 pub(crate) fn lower_closure_literal(
     ctx: &mut NativeCtx,
     id: usize,
@@ -468,7 +530,7 @@ pub(crate) fn lower_closure_literal(
         .closure_layouts
         .get(&id)
         .cloned()
-        .ok_or_else(|| format!("closure #{id} is not in the native Stage-1 subset"))?;
+        .ok_or_else(|| format!("closure #{id} is not in the native closure subset"))?;
     let word_count = 1 + layout.captures.len();
 
     // Allocate the block: `mov rcx, word_count*8 ; call __lullaby_alloc` → rax = block.
@@ -494,10 +556,26 @@ pub(crate) fn lower_closure_literal(
     code.extend_from_slice(&[0x48, 0x89, 0x01]); // mov [rcx], rax  (word 0 = code ptr)
 
     // Words 1.. = captured scalars, in capture order.
-    for (index, (cap_name, _)) in layout.captures.iter().enumerate() {
-        let cap_slot = ctx.local_slot(cap_name).map_err(|_| {
-            format!("closure #{id} captures `{cap_name}`, which is not a native local")
-        })?;
+    for (index, (cap_name, cap_class)) in layout.captures.iter().enumerate() {
+        let local = ctx
+            .local(cap_name)
+            .map_err(|_| {
+                format!("closure #{id} captures `{cap_name}`, which is not a native local")
+            })?
+            .clone();
+        // Cross-check the layout's class (derived from the IR node's static type)
+        // against the enclosing local's resolved layout. They must agree, or the
+        // env word would be written as one class and read as another — a silent
+        // reinterpretation of the bits. Refuse instead, so the function skips.
+        if &local.ty != cap_class {
+            ctx.scratch_next = saved_scratch;
+            return Err(format!(
+                "closure #{id} captures `{cap_name}` typed {:?} in the closure layout but \
+                 {:?} in the enclosing frame; refusing to reinterpret the capture",
+                cap_class, local.ty
+            ));
+        }
+        let cap_slot = local.slot;
         // A closure-using function is excluded from register promotion, so the
         // capture always lives in its frame slot. Guard against a stray promotion.
         if ctx.promoted_reg(cap_slot).is_some() {
@@ -520,17 +598,39 @@ pub(crate) fn lower_closure_literal(
     Ok(())
 }
 
-/// Lower a direct call `name(args)` where `name` is a closure-bound local: load the
-/// env pointer (the block base), put it in `rcx`, the arguments (integer-cell
-/// scalars) in `rdx`/`r8`/`r9`, load word 0 (the code pointer) into `rax`, and
-/// issue an indirect `call rax`. The result (an integer-cell scalar) is left in
-/// `rax`.
+/// Lower a direct call `name(args)` where `name` is a closure-bound local, leaving
+/// the result in `rax` (an integer-cell return) or `xmm0` (a float return) and
+/// reporting the return class.
+///
+/// The **env pointer is the hidden first argument**, structurally identical to the
+/// hidden `sret` pointer an aggregate-returning call passes: it takes effective
+/// register position 0 (`rcx`) and shifts every visible argument to position
+/// `i + 1`. That is why this routes through [`emit_native_call_args_with`] — the
+/// same staging and distribution the whole backend uses — rather than a parallel
+/// closure-only sequence. Consequences that fall out of sharing it, all of which
+/// this backend previously got wrong or could not express:
+///
+/// - **Float register positions are positional, not sequential.** Argument `i` at
+///   effective position `i + 1` takes `xmm{i+1}` when it is a float, so the first
+///   parameter of `fn a i64 b f64 -> …` is `rdx` (position 1) and `b` is **`xmm2`**
+///   (position 2) — *not* `xmm0`/`xmm1`. Win64 pairs each XMM with the GPR of the
+///   same index and consumes both, so "the next unused XMM" is the classic
+///   silent-corruption bug here.
+/// - **A 4th parameter is the 5th argument**, so it spills to the outgoing stack
+///   area at `[rsp + 32 + 8*(pos-4)]` (above the 32-byte shadow space) — reserved
+///   by the caller's frame via `max_outgoing_stack_words`, which counts the hidden
+///   env word for exactly this reason.
+///
+/// The env pointer is placed into `rcx` last (after the staging words are
+/// discarded), so `mov rax,[rcx]` then reads the code pointer at word 0 with the
+/// env still live in `rcx` — where the callee expects it — and `call rax` clobbers
+/// no argument register.
 pub(crate) fn lower_closure_call(
     ctx: &mut NativeCtx,
     name: &str,
     args: &[BytecodeExpr],
     code: &mut Vec<u8>,
-) -> Result<(), String> {
+) -> Result<NativeType, String> {
     let id = *ctx
         .closure_locals
         .get(name)
@@ -538,57 +638,204 @@ pub(crate) fn lower_closure_call(
     let layout = ctx
         .closure_layouts
         .get(&id)
-        .ok_or_else(|| format!("closure #{id} has no native layout"))?;
-    if args.len() != layout.param_count {
+        .ok_or_else(|| format!("closure #{id} has no native layout"))?
+        .clone();
+    if args.len() != layout.params.len() {
         return Err(format!(
             "closure `{name}` expects {} argument(s) but got {}",
-            layout.param_count,
+            layout.params.len(),
             args.len()
         ));
     }
-    if args.len() > 3 {
-        return Err("native closures accept at most three arguments".to_string());
+    // The env pointer lives in the closure local's own frame slot. A closure-using
+    // function is excluded from register promotion, so it is always in its slot.
+    let env_slot = ctx.local_slot(name)?;
+    if ctx.promoted_reg(env_slot).is_some() {
+        return Err(format!(
+            "closure local `{name}` was register-promoted; the env pointer must stay \
+             addressable in its frame slot"
+        ));
     }
-
-    // Stage the env pointer and every argument onto the machine stack (mirroring the
-    // binary-operand and named-call staging elsewhere in the backend), then pop each
-    // into its Win64 register just before the indirect call. This keeps a later
-    // argument's evaluation from clobbering an already-placed register.
-    let slot = ctx.local_slot(name)?; // env pointer lives in the closure local's slot
-    load_local(code, slot); // rax = env pointer (block base)
-    code.push(0x50); // push rax (env)
-    for arg in args {
-        lower_native_expr(ctx, arg, code)?; // rax = arg value
-        code.push(0x50); // push rax
-    }
-    // Argument registers, in Win64 order after the env pointer consumes `rcx`.
-    // pop into rdx / r8 / r9 for args 0 / 1 / 2. Pop in reverse (top of stack is the
-    // last argument).
-    const ARG_POP: [&[u8]; 3] = [
-        &[0x5A],       // pop rdx (arg 0)
-        &[0x41, 0x58], // pop r8  (arg 1)
-        &[0x41, 0x59], // pop r9  (arg 2)
-    ];
-    for index in (0..args.len()).rev() {
-        code.extend_from_slice(ARG_POP[index]);
-    }
-    code.push(0x59); // pop rcx (env pointer)
-    // rax = [rcx] (code pointer at word 0), then `call rax`.
+    let param_tys: Vec<Option<NativeType>> =
+        layout.params.iter().map(|(_, t)| Some(t.clone())).collect();
+    emit_native_call_args_with(
+        ctx,
+        &param_tys,
+        args,
+        Some(HiddenArg::ClosureEnv(env_slot)),
+        code,
+    )?;
+    // rax = [rcx] (code pointer at word 0), then `call rax`. `rcx` holds the env
+    // pointer, which is also what the callee reads as its hidden first argument.
     code.extend_from_slice(&[0x48, 0x8B, 0x01]); // mov rax, [rcx]
     code.extend_from_slice(&[0xFF, 0xD0]); // call rax
+    Ok(layout.ret)
+}
+
+// -- Per-register-file closure hooks ------------------------------------------
+//
+// The integer lowerer (`native_object_expr.rs`) and the float lowerer
+// (`native_object_lowering.rs`) resolve a value through different register files, so
+// each needs its own env-capture and closure-call branch. All four live HERE, next to
+// the layout they read, and the two lowerers call in — one closure ABI and one place
+// that knows the env block's shape, with no placement logic duplicated per file.
+//
+// Each pair is deliberately symmetric: the capture hook returns `Ok(None)` when the
+// name is not a capture of ITS class (so the lowerer falls through to its ordinary
+// frame-slot path), and the call hook refuses a return of the other class rather than
+// reading the wrong register — that refusal is what stops a float's bits from being
+// silently reinterpreted as an integer, or vice versa.
+
+/// Load a captured **integer cell** `name` into `rax` from the env block, or
+/// `Ok(false)` when `name` is not a capture, so the integer lowerer falls through to
+/// its ordinary frame-slot path.
+///
+/// `mov rax, [rbp - env_slot]` (env pointer) then `mov rax, [rax + offset]`. A FLOAT
+/// capture reaching here is refused: handing back its raw IEEE-754 bits as an integer
+/// would be a silent reinterpretation. (A float capture in a float context is resolved
+/// by [`lower_closure_float_capture`].)
+pub(crate) fn lower_closure_int_capture(
+    ctx: &mut NativeCtx,
+    name: &str,
+    code: &mut Vec<u8>,
+) -> Result<bool, String> {
+    let Some(env) = ctx.closure_env.as_ref() else {
+        return Ok(false);
+    };
+    let Some((offset, class)) = env.captures.get(name) else {
+        return Ok(false);
+    };
+    if !matches!(class, NativeType::I64) {
+        return Err(format!(
+            "captured `{name}` is a float; it cannot be read as an integer cell"
+        ));
+    }
+    let (offset, env_slot) = (*offset, env.env_slot);
+    load_local(code, env_slot); // mov rax, [rbp - env_slot] (env ptr)
+    code.extend_from_slice(&[0x48, 0x8B, 0x80]); // mov rax, [rax + offset]
+    code.extend_from_slice(&offset.to_le_bytes());
+    Ok(true)
+}
+
+/// Lower an **integer-cell-returning** closure call `name(args)`, leaving the result
+/// in `rax`. Placement is the shared closure ABI ([`lower_closure_call`]); this only
+/// asserts the return really is an integer cell, so a float-returning closure (whose
+/// value is in `xmm0`) cannot have `rax`'s garbage read out of it.
+pub(crate) fn lower_closure_int_call(
+    ctx: &mut NativeCtx,
+    name: &str,
+    args: &[BytecodeExpr],
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    let ret = lower_closure_call(ctx, name, args, code)?;
+    if !matches!(ret, NativeType::I64) {
+        return Err(format!(
+            "closure `{name}` returns a float (in xmm0); it cannot be used \
+             where an integer cell is expected"
+        ));
+    }
     Ok(())
+}
+
+/// `movs{d,s} xmm0, [rcx + disp32]` — load a float at a constant byte offset from the
+/// pointer in `rcx`. Reads a captured float out of a closure's env block
+/// (`[env + 8*(k+1)]`). ModRM 0x81 = `[rcx + disp32]`, reg 0. `movss` reads only the
+/// low four bytes, so an `f32` capture never observes its word's undefined high half.
+fn load_float_from_rcx_disp(code: &mut Vec<u8>, width: FloatWidth, disp: i32) {
+    let prefix = match width {
+        FloatWidth::F64 => 0xF2,
+        FloatWidth::F32 => 0xF3,
+    };
+    code.extend_from_slice(&[prefix, 0x0F, 0x10, 0x81]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+/// The [`FloatWidth`] of a captured float `name` inside a synthesized closure body,
+/// or `None` when `name` is not a capture or is an integer cell. Used by
+/// `float_width_of_expr` to classify a capture before any code is emitted.
+pub(crate) fn closure_env_float_width(ctx: &NativeCtx, name: &str) -> Option<FloatWidth> {
+    let (_, class) = ctx.closure_env.as_ref()?.captures.get(name)?;
+    closure_scalar_float_width(class)
+}
+
+/// The [`FloatWidth`] a closure local `name` returns, or `None` when it returns an
+/// integer cell (or is not a closure local).
+pub(crate) fn closure_call_float_width(ctx: &NativeCtx, name: &str) -> Option<FloatWidth> {
+    let id = ctx.closure_locals.get(name)?;
+    closure_scalar_float_width(&ctx.closure_layouts.get(id)?.ret)
+}
+
+/// Load a captured **float** `name` into `xmm0` from the env block, reporting its
+/// width — or `Ok(None)` when `name` is not a float capture, so the float lowerer
+/// falls through to its ordinary frame-slot path.
+///
+/// `mov rcx, [rbp - env_slot]` (env pointer) then `movs{d,s} xmm0, [rcx + offset]`.
+/// An `f32` is loaded with `movss`, reading only the meaningful low four bytes of
+/// its env word, so the undefined high four bytes the literal's raw 8-byte capture
+/// store may have written are never observed.
+pub(crate) fn lower_closure_float_capture(
+    ctx: &mut NativeCtx,
+    name: &str,
+    code: &mut Vec<u8>,
+) -> Result<Option<FloatWidth>, String> {
+    let Some(env) = ctx.closure_env.as_ref() else {
+        return Ok(None);
+    };
+    let Some((offset, class)) = env.captures.get(name) else {
+        return Ok(None);
+    };
+    let Some(width) = closure_scalar_float_width(class) else {
+        // An integer-cell capture in a float context: not a float value. Report
+        // "not a float" rather than reinterpreting the word's bits.
+        return Ok(None);
+    };
+    let (offset, env_slot) = (*offset, env.env_slot);
+    emit_mov_rcx_from_slot(code, env_slot); // rcx = env pointer (block base)
+    load_float_from_rcx_disp(code, width, offset); // xmm0 = [rcx + offset]
+    Ok(Some(width))
+}
+
+/// Lower a **float-returning** closure call `name(args)` in float position, leaving
+/// the result in `xmm0`. Placement is the shared closure ABI ([`lower_closure_call`]);
+/// this only asserts the return really is a float, so an integer-returning closure
+/// used in a float context is refused rather than having `rax`'s bits read out of
+/// `xmm0`.
+pub(crate) fn lower_closure_float_call(
+    ctx: &mut NativeCtx,
+    name: &str,
+    args: &[BytecodeExpr],
+    code: &mut Vec<u8>,
+) -> Result<FloatWidth, String> {
+    let ret = lower_closure_call(ctx, name, args, code)?;
+    closure_scalar_float_width(&ret).ok_or_else(|| {
+        format!("closure `{name}` returns an integer cell; it cannot be used as a float")
+    })
 }
 
 // -- Closure body synthesis ---------------------------------------------------
 
 /// Synthesize the native `.text` body of a closure definition: a function
-/// `__closure_{id}` receiving the env pointer in `rcx` and its parameters in
-/// `rdx`/`r8`/`r9`, seating them into frame slots, resolving each captured name to
-/// `[env + 8*(k+1)]`, and returning the single-expression body's scalar value in
-/// `rax`. The body must be heap-free and free of user/`extern` calls (so the
-/// closure allocates nothing and retains no pointer — keeping the enclosing arena
-/// reasoning a true leaf); a violation returns `Err`, demoting the enclosing
-/// function.
+/// `__closure_{id}` receiving the env pointer in `rcx` and its parameters at
+/// effective Win64 positions 1.., seating them into frame slots, resolving each
+/// captured name to `[env + 8*(k+1)]`, and returning the single-expression body's
+/// scalar value in `rax` (integer cell) or `xmm0` (float).
+///
+/// The prologue is the exact mirror of [`lower_closure_call`]'s placement, and of
+/// the ordinary function prologue in `native_object_stmt.rs`: parameter `i` sits at
+/// effective position `i + 1` (the env pointer is the hidden position 0), so
+/// positions 1..3 arrive in `rdx`/`r8`/`r9` or `xmm1`/`xmm2`/`xmm3` **by position
+/// and class**, and positions 4+ arrive on the caller's stack.
+///
+/// The stack-argument displacement is fixed by the entry sequence: on entry the
+/// return address is at `[rsp]`; after `push rbp; mov rbp,rsp` the saved `rbp` is
+/// at `[rbp]`, the return address at `[rbp+8]`, the caller's 32-byte shadow at
+/// `[rbp+16..rbp+48]`, and the first stack argument at `[rbp+48]`. So effective
+/// position `pos >= 4` reads `[rbp + 48 + 8*(pos-4)]` — which is exactly the word
+/// the caller wrote to `[rsp + 32 + 8*(pos-4)]` before the `call`.
+///
+/// The body must be heap-free and free of user/`extern` calls (so the closure
+/// allocates nothing and retains no pointer — keeping the enclosing arena reasoning
+/// a true leaf); a violation returns `Err`, demoting the enclosing function.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn synthesize_closure_body(
     def: &BytecodeClosureDef,
@@ -608,14 +855,14 @@ pub(crate) fn synthesize_closure_body(
     let empty_aggs = std::collections::HashSet::new();
     if expr_touches_heap(&def.body, &empty_aggs) {
         return Err(format!(
-            "closure #{} body touches the heap; native closures are scalar-only in Stage 1",
+            "closure #{} body touches the heap; native closures are scalar-only",
             def.id
         ));
     }
     let user_names: std::collections::HashSet<&str> = callable.iter().copied().collect();
     if expr_calls_user(&def.body, &user_names) {
         return Err(format!(
-            "closure #{} body calls a user/extern function; deferred in Stage 1",
+            "closure #{} body calls a user/extern function; deferred",
             def.id
         ));
     }
@@ -626,14 +873,16 @@ pub(crate) fn synthesize_closure_body(
     // Env pointer (word 0 = code ptr; captures at 8*(k+1)).
     next_slot += 8;
     let env_slot = next_slot;
-    // Parameters (integer-cell scalars), one word each, in order.
-    for pname in &layout.param_names {
+    // Parameters (native scalars), one word each, in order. The slot's `NativeType`
+    // is the parameter's real class, so the body's float path finds an `F64`/`F32`
+    // local and the integer path an `I64` one — the two can never cross.
+    for (pname, pclass) in &layout.params {
         next_slot += 8;
         locals.insert(
             pname.clone(),
             NativeLocal {
                 slot: next_slot,
-                ty: NativeType::I64,
+                ty: pclass.clone(),
             },
         );
     }
@@ -648,16 +897,22 @@ pub(crate) fn synthesize_closure_body(
     let raw = next_slot + 32;
     let frame_size = ((raw + 15) / 16) * 16;
 
-    // Env capture offsets: capture `k` at byte offset `8*(k+1)` in the env block.
+    // Env capture offsets: capture `k` at byte offset `8*(k+1)` in the env block,
+    // paired with its scalar class so the body loads it through the right register
+    // file.
     let mut captures = HashMap::new();
-    for (index, (cap_name, _)) in layout.captures.iter().enumerate() {
-        captures.insert(cap_name.clone(), ((index + 1) * 8) as i32);
+    for (index, (cap_name, cap_class)) in layout.captures.iter().enumerate() {
+        captures.insert(
+            cap_name.clone(),
+            (((index + 1) * 8) as i32, cap_class.clone()),
+        );
     }
 
     let mut ctx = NativeCtx::for_closure_body(
         locals,
         frame_size,
         scratch_base,
+        layout.ret.clone(),
         ClosureEnv { env_slot, captures },
         callable,
         extern_sigs,
@@ -675,20 +930,43 @@ pub(crate) fn synthesize_closure_body(
     // Seat the env pointer (rcx) into its slot: `mov [rbp - env_slot], rcx`.
     code.extend_from_slice(&[0x48, 0x89, 0x8D]);
     code.extend_from_slice(&(-env_slot).to_le_bytes());
-    // Seat parameters from rdx / r8 / r9 (Win64 argument registers 1..3).
-    const PARAM_STORE: [&[u8]; 3] = [
-        &[0x48, 0x89, 0x95], // mov [rbp+disp32], rdx (param 0)
-        &[0x4C, 0x89, 0x85], // mov [rbp+disp32], r8  (param 1)
-        &[0x4C, 0x89, 0x8D], // mov [rbp+disp32], r9  (param 2)
+    // Seat each parameter from its effective Win64 position `i + 1` (the env
+    // pointer is the hidden position 0). Integer positions 1..3 arrive in
+    // rdx/r8/r9; float positions 1..3 arrive in the POSITIONALLY matching
+    // xmm1/xmm2/xmm3; positions 4+ arrive on the caller's stack at
+    // `[rbp + 48 + 8*(pos-4)]`.
+    const PARAM_STORE: [&[u8]; 4] = [
+        &[0x48, 0x89, 0x8D], // mov [rbp+disp32], rcx (position 0 — the env pointer)
+        &[0x48, 0x89, 0x95], // mov [rbp+disp32], rdx (position 1)
+        &[0x4C, 0x89, 0x85], // mov [rbp+disp32], r8  (position 2)
+        &[0x4C, 0x89, 0x8D], // mov [rbp+disp32], r9  (position 3)
     ];
-    for (index, pname) in layout.param_names.iter().enumerate() {
+    for (index, (pname, pclass)) in layout.params.iter().enumerate() {
         let slot = ctx.local_slot(pname)?;
-        code.extend_from_slice(PARAM_STORE[index]);
-        code.extend_from_slice(&(-slot).to_le_bytes());
+        let pos = index + 1; // the env pointer consumes effective position 0
+        if pos >= 4 {
+            // A stack argument is already a raw 8-byte word for every scalar class
+            // (an integer cell, or raw float bits): copy it bit-for-bit into the
+            // parameter's slot. A float needs no XMM round-trip — the slot holds
+            // raw bits and every float reader loads it with movsd/movss.
+            let stack_disp = 48 + (pos as i32 - 4) * 8;
+            emit_mov_rax_from_rbp_pos(&mut code, stack_disp);
+            store_local(&mut code, slot);
+        } else if let Some(width) = closure_scalar_float_width(pclass) {
+            // `xmm{pos}` — chosen by POSITION, not by how many floats came before.
+            emit_store_xmm_to_slot(&mut code, pos as u8, slot, width);
+        } else {
+            code.extend_from_slice(PARAM_STORE[pos]);
+            code.extend_from_slice(&(-slot).to_le_bytes());
+        }
     }
 
-    // Body: a single integer-cell scalar expression, evaluated into `rax`.
-    lower_native_expr(&mut ctx, &def.body, &mut code)?;
+    // Body: a single native-scalar expression. Routed through `lower_return_value`
+    // — the backend's ONE value-position routing point — so an integer-cell return
+    // lands in `rax` and a float return in `xmm0` by exactly the same rule every
+    // other function return follows. `ctx.return_ty` (set above) is what it reads;
+    // a closure return is never an aggregate, so `sret_slot` stays `None`.
+    lower_return_value(&mut ctx, &def.body, &mut code)?;
 
     // Epilogue: add rsp, frame; pop rbp; ret.
     emit_native_epilogue(&mut code, frame_size, &[]);

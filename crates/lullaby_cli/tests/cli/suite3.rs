@@ -2359,13 +2359,29 @@ pub(crate) fn native_generic_scalar_execution_parity_when_linkable() {
     );
 }
 
-/// Closures (Stage 1: scalar captures, direct non-escaping call) compile natively
-/// and run byte-identically to the interpreters. Each fixture takes the DEFAULT
-/// native command's direct-PE path (no external linker — the closure heap block is
+/// Closures (native scalar subset: integer AND float captures/parameters/returns,
+/// any parameter count, direct non-escaping call) compile natively and run
+/// byte-identically to the interpreters. Each fixture takes the DEFAULT native
+/// command's direct-PE path (no external linker — the closure heap block is
 /// allocated in-house), so this needs neither `rust-lld` nor `kernel32.lib`. The
-/// `reclaim` fixture allocates a closure per iteration across 100000 iterations;
-/// its correct result (rather than a heap-exhaustion trap) proves the arena
-/// per-iteration sub-region reclaims each closure block — bounded heap.
+/// `reclaim`/`float_reclaim` fixtures allocate a closure per iteration across many
+/// iterations; their correct result (rather than a heap-exhaustion trap) proves the
+/// arena per-iteration sub-region reclaims each closure block — bounded heap. A float
+/// capture does not change that argument: the block's shape is unchanged (one raw
+/// word per capture), only what the words hold.
+///
+/// The float/multi-parameter fixtures pin the two ABI hazards of the hidden env
+/// pointer, which shifts every parameter to effective position `i + 1`:
+///
+/// - `mixed_capture`, `combo`, `float_spill` — a float parameter's register is fixed
+///   by POSITION (a float at position 2 takes `xmm2`), not by how many floats precede
+///   it. Injecting the sequential-XMM bug (reading `xmm{pos-1}`) makes all three fail.
+///   Note a SINGLE-float-parameter closure cannot pin this: the caller stages that
+///   argument through `xmm0`, so a callee wrongly reading `xmm0` still sees the right
+///   value. These fixtures interleave classes so the coincidence breaks.
+/// - `four_params`, `six_params`, `float_spill`, `combo` — a 4th parameter is the 5th
+///   argument and spills to the stack. Injecting a wrong spill displacement (`40`
+///   instead of `48`) makes exactly these four fail.
 #[test]
 pub(crate) fn native_closures_direct_pe_run_parity() {
     let fixtures = [
@@ -2373,6 +2389,15 @@ pub(crate) fn native_closures_direct_pe_run_parity() {
         "native_closure_multi_capture",
         "native_closure_loop",
         "native_closure_reclaim",
+        // Scalar completeness: floats and past-the-register-file parameter counts.
+        "native_closure_float_capture",
+        "native_closure_mixed_capture",
+        "native_closure_four_params",
+        "native_closure_six_params",
+        "native_closure_float_spill",
+        "native_closure_f32",
+        "native_closure_combo",
+        "native_closure_float_reclaim",
     ];
     for name in fixtures {
         let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
@@ -2401,13 +2426,35 @@ pub(crate) fn native_closures_direct_pe_run_parity() {
             "{name}: direct-PE path must not write an object"
         );
 
-        // Interpreter ground truth for `main`.
-        let run = lullaby()
-            .args(["run", fixture.to_str().expect("fixture path")])
-            .output()
-            .expect("run cli");
-        assert!(run.status.success(), "{name}: {}", stderr(&run));
-        let interp: i64 = stdout(&run).trim().parse().expect("interpreter i64");
+        // Interpreter ground truth for `main`, from ALL THREE engines. Native is
+        // compared against a value every interpreter agrees on, so this cannot pass
+        // by matching one engine that is itself wrong.
+        let mut interp: Option<i64> = None;
+        for backend in ["ast", "ir", "bytecode"] {
+            let run = lullaby()
+                .args([
+                    "run",
+                    "--backend",
+                    backend,
+                    fixture.to_str().expect("fixture path"),
+                ])
+                .output()
+                .expect("run cli");
+            assert!(run.status.success(), "{name} ({backend}): {}", stderr(&run));
+            let value: i64 = stdout(&run)
+                .trim()
+                .parse()
+                .unwrap_or_else(|e| panic!("{name} ({backend}): interpreter i64: {e}"));
+            match interp {
+                None => interp = Some(value),
+                Some(first) => assert_eq!(
+                    value, first,
+                    "{name}: interpreter divergence — {backend} computes {value}, \
+                     the first engine computed {first}"
+                ),
+            }
+        }
+        let interp = interp.expect("at least one backend ran");
 
         // Run the in-house `.exe` and compare exit codes (all fixtures return < 256).
         let exe = Command::new(&out).output().expect("run direct pe exe");
@@ -2421,9 +2468,20 @@ pub(crate) fn native_closures_direct_pe_run_parity() {
 }
 
 /// Deferred closure shapes still skip cleanly to the interpreters (`L0339`), never
-/// miscompiled: a `string` capture, a closure passed to a higher-order function
-/// (`apply(f, x)`), and a returned/escaping closure. Each still runs correctly on
-/// the interpreters.
+/// miscompiled, and each still runs correctly on the interpreters.
+///
+/// These are the **skip pins**: they fix the boundary of the native closure subset in
+/// place. Scalar completeness (floats, any parameter count) widened what compiles, so
+/// each escape hatch is re-pinned HERE with a float-capturing closure — proving the
+/// widening did not accidentally admit an escaping or heap shape along with the
+/// floats. What remains deferred:
+///
+/// - a heap capture (`string`; `list`/`map`/aggregate resolve the same way),
+/// - a higher-order use — the closure passed as an argument (`apply(f, x)`),
+/// - a returned/escaping closure,
+/// - a closure whose body calls a user/`extern` function,
+/// - a mutable/rebound closure local,
+/// - a closure bound from a factory result rather than a direct literal.
 #[test]
 pub(crate) fn native_closure_deferred_shapes_skip() {
     // (fixture, interpreter result)
@@ -2431,6 +2489,11 @@ pub(crate) fn native_closure_deferred_shapes_skip() {
         ("native_closure_string_capture", 42_i64),
         ("run_closures", 27),
         ("run_closures_returned", 134),
+        // The same escape hatches, re-pinned with FLOAT-capturing closures.
+        ("native_closure_float_hof", 61),
+        ("native_closure_float_body_call", 62),
+        ("native_closure_float_rebind", 63),
+        ("native_closure_factory_bound", 64),
     ];
     for (name, expected) in skips {
         let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));

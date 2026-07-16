@@ -38,6 +38,10 @@ pub(crate) fn lower_native_float_expr(
             Ok(width)
         }
         BytecodeExprKind::Variable(name) => {
+            // A captured float resolves through the env pointer, not a frame slot.
+            if let Some(width) = lower_closure_float_capture(ctx, name, code)? {
+                return Ok(width);
+            }
             let local = ctx.local(name)?;
             let width = match local.ty {
                 NativeType::F64 => FloatWidth::F64,
@@ -49,6 +53,11 @@ pub(crate) fn lower_native_float_expr(
             Ok(width)
         }
         BytecodeExprKind::Call { name, args } => {
+            // A float-returning closure call leaves its value in `xmm0`. Checked
+            // before builtin/extern resolution, mirroring the integer path.
+            if ctx.closure_locals.contains_key(name) {
+                return lower_closure_float_call(ctx, name, args, code);
+            }
             // `to_f32(x f64) -> f32`: evaluate the f64 argument, then round it to
             // single precision with `cvtsd2ss`.
             if name == "to_f32" {
@@ -332,11 +341,19 @@ pub(crate) fn lower_native_float_compare(
 pub(crate) fn float_width_of_expr(ctx: &NativeCtx, expr: &BytecodeExpr) -> Option<FloatWidth> {
     match &expr.kind {
         BytecodeExprKind::Float(_) => FloatWidth::from_type_name(expr.ty.name.as_str()),
-        BytecodeExprKind::Variable(name) => match ctx.locals.get(name)?.ty {
-            NativeType::F64 => Some(FloatWidth::F64),
-            NativeType::F32 => Some(FloatWidth::F32),
-            _ => None,
-        },
+        // A captured float has no frame local — its class lives in the env binding,
+        // so consult that first, or its arithmetic would misroute to the integer path.
+        BytecodeExprKind::Variable(name) => {
+            closure_env_float_width(ctx, name).or_else(|| match ctx.locals.get(name)?.ty {
+                NativeType::F64 => Some(FloatWidth::F64),
+                NativeType::F32 => Some(FloatWidth::F32),
+                _ => None,
+            })
+        }
+        // A float-returning closure call is a float of its declared return width.
+        BytecodeExprKind::Call { name, args } if ctx.closure_locals.contains_key(name) => {
+            closure_call_float_width(ctx, name)
+        }
         BytecodeExprKind::Call { name, args } => match name.as_str() {
             "to_f32" => Some(FloatWidth::F32),
             "to_f64" | "sqrt" => Some(FloatWidth::F64),

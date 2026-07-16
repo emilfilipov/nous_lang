@@ -1,0 +1,8 @@
+fn main -> i64
+    let s f64 = 2.0
+    let g fn(f64) -> f64 = fn x f64 -> x * s
+    g = fn x f64 -> x + s
+    let r f64 = g(3.0)
+    if r > 4.99
+        return 63
+    return 0

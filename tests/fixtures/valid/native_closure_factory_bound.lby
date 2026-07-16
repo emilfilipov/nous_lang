@@ -1,0 +1,9 @@
+fn make s f64 -> fn(f64) -> f64
+    fn x f64 -> x * s
+
+fn main -> i64
+    let g fn(f64) -> f64 = make(2.0)
+    let r f64 = g(3.0)
+    if r > 5.99
+        return 64
+    return 0

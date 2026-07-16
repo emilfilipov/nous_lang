@@ -1,0 +1,4 @@
+fn main -> i64
+    let n i64 = 5
+    let f fn(i64, i64, i64, i64) -> i64 = fn a i64 b i64 c i64 d i64 -> a * 27 + b * 9 + c * 3 + d + n
+    f(1, 2, 3, 4)

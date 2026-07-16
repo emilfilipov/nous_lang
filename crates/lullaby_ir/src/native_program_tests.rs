@@ -4922,7 +4922,7 @@ fn assert_main_skips(source: &str) {
     }
 }
 
-/// A closure that captures a `string` is outside the Stage-1 scalar-capture slice
+/// A closure that captures a `string` is outside the scalar-capture slice
 /// and skips cleanly (never miscompiled).
 #[test]
 fn native_closure_string_capture_skips() {
@@ -4961,14 +4961,47 @@ fn native_closure_returned_skips() {
     ));
 }
 
-/// A closure with more than three parameters (the env pointer consumes `rcx`,
-/// leaving only `rdx`/`r8`/`r9`) is deferred and skips cleanly.
+/// A closure with more than three parameters COMPILES: the env pointer consumes
+/// effective position 0 (`rcx`), so parameters 0..2 take `rdx`/`r8`/`r9` and a 4th
+/// parameter — the 5th argument — spills to the outgoing stack area, exactly as an
+/// ordinary call's 5th+ argument does. (This asserted a skip while closures were
+/// limited to three parameters.)
 #[test]
-fn native_closure_too_many_params_skips() {
-    assert_main_skips(concat!(
+fn native_closure_many_params_compiles() {
+    let program = emit_native_program(&module_for(concat!(
         "fn main -> i64\n",
         "    let n i64 = 1\n",
         "    let f fn(i64, i64, i64, i64) -> i64 = fn a i64 b i64 c i64 d i64 -> a + b + c + d + n\n",
         "    f(1, 2, 3, 4)\n",
-    ));
+    )))
+    .expect("a four-parameter closure compiles");
+    assert!(
+        program.compiled.contains(&"main".to_string())
+            && program.compiled.contains(&"__closure_0".to_string()),
+        "main and the synthesized body must both compile: {:?} (skipped {:?})",
+        program.compiled,
+        program.skipped
+    );
+}
+
+/// A closure capturing a FLOAT compiles: the capture is one raw word in the env
+/// block, read back through the XMM file. (A float capture was outside the
+/// integer-cell-only slice this backend started with.)
+#[test]
+fn native_closure_float_capture_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let w f64 = 2.5\n",
+        "    let f fn(f64) -> bool = fn x f64 -> x * w > 4.0\n",
+        "    if f(3.0)\n",
+        "        return 1\n",
+        "    return 0\n",
+    )))
+    .expect("a float-capturing closure compiles");
+    assert!(
+        program.compiled.contains(&"__closure_0".to_string()),
+        "the synthesized body must compile: {:?} (skipped {:?})",
+        program.compiled,
+        program.skipped
+    );
 }

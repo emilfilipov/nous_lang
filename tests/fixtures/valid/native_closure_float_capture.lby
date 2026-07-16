@@ -1,0 +1,9 @@
+fn main -> i64
+    let scale f64 = 2.5
+    let offset f64 = 1.5
+    let f fn(f64) -> f64 = fn x f64 -> x * scale + offset
+    let r f64 = f(4.0)
+    if r > 11.49
+        if r < 11.51
+            return 42
+    return 0

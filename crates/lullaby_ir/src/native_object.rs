@@ -329,7 +329,7 @@ pub(crate) struct NativeCtx<'a> {
     /// heap block. Populated by `collect_native_locals` from a `let` whose value is
     /// a `Closure { id }` literal.
     closure_locals: HashMap<String, usize>,
-    /// Native layouts of every Stage-1 closure in the module, keyed by parse-order
+    /// Native layouts of every natively-lowerable closure in the module, keyed by parse-order
     /// `id`. Used to size a closure literal's block, resolve the `__closure_{id}`
     /// code symbol, and lay out the captured scalars.
     closure_layouts: &'a HashMap<usize, ClosureLayout>,
@@ -434,12 +434,12 @@ impl<'a> NativeCtx<'a> {
         // ONLY as its own `let`'s closure-literal initializer or as the callee of a
         // direct call `f(args)`. A closure passed to a function, returned, stored,
         // reassigned, or read as a bare value is a higher-order/escaping use outside
-        // the Stage-1 slice, so the function skips cleanly rather than miscompiling.
+        // the supported slice, so the function skips cleanly rather than miscompiling.
         for name in closure_locals.keys() {
             if !closure_local_ok(function, name) {
                 return Err(format!(
                     "closure local `{name}` escapes or is used in an unsupported position \
-                     (native Stage-1 closures support only a direct non-escaping call)"
+                     (native closures support only a direct non-escaping call)"
                 ));
             }
         }
@@ -529,7 +529,10 @@ impl<'a> NativeCtx<'a> {
         // effective register arguments. The area lives at the bottom of the frame
         // (lowest addresses, where `rsp` points at a `call`): `[rsp .. rsp+32]` is
         // the shadow, `[rsp+32 .. rsp+32+8*out]` holds the 5th+ arguments.
-        let out_words = max_outgoing_stack_words(&function.instructions, signatures);
+        // `closure_locals` is populated by `collect_native_locals` above, so a call
+        // through a closure local is counted with its hidden env pointer.
+        let out_words =
+            max_outgoing_stack_words(&function.instructions, signatures, &closure_locals);
         let shadow = if has_call { 32 } else { 0 };
         let raw = next_slot + shadow + out_words as i32 * 8;
         // Keep the frame a multiple of 16 so that after `push rbp` and a `call`
@@ -727,6 +730,10 @@ pub(crate) use stmt_lowering::*;
 #[path = "native_object_expr.rs"]
 mod expr_lowering;
 pub(crate) use expr_lowering::*;
+
+#[path = "native_object_callargs.rs"]
+mod call_args;
+pub(crate) use call_args::*;
 
 #[path = "native_object_rawptr.rs"]
 mod rawptr;

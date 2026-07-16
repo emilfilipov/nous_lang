@@ -1,0 +1,7 @@
+fn main -> i64
+    let k i64 = 2
+    let w f64 = 0.5
+    let f fn(i64, f64, i64, f64, i64) -> bool = fn a i64 b f64 c i64 d f64 e i64 -> b + d + w > 5.4 and a * 100 + c * 10 + e > 120 and a + c + e < 10 * k
+    if f(1, 2.0, 2, 3.0, 3)
+        return 128
+    return 0

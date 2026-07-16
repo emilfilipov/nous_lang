@@ -1,0 +1,8 @@
+fn main -> i64
+    let s f32 = to_f32(1.5)
+    let f fn(f32) -> f32 = fn x f32 -> x * s
+    let r f32 = f(to_f32(4.0))
+    if r > to_f32(5.99)
+        if r < to_f32(6.01)
+            return 6
+    return 0
