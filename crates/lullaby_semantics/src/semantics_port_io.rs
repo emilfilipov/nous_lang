@@ -203,9 +203,13 @@ impl Checker<'_> {
         function: &Function,
     ) {
         let hint = if actual.name == "i64" {
+            // The example literal must itself be representable in `expected`, or the
+            // hint recommends code that fails with `L0207`: `0x3F8` is 1016, which
+            // does not fit in a `u8`.
+            let example = if expected == "u8" { "0x20" } else { "0x3F8" };
             format!(
                 " (an integer literal is `i64`; write it with the `{expected}` suffix, \
-                 e.g. `0x3F8{expected}`, or convert it with `to_{expected}(...)`)"
+                 e.g. `{example}{expected}`, or convert it with `to_{expected}(...)`)"
             )
         } else {
             String::new()
