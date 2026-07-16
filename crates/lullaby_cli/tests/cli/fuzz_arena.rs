@@ -3,21 +3,25 @@
 //! submodule of `fuzz.rs`, reusing its shared `Rng` and `fuzz_native_exit` harness
 //! via `use super::*`.
 //!
-//! # Why the oracle is a VALUE, not a differential
+//! # Two oracles, both real
 //!
-//! Every other fuzzer here cross-checks native against the interpreters. That is
-//! impossible for arenas by construction: the interpreters **refuse** `arena_alloc`
-//! with `L0460` (their place-backed, typed-cell pointer model cannot reinterpret a
-//! buffer's storage as new typed cells), so there is no second engine to disagree
-//! with. Falling back to "native must skip" would be an empty oracle — native must
-//! emphatically *not* skip, since it is the only tier that defines the feature.
+//! The arena has **full four-tier parity**, so this fuzzer gets both oracles the
+//! harness supports:
 //!
-//! So the oracle is the **generator's own arithmetic**: it emits a program whose
-//! exact result it computes independently in Rust, then asserts the real `.exe`'s
-//! exit code equals it. That is a genuine oracle — it catches a bump that fails to
-//! advance (allocations aliasing), a cursor that starts at garbage, and a
-//! mis-scaled address — because each makes the exit code wrong rather than merely
-//! different.
+//! * a **differential** oracle — native's exit code must equal the interpreters',
+//!   and the three interpreters must agree with each other; and
+//! * a **value** oracle — the generator computes each program's exact result
+//!   independently in Rust, so a bug that corrupts *every* tier identically still
+//!   fails. A pure differential would miss that.
+//!
+//! (An earlier version had only the value oracle, because the interpreters refused
+//! `arena_alloc` outright. That refusal was wrong — an arena cell is an ordinary
+//! `array<i64>` element, which every tier addresses — and removing it made the
+//! stronger differential oracle available.)
+//!
+//! Between them these catch a bump that fails to advance (allocations aliasing), a
+//! cursor that starts at garbage, and a mis-scaled address — each as a wrong exit
+//! code rather than a subtle difference.
 //!
 //! # The boundary is the point
 //!
@@ -138,8 +142,9 @@ fn gen_arena_program(seed: u64) -> ArenaCase {
 }
 
 /// **THE oracle for the static-buffer arena.** Compile each generated program to a
-/// real `.exe` and check its exit code against the generator's independently
-/// computed result.
+/// real `.exe` and check its exit code against *both* the generator's independently
+/// computed result and the interpreters' — the arena has four-tier parity, so
+/// native must agree with the other three as well as with the arithmetic.
 ///
 /// What this catches, each as a wrong exit code rather than a subtle difference:
 ///
@@ -206,6 +211,16 @@ fn fuzz_arena_native_matches_the_value_oracle() {
                      hand out distinct, correctly-scaled cells from a zeroed cursor\n{}",
                     case.source
                 );
+                // The differential half: native must also agree with the tier the
+                // author is most likely to have tested against.
+                let (ast, _, _) = run_interpreters(&case.source);
+                assert_eq!(
+                    ast,
+                    Outcome::Value(i64::from(exit)),
+                    "native and the interpreters disagree on arena program #{i} (seed \
+                     {seed:#x})\n{}",
+                    case.source
+                );
             }
             None => {
                 overflow_cases += 1;
@@ -238,5 +253,60 @@ fn fuzz_arena_native_matches_the_value_oracle() {
     assert!(
         overflow_cases > 0,
         "arena fuzz never exercised the overflow edge ({ran} ran)"
+    );
+}
+
+/// The **differential** oracle, now that the arena has four-tier parity: the three
+/// interpreters must agree with each other on every generated program.
+///
+/// Always runs — no link toolchain needed — so this is the arena's cross-engine net
+/// even on a machine where the native fuzzer skips. The overflow programs are
+/// expected to abort (`L0460`), and the three engines must agree on *that* too:
+/// `Outcome::Error` on one tier and a value on another would itself be a finding.
+#[test]
+fn fuzz_arena_interpreters_agree() {
+    const PROGRAMS: u64 = 400;
+    let base_seed = 0x00A2_E5A0_5EED_1C37u64;
+    let mut overflow_cases = 0u64;
+    let mut success_cases = 0u64;
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let case = gen_arena_program(seed);
+        let (ast, ir, bc) = run_interpreters(&case.source);
+        assert!(
+            ast == ir && ir == bc,
+            "arena backend divergence on program #{i} (seed {seed:#x}):\n{}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}",
+            case.source
+        );
+        match case.expected {
+            Some(expected) => {
+                success_cases += 1;
+                assert_eq!(
+                    ast,
+                    Outcome::Value(expected),
+                    "arena value mismatch on the interpreters, program #{i} (seed \
+                     {seed:#x})\n{}",
+                    case.source
+                );
+            }
+            None => {
+                overflow_cases += 1;
+                assert_eq!(
+                    ast,
+                    Outcome::Error,
+                    "program #{i} (seed {seed:#x}) requests one cell MORE than its buffer \
+                     holds, so the interpreters must abort (`L0460`) rather than return a \
+                     value\n{}",
+                    case.source
+                );
+            }
+        }
+    }
+    assert!(
+        success_cases > 0 && overflow_cases > 0,
+        "arena interpreter fuzz must exercise both a fitting allocation and the overflow \
+         edge (fit={success_cases}, overflow={overflow_cases})"
     );
 }

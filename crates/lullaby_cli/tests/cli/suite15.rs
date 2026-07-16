@@ -1408,34 +1408,69 @@ fn arena_overflow_hits_the_panic_edge_natively() {
     );
 }
 
-/// The interpreters **refuse** the arena with `L0460` rather than approximate it.
+/// **Full four-tier parity**: the arena produces `109` on the AST, IR, and bytecode
+/// interpreters too, matching native exactly.
 ///
-/// Their pointer model addresses typed cells through a place-backed pointer (each
-/// names an existing binding plus a path to it — see `L0459`), so it cannot
-/// reinterpret a buffer's storage as freshly-typed cells. The bump arithmetic
-/// could be faked, but a faked pointer reads and writes the *wrong storage* — a
-/// silent wrong answer. So no parity is claimed for the arena: native defines it,
-/// the interpreters decline to, exactly as with port I/O (`L0444`).
-///
-/// The refusal must be the *honest* one. Before the special-form handling landed,
-/// these raised `L0403 unknown variable` — an accident of argument-evaluation
-/// order that reads like a bug in the user's program. Asserting the code pins that.
+/// An earlier version of this increment *refused* the arena on all three
+/// interpreters (`L0460`), arguing their typed-cell pointer model could not
+/// reinterpret a buffer's storage. That argument did not survive its own design:
+/// because the arena bumps in whole 8-byte cells of an `array<i64>`,
+/// `arena_alloc(r, n)` is exactly `addr_of(buf[cursor])` plus an integer cursor —
+/// and the interpreters define both halves. There was nothing to reinterpret, so
+/// the refusal was work not done rather than an honest limitation. This test is the
+/// standing proof that it was modellable.
 #[test]
-fn arena_is_refused_on_every_interpreter() {
+fn arena_runs_identically_on_every_interpreter() {
     for backend in ["ast", "ir", "bytecode"] {
         let output = run_backend(
             "tests/fixtures/valid/no_runtime/freestanding_arena_alloc.lby",
             backend,
         );
+        assert!(
+            output.status.success(),
+            "the {backend} interpreter must RUN a static-buffer arena, not refuse it — an \
+             arena cell is an ordinary `array<i64>` element, which this tier addresses \
+             natively via the same place-backed `addr_of` machinery: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output).trim(),
+            "109",
+            "{backend} must agree with native (109) on the arena's result"
+        );
+    }
+}
+
+/// The **overflow edge** on the interpreters: a bump past the buffer aborts with
+/// `L0460` on all three, mirroring native's `ud2` trap.
+///
+/// Both terminate without producing a value, which is exactly the relationship the
+/// delivered array-bounds failure already has (`L0413` on the interpreters, `ud2`
+/// natively) and what decision **A5** requires — abort with a diagnostic, no
+/// unwinding. §8 will route both edges to the program's own `panic fn`.
+///
+/// `L0460` used to mean "an arena cannot run on an interpreter at all". It was
+/// retargeted to the failure that genuinely exists once the arena was implemented.
+#[test]
+fn arena_overflow_aborts_on_every_interpreter() {
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = run_backend(
+            "tests/fixtures/valid/no_runtime/freestanding_arena_overflow.lby",
+            backend,
+        );
         let errors = stderr(&output);
         assert!(
             !output.status.success(),
-            "the {backend} interpreter must refuse a static-buffer arena, not run it"
+            "an arena overflow must abort on the {backend} interpreter, not return a value"
         );
         assert!(
             errors.contains("L0460"),
-            "the {backend} interpreter must refuse the arena with the honest `L0460` \
-             (native-only), not an incidental diagnostic: {errors}"
+            "the {backend} interpreter must abort an arena overflow with `L0460`: {errors}"
+        );
+        assert!(
+            !stdout(&output).contains('6'),
+            "the {backend} interpreter must not produce 6 — the value `exhaust` would return \
+             if the overflowing third allocation had wrongly succeeded"
         );
     }
 }
@@ -1527,4 +1562,24 @@ fn arena_region_survives_fmt_round_trip() {
         stderr(&second)
     );
     assert_eq!(stdout(&second), formatted, "fmt must be idempotent");
+}
+
+/// **Two arenas over ONE buffer must be rejected** — they would silently alias.
+///
+/// Each region bumps from its own cursor starting at zero, so `region a in buf` and
+/// `region b in buf` both hand out `&buf[0]`: two logically distinct arenas
+/// returning overlapping cells, each write clobbering the other. Before this was
+/// caught, the program compiled and returned 40 instead of 30 — a silent wrong
+/// answer, and one that directly contradicts `freestanding_arena_alloc.lby`'s
+/// `two_cells`, which exists to assert distinct allocations do not alias.
+///
+/// This is the shape §5's per-CPU-pool motivation actively invites: an author who
+/// wants two bounded pools reaches for two regions. Separate pools need separate
+/// buffers.
+#[test]
+fn arena_two_regions_over_one_buffer_are_rejected() {
+    assert_check_rejected_with(
+        "tests/fixtures/invalid/no_runtime/arena_two_regions_one_buffer.lby",
+        "L0445",
+    );
 }

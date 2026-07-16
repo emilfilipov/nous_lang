@@ -38,7 +38,7 @@ mod runtime_os;
 
 pub use interpreter::{run_main, run_main_with_args, run_named_function};
 pub use raw_pointer::{
-    RAW_POINTER_BASE, RawPointerMemory, RawResolve, RootSlot, dangling_place, next_env_id,
+    RAW_POINTER_BASE, RawPointerMemory, RawResolve, RootSlot, arena_buffer_key, arena_cursor_key, dangling_place, next_env_id,
     unmapped_raw, unreachable_frame,
 };
 pub use runtime_concurrency::*;

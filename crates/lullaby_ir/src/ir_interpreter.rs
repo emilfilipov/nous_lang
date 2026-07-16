@@ -687,12 +687,6 @@ impl<'a> IrRuntime<'a> {
             "port_in8" | "port_in16" | "port_in32" | "port_out8" | "port_out16" | "port_out32" => {
                 Err(port_io_interpreter_error(name))
             }
-            // Static-buffer arenas are native-only: the interpreters' place-backed,
-            // typed-cell pointer model cannot reinterpret a caller's buffer as new
-            // typed cells. Refuse with `L0460` rather than hand back a pointer that
-            // would read and write the wrong storage. This arm serves BOTH the IR
-            // tree-walker and the bytecode VM (whose `VmOp::Call` routes here).
-            "arena_alloc" => Err(arena_interpreter_error(name)),
             "env" => Self::builtin_env(args),
             "os_random" => Self::builtin_os_random(args),
             "args" => self.builtin_args(args),
@@ -751,11 +745,6 @@ impl<'a> IrRuntime<'a> {
             // A region-creation marker has no runtime effect in the current
             // analysis-only region model.
             "region_create" => Ok(Value::Void),
-            // The static-buffer arena declaration marker (§5). Declaring an arena
-            // allocates nothing and reads nothing — it only names a buffer — so it
-            // is a genuine no-op here rather than a refusal. `arena_alloc`, the
-            // operation this model cannot express, is what refuses (`L0460`).
-            "arena_region" => Ok(Value::Void),
             _ => {
                 let function = *self.functions.get(name).ok_or_else(|| {
                     RuntimeError::new("L0401", format!("unknown function `{name}`"))
@@ -1436,13 +1425,17 @@ impl<'a> IrRuntime<'a> {
                 if name == "addr_of" && args.len() == 1 {
                     return self.eval_addr_of(&args[0], env);
                 }
-                // `arena_alloc(region, count)`: refuse BEFORE evaluating arguments.
-                // `region` is a compile-time region name rather than a value, so
-                // evaluating it would raise a misleading `L0403 unknown variable`
-                // instead of the honest "static-buffer arenas are native-only"
-                // (`L0460`). Serves both the IR tree-walker and the bytecode VM.
-                if name == "arena_alloc" {
-                    return Err(arena_interpreter_error(name));
+                // The static-buffer arena surface (freestanding tier §5). Both are
+                // special forms handled before ordinary argument evaluation, because
+                // their region operand is a compile-time region name rather than a
+                // value — evaluating it would raise a misleading `L0403 unknown
+                // variable`. Serves both the IR tree-walker and the bytecode VM,
+                // which share this dispatch.
+                if name == "arena_region" && args.len() == 2 {
+                    return self.eval_arena_region(&args[0], &args[1], env);
+                }
+                if name == "arena_alloc" && args.len() == 2 {
+                    return self.eval_arena_alloc(&args[0], &args[1], env);
                 }
                 let values = args
                     .iter()
@@ -1786,6 +1779,108 @@ impl<'a> IrRuntime<'a> {
     /// path and registered as a place-backed region, so reads and writes through the
     /// pointer reach the original storage and genuinely alias. See runtime
     /// `raw_pointer.rs`.
+    /// The `arena_region(name, buffer)` marker: open a static-buffer arena
+    /// (freestanding tier §5). Its whole state is two env bindings — a cell cursor
+    /// starting at zero and the backing buffer's name — so the arena inherits
+    /// exactly the frame and block lifetime the `region` declaration has. Declaring
+    /// an arena allocates nothing and reads nothing.
+    fn eval_arena_region(
+        &mut self,
+        region: &IrExpr,
+        buffer: &IrExpr,
+        env: &mut Env,
+    ) -> Result<Value, RuntimeError> {
+        let (IrExprKind::String(region), IrExprKind::String(buffer)) = (&region.kind, &buffer.kind)
+        else {
+            return Err(RuntimeError::new(
+                "L0445",
+                "`arena_region` takes the region and buffer names as string literals",
+            ));
+        };
+        env.define(arena_cursor_key(region), Value::I64(0));
+        env.define(
+            arena_buffer_key(region),
+            Value::String(buffer.clone().into()),
+        );
+        Ok(Value::Void)
+    }
+
+    /// `arena_alloc(region, count) -> ptr<T>`: bump `count` cells out of a
+    /// static-buffer arena and return a pointer to the first (freestanding tier §5).
+    ///
+    /// The IR/bytecode counterpart of the AST interpreter's `eval_arena_alloc`; see
+    /// that function for why this is ordinary place-backed addressing rather than a
+    /// new pointer model. In short: the arena bumps in whole 8-byte cells of an
+    /// `array<i64>`, so allocating is exactly `addr_of(buf[cursor])` over an element
+    /// the buffer already has — nothing is reinterpreted, and the pointer genuinely
+    /// aliases the buffer. The one genuinely unmodellable case, a pointer escaping
+    /// its buffer's frame, is not arena-specific and is already diagnosed by `L0459`
+    /// from the shared `addr_of` machinery this reuses.
+    fn eval_arena_alloc(
+        &mut self,
+        region: &IrExpr,
+        count: &IrExpr,
+        env: &mut Env,
+    ) -> Result<Value, RuntimeError> {
+        let IrExprKind::Variable(region) = &region.kind else {
+            return Err(RuntimeError::new(
+                "L0445",
+                "`arena_alloc` requires a static-buffer region name as its first operand",
+            ));
+        };
+        let buffer = env
+            .get_ref(&arena_buffer_key(region))
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "L0445",
+                    format!("`arena_alloc` names region `{region}`, which is not declared"),
+                )
+            })?
+            .as_string()?;
+        let cursor = env.get(&arena_cursor_key(region))?.as_i64()?;
+        let requested = self.eval_expr(count, env)?.as_i64()?;
+
+        let capacity = match env.get_ref(&buffer) {
+            Some(Value::Array(cells)) => cells.len() as i64,
+            _ => {
+                return Err(RuntimeError::new(
+                    "L0445",
+                    format!(
+                        "static-buffer arena `{region}` is backed by `{buffer}`, which is not a \
+                         fixed array in scope"
+                    ),
+                ));
+            }
+        };
+
+        // Overflow is a defined edge, not a wrap: a negative or absurd `count` must
+        // not bring the cursor back into range and hand out a pointer outside the
+        // buffer. The interpreter counterpart of the native `jc` + unsigned `ja`.
+        let end = cursor.checked_add(requested).filter(|end| *end >= cursor);
+        let Some(end) = end.filter(|end| *end <= capacity) else {
+            return Err(arena_overflow_error(region, requested, capacity - cursor));
+        };
+        env.assign(&arena_cursor_key(region), Value::I64(end))?;
+
+        let place = IrExpr {
+            kind: IrExprKind::Index {
+                target: Box::new(IrExpr {
+                    kind: IrExprKind::Variable(buffer),
+                    ty: TypeRef::new("array<i64>"),
+                    span: count.span,
+                }),
+                index: Box::new(IrExpr {
+                    kind: IrExprKind::Integer(cursor),
+                    ty: TypeRef::new("i64"),
+                    span: count.span,
+                }),
+            },
+            ty: TypeRef::new("i64"),
+            span: count.span,
+        };
+        self.eval_addr_of(&place, env)
+    }
+
     fn eval_addr_of(&mut self, arg: &IrExpr, env: &mut Env) -> Result<Value, RuntimeError> {
         let (name, mut path) = self.resolve_addr_of_path(arg, env)?;
         let root = env

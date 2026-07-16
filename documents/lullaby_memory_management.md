@@ -203,15 +203,26 @@ fn two_cells -> i64
   scalar is stored as a normalized 8-byte cell — the same reason `addr_of` is
   8-byte-only.
 - **Overflow is a defined, deterministic edge**: a bump past the buffer traps
-  (`ud2`), the same edge as an out-of-range index. It can never hand back a pointer
-  past the buffer's end. The pluggable panic handler
+  (`ud2`) natively and aborts with **`L0460`** on the interpreters — the same
+  relationship the array-bounds failure already has (`L0413` / `ud2`), and what
+  decision A5 requires: abort with a diagnostic, no unwinding. It can never hand
+  back a pointer past the buffer's end. The pluggable panic handler
   ([freestanding_tier_design.md](freestanding_tier_design.md) §8, undelivered) will
-  replace that trap with a call to the program's own `panic fn`.
-- **Native-only.** The interpreters refuse `arena_alloc` with **`L0460`**: their
-  place-backed, typed-cell pointer model cannot reinterpret a buffer's storage as
-  new typed cells, and a fabricated pointer would read and write the wrong storage.
-  A documented acceptance divergence, not a defect — native is the tier a kernel
-  targets.
+  route both edges to the program's own `panic fn`.
+- **Full four-tier parity.** An arena cell is an ordinary `array<i64>` element, so
+  `arena_alloc(r, n)` is `addr_of(buf[cursor])` plus an integer cursor — which every
+  tier defines. The interpreters reuse that same place-backed `addr_of` machinery, so
+  the pointer genuinely aliases the buffer.
+- **Two arenas over one buffer are rejected** (`L0445`). Each bumps from its own
+  cursor starting at zero, so they would hand out the *same* cells and silently
+  clobber each other. Separate bounded pools need separate buffers.
+- **Lifetime.** The arena's memory *is* the buffer, so a pointer into it is valid
+  exactly as long as the buffer's binding — its enclosing frame. Using one after
+  that frame returns is real undefined behaviour, precisely as the equivalent C is,
+  which is why the surface is `unsafe`-gated. Do not return an arena pointer from
+  the function that owns the buffer.
+- **Available in both tiers**, like `unsafe` and the raw-pointer builtins — it is
+  load-bearing for `no-runtime`, but a safe-tier function may use one too.
 
 Canonical design and as-built record:
 [freestanding_tier_design.md](freestanding_tier_design.md) §5 / §5.2; native

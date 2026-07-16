@@ -1354,7 +1354,19 @@ impl<'a> Runtime<'a> {
             // codegen + linking; the AST interpreter cannot execute it, so reject
             // it with `L0425` (like `extern`'s `L0423`) rather than no-op.
             Stmt::Asm { .. } => Err(asm_interpreter_error()),
-            // A region declaration is compile-time metadata; it has no runtime
+            // A **static-buffer arena** (`region N in buf`, freestanding tier §5)
+            // opens a real bump arena over the caller's buffer. Its whole state is
+            // two env bindings — a cell cursor starting at zero and the backing
+            // buffer's name — so the arena gets exactly the frame and block lifetime
+            // the declaration has, for free. See `arena_cursor_key` for why these
+            // keys cannot collide with a user binding.
+            Stmt::Region(decl) if decl.backing.is_some() => {
+                let backing = decl.backing.clone().unwrap_or_default();
+                env.define(arena_cursor_key(&decl.name), Value::I64(0));
+                env.define(arena_buffer_key(&decl.name), Value::String(backing.into()));
+                Ok(Control::Value(Value::Void))
+            }
+            // A metadata region declaration is compile-time only; it has no runtime
             // effect in the current analysis-only region model.
             Stmt::Region(_) => Ok(Control::Value(Value::Void)),
             Stmt::Throw { value, .. } => {

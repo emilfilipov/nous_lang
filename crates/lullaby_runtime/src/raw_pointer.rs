@@ -589,6 +589,28 @@ impl RawPointerMemory {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Freestanding static-buffer arenas (`documents/freestanding_tier_design.md` §5).
+// ---------------------------------------------------------------------------
+
+/// The env key holding a static-buffer arena's **bump cursor** (a cell index).
+///
+/// The space is deliberate and load-bearing: the lexer can never produce an
+/// identifier containing one, so these keys are collision-proof against any user
+/// binding **by construction** rather than by picking a name nobody is likely to
+/// write. Storing arena state as ordinary env bindings — rather than on the
+/// interpreter — gives it exactly the frame and block lifetime a `region`
+/// declaration has, for free.
+pub fn arena_cursor_key(region: &str) -> String {
+    format!("arena cursor {region}")
+}
+
+/// The env key holding the *name* of a static-buffer arena's backing buffer.
+/// See [`arena_cursor_key`] for why the space makes this collision-proof.
+pub fn arena_buffer_key(region: &str) -> String {
+    format!("arena buffer {region}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

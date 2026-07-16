@@ -15,7 +15,7 @@ use lullaby_runtime::{
     ArithOp, Closure, EnumValue, Future, IntKind, MEMORY_ORDER_VARIANTS, OverflowMode,
     ProcessResource, RawPointerMemory, RawResolve, ResolvedPlace, RootSlot, RuntimeError,
     SharedAtomic, SharedMutex, SocketResource, StructValue, Task, Value, apply_compound,
-    arena_interpreter_error,
+    arena_buffer_key, arena_cursor_key, arena_overflow_error,
     asm_interpreter_error, await_future, builtin_atomic_add_ordered, builtin_atomic_and_ordered,
     builtin_atomic_cas_ordered, builtin_atomic_load_ordered, builtin_atomic_or_ordered,
     builtin_atomic_store_ordered, builtin_atomic_sub_ordered, builtin_atomic_swap_ordered,

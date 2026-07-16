@@ -1055,11 +1055,7 @@ impl<'a> Runtime<'a> {
             "port_in8" | "port_in16" | "port_in32" | "port_out8" | "port_out16" | "port_out32" => {
                 Err(port_io_interpreter_error(name))
             }
-            // Static-buffer arenas are native-only: the interpreters' place-backed,
-            // typed-cell pointer model cannot reinterpret a caller's buffer as new
-            // typed cells. Refuse with `L0460` rather than hand back a pointer that
-            // would read and write the wrong storage.
-            "arena_alloc" => Err(arena_interpreter_error(name)),
+
             "env" => Self::builtin_env(args),
             "os_random" => Self::builtin_os_random(args),
             "args" => self.builtin_args(args),

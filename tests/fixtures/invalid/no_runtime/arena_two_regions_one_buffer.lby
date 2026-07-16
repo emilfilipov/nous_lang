@@ -1,0 +1,22 @@
+# L0445: two arenas over ONE buffer would silently ALIAS.
+#
+# Each region gets its own bump cursor starting at zero, so `a` and `b` below
+# both hand out `&buf[0]`: two logically distinct arenas returning overlapping
+# cells, each write clobbering the other. Before this was rejected, the program
+# compiled and returned 40 instead of 30 — a silent wrong answer.
+#
+# This is exactly the shape §5's per-CPU-pool motivation invites: an author who
+# wants two bounded pools reaches for two regions. Separate pools need separate
+# buffers.
+no-runtime
+
+fn main -> i64
+    let buf array<i64> = [0, 0, 0, 0]
+    region a in buf
+    region b in buf
+    unsafe
+        let p ptr<i64> = arena_alloc(a, 1)
+        let q ptr<i64> = arena_alloc(b, 1)
+        ptr_write(p, 10)
+        ptr_write(q, 20)
+        ptr_read(p) + ptr_read(q)

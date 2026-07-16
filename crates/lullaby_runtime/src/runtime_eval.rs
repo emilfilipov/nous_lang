@@ -203,16 +203,12 @@ impl<'a> Runtime<'a> {
                 if name == "addr_of" && args.len() == 1 {
                     return self.eval_addr_of(&args[0], env);
                 }
-                // `arena_alloc(region, count)` is likewise a special form, and is
-                // refused here — BEFORE argument evaluation — for two reasons.
-                // First, `region` names a compile-time `region <name> in <buffer>`
-                // declaration, not a value, so evaluating it would raise a
-                // misleading `L0403 unknown variable` that reads like a bug in the
-                // user's program. Second, and the real point: a static-buffer arena
-                // is native-only (see `arena_interpreter_error`), so the honest
-                // answer is the refusal itself, not an accident of evaluation order.
-                if name == "arena_alloc" {
-                    return Err(arena_interpreter_error(name));
+                // `arena_alloc(region, count)` is likewise a special form: `region`
+                // names a compile-time `region <name> in <buffer>` declaration, not
+                // a value, so ordinary argument evaluation would look it up as a
+                // local and raise a misleading `L0403 unknown variable`.
+                if name == "arena_alloc" && args.len() == 2 {
+                    return self.eval_arena_alloc(&args[0], &args[1], env);
                 }
                 let values = args
                     .iter()
@@ -909,6 +905,97 @@ impl<'a> Runtime<'a> {
     }
 
     /// Decompose an `addr_of` argument into its root binding name and the
+    /// `arena_alloc(region, count) -> ptr<T>`: bump `count` cells out of a
+    /// static-buffer arena and return a pointer to the first
+    /// (`documents/freestanding_tier_design.md` §5).
+    ///
+    /// # Why this is ordinary place-backed addressing, not a new pointer model
+    ///
+    /// The arena bumps in whole **8-byte cells of an `array<i64>`** — the buffer's
+    /// own element type. So there is nothing to *reinterpret*: allocating a cell is
+    /// exactly taking the address of an element the buffer already has. This
+    /// reduces to `addr_of(buf[cursor])` plus an integer cursor, and the
+    /// interpreters define both halves already. The pointer it returns is the same
+    /// place-backed pointer `addr_of(buf[i])` returns, and genuinely aliases the
+    /// buffer.
+    ///
+    /// That is why the arena is **not** refused here. An earlier version of this
+    /// increment refused it on all three interpreters, arguing their typed-cell
+    /// model could not reinterpret a buffer's storage. Once the design settled on
+    /// cell-granular bumping over `array<i64>`, that argument was simply false —
+    /// there was no reinterpretation left to be unable to do. Refusing would have
+    /// been work not done dressed as a limitation.
+    ///
+    /// The genuinely unmodellable case — a pointer escaping the frame that owns the
+    /// buffer — is not special to arenas and is already diagnosed by `L0459` from
+    /// the shared `addr_of` machinery, which this reuses wholesale.
+    fn eval_arena_alloc(
+        &mut self,
+        region: &Expr,
+        count: &Expr,
+        env: &mut Env,
+    ) -> Result<Value, RuntimeError> {
+        let ExprKind::Variable(region) = &region.kind else {
+            return Err(RuntimeError::new(
+                "L0445",
+                "`arena_alloc` requires a static-buffer region name as its first operand",
+            ));
+        };
+        let buffer = env
+            .get_ref(&arena_buffer_key(region))
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "L0445",
+                    format!("`arena_alloc` names region `{region}`, which is not declared"),
+                )
+            })?
+            .as_string()?;
+        let cursor = env.get(&arena_cursor_key(region))?.as_i64()?;
+        let requested = self.eval_expr(count, env)?.as_i64()?;
+
+        // The buffer's extent. Reading it through the env keeps this honest for a
+        // buffer whose length is only known at run time.
+        let capacity = match env.get_ref(&buffer) {
+            Some(Value::Array(cells)) => cells.len() as i64,
+            _ => {
+                return Err(RuntimeError::new(
+                    "L0445",
+                    format!(
+                        "static-buffer arena `{region}` is backed by `{buffer}`, which is not a \
+                         fixed array in scope"
+                    ),
+                ));
+            }
+        };
+
+        // Overflow is a defined edge, not a wrap. A negative or absurd `count` must
+        // not be able to bring the cursor back into range and hand out a pointer
+        // outside the buffer, so the sum is checked rather than wrapped — the
+        // interpreter counterpart of the native `jc` + unsigned `ja`.
+        let end = cursor.checked_add(requested).filter(|end| *end >= cursor);
+        let Some(end) = end.filter(|end| *end <= capacity) else {
+            return Err(arena_overflow_error(region, requested, capacity - cursor));
+        };
+        env.assign(&arena_cursor_key(region), Value::I64(end))?;
+
+        // `&buffer[cursor]` — the same place-backed pointer `addr_of(buf[cursor])`
+        // yields, so it aliases the buffer exactly as the native `lea` does.
+        let place = Expr {
+            kind: ExprKind::Index {
+                target: Box::new(Expr {
+                    kind: ExprKind::Variable(buffer),
+                    span: count.span,
+                }),
+                index: Box::new(Expr {
+                    kind: ExprKind::Integer(cursor),
+                    span: count.span,
+                }),
+            },
+            span: count.span,
+        };
+        self.eval_addr_of(&place, env)
+    }
+
     /// [`ResolvedPlace`] path beneath it (`s.f`, `a[i]`, `s.a[i].f`, …). Index
     /// expressions are evaluated here, exactly as ordinary assignment resolves them.
     /// Anything that is not rooted in a binding is not addressable — the checker

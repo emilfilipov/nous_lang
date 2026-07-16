@@ -109,6 +109,32 @@ impl Checker<'_> {
             ));
             return;
         }
+        // Two arenas over ONE buffer would silently ALIAS. Each region gets its own
+        // bump cursor starting at zero, so `region a in buf` and `region b in buf`
+        // both hand out `&buf[0]` — two logically distinct arenas returning
+        // overlapping cells, with every write through one clobbering the other. That
+        // is a silent wrong answer, and it is exactly the shape §5's per-CPU-pool
+        // motivation invites an author to reach for. Separate pools need separate
+        // buffers; reject rather than corrupt.
+        if let Some((existing, _)) = self
+            .arena_regions
+            .iter()
+            .find(|(_, buffer)| buffer.as_str() == backing)
+        {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0445",
+                format!(
+                    "region `{}` is backed by `{backing}`, which already backs region \
+                     `{existing}`: two arenas over one buffer each bump from their own cursor, \
+                     so they would hand out the SAME cells and silently clobber each other. \
+                     Give each arena its own buffer",
+                    decl.name
+                ),
+                Some(function.name.clone()),
+                decl.span,
+            ));
+            return;
+        }
         if !self.region_names.insert(decl.name.clone()) {
             self.diagnostics.push(SemanticDiagnostic::at(
                 "L0445",

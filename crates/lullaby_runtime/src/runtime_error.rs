@@ -125,35 +125,37 @@ pub fn port_io_interpreter_error(name: &str) -> RuntimeError {
     )
 }
 
-/// The refusal every interpreter raises for a freestanding **static-buffer arena**
-/// allocation (`documents/freestanding_tier_design.md` §5).
+/// A freestanding **static-buffer arena** allocation overflowed its backing buffer
+/// (`documents/freestanding_tier_design.md` §5).
 ///
-/// A static-buffer arena hands out a `ptr<T>` into raw bytes carved from a
-/// caller-owned buffer. That is precisely the one thing the interpreters' pointer
-/// model cannot express: it addresses **typed cells via a stride** and is
-/// *place-backed* (each pointer names an existing binding and a path to it), so it
-/// has no way to reinterpret a buffer's storage as freshly-typed cells, and no way
-/// to carry the resulting pointer across the frames an arena is naturally passed
-/// through (the same wall `L0459` describes). Bump arithmetic alone could be
-/// faked — but a faked pointer that reads and writes the *wrong storage* is a
-/// silent wrong answer, which is exactly what this model exists to prevent.
+/// An arena never grows and never calls an allocator — its memory is the caller's
+/// fixed buffer — so a bump past the end has to go somewhere defined. This is the
+/// interpreters' half of that edge; natively it is a `ud2` trap. Both terminate
+/// without producing a value, which is the same relationship the delivered
+/// array-bounds failure already has (`L0413` on the interpreters, `ud2` natively),
+/// and it is what decision **A5** requires: abort with a diagnostic, no unwinding.
 ///
-/// So the arena is **native-only** and the interpreters refuse it, deliberately
-/// mirroring `port_io_interpreter_error`/`L0444`: a documented acceptance
-/// divergence, not a defect. Native is the tier a kernel targets, and `check`
-/// still fully validates the arena (`L0445`, the `unsafe` gate `L0330`) — only
-/// *execution* is native-only.
-pub fn arena_interpreter_error(name: &str) -> RuntimeError {
+/// §8's pluggable panic handler will route both edges to the program's own
+/// `panic fn` with `kind = arena_overflow`.
+///
+/// **This code used to mean something else.** Until the arena was implemented on
+/// the interpreters, `L0460` was a blanket refusal — "a static-buffer arena cannot
+/// run here at all". That justification did not survive scrutiny: because the arena
+/// bumps in whole 8-byte cells of an `array<i64>`, `arena_alloc(r, n)` is exactly
+/// `addr_of(buf[cursor])` plus an integer cursor, and the interpreters define both
+/// halves. There was nothing to reinterpret and therefore nothing to refuse. The
+/// refusal was work not done, not an honest limitation, so it was replaced by a
+/// real implementation and the code retargeted to the failure that genuinely
+/// exists.
+pub fn arena_overflow_error(region: &str, requested: i64, remaining: i64) -> RuntimeError {
     RuntimeError::new(
         "L0460",
         format!(
-            "cannot execute the static-buffer arena builtin `{name}` on an interpreter: an arena \
-             carves raw storage out of a caller-owned buffer and hands back a `ptr<T>` into it, \
-             but the interpreters address typed cells through a place-backed pointer model that \
-             cannot reinterpret a buffer's storage as new typed cells — a fabricated pointer \
-             would silently read and write the wrong storage. Compile with `lullaby native \
-             --freestanding` to run the real bump allocator; the resulting image is meant for a \
-             kernel/bootloader, not a hosted interpreter run"
+            "static-buffer arena `{region}` overflowed: requested {requested} cell(s) but only \
+             {remaining} remain in its backing buffer. An arena never grows and never calls an \
+             allocator — its memory is the fixed buffer you gave it — so this allocation has \
+             nowhere to come from. Give the buffer more cells, or allocate less from it \
+             (natively this same edge traps with `ud2`)"
         ),
     )
 }

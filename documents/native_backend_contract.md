@@ -1914,7 +1914,7 @@ names, so a function using one fails their `callable` lookup and skips cleanly
 a program then falls back to an interpreter, which raises the same `L0444`. The
 chain is honest end to end: no target ever invents a port value.
 
-## Static-Buffer Arenas (Freestanding Tier) (DELIVERED, native-only, runs)
+## Static-Buffer Arenas (Freestanding Tier) (DELIVERED, runs, full four-tier parity)
 
 `region <name> in <buffer>` + `arena_alloc(region, count) -> ptr<T>` give a
 `no-runtime` module its first **bounded, allocator-free storage**. Until this
@@ -1993,16 +1993,26 @@ So **no conservative exclusion was needed and none was made**. A function with n
 arena has an empty `arena_buffers` and emits byte-identical code, which is why the
 escape-analysis fuzzers stay green.
 
-### Acceptance divergence: native runs it, the interpreters refuse it
+### Parity: all four tiers, and no divergence of its own
 
-All three interpreters refuse `arena_alloc` with **`L0460`** rather than approximate
-it. Their pointer model addresses **typed cells through a place-backed pointer**
-(each names an existing binding plus a path to it — see `L0459`), so it cannot
-reinterpret a buffer's storage as freshly-typed cells, nor carry the pointer across
-the frames an arena is naturally passed through. The bump arithmetic could be faked,
-but a faked pointer reads and writes the *wrong storage* — a silent wrong answer.
-**No parity is claimed**, exactly as with port I/O (`L0444`). `check` still fully
-validates the arena (`L0445`, `L0330`), so only *execution* is native-only.
+The arena runs on the AST, IR, and bytecode interpreters too, agreeing with native
+on every program. There is nothing here that only native can express: because the
+bump unit is a whole 8-byte cell of an `array<i64>`, an arena cell **is** an ordinary
+buffer element, so `arena_alloc(r, n)` reduces to `addr_of(buf[cursor])` plus an
+integer cursor — both of which every tier already defines. The interpreters
+implement it by reusing that same place-backed `addr_of` machinery, so the pointer
+they return genuinely aliases the buffer exactly as the native `lea` does.
+
+The overflow edge is the one place the tiers *look* different and are not: natively
+`ud2`, on the interpreters `L0460`. Both terminate without producing a value — the
+same relationship the delivered array-bounds failure already has (`L0413` /`ud2`),
+and what decision **A5** requires.
+
+The only genuinely unmodellable case is a pointer **escaping the frame that owns its
+buffer**, which the interpreters refuse with `L0459` — the pre-existing `addr_of`
+divergence documented above, inherited rather than added. Natively that is real
+undefined behaviour, precisely as the equivalent C is (an arena pointer is valid
+exactly as long as its buffer's binding); it is `unsafe`-gated for that reason.
 
 ### Verification
 
@@ -2010,10 +2020,13 @@ validates the arena (`L0445`, `L0330`), so only *execution* is native-only.
 `lullaby native --freestanding` to a real direct-PE exe (no linker) and **runs,
 exiting 109**: `two_cells` (42 — distinct allocations do not alias), `loop_sum` (60
 — the arena composes with a loop), `block` (7 — a multi-cell request walked with
-`ptr_offset`). `freestanding_arena_overflow.lby` traps as above. Tests in
+`ptr_offset`) — and the three interpreters produce `109` too.
+`freestanding_arena_overflow.lby` traps as above. **Two arenas over one buffer are
+rejected at compile time** (`L0445`): each bumps from its own zeroed cursor, so they
+would hand out the same cells and silently clobber each other. Tests in
 `crates/lullaby_cli/tests/cli/suite15.rs`; fuzzer in
-`crates/lullaby_cli/tests/cli/fuzz_arena.rs` (a *value* oracle, since there is no
-second engine to differ with; teeth measured by two reverted bug injections).
+`crates/lullaby_cli/tests/cli/fuzz_arena.rs` (both a cross-engine *differential* and
+a *value* oracle; teeth measured by two reverted bug injections).
 
 ---
 
