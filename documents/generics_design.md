@@ -2,10 +2,24 @@
 
 Canonical language rules: see [core_language_rules.md](core_language_rules.md).
 
-**Status:** Design spike (implementation strategy, NOT implementation). Requested
-for **road_to_1_0_stable A1** — owner DECIDED (2026-07-15) that user-defined
-generic types ship in 1.0. This document is the buildable plan; it does not edit
-any `.rs`.
+**Status:** Design spike (implementation strategy). Requested for
+**road_to_1_0_stable A1** — owner DECIDED (2026-07-15) that user-defined generic
+types ship in 1.0.
+
+**Implementation status (A1 codegen, per-backend monomorphization delivered):**
+- **Native x86-64:** monomorphizes user generic `struct`/`enum` instantiations with
+  scalar or one-level `string` type arguments (`Box<i64>`, `Pair<string, i64>`,
+  `Opt<string>`, `Either<i64, bool>`); see the native monomorphization bullet in
+  [native_backend_contract.md](native_backend_contract.md).
+- **WASM:** **at A1 parity with native** (delivered) — `crates/lullaby_ir/src/wasm_generics.rs`
+  monomorphizes the same scalar + one-level-`string` subset and registers each
+  concrete layout into the WASM `structs`/`enums` tables so the existing linear-
+  memory machinery (construction, field/payload read, value-semantic deep copy,
+  `match`, by-pointer boundary) lays it out byte-identically to a hand-written
+  concrete type. Deeper-than-one-level heap shapes (`Box<list<i64>>`, recursive
+  `Tree<T>` through `list<Tree<T>>`) and generic **methods** are deferred cleanly
+  (`L0338`), matching native's boundary exactly. See
+  [wasm_backend_design.md](wasm_backend_design.md).
 
 **Scope.** How `struct Stack<T>` / `enum Opt<T>` should parse, type-check, lower,
 and reclaim across Lullaby's five execution paths (AST tree-walker, IR
@@ -470,6 +484,19 @@ so the collection pass terminates (§3.5).
   needs a concept of a type variable.**
 - `enum_ctor_name` / `is_enum_type_name` (which already split on `<`) generalize to
   user generic enums via the mangled concrete names.
+- **WASM, as delivered** (`wasm_generics.rs::expand_generic_instantiations`): rather
+  than mangling to a synthetic name, each reachable instantiation is monomorphized by
+  substituting the declared type parameters with the instantiation's concrete
+  arguments (`substitute_type`) and **registered under its full spelling** (`Box<i64>`,
+  `Opt<string>`) into the WASM `structs`/`enums` tables. Every downstream WASM path
+  already keys layout off the concrete type spelling, so the instantiation becomes a
+  first-class concrete type with no further changes. Construction nodes carry the BASE
+  type (`Box(5)` is typed `Box`, `present(n)` is typed `Opt`), so struct construction
+  takes each field's slot type from the ARGUMENT type and generic-enum construction
+  builds the record shape from the base declaration's (type-parameter-independent)
+  variant arities — see `generic_enum_construction_layout`. A default-deny gate
+  registers only scalar-only / one-level-`string` layouts, so deeper heap shapes stay
+  unresolvable and their functions skip (`L0338`), matching native exactly.
 
 ---
 

@@ -332,7 +332,11 @@ pub(crate) fn lower_expr(
                 return Ok(());
             }
             // A call whose name is a declared struct is a struct construction: the
-            // IR lowerer emits struct literals as positional `Call`s.
+            // IR lowerer emits struct literals as positional `Call`s. For a generic
+            // instantiation the call name is the struct's BASE name (`Box`) and the
+            // construction node carries the base type too (`Box`, not `Box<i64>`), so
+            // the concrete field types are taken from the ARGUMENT types inside
+            // `lower_struct_construction` (see there).
             if ctx.structs.contains_key(name) {
                 return lower_struct_construction(ctx, name, args, out);
             }
@@ -344,6 +348,18 @@ pub(crate) fn lower_expr(
             if let Some(layout) = ctx.enum_layout(&expr.ty)
                 && layout.tag_of(name).is_some()
             {
+                return lower_enum_construction(ctx, &layout, name, args, out);
+            }
+            // A GENERIC enum construction (`present(x)`/`absent` for `Opt<T>`): the
+            // construction node carries the BASE enum type (`Opt`), whose variant
+            // payloads are unresolved type parameters, so `enum_layout` above cannot
+            // resolve it. Build the record shape from the base declaration — the
+            // variant order (tags) and the payload arity (record slot count) are
+            // type-parameter-independent, so they equal the registered
+            // monomorphized instantiation's — and take the constructed variant's
+            // payload slot types from the ARGUMENT types (concrete). This is the
+            // enum analogue of the generic struct construction above.
+            if let Some(layout) = generic_enum_construction_layout(ctx, &expr.ty, name, args) {
                 return lower_enum_construction(ctx, &layout, name, args, out);
             }
             let index = *ctx.func_index.get(name).ok_or_else(|| {
@@ -718,7 +734,17 @@ pub(crate) fn lower_struct_construction(
     }
     let ptr = alloc_bytes(ctx, fields.len() as i32 * SLOT_SIZE, out);
     for (slot, ((_, field_ty), arg)) in fields.iter().zip(args).enumerate() {
+        // The slot's value type is the declared field type when it resolves, but for
+        // a GENERIC struct's base declaration the field type is an unresolved type
+        // parameter (`Box<T>`'s `value T`) — the construction node carries the base
+        // type, so the concrete monomorphized field type is not on this expression.
+        // In that case take the slot type from the ARGUMENT's own (concrete) type,
+        // which IS the value being stored and equals the monomorphized field type
+        // the field-read/`match`/copy paths use for the registered instantiation. For
+        // a non-generic struct `field_ty` resolves and equals `arg.ty`, so this is
+        // byte-identical to before.
         let slot_ty = slot_val_type(field_ty, ctx.structs, ctx.enums)
+            .or_else(|| slot_val_type(&arg.ty, ctx.structs, ctx.enums))
             .ok_or_else(|| format!("struct `{name}` field has unsupported type"))?;
         get_local(out, ptr); // base pointer
         lower_expr(ctx, arg, out)?; // field value
@@ -726,6 +752,40 @@ pub(crate) fn lower_struct_construction(
     }
     get_local(out, ptr);
     Ok(())
+}
+
+/// Build the [`EnumLayout`] for a GENERIC enum construction whose node carries the
+/// BASE enum type (`Opt` for an `Opt<T>` instantiation), or `None` if `ty` is not a
+/// declared generic enum with `variant`. The variant order (discriminant tags) and
+/// each variant's payload ARITY come from the base declaration and are
+/// type-parameter-independent, so the record's slot count matches the registered
+/// monomorphized instantiation exactly. The CONSTRUCTED variant's payload types are
+/// taken from the argument types (concrete), so [`lower_enum_construction`] resolves
+/// its slot value types; the other variants' unresolved-`T` payloads are never type-
+/// resolved during construction (only their arity is read via `build_layout`).
+fn generic_enum_construction_layout(
+    ctx: &LowerCtx,
+    ty: &TypeRef,
+    variant: &str,
+    args: &[IrExpr],
+) -> Option<EnumLayout> {
+    let def = ctx.enums.get(&ty.name)?;
+    if def.type_params.is_empty() || !def.variants.iter().any(|v| v.name == variant) {
+        return None;
+    }
+    let variants: Vec<(String, Vec<TypeRef>)> = def
+        .variants
+        .iter()
+        .map(|v| {
+            let payload = if v.name == variant {
+                args.iter().map(|a| a.ty.clone()).collect()
+            } else {
+                v.payload.clone()
+            };
+            (v.name.clone(), payload)
+        })
+        .collect();
+    Some(build_layout(variants))
 }
 
 /// Lower an enum construction (`some(x)`/`none`/`ok(x)`/`err(e)` or a user

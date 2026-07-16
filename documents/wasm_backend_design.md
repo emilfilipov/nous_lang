@@ -274,6 +274,63 @@ collection elements/values (landed)** below. (`string` **elements** of a
 compile.) Functions using any deferred construct are skipped with a reason and
 still run on the interpreters.
 
+### User generic types — monomorphization (landed, A1 parity with native)
+
+A user-defined generic `struct`/`enum` instantiated with **scalar** type arguments
+(`Box<i64>`, `Pair<i64, bool>`, `Opt<i64>`, `Either<i64, bool>`) **or with a
+one-level `string` type argument** (`Box<string>`, `Pair<string, i64>`,
+`Opt<string>`, `Either<i64, string>`) is **monomorphized** to a concrete linear-
+memory layout and compiled to WASM — bringing the WASM backend to A1 parity with the
+native backend. Lives in `crates/lullaby_ir/src/wasm_generics.rs`
+(`expand_generic_instantiations`), run by `emit_wasm_module` right after the
+`structs`/`enums` tables are built.
+
+- **How it works.** Every reachable user-generic instantiation is collected from the
+  module's signatures and bodies (a worklist that recurses through nested generic
+  arguments and through substituted fields, so `Box<Pair<i64, bool>>` and a
+  `Wrap<T> { inner Box<T> }` both reach their sub-instantiations). The declared type
+  parameters are substituted with the instantiation's concrete arguments (the
+  semantic `substitute_type`), and the resulting concrete `struct`/`enum` is
+  **registered into the `structs`/`enums` tables under its full spelling** (`Box<i64>`,
+  `Opt<string>`). Because every downstream classification/layout path (`is_pointer_type`,
+  `slot_val_type`, `enum_layout`, `struct_field_slot`, the deep-copy and `match`
+  paths) already keys off the concrete type spelling, the instantiation becomes a
+  first-class concrete type with no other change — a monomorphized `Box<string>` has
+  the byte-identical layout to a hand-written `struct { value string }` (one immutable-
+  `string` pointer word, **shared** on the value-semantic copy), so the whole existing
+  string-field / scalar-aggregate / string-payload-enum machinery applies unchanged.
+- **Construction.** Constructor nodes carry the BASE type, not the instantiation
+  (`Box(5)` is typed `Box`, `present(n)` is typed `Opt`), so the concrete type
+  arguments are not on the expression. Struct construction therefore takes each
+  field's slot value type from the **argument's own (concrete) type**; generic-enum
+  construction builds the record shape from the base declaration's variant order and
+  arities (both type-parameter-independent, so the record size matches the registered
+  instantiation) and takes the constructed variant's payload slot types from the
+  argument types (`generic_enum_construction_layout`). Field/payload read, `match`,
+  value-semantic copy, and the by-pointer call boundary all use the registered
+  concrete spelling and need no special-casing.
+- **Default-deny scope gate (matches native's boundary exactly).** An instantiation is
+  registered only when its monomorphized layout is scalar-only OR scalars plus one-
+  level immutable `string` words. A DEEPER heap shape is left unregistered so its
+  spelling stays unresolvable and the enclosing function skips cleanly (`L0338`),
+  never miscompiled: a mutable heap field/payload (`Box<list<i64>>`, `Stack<i64>`'s
+  `list<i64>`), a recursion-through-indirection generic enum (`Tree<T>` via
+  `list<Tree<T>>`), a nested heap-carrying aggregate, or a two-level `string` nesting.
+- **Generic methods are deferred** (skip cleanly). An inherent-`impl` method call on a
+  generic type lowers to an unknown function and the calling function is skipped —
+  matching native, where inherent methods on generic types are also ineligible. A
+  PLAIN generic function is unaffected (`multi_param`'s `fold`, a `match` over
+  `Either<i64, string>`, compiles).
+- **Verification.** `wasm_tests.rs` proves the monomorphized code section is
+  **byte-identical** to the equivalent hand-written concrete type
+  (`monomorphized_*_matches_handwritten_bytes`) — since the hand-written path is
+  already verified against the interpreters and native, this proves result-parity by
+  construction. Fixtures `native_generic_scalar.lby`, `native_generic_heap_string.lby`
+  (interpreter result 63), `generics/box_pair.lby`, and `generics/opt_res.lby`
+  (interpreter result 141) compile with no function skipped; `generics/tree_indirection.lby`
+  and a `Box<list<i64>>` probe defer with `L0338`. Purely additive — a module without
+  generics leaves both tables untouched, so non-generic output is byte-identical.
+
 ### Growable `list<T>` — scalar and `string` elements (landed)
 
 The growable, value-semantic `list<T>` collection compiles to linear memory for

@@ -1651,3 +1651,240 @@ fn f64_min_max_sign_clamp_are_deferred() {
     let err = emit_wasm_module(&module_for(clamp_src)).expect_err("f64 clamp deferred");
     assert_eq!(err.code, "L0338");
 }
+
+// -- User generic type monomorphization (A1 parity with native) --------------
+//
+// A user-defined generic `struct`/`enum` instantiated with scalar or one-level
+// `string` type arguments is monomorphized to a concrete WASM layout that is
+// BYTE-IDENTICAL to the equivalent hand-written concrete type. Because the
+// hand-written string-field struct / scalar aggregate / string-payload enum paths
+// are already verified against the interpreters (and the native backend), a
+// byte-for-byte match of the emitted CODE section proves the monomorphized codegen
+// is result-identical by construction. Deeper-than-one-level heap instantiations
+// are deferred cleanly (`L0338`), matching native's boundary exactly.
+
+/// Read a `tests/fixtures/valid/...` fixture and lower it through the shared
+/// lex/parse/validate/lower pipeline used by [`module_for`].
+fn fixture_module(rel: &str) -> IrModule {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/valid")
+        .join(rel);
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+    module_for(&source)
+}
+
+/// The interpreter's `main` result as an `i64` (the ground truth every backend
+/// must match).
+fn interp_i64(module: &IrModule) -> i64 {
+    match crate::run_main(module).expect("ir interpreter run") {
+        lullaby_runtime::Value::I64(v) => v,
+        other => panic!("expected i64 result, got {other:?}"),
+    }
+}
+
+#[test]
+fn monomorphized_scalar_generic_struct_matches_handwritten_bytes() {
+    // `Box<i64>` monomorphizes to the same one-i64-field layout a hand-written
+    // `struct BoxI64 { value i64 }` uses; field read emits identical code.
+    let generic = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "fn box_get b Box<i64> -> i64\n    b.value\n",
+    );
+    let mono = concat!(
+        "struct BoxI64\n    value i64\n\n",
+        "fn box_get b BoxI64 -> i64\n    b.value\n",
+    );
+    let g = emit_wasm_module(&module_for(generic)).expect("generic emit");
+    let m = emit_wasm_module(&module_for(mono)).expect("mono emit");
+    assert_eq!(g.compiled, vec!["box_get".to_string()]);
+    assert!(g.skipped.is_empty(), "no generic function skipped");
+    assert_eq!(
+        section_body(&g.bytes, 10),
+        section_body(&m.bytes, 10),
+        "monomorphized Box<i64> code section is byte-identical to hand-written"
+    );
+}
+
+#[test]
+fn monomorphized_string_field_generic_matches_handwritten_bytes() {
+    // `Box<string>` monomorphizes to a single immutable-`string` pointer word,
+    // shared on the value-semantic copy — identical to a hand-written string-field
+    // struct. The field read (`len(b.value)`) emits identical code.
+    let generic = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "fn box_len b Box<string> -> i64\n    len(b.value)\n",
+    );
+    let mono = concat!(
+        "struct BoxS\n    value string\n\n",
+        "fn box_len b BoxS -> i64\n    len(b.value)\n",
+    );
+    let g = emit_wasm_module(&module_for(generic)).expect("generic emit");
+    let m = emit_wasm_module(&module_for(mono)).expect("mono emit");
+    assert_eq!(g.compiled, vec!["box_len".to_string()]);
+    assert!(g.skipped.is_empty());
+    assert_eq!(
+        section_body(&g.bytes, 10),
+        section_body(&m.bytes, 10),
+        "monomorphized Box<string> code section is byte-identical to hand-written"
+    );
+}
+
+#[test]
+fn monomorphized_generic_enum_match_matches_handwritten_bytes() {
+    // `Opt<string>` monomorphizes to a string-payload enum; `match` over it emits
+    // the same tag-dispatch + payload-load code as a hand-written enum.
+    let generic = concat!(
+        "enum Opt<T>\n    present T\n    absent\n\n",
+        "fn opt_len o Opt<string> f i64 -> i64\n",
+        "    match o\n        present(s) -> len(s)\n        absent -> f\n",
+    );
+    let mono = concat!(
+        "enum OptS\n    present string\n    absent\n\n",
+        "fn opt_len o OptS f i64 -> i64\n",
+        "    match o\n        present(s) -> len(s)\n        absent -> f\n",
+    );
+    let g = emit_wasm_module(&module_for(generic)).expect("generic emit");
+    let m = emit_wasm_module(&module_for(mono)).expect("mono emit");
+    assert_eq!(g.compiled, vec!["opt_len".to_string()]);
+    assert!(g.skipped.is_empty());
+    assert_eq!(
+        section_body(&g.bytes, 10),
+        section_body(&m.bytes, 10),
+        "monomorphized Opt<string> code section is byte-identical to hand-written"
+    );
+}
+
+#[test]
+fn monomorphized_construction_matches_handwritten_bytes() {
+    // A generic construction `Box(5)` (call name is the BASE `Box`, concrete type
+    // `Box<i64>`) allocates + stores exactly like a hand-written `BoxI64(5)`.
+    let generic = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "fn make -> i64\n    let b Box<i64> = Box(5)\n    b.value\n",
+    );
+    let mono = concat!(
+        "struct BoxI64\n    value i64\n\n",
+        "fn make -> i64\n    let b BoxI64 = BoxI64(5)\n    b.value\n",
+    );
+    let g = emit_wasm_module(&module_for(generic)).expect("generic emit");
+    let m = emit_wasm_module(&module_for(mono)).expect("mono emit");
+    assert_eq!(
+        section_body(&g.bytes, 10),
+        section_body(&m.bytes, 10),
+        "monomorphized construction is byte-identical to hand-written"
+    );
+}
+
+#[test]
+fn wasm_compiles_native_generic_scalar_fixture() {
+    // Every generic instantiation is scalar-only, so every function compiles.
+    let module = fixture_module("native_generic_scalar.lby");
+    let artifact = emit_wasm_module(&module).expect("scalar generics compile");
+    assert!(
+        artifact.skipped.is_empty(),
+        "no scalar-generic function skipped: {:?}",
+        artifact.skipped
+    );
+    for f in [
+        "unbox",
+        "rewrap",
+        "pair_score",
+        "opt_or",
+        "flag_or",
+        "either_to_i",
+        "f64box_hit",
+        "main",
+    ] {
+        assert!(artifact.compiled.iter().any(|n| n == f), "{f} compiled");
+    }
+    // Ground truth: the interpreter's `main` result.
+    assert_eq!(interp_i64(&module), 219);
+}
+
+#[test]
+fn wasm_compiles_native_generic_heap_string_fixture() {
+    // `Box<string>`/`Pair<string, i64>`/`Opt<string>` are one-level `string`
+    // instantiations — all compile. Documented result is 63.
+    let module = fixture_module("native_generic_heap_string.lby");
+    let artifact = emit_wasm_module(&module).expect("heap-string generics compile");
+    assert!(
+        artifact.skipped.is_empty(),
+        "no heap-string generic function skipped: {:?}",
+        artifact.skipped
+    );
+    for f in ["box_len", "rebox", "pair_sum", "opt_len", "main"] {
+        assert!(artifact.compiled.iter().any(|n| n == f), "{f} compiled");
+    }
+    assert_eq!(interp_i64(&module), 63);
+}
+
+#[test]
+fn wasm_compiles_generics_dir_scalar_fixtures() {
+    // `box_pair` (generic structs) and `opt_res` (generic enums) are scalar-only.
+    let box_pair = fixture_module("generics/box_pair.lby");
+    let a = emit_wasm_module(&box_pair).expect("box_pair compiles");
+    assert!(a.skipped.is_empty(), "box_pair: {:?}", a.skipped);
+    assert!(a.compiled.iter().any(|n| n == "main"));
+    assert_eq!(interp_i64(&box_pair), 146);
+
+    let opt_res = fixture_module("generics/opt_res.lby");
+    let b = emit_wasm_module(&opt_res).expect("opt_res compiles");
+    assert!(b.skipped.is_empty(), "opt_res: {:?}", b.skipped);
+    assert!(b.compiled.iter().any(|n| n == "main"));
+    assert_eq!(interp_i64(&opt_res), 141);
+}
+
+#[test]
+fn wasm_defers_deeper_heap_generic_struct() {
+    // A generic whose type argument yields a MUTABLE heap field (`Box<list<i64>>`
+    // -> a `list<i64>` field) is DEFERRED — not registered, so the spelling stays
+    // unresolvable and the only function skips with `L0338`, exactly like native.
+    let source = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "fn take b Box<list<i64>> -> i64\n    len(b.value)\n",
+    );
+    let err = emit_wasm_module(&module_for(source)).expect_err("deep-heap generic deferred");
+    assert_eq!(err.code, "L0338");
+    assert!(err.skipped.iter().any(|s| s.name == "take"));
+}
+
+#[test]
+fn wasm_defers_generic_methods_but_compiles_plain_generic_functions() {
+    // Generic METHODS (inherent `impl` methods on a generic type) are not in the
+    // WASM subset — a method call lowers to an unknown function and the calling
+    // function skips cleanly (matching native, where generic methods are also
+    // ineligible). But a PLAIN generic function is unaffected: `multi_param`'s
+    // `fold` (a `match` over `Either<i64, string>`, a one-level `string` generic
+    // enum) COMPILES, while its `main` (which calls `.get_value()`) skips.
+    let module = fixture_module("generics/multi_param.lby");
+    let artifact = emit_wasm_module(&module).expect("fold still compiles");
+    assert!(
+        artifact.compiled.iter().any(|n| n == "fold"),
+        "plain generic function compiles"
+    );
+    assert!(
+        artifact
+            .skipped
+            .iter()
+            .any(|s| s.name == "main" && s.reason.contains("get_value")),
+        "generic method call skips cleanly: {:?}",
+        artifact.skipped
+    );
+
+    // A method-only generic program has no eligible function -> clean `L0338`.
+    let methods = fixture_module("generics/methods.lby");
+    let err = emit_wasm_module(&methods).expect_err("method-only generics defer");
+    assert_eq!(err.code, "L0338");
+}
+
+#[test]
+fn wasm_defers_recursive_indirection_generic_enum() {
+    // `Tree<i64>` recurses through `list<Tree<T>>` (a mutable heap payload), so it
+    // is DEFERRED and `sum_tree` skips — matching native's boundary. The fixture
+    // still runs on the interpreters (documented leaf sum 17).
+    let module = fixture_module("generics/tree_indirection.lby");
+    let err = emit_wasm_module(&module).expect_err("recursive generic enum deferred");
+    assert_eq!(err.code, "L0338");
+    assert!(err.skipped.iter().any(|s| s.name == "sum_tree"));
+    assert_eq!(interp_i64(&module), 17);
+}

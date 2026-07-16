@@ -578,6 +578,16 @@ fn is_pointer_type(
     if enum_layout(ty, structs, enums).is_some() {
         return true;
     }
+    // A declared enum NAME is always an i32 pointer, even when `enum_layout` cannot
+    // resolve a concrete layout for it — that happens for the BASE spelling of a
+    // generic enum (`Opt`, not `Opt<i64>`), which is the type a generic enum
+    // CONSTRUCTION node carries (`present(n)` is typed `Opt`). The construction still
+    // lowers to a pointer (see `generic_enum_construction_layout`); this lets the
+    // value-type classifier treat it as one so a generic-enum-returning tail/return
+    // resolves. (A base generic STRUCT name is already caught by `structs` above.)
+    if enums.contains_key(&ty.name) {
+        return true;
+    }
     if let Some(elem) = ty.array_element() {
         return slot_val_type(&elem, structs, enums).is_some();
     }
@@ -851,12 +861,25 @@ pub(crate) struct Local {
 pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     // A struct name -> ordered `(field, type)` map, used everywhere we classify a
     // type (pointer vs scalar) or compute a struct's field layout.
-    let structs = struct_table(&module.structs);
+    let mut structs = struct_table(&module.structs);
     // A user-enum name -> its IR definition, used to classify an enum type and to
     // resolve its variant table / payload layout (see `enum_layout`). Built-in
     // `option`/`result` are resolved structurally from the type spelling, so they
     // are not in this map.
-    let enums = enum_table(&module.enums);
+    let mut enums = enum_table(&module.enums);
+
+    // Monomorphize every reachable user-generic struct/enum instantiation, registering
+    // each supported (scalar-only or one-level `string`) concrete layout into the two
+    // tables under its full spelling (`Box<i64>`, `Opt<string>`). Every downstream
+    // classification/layout path keys off the concrete type spelling, so this makes a
+    // generic instantiation a first-class concrete type with no other changes —
+    // exactly the native backend's per-backend monomorphization. Instantiations whose
+    // monomorphized layout carries deeper-than-one-level heap are left unregistered so
+    // the enclosing function skips gracefully (`L0338`), matching native's A1 boundary.
+    // No-op for a module without generics (non-generic output stays byte-identical).
+    expand_generic_instantiations(module, &mut structs, &mut enums);
+    let structs = structs;
+    let enums = enums;
 
     // First pass: decide signature eligibility and assign WASM function indices
     // to the functions we will compile. Calls between compiled functions resolve
@@ -1845,6 +1868,9 @@ fn lower_for(
     out.push(0x0b); // end block
     Ok(())
 }
+#[path = "wasm_generics.rs"]
+mod generics;
+pub(crate) use generics::*;
 #[path = "wasm_lowering.rs"]
 mod lowering;
 pub(crate) use lowering::*;
