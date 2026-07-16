@@ -684,6 +684,70 @@ fn gen_generic_scalar_program(seed: u64) -> String {
     format!("{decls}{body}")
 }
 
+/// Generates a program exercising **native inherent-method dispatch** (A1): a
+/// non-generic `struct Counter` with inherent methods (`bump` returns a fresh
+/// `Counter`, `get` reads the scalar field) and a generic `Box<T>`/`Opt<T>` with
+/// methods (`peek`/`rewrap`, `unwrap_or`), called over the `i64`/`bool`/`string`
+/// instantiations. Each `recv.method(args)` monomorphizes to a direct call whose
+/// `self` is a copied aggregate, so the receiver is unchanged after the call —
+/// `c.get()` after `c.bump(..)` reads the original value, the value-semantics
+/// oracle. A chained call (`c.bump(v).get()`) exercises method-call chaining. All
+/// arithmetic is wrapping `+`/`-`/`*` over `i64`/`bool` cells (ASCII `len` for the
+/// string box), so the program is divergence-free and `main` returns an `i64`.
+fn gen_method_program(seed: u64) -> String {
+    let mut rng = Rng(seed ^ 0x7D14_9C3B_5E62_08AFu64);
+    let decls = "struct Counter\n    n i64\n\n\
+                 impl Counter\n    fn bump self d i64 -> Counter\n        \
+                 Counter(self.n + d)\n    fn get self -> i64\n        self.n\n\n\
+                 struct Box<T>\n    value T\n\n\
+                 impl Box<T>\n    fn peek self -> T\n        self.value\n    \
+                 fn rewrap self v T -> Box<T>\n        Box(v)\n\n\
+                 enum Opt<T>\n    present T\n    absent\n\n\
+                 impl Opt<T>\n    fn unwrap_or self f T -> T\n        match self\n            \
+                 present(x) -> x\n            absent -> f\n\n";
+
+    let v1 = rng.range(-1000, 1000);
+    let v2 = rng.range(-1000, 1000);
+    let v3 = rng.range(-1000, 1000);
+    let v4 = rng.range(-1000, 1000);
+    let v5 = rng.range(-1000, 1000);
+    let v6 = rng.range(-1000, 1000);
+    let flag = rng.chance(2);
+    let present = rng.chance(2);
+    let fallback = rng.range(-500, 500);
+    let word = match rng.below(4) {
+        0 => "hello",
+        1 => "abc",
+        2 => "",
+        _ => "native",
+    };
+
+    let mut body = String::from("fn main -> i64\n");
+    // Non-generic method + value semantics: `c` is read AFTER `c.bump(..)`, so it
+    // must be unchanged (self is a copied aggregate).
+    body.push_str(&format!("    let c Counter = Counter({v1})\n"));
+    body.push_str(&format!("    let d Counter = c.bump({v2})\n"));
+    // Generic struct method over two scalar instantiations + a fresh-aggregate return.
+    body.push_str(&format!("    let a Box<i64> = Box({v3})\n"));
+    body.push_str(&format!("    let b Box<i64> = a.rewrap({v4})\n"));
+    body.push_str(&format!("    let fb Box<bool> = Box({flag})\n"));
+    // A heap-field (`string`) receiver method read.
+    body.push_str(&format!("    let sb Box<string> = Box(\"{word}\")\n"));
+    let opt_ctor = if present {
+        format!("present({v5})")
+    } else {
+        "absent".to_string()
+    };
+    body.push_str(&format!("    let o Opt<i64> = {opt_ctor}\n"));
+    body.push_str("    let fg i64 = 7 if fb.peek() else 3\n");
+    // A chained method call `c.bump(v6).get()` plus reads that prove `c` survived.
+    body.push_str(&format!(
+        "    c.get() + d.get() + a.peek() + b.peek() + fg + len(sb.peek()) \
+         + o.unwrap_or({fallback}) + c.bump({v6}).get()\n"
+    ));
+    format!("{decls}{body}")
+}
+
 /// The result of running a program on one backend, reduced to a comparable form.
 #[derive(PartialEq, Eq, Debug)]
 enum Outcome {
@@ -1384,6 +1448,92 @@ fn fuzz_generic_scalar_native_matches_interpreter_when_linkable() {
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (generic scalar) on #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_method_interpreters_agree() {
+    // Cross-check the three engines on inherent-method-dispatch programs. Always
+    // runs (no toolchain needed); a divergence prints the reproducing program.
+    const PROGRAMS: u64 = 2000;
+    let base_seed = 0x3C6E_F372_FE94_F82Du64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_method_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "method backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "method generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_method_native_matches_interpreter_when_linkable() {
+    // The correctness oracle for native inherent-method dispatch: each program
+    // calls non-generic and monomorphized generic methods (receiver passed by the
+    // aggregate ABI, copy-in value semantics), so every function MUST compile
+    // natively AND its `.exe` exit code MUST equal the interpreter result. A clean
+    // skip here would mean method dispatch regressed. Gated on the link toolchain.
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!("rust-lld/kernel32.lib unavailable; skipping native method fuzz");
+        return;
+    }
+    ensure_msvc_env();
+
+    const PROGRAMS: u64 = 120;
+    let base_seed = 0x6A09_E667_F3BC_C908u64;
+    let dir = std::env::temp_dir().join("lullaby_fuzz_native_method");
+    let _ = std::fs::create_dir_all(&dir);
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_method_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on native-method-fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => panic!("method generator produced {other:?} on seed {seed:#x}:\n{source}"),
+        };
+
+        let src_path = dir.join(format!("fuzz_m_{i}.lby"));
+        let exe_path = dir.join(format!("fuzz_m_{i}.exe"));
+        std::fs::write(&src_path, &source).expect("write fuzz source");
+        let _ = std::fs::remove_file(&exe_path);
+
+        let emit = lullaby()
+            .args([
+                "native",
+                "-o",
+                exe_path.to_str().expect("exe path"),
+                src_path.to_str().expect("src path"),
+            ])
+            .output()
+            .expect("run native");
+        // Every method instance is native-eligible, so an exe MUST be produced; a
+        // clean skip would mean method dispatch regressed.
+        assert!(
+            emit.status.success() && exe_path.is_file(),
+            "expected a native exe for method dispatch on #{i} (seed {seed:#x}):\n{source}\n{}",
+            stderr(&emit)
+        );
+
+        let run = Command::new(&exe_path).output().expect("run fuzz exe");
+        let exit = run.status.code().expect("native exit code");
+        assert_eq!(
+            exit, expected as i32,
+            "NATIVE MISCOMPILE (method dispatch) on #{i} (seed {seed:#x}):\n{source}\n\
              interpreter={expected}, native exit={exit}"
         );
     }

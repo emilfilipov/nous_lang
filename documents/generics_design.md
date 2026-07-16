@@ -300,6 +300,27 @@ free.
 - **Method dispatch:** methods on a generic type (`impl` blocks / UFCS) resolve
   with the receiver's concrete instantiation substituted in, reusing receiver-type
   dispatch that traits already use.
+  - **DELIVERED on native (A1).** Inherent-method dispatch is now compiled to
+    native x86-64 (`crates/lullaby_ir/src/native_object_method.rs`). A source
+    `recv.method(args)` reaches the backend as an ordinary UFCS `Call { name,
+    args: [recv, ...] }` (the method bodies live in `BytecodeModule::impls`, keyed
+    by `(base_type, method)`; the receiver-dispatched names are
+    `BytecodeModule::trait_methods`). A native pre-pass expands each call whose
+    receiver resolves to a concrete user struct/enum — including a monomorphized
+    generic instantiation (`Box<i64>`, `Opt<i64>`) — into a direct call to a
+    synthesized instance function appended to `functions`, with the method body
+    monomorphized by `substitute_type` (`{T: i64}`) exactly as generic-type field
+    layouts already are. `self` is passed by the existing aggregate ABI (hidden
+    pointer / copy-in), so the interpreters' by-value `self` (each call clones the
+    receiver `Value`) is matched bit-for-bit — mutating `self` cannot affect the
+    caller. **Default-deny:** a receiver that is a bare type parameter `T`, a
+    dynamic/trait-object receiver, or an instance whose monomorphized
+    receiver/param/return layout is outside the native subset (a deeper-than-one-
+    level heap receiver, an out-of-subset param/return) is left untouched and skips
+    cleanly through the fixpoint (`L0339`) — never miscompiled. Proven by the
+    `native_object_method` unit tests, the `generics/methods.lby` link-and-run
+    (exit 151), and the `fuzz_method_*` differential fuzzers (2000 interpreter +
+    120 native link-and-run programs).
 
 ### 4.4 Name mangling for monomorphized defs (native/WASM only)
 
@@ -307,7 +328,12 @@ A specialized def gets a deterministic mangled name derived from the canonical
 instantiation spelling, e.g. `Stack<i64>` → `Stack$i64`, `Pair<string,i64>` →
 `Pair$string$i64`, nested `Stack<list<i64>>` → a stable encoding of the nested
 spelling. Mangling is confined to the native/WASM lowering; source, diagnostics,
-and interpreters always show/handle the human spelling `Stack<i64>`.
+and interpreters always show/handle the human spelling `Stack<i64>`. The delivered
+native **method** instances follow the same principle with a `$mth$` prefix that
+cannot collide with any source identifier: `Box<i64>::peek` →
+`$mth$Box_i64_$peek`, `Counter::bump` → `$mth$Counter$bump` (non-identifier
+characters in the receiver spelling are sanitized to `_`, keeping distinct
+instantiations distinct).
 
 ### 4.5 New diagnostics (numbers assigned in `diagnostic_registry.md` at build time)
 

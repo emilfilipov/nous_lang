@@ -10,11 +10,12 @@
 //! (generics are erased on the interpreters), so these tests pin that a program
 //! calling generic-type methods over two instantiations runs byte-for-byte
 //! identically on every interpreter backend (`ast`, `ir`, `bytecode`), that the
-//! native backend still cleanly skips a function that CALLS a generic-type method
-//! (native method dispatch is a separate later feature — inherent methods on a
-//! non-generic struct are not compiled natively either — so it is reported as
-//! native-ineligible via `L0339`, never miscompiled), and that the stage-4
-//! semantic negatives are rejected with their dedicated diagnostics.
+//! native backend now COMPILES inherent-method dispatch (each `recv.method(args)`
+//! call resolves to a monomorphized instance function per receiver instantiation,
+//! so the produced `.exe` exits with the same value the interpreters compute), and
+//! that the stage-4 semantic negatives are rejected with their dedicated
+//! diagnostics. A method whose receiver/param/return falls outside the native
+//! subset still skips cleanly (`L0339`) rather than miscompiling.
 //!
 //! The positive fixtures live under `tests/fixtures/valid/generics/` and the
 //! negatives under `tests/fixtures/invalid/generics/` so the `ir_lib_tests`
@@ -57,41 +58,51 @@ pub(crate) fn generic_methods_run_identically_on_all_backends() {
     assert_eq!(results[2], results[0], "bytecode output differs from ast");
 }
 
-/// Scalar generic STRUCT/ENUM *values* now monomorphize natively (A1 stage-1
-/// native), but a call to an inherent *method* on a generic type is still
-/// native-ineligible — exactly as inherent methods on a NON-generic struct are
-/// also not yet compiled natively (native method dispatch is a separate, later
-/// feature). So a program whose `main` calls generic-type methods must still
-/// *cleanly skip* via the `L0339` gate rather than miscompiling: `main` is
-/// reported as skipped and — nothing else eligible — the command surfaces `L0339`
-/// as a hard error, never a produced-but-wrong executable.
+/// Native inherent-method dispatch (A1): a program whose `main` calls methods on
+/// generic types — `Box<i64>.peek`/`rewrap`, `Box<bool>.peek`, `Opt<i64>.unwrap_or`
+/// — now COMPILES natively. Each `recv.method(args)` resolves to a monomorphized
+/// instance function (`self` passed by the existing aggregate ABI, copy-in value
+/// semantics), so the produced `.exe` exits with the interpreters' `151` (mod 256).
+/// The verbose listing reports the mangled instance functions as compiled, and the
+/// direct-PE path runs it with no linker.
 #[test]
-pub(crate) fn generic_methods_cleanly_skip_native() {
+pub(crate) fn generic_methods_compile_native() {
     let fixture = workspace_root().join("tests/fixtures/valid/generics/methods.lby");
+    let out = std::env::temp_dir().join("lullaby_generic_methods.exe");
+    let _ = std::fs::remove_file(&out);
     let output = lullaby()
         .args([
             "native",
             "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
             fixture.to_str().expect("fixture path"),
         ])
         .output()
         .expect("run cli");
     assert!(
-        !output.status.success(),
-        "expected the L0339 no-eligible-function gate: {output:?}"
+        output.status.success(),
+        "expected native method dispatch to compile: {output:?}"
     );
-    let errors = stderr(&output);
+    let listing = stdout(&output);
+    // `main` and the monomorphized method instances are compiled `.text` symbols.
+    assert!(listing.contains("compiled main"), "listing: {listing}");
     assert!(
-        errors.contains("L0339"),
-        "expected the no-eligible-function skip diagnostic: {errors}"
+        listing.contains("$mth$Box_i64_$peek"),
+        "expected the Box<i64>::peek instance to compile: {listing}"
     );
-    // `main` (which calls generic-type methods) is reported as skipped, proving it
-    // demoted to the interpreter rather than miscompiling. The skip reason is the
-    // method dispatch, not the generic value — the `Box<i64>` value itself
-    // monomorphizes fine; the method call is what stays native-ineligible.
     assert!(
-        errors.contains("skipped main"),
-        "expected `main` to be skipped natively: {errors}"
+        listing.contains("$mth$Opt_i64_$unwrap_or"),
+        "expected the Opt<i64>::unwrap_or instance to compile: {listing}"
+    );
+    assert!(out.is_file(), "expected a native exe at {}", out.display());
+
+    // Native exit code must equal the interpreter result (151) mod 256.
+    let exe = Command::new(&out).output().expect("run native methods exe");
+    let exit = exe.status.code().expect("native exit code");
+    assert_eq!(
+        exit, 151,
+        "native inherent-method dispatch must exit with the interpreter result (151)"
     );
 }
 

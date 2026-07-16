@@ -308,6 +308,18 @@ pub fn emit_native_program_for_target(
         return crate::aarch64::emit_aarch64_program(module, &target);
     }
 
+    // Inherent-method dispatch (x86-64): a source `recv.method(args)` reaches the
+    // backend as an ordinary `Call { name: "method", args: [recv, ...] }` (UFCS),
+    // but the method bodies live in `module.impls`, not `module.functions`. Expand
+    // every native-resolvable method call into a direct call to a synthesized,
+    // monomorphized instance function appended to `functions`, so the whole
+    // existing pipeline (eligibility, signatures, lowering, emission) applies to a
+    // method exactly as to any function. Default-deny: an unresolvable/out-of-subset
+    // method call is left untouched and skips through the fixpoint. Produces a
+    // structural clone with byte-identical bodies when there are no methods.
+    let expanded_module = expand_method_instances(module);
+    let module = &expanded_module;
+
     // Native closure layouts (Stage 1): for each closure definition that appears as
     // a `fn(...)` literal in the module, resolve its native layout (captures, param
     // count) from the literal's static function type. A closure outside the Stage-1
@@ -1348,6 +1360,10 @@ pub(crate) use types::*;
 #[path = "native_object_eligibility.rs"]
 mod eligibility;
 pub(crate) use eligibility::*;
+
+#[path = "native_object_method.rs"]
+mod method;
+pub(crate) use method::*;
 
 #[path = "native_object_stmt.rs"]
 mod stmt_lowering;

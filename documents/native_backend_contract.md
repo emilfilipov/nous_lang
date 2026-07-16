@@ -30,7 +30,8 @@ Implemented now:
 - **First-class heap `string` values.** A `string` value is a heap pointer to a `[char_len i64][byte_len i64][utf8 bytes]` record. String literals used as values, string locals/parameters/returns/call arguments, runtime `+` concatenation, `len(s)` for any string value, and `to_string` for integers/`bool`/`char`/`byte` are compiled to native machine code, agreeing bit-for-bit with the interpreters (including UTF-8 char counting). Strings are immutable, so they pass/return by pointer with no deep copy. **Strings as `list`/`map` elements/values and enum payloads are now delivered** (`list<string>`, `map<K, string>`, `option<string>`, `result<i64, string>`, string-payload user enums — see the list/map/enum sections). `to_string(f64)`/`to_string(f32)`, the remaining string builtins (`replace`/`words`), string map keys, and strings as array **elements** remain deferred. **A `string` struct/enum FIELD is now delivered** (a struct with a `string` field, one level deep — see "Heap-Typed Aggregate Fields (`struct` with a `string` field)" below). See "First-class heap `string` values" below.
 - **Heap-typed aggregate FIELDS (`struct` with a `string` field), one level deep.** A `struct` (or scalar-payload enum) whose fields are scalars plus one or more immutable `string` fields is compiled to native machine code: the `string` field is stored as a single immutable pointer word inside the stack-flattened aggregate, construction evaluates the string expression into that word, a field read loads the pointer, and the value-semantic copy **shares** the pointer (correct because strings are immutable) — matching the interpreters bit-for-bit, including across function boundaries (the by-hidden-pointer aggregate ABI copies the word). **Recursive reclamation** extends the recursive RC drop-glue: a uniquely-owned, borrow-only heap-field aggregate loop temp is dropped by one `rc_dec` per `string` field at each loop edge, composing with BOTH the RC/free-list path (the record is freed and reused) AND the arena path (`rc_free` no-ops; the bump rewind reclaims) — no double-free, no leak on either. Nested heap-carrying struct fields also compile (a `string` field nested inside a struct field is still a shared immutable word, stack-flattened recursively). A MUTABLE heap field (`list`/`map`) and an `f32` field stay deferred, as does storing such an aggregate from a **non-constructor** value (a struct variable/parameter/`get` result) into a MUTABLE-aggregate `list`/`map` element or enum payload — only an inline constructor in that slot compiles; both skip cleanly. See "Heap-Typed Aggregate Fields (`struct` with a `string` field)" below.
 - **Direct PE executable emission (freestanding, no external linker).** `lullaby native --freestanding` writes a runnable Windows `.exe` in-house — a fixed-base PE32+ image laid around the generated `.text` with a one-import (`kernel32!ExitProcess`) table — skipping `rust-lld` entirely. This removes the external linker, which is ~93% of the `lullaby native` wall-clock, making the freestanding edit→exe loop linker-cost-free. Link-and-run verified on this host. See "Direct PE Executable Emission (Freestanding, No External Linker)" below.
-- **User generic types with scalar OR one-level `string` type arguments (native monomorphization).** A user-defined generic `struct`/`enum` instantiated with **scalar** type arguments — `Box<i64>`, `Pair<i64, bool>`, `Opt<i64>`, `Either<i64, bool>` — **or with a `string` type argument that yields a one-level immutable `string` field/payload** — `Box<string>`, `Pair<string, i64>`, `Opt<string>`, `Either<i64, string>` — is **monomorphized**: the declared type parameters are substituted with the instantiation's concrete arguments (reusing the semantic `substitute_type`), and the resulting fully-concrete field/variant layout flows through the existing struct/enum machinery. Construction, field read/write, `match`, value-semantic copy, and passing/returning across boundaries all compile, byte-identical to the interpreters' erased value (value-neutral). A monomorphized `Box<string>` has the **identical layout** to a hand-written `struct { value string }`, so the whole heap-field machinery applies unchanged: the `string` field is a shared immutable pointer word, and the recursive `rc_dec` drop-glue reclaims each instantiation's `string` field per loop iteration, composing with **both** the RC/free-list path and the arena rewind (no leak, no double-free). **Default-deny scope gate:** an instantiation compiles only when its monomorphized layout is scalar-only or scalars plus one-level `string` words; a **deeper** heap shape — a mutable heap field (`Stack<i64>` → `list<i64>`; a recursive `Tree<i64>`), a nested heap-carrying aggregate, or a two-level `string` nesting — is **deferred cleanly** to the interpreters, exactly what the non-generic heap-field aggregate path also defers. Inherent methods on a generic type stay native-ineligible (as they are for non-generic structs). See "User Generic Types: Native Monomorphization (Scalar + One-Level `string` Type Arguments)" below.
+- **User generic types with scalar OR one-level `string` type arguments (native monomorphization).** A user-defined generic `struct`/`enum` instantiated with **scalar** type arguments — `Box<i64>`, `Pair<i64, bool>`, `Opt<i64>`, `Either<i64, bool>` — **or with a `string` type argument that yields a one-level immutable `string` field/payload** — `Box<string>`, `Pair<string, i64>`, `Opt<string>`, `Either<i64, string>` — is **monomorphized**: the declared type parameters are substituted with the instantiation's concrete arguments (reusing the semantic `substitute_type`), and the resulting fully-concrete field/variant layout flows through the existing struct/enum machinery. Construction, field read/write, `match`, value-semantic copy, and passing/returning across boundaries all compile, byte-identical to the interpreters' erased value (value-neutral). A monomorphized `Box<string>` has the **identical layout** to a hand-written `struct { value string }`, so the whole heap-field machinery applies unchanged: the `string` field is a shared immutable pointer word, and the recursive `rc_dec` drop-glue reclaims each instantiation's `string` field per loop iteration, composing with **both** the RC/free-list path and the arena rewind (no leak, no double-free). **Default-deny scope gate:** an instantiation compiles only when its monomorphized layout is scalar-only or scalars plus one-level `string` words; a **deeper** heap shape — a mutable heap field (`Stack<i64>` → `list<i64>`; a recursive `Tree<i64>`), a nested heap-carrying aggregate, or a two-level `string` nesting — is **deferred cleanly** to the interpreters, exactly what the non-generic heap-field aggregate path also defers. Inherent-method dispatch on generic AND non-generic types is now delivered (see the next bullet). See "User Generic Types: Native Monomorphization (Scalar + One-Level `string` Type Arguments)" below.
+- **Inherent-method dispatch (`recv.method(args)`).** An inherent/`impl` method call on a receiver whose static type is a concrete user `struct`/`enum` — including a monomorphized generic instantiation (`Box<i64>`, `Box<string>`, `Opt<i64>`) — compiles to a native **direct call** to a synthesized method-instance function. A source `recv.method(args)` reaches the backend as an ordinary UFCS `Call { name: "method", args: [recv, ...] }` (parse-time desugaring); the method bodies live in `BytecodeModule::impls` (keyed by `(base_type, method)`), and the receiver-dispatched names are `BytecodeModule::trait_methods`. A native pre-pass (`crates/lullaby_ir/src/native_object_method.rs`) rewrites each resolvable call to a unique mangled instance name (`$mth$Box_i64_$peek`, `$mth$Counter$bump`) and appends the monomorphized method body (its `self`/param/return/body `TypeRef`s substituted `{T: i64}` via `substitute_type`) to `functions`, so the whole existing pipeline (eligibility, signatures, lowering, emission) treats a method exactly as any function. The `self` receiver is passed by the **existing aggregate ABI** (hidden pointer / copy-in) — no new ABI — so the interpreters' by-value `self` (each call clones the receiver `Value`) is matched bit-for-bit: mutating `self` cannot affect the caller, and a method returning a fresh aggregate leaves the receiver unchanged. **Default-deny:** a bare-`T`/dynamic/trait-object receiver, or an instance whose monomorphized receiver/param/return falls outside the native subset (a deeper-than-one-level heap receiver, a `map<string,…>` param, a generic method body building a closure), is left untouched and skips cleanly through the fixpoint (`L0339`) — never miscompiled. See "Inherent-Method Dispatch" below.
 - **Fat-pointer array parameters (runtime-length `array<T>`).** A **read-only** scalar-element `array<T>` parameter (an integer cell `i64`/fixed-width/`bool`/`char`/`byte`, or a float `f64`/`f32`) whose length is not known at compile time is passed as a **fat pointer** — a `(data_ptr, length)` descriptor — so the callee reads the caller's storage in place instead of demoting because the length could not be inferred from a call site. `a[i]` (runtime-length bounds-checked; an integer element loads through a GPR, a float element through an XMM register), `len(a)`, and `for x in a` all lower against the descriptor. This closes the single largest native-reach gap (144→29 "no call site to infer its length from" corpus demotions). Value semantics hold because the parameter is read-only; a mutating or length-inferable parameter keeps the copy-in stack-array path. Forwarding a fat parameter as a call argument, mutating runtime-length parameters, and runtime-length returns/locals stay deferred. See "Fat-Pointer Array Parameters (Runtime-Length `array<T>`)" below.
 - **Closures — Stage 1 (scalar captures, direct non-escaping call).** A closure literal `fn PARAMS -> EXPR` that captures only **integer-cell scalars** (`i64`/fixed-width/`bool`/`char`/`byte`), takes at most three integer-cell scalar parameters, returns an integer-cell scalar, and whose single-expression body is heap-free and calls no user/`extern` function is compiled to native machine code when it is **created by a direct literal** (`let f fn(...) = fn x -> …`) and used **only as the callee of a direct call** (`f(args)`). The closure value is a heap block `[code_ptr][capture words…]` allocated by the shared bump/RC allocator, so it is reclaimed by the arena rewind (a per-iteration sub-region for a non-escaping loop closure — bounded heap) or the RC/free-list path like any other block. The call loads word 0 (the code pointer), puts the env pointer in `rcx`, the arguments in `rdx`/`r8`/`r9`, and issues an indirect `call rax`. **Default-deny — everything else skips cleanly to the interpreters (`L0339`), never miscompiled:** a `string`/`list`/`map`/aggregate or float capture, a closure passed to a higher-order function/builtin (`apply(f, x)`), a returned/escaping closure, a mutable/rebound closure local, a closure bound from a non-literal (a factory result), or more than three parameters. See "Closures — Stage 1" below.
 
@@ -952,6 +953,103 @@ Deferred beyond this increment: **`to_string(f64)`/`to_string(f32)`** (needs dto
 ### Verification
 
 The fixture `tests/fixtures/valid/native_string_build.lby` (a `greeting` function that returns a concatenated string, a `measure` function that takes a string and returns its `len`, and a `main` that builds strings via `+`, `to_string(i64)`, and `to_string(bool)`, passes a string across a boundary, and derives `17`) runs on all interpreter backends for ground truth and is native-compiled, linked, and run by `native_string_build_execution_parity_when_linkable` in `crates/lullaby_cli/tests/cli.rs`, which sources MSVC's `LIB` when unset and asserts the `.exe` exit code equals the interpreter's `run` result (mod 256; gated on `rust-lld` + `kernel32.lib`, with the all-functions-compile and interpreter-truth assertions always running). The index-based string operations add `tests/fixtures/valid/native_string_ops.lby` (char-indexed `substring`/`find` over the multi-byte `"café"` — where `é` is 2 bytes — an empty needle, present/absent `find`, and true/false cases of every predicate, combined into `11`), run identically on the AST/IR/bytecode interpreters and native-compiled, linked, and run by `native_string_ops_execution_parity_when_linkable` (same MSVC/`rust-lld`/`kernel32` gating and mod-256 exit-code assertion; the all-fifteen-functions-compile-natively and interpreter-truth assertions always run). The existing `native_strings.lby` (`len("literal")`) fixture and its parity test still pass unchanged. Unit tests in `native_program_tests` assert that string-value functions (a string return, a string parameter, `+` concat, `to_string`, `len`) report `compiled` (not `skipped`), that the object emits the `__lullaby_str_lit`/`_concat`/`_from_int`/`_from_bool`/`_from_char` **and** `_substring`/`_find`/`_contains`/`_starts_with`/`_ends_with` helper symbols and the bump allocator + `.bss` heap, that a concat call site references the concat helper, that every index-string call site references its helper (and the using function compiles natively), that the `substring` helper carries the `ud2` `L0413` trap and calls the allocator while the four scan helpers are leaf functions (no relocations, ending in `ret`), that a `string` is a scalar (not a by-pointer aggregate) with one word, and that `to_string(f64)` and a heap-field aggregate skip with clear reasons.
+
+## Inherent-Method Dispatch (`recv.method(args)`) (DELIVERED, link-and-run verified)
+
+An inherent/`impl` method call whose receiver's static type is a concrete user
+`struct`/`enum` compiles to a native **direct call** to a synthesized,
+monomorphized method-instance function. This completes the deferred A1 item and
+covers methods on ANY struct/enum, generic or not.
+
+### Representation the backend consumes
+
+A source `recv.method(args)` is desugared **at parse time** (UFCS) into an
+ordinary `Call { name: "method", args: [recv, args...] }` node — there is no
+distinct method-call IR node, and the receiver is simply `args[0]`. The method
+bodies live in `BytecodeModule::impls` (keyed by `(base_type_name, method_name)`),
+**not** in `BytecodeModule::functions`; the set of receiver-dispatched names
+(trait methods plus inherent `impl Type<T>` methods) is
+`BytecodeModule::trait_methods`. The interpreters dispatch such a call by the
+receiver's *runtime* type; the native backend resolves it statically by the
+receiver's *static* type. Previously the backend did not lower receiver method
+calls at all — `c.bump(3)` failed with `call to non-i64-scalar or unknown function
+'bump'` and `a.rewrap(9)` with `constructor 'rewrap' does not match struct layout
+'Box'`, both skipping cleanly.
+
+### The expansion pass
+
+`crates/lullaby_ir/src/native_object_method.rs::expand_method_instances` runs once
+at the top of `emit_native_program_for_target` (x86-64 only; AArch64 is unaffected)
+and returns a NEW module used only for native emission — the interpreters keep the
+original. In it:
+
+- every method-call site whose (type-substituted) receiver resolves to a concrete
+  user struct/enum with a matching impl is rewritten from the bare method name to a
+  unique **mangled** instance name (`$mth$Box_i64_$peek`, `$mth$Counter$bump`; the
+  leading `$` can never appear in a source identifier, so it cannot collide, and
+  non-identifier characters in the receiver spelling are sanitized to `_`); and
+- for each instance, a synthesized `BytecodeFunction` under that mangled name is
+  appended to `functions`, with the method body **monomorphized**: every `TypeRef`
+  (params, return, and each embedded expression/`let` type) has the receiver's type
+  arguments substituted (`{T: i64}`) via the same `substitute_type`
+  (`lullaby_semantics`) the generic-type layout path uses. A worklist drains chained
+  method calls (a method body calling another method) to a fixpoint.
+
+Because a method instance is thereafter an ordinary function whose first parameter
+is the aggregate `self`, **the entire existing pipeline applies unchanged** —
+signature eligibility, array-length inference, native-signature computation, body
+lowering, arena analysis, and object emission. No new ABI: `self` is passed by the
+existing aggregate-argument ABI (hidden pointer / copy-in value semantics), exactly
+like any aggregate parameter.
+
+### Value-semantics soundness
+
+The interpreters invoke a method as `invoke_function(method, args)` where `args[0]`
+is the receiver `Value` — evaluated from the call expression, i.e. a clone of the
+receiver. So `self` is a by-value copy: mutating `self` inside a method cannot
+affect the caller, and a method returning a fresh aggregate leaves the receiver
+untouched. The native copy-in aggregate ABI copies the aggregate into the callee's
+frame, so it matches this bit-for-bit. `c.get()` read after `c.bump(3)` sees the
+original `c`; the differential fuzzer asserts this over 120 linked programs.
+
+### Supported subset and default-deny
+
+An instance compiles only when its monomorphized receiver, every parameter, its
+return, and its body are within the CURRENT native aggregate subset (scalar,
+`string`, `list`, `map`, scalar-field and one-level heap-`string`-field
+structs/enums). Everything else is **left untouched and skips cleanly** — the call
+name is not rewritten, or the synthesized instance fails eligibility/lowering, and
+the enclosing function is demoted through the existing fixpoint so the program runs
+on the interpreters (`L0339`), never miscompiled:
+
+- a receiver that is a bare type parameter `T` or a dynamic/trait-object receiver
+  (e.g. `v.show()` inside a bounded generic free function `describe<T: Show>`) —
+  this is where **trait/dynamic dispatch** stays deferred; a trait method on a
+  *concrete* receiver resolves identically to an inherent one and is correct;
+- a deeper-than-one-level heap receiver (a struct with a `list`/`map` field);
+- an out-of-subset param/return (a `map<string, …>` parameter, a nested-heap
+  return);
+- a generic (non-empty-substitution) method whose body builds a **closure** (the
+  closure body is keyed by id in `BytecodeModule::closures` and shared across
+  instantiations, so it cannot carry a per-instantiation monomorphization) — the
+  instance is not synthesized and its caller skips.
+
+### Verification
+
+The generic fixture `tests/fixtures/valid/generics/methods.lby` (`Box<i64>`
+`peek`/`rewrap`, `Box<bool>` `peek`, `Opt<i64>` `unwrap_or`) now compiles native
+and its `.exe` exits `151`, matching the interpreters
+(`suite10::generic_methods_compile_native`). Unit tests in
+`native_object_method` assert that a non-generic method, a generic struct method
+(two instantiations + a fresh-aggregate `rewrap`), a generic enum method, and a
+`Box<string>` heap-field-receiver method all report `compiled` with nothing
+skipped, and that a deeper-heap receiver, an out-of-subset `map<string,i64>`
+parameter, and a trait-dispatched call through a bounded generic all cleanly skip.
+The `fuzz_method_interpreters_agree` (2000 programs) and
+`fuzz_method_native_matches_interpreter_when_linkable` (120 linked programs)
+differential fuzzers cross-check non-generic + monomorphized generic method
+dispatch (including value semantics and method-call chaining) against the
+interpreters.
 
 ## Closures — Stage 1 (Scalar Captures, Direct Non-Escaping Call) (DELIVERED, link-and-run verified)
 
