@@ -370,6 +370,13 @@ pub(crate) fn build_object_model(
             let kind = match symbols[symbol].kind {
                 ObjectSymbolKind::Function => ObjectRelocationKind::Branch,
                 ObjectSymbolKind::Data => ObjectRelocationKind::PcRel32,
+                // Section symbols exist only in the DWARF sections, which are
+                // attached after this builder runs (see `attach_dwarf_line_info`)
+                // and are never referenced from `.text` machine code, so no code
+                // relocation can name one.
+                ObjectSymbolKind::Section => {
+                    panic!("`.text` relocations never reference a section symbol")
+                }
             };
             ObjectRelocation {
                 offset: reloc.offset,

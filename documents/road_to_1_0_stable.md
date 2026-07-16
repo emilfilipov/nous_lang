@@ -108,8 +108,9 @@ collections, math, fs, io, time, os, (maybe net) — and mark each item **stable
 **extended/experimental**. Do this near the finish line, informed by dogfooding.
 
 ### B3. "Stable"-grade toolchain — **PARTIALLY SHIPPED**
-Before stamping "stable": a built-in **test runner**, **debug info on Linux/macOS**
-(DWARF — CodeView is Windows-only today), and **LSP + package-manager maturity**.
+Before stamping "stable": a built-in **test runner** (SHIPPED), **debug info on
+Linux/macOS** (DWARF source lines — SHIPPED; CodeView was Windows-only), and
+**LSP + package-manager maturity** (still planned).
 These are toolchain-completeness items, not language decisions.
 
 - **Test runner — SHIPPED, with two known containment gaps (fix funded, below).**
@@ -152,7 +153,13 @@ These are toolchain-completeness items, not language decisions.
   name string. It is **not** scheduled: the convention is specified in
   `language_surface.md` and ships in released binaries, so changing it is a
   breaking surface change and an owner decision.
-- **DWARF debug info + LSP/package-manager maturity — still PLANNED.**
+- **DWARF debug info — SHIPPED (source lines).** `--debug`/`-g` now emits DWARF
+  `.debug_line`/`.debug_info`/`.debug_abbrev` on the ELF and Mach-O targets, at
+  the same per-function granularity CodeView already gave COFF. Verified by
+  decoding the output with `gimli` (an independent DWARF reader) on both formats,
+  and once end-to-end through `rust-lld` → linked binary → `gimli`. Variables,
+  types, and frame/CFI info remain deferred.
+- **LSP/package-manager maturity — still PLANNED.**
 
 ---
 
@@ -166,7 +173,7 @@ These are toolchain-completeness items, not language decisions.
 | A5 | Safe-tier failure semantics | **DECIDED** | Abort + diagnostic, no unwinding | 2026-07-15 |
 | B1 | Closures native codegen | PLANNED | schedule post-arena | — |
 | B2 | Concrete stdlib contents | PLANNED | enumerate near finish | — |
-| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolates every runtime error but a stack-overflow/non-terminating test still takes it down — subprocess+timeout FUNDED next; DWARF + LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-16 |
+| B3 | Stable-grade toolchain | **PARTIAL** | test runner SHIPPED (+`--filter`, suite17); isolates every runtime error but a stack-overflow/non-terminating test still takes it down — subprocess+timeout FUNDED next; **DWARF source lines SHIPPED** (ELF+Mach-O, `gimli`-verified, suite20; variables/types/CFI deferred); LSP/pkg remain; `test` declaration surface (`test_*` vs `test "name"` block) is an open owner call | 2026-07-17 |
 
 ## Owner decisions — 2026-07-16
 

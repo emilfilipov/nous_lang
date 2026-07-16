@@ -834,6 +834,14 @@ fn patch_rel32_to(code: &mut [u8], site: usize, target: usize) {
 mod object_writers;
 pub(crate) use object_writers::*;
 
+// DWARF source-line debug info for the ELF/Mach-O targets — the portable
+// counterpart of the COFF `.debug$S` CodeView emitter in `object_writers`. Its
+// own file: it is a self-contained, format-neutral byte builder, and
+// `native_object_writers.rs` is at the file-size cap.
+#[path = "native_object_dwarf.rs"]
+mod dwarf;
+pub(crate) use dwarf::*;
+
 #[path = "pe_image.rs"]
 mod pe_image;
 pub(crate) use pe_image::*;

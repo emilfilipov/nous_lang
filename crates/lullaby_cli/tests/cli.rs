@@ -1427,6 +1427,11 @@ mod suite17;
 #[path = "cli/suite18.rs"]
 mod suite18;
 
+// -- DWARF source-line debug info on the ELF/Mach-O targets (`--debug`/`-g`),
+//    the portable counterpart of the COFF CodeView path (road_to_1_0_stable B3)
+#[path = "cli/suite20.rs"]
+mod suite20;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

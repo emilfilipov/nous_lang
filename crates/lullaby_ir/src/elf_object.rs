@@ -2,14 +2,30 @@
 //!
 //! Serializes an [`ObjectModel`](crate::object_model::ObjectModel) into a
 //! `ET_REL` ELF64 object: an `Elf64_Ehdr`, a section header table
-//! (`.text`/`.rodata`/`.bss`/`.rela.text`/`.symtab`/`.strtab`/`.shstrtab`), a
-//! global symbol table, and `Elf64_Rela` relocations. The `e_machine` field and
+//! (`.text`/`.rodata`/`.bss`, the DWARF `.debug_*` sections when `--debug` was
+//! requested, one `.rela.<section>` per relocated section, then
+//! `.symtab`/`.strtab`/`.shstrtab`), a symbol table, and `Elf64_Rela`
+//! relocations. The `e_machine` field and
 //! the relocation types are selected from the model's
 //! [`ObjectMachine`](crate::object_model::ObjectMachine): x86-64 objects use
 //! `R_X86_64_PLT32` for `call` sites and `R_X86_64_PC32` for RIP-relative data
 //! references; AArch64 objects use `R_AARCH64_CALL26` for `bl` call sites. The
 //! shared machine code is emitted by the native backend; this module only builds
 //! the ELF container plus the Linux freestanding entry stub's symbol (`_start`).
+//!
+//! # `--debug` (DWARF)
+//!
+//! With `--debug`, `native_object_dwarf.rs` attaches the DWARF sections,
+//! `STT_SECTION` symbols, and their relocations to the model *before* it reaches
+//! this writer, so nothing here is DWARF-aware beyond three mechanical
+//! consequences: relocations are emitted **per section** rather than only for
+//! `.text`; the two DWARF relocation kinds map to `R_X86_64_64` (an absolute
+//! address) and `R_X86_64_32` (a section-relative offset); and, since those
+//! section symbols are the first `STB_LOCAL` symbols this writer has ever
+//! emitted, the symbol table is now ordered locals-before-globals with
+//! `.symtab`'s `sh_info` pointing at the first global, as ELF requires. Without
+//! `--debug` the model carries no debug section, symbol, or relocation, and the
+//! emitted bytes are byte-for-byte unchanged.
 //!
 //! # Verification honesty
 //!
@@ -21,8 +37,32 @@
 //! gracefully otherwise). See `documents/native_backend_contract.md`.
 
 use crate::object_model::{
-    ObjectMachine, ObjectModel, ObjectRelocationKind, ObjectSectionKind, ObjectSymbolKind,
+    DwarfSection, ObjectMachine, ObjectModel, ObjectRelocationKind, ObjectSectionKind,
+    ObjectSymbolKind,
 };
+
+/// The `.shstrtab` name of a model section.
+fn section_name(kind: ObjectSectionKind) -> &'static str {
+    match kind {
+        ObjectSectionKind::Text => ".text",
+        ObjectSectionKind::ReadOnlyData => ".rodata",
+        ObjectSectionKind::Bss => ".bss",
+        ObjectSectionKind::Debug(dwarf) => dwarf.elf_name(),
+    }
+}
+
+/// The `.shstrtab` name of the `SHT_RELA` section carrying `kind`'s relocations.
+/// Static, because `PlannedSection` interns `&'static str` names.
+fn rela_section_name(kind: ObjectSectionKind) -> &'static str {
+    match kind {
+        ObjectSectionKind::Text => ".rela.text",
+        ObjectSectionKind::ReadOnlyData => ".rela.rodata",
+        ObjectSectionKind::Bss => ".rela.bss",
+        ObjectSectionKind::Debug(DwarfSection::Line) => ".rela.debug_line",
+        ObjectSectionKind::Debug(DwarfSection::Info) => ".rela.debug_info",
+        ObjectSectionKind::Debug(DwarfSection::Abbrev) => ".rela.debug_abbrev",
+    }
+}
 
 // -- ELF64 constants ---------------------------------------------------------
 
@@ -60,13 +100,22 @@ const SHF_ALLOC: u64 = 0x2;
 /// `SHF_EXECINSTR`.
 const SHF_EXECINSTR: u64 = 0x4;
 
+/// `STB_LOCAL` binding.
+const STB_LOCAL: u8 = 0;
 /// `STB_GLOBAL` binding (shifted into the high nibble of `st_info`).
 const STB_GLOBAL: u8 = 1;
 /// `STT_OBJECT` symbol type.
 const STT_OBJECT: u8 = 1;
 /// `STT_FUNC` symbol type.
 const STT_FUNC: u8 = 2;
+/// `STT_SECTION` symbol type — names the start of a section.
+const STT_SECTION: u8 = 3;
 
+/// `R_X86_64_64` — 64-bit absolute address (`S + A`).
+const R_X86_64_64: u32 = 1;
+/// `R_X86_64_32` — 32-bit zero-extended absolute reference (`S + A`); used
+/// against an `STT_SECTION` symbol to express a section-relative DWARF offset.
+const R_X86_64_32: u32 = 10;
 /// `R_X86_64_PC32` — 32-bit PC-relative reference (`S + A - P`).
 const R_X86_64_PC32: u32 = 2;
 /// `R_X86_64_PLT32` — 32-bit PLT-relative reference; resolves like `PC32` for a
@@ -110,38 +159,77 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
     // so its ELF index depends on how many content sections exist. Content
     // sections: one per model section. Then `.rela.text` (if `.text` has any
     // relocations), then `.symtab`, `.strtab`, `.shstrtab`.
-    let text_index = model.text_section_index();
-    let has_text_relocs = !model.sections[text_index].relocations.is_empty();
+    // Every section carrying relocations gets its own `SHT_RELA` section, in
+    // model-section order. Without `--debug` only `.text` ever has any, so the
+    // planned table — and the emitted bytes — are exactly as before.
+    let reloc_section_indices: Vec<usize> = model
+        .sections
+        .iter()
+        .enumerate()
+        .filter(|(_, section)| !section.relocations.is_empty())
+        .map(|(index, _)| index)
+        .collect();
 
     // Section-header indices are assigned in table order:
-    //   0 null, 1.. content sections, then rela.text?, symtab, strtab, shstrtab.
+    //   0 null, 1.. content sections, then one rela per relocated section,
+    //   then symtab, strtab, shstrtab.
     let content_count = model.sections.len() as u32;
-    let symtab_shidx = 1 + content_count + u32::from(has_text_relocs);
+    let symtab_shidx = 1 + content_count + reloc_section_indices.len() as u32;
     let strtab_shidx = symtab_shidx + 1;
 
     // -- Build the symbol table + its string table --------------------------
-    // Symbol 0 is the reserved null symbol (all zero, STB_LOCAL). Every model
-    // symbol follows as STB_GLOBAL, so the first global is index 1.
+    // Symbol 0 is the reserved null symbol (all zero, STB_LOCAL). ELF requires
+    // every STB_LOCAL symbol to precede every STB_GLOBAL one, so the model's
+    // symbols are emitted section-symbols-first (the only locals; created solely
+    // by the ELF DWARF path). The sort is stable, so the globals keep the model's
+    // defined-before-undefined order, and with no section symbols the order — and
+    // the bytes — are unchanged.
+    let mut symbol_order: Vec<usize> = (0..model.symbols.len()).collect();
+    symbol_order.sort_by_key(|&index| match model.symbols[index].kind {
+        ObjectSymbolKind::Section => 0,
+        ObjectSymbolKind::Function | ObjectSymbolKind::Data => 1,
+    });
+    let local_count = model
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind == ObjectSymbolKind::Section)
+        .count();
+
+    // Model symbol index -> `.symtab` index (1-based; the null symbol shifts it).
+    let mut symtab_index_by_model = vec![0u64; model.symbols.len()];
+    for (position, &model_index) in symbol_order.iter().enumerate() {
+        symtab_index_by_model[model_index] = 1 + position as u64;
+    }
+
     let mut strtab: Vec<u8> = vec![0]; // leading NUL
     let mut symtab: Vec<u8> = Vec::new();
     // Null symbol.
     symtab.extend_from_slice(&[0u8; SYM_SIZE as usize]);
-    for symbol in &model.symbols {
-        let name_off = strtab.len() as u32;
-        strtab.extend_from_slice(symbol.name.as_bytes());
-        strtab.push(0);
-        let (st_type, st_shndx) = match symbol.section {
+    for &model_index in &symbol_order {
+        let symbol = &model.symbols[model_index];
+        // A section symbol conventionally carries no name of its own; its
+        // identity is its `st_shndx`.
+        let name_off = if symbol.kind == ObjectSymbolKind::Section {
+            0
+        } else {
+            let off = strtab.len() as u32;
+            strtab.extend_from_slice(symbol.name.as_bytes());
+            strtab.push(0);
+            off
+        };
+        let (st_bind, st_type, st_shndx) = match symbol.section {
             Some(model_section) => {
-                let ty = match symbol.kind {
-                    ObjectSymbolKind::Function => STT_FUNC,
-                    ObjectSymbolKind::Data => STT_OBJECT,
+                let (bind, ty) = match symbol.kind {
+                    ObjectSymbolKind::Function => (STB_GLOBAL, STT_FUNC),
+                    ObjectSymbolKind::Data => (STB_GLOBAL, STT_OBJECT),
+                    ObjectSymbolKind::Section => (STB_LOCAL, STT_SECTION),
                 };
-                (ty, elf_index_of_model(model_section) as u16)
+                (bind, ty, elf_index_of_model(model_section) as u16)
             }
             // Undefined external: no defining section (SHN_UNDEF), no type.
-            None => (0u8, 0u16),
+            None => (STB_GLOBAL, 0u8, 0u16),
         };
-        let st_info = (STB_GLOBAL << 4) | st_type;
+        let st_info = (st_bind << 4) | st_type;
         push_u32(&mut symtab, name_off);
         symtab.push(st_info);
         symtab.push(0); // st_other
@@ -149,28 +237,34 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
         push_u64(&mut symtab, symbol.value);
         push_u64(&mut symtab, 0); // st_size
     }
-    // The `.symtab` index into a model symbol is `1 + model_index` (null shift).
-    let symtab_index_of = |model_index: usize| -> u64 { 1 + model_index as u64 };
+    let symtab_index_of = |model_index: usize| -> u64 { symtab_index_by_model[model_index] };
 
-    // -- Build `.rela.text` --------------------------------------------------
+    // -- Build one `.rela.<section>` per relocated section --------------------
     // Each relocation kind maps to its architecture-specific ELF type and addend.
     // The x86-64 REL32 kinds carry the `-4` end-of-field addend; the AArch64
     // `CALL26` kind carries addend 0 (the branch immediate is PC-relative to the
-    // instruction word itself).
-    let mut rela: Vec<u8> = Vec::new();
-    if has_text_relocs {
-        for reloc in &model.sections[text_index].relocations {
-            let (r_type, addend) = match reloc.kind {
-                ObjectRelocationKind::Branch => (R_X86_64_PLT32, REL32_ADDEND),
-                ObjectRelocationKind::PcRel32 => (R_X86_64_PC32, REL32_ADDEND),
-                ObjectRelocationKind::Aarch64Call26 => (R_AARCH64_CALL26, 0),
-            };
-            let r_info = (symtab_index_of(reloc.symbol) << 32) | u64::from(r_type);
-            push_u64(&mut rela, reloc.offset);
-            push_u64(&mut rela, r_info);
-            push_i64(&mut rela, addend);
-        }
-    }
+    // instruction word itself); the DWARF kinds are absolute (`S + A`) with no
+    // implicit bias, so addend 0.
+    let rela_bytes: Vec<Vec<u8>> = reloc_section_indices
+        .iter()
+        .map(|&section_index| {
+            let mut rela: Vec<u8> = Vec::new();
+            for reloc in &model.sections[section_index].relocations {
+                let (r_type, addend) = match reloc.kind {
+                    ObjectRelocationKind::Branch => (R_X86_64_PLT32, REL32_ADDEND),
+                    ObjectRelocationKind::PcRel32 => (R_X86_64_PC32, REL32_ADDEND),
+                    ObjectRelocationKind::Aarch64Call26 => (R_AARCH64_CALL26, 0),
+                    ObjectRelocationKind::Absolute64 => (R_X86_64_64, 0),
+                    ObjectRelocationKind::SectionOffset32 => (R_X86_64_32, 0),
+                };
+                let r_info = (symtab_index_of(reloc.symbol) << 32) | u64::from(r_type);
+                push_u64(&mut rela, reloc.offset);
+                push_u64(&mut rela, r_info);
+                push_i64(&mut rela, addend);
+            }
+            rela
+        })
+        .collect();
 
     // -- Build `.shstrtab` (section-name string table) ----------------------
     // Names are interned as they are appended; the null section uses offset 0.
@@ -203,10 +297,14 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
 
     // Content sections (from the model).
     for section in &model.sections {
-        let (name, sh_type, flags, addralign): (&'static str, u32, u64, u64) = match section.kind {
-            ObjectSectionKind::Text => (".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16),
-            ObjectSectionKind::ReadOnlyData => (".rodata", SHT_PROGBITS, SHF_ALLOC, 1),
-            ObjectSectionKind::Bss => (".bss", SHT_NOBITS, SHF_ALLOC | SHF_WRITE, 16),
+        let name = section_name(section.kind);
+        let (sh_type, flags, addralign): (u32, u64, u64) = match section.kind {
+            ObjectSectionKind::Text => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16),
+            ObjectSectionKind::ReadOnlyData => (SHT_PROGBITS, SHF_ALLOC, 1),
+            ObjectSectionKind::Bss => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE, 16),
+            // A DWARF section occupies file space but no memory image, so it is
+            // PROGBITS with no SHF_ALLOC. Byte-aligned: DWARF is a byte stream.
+            ObjectSectionKind::Debug(_) => (SHT_PROGBITS, 0, 1),
         };
         let bytes = if section.kind == ObjectSectionKind::Bss {
             Vec::new()
@@ -227,9 +325,9 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
         });
     }
 
-    if has_text_relocs {
+    for (&section_index, rela) in reloc_section_indices.iter().zip(rela_bytes) {
         planned.push(PlannedSection {
-            name: ".rela.text",
+            name: rela_section_name(model.sections[section_index].kind),
             sh_type: SHT_RELA,
             flags: 0,
             addralign: 8,
@@ -237,12 +335,14 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
             offset: 0,
             size: rela.len() as u64,
             link: symtab_shidx,
-            info: elf_index_of_model(text_index),
+            info: elf_index_of_model(section_index),
             bytes: rela,
         });
     }
 
-    // `.symtab`: sh_link = strtab index, sh_info = index of first global (1).
+    // `.symtab`: sh_link = strtab index, sh_info = index of the first global,
+    // which is the null symbol (1) plus however many section-symbol locals the
+    // DWARF path added.
     planned.push(PlannedSection {
         name: ".symtab",
         sh_type: SHT_SYMTAB,
@@ -252,7 +352,7 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
         offset: 0,
         size: symtab.len() as u64,
         link: strtab_shidx,
-        info: 1,
+        info: 1 + local_count as u32,
         bytes: symtab,
     });
     planned.push(PlannedSection {
