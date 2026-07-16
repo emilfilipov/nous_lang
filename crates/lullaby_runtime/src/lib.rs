@@ -14,15 +14,21 @@
 //! - `runtime_os`: clocks, sleep, OS randomness, and stdin readers.
 //! - `runtime_net`: sockets, processes, and the HTTP exchange.
 //! - `runtime_list`: homogeneous-list aggregate/sort operations.
-//! - `interpreter`: the `Runtime` evaluator, its `Env`, and the entry points;
+//! - `interpreter`: the `Runtime` evaluator, the env shelf, and the entry points;
 //!   its builtin and eval halves stay in the crate root's `builtins`/`eval`
 //!   submodules.
+//! - `runtime_env`: the lexical `Env` (scope stack, monotonic scope ids, the
+//!   process-unique env id the raw-pointer model resolves against), mirroring the
+//!   IR/bytecode tiers' `ir_env.rs`.
+//! - `raw_pointer`: the place-backed raw-pointer address space behind `addr_of` /
+//!   `ptr_offset` / `ptr_cast`.
 
 use std::fmt;
 
 mod interpreter;
 mod raw_pointer;
 mod runtime_concurrency;
+mod runtime_env;
 mod runtime_error;
 mod runtime_int;
 mod runtime_list;
@@ -32,8 +38,8 @@ mod runtime_os;
 
 pub use interpreter::{run_main, run_main_with_args, run_named_function};
 pub use raw_pointer::{
-    RAW_POINTER_BASE, RawPointerMemory, RawResolve, RootSlot, dangling_place, escaped_pointer,
-    next_env_id, unmapped_raw,
+    RAW_POINTER_BASE, RawPointerMemory, RawResolve, RootSlot, dangling_place, next_env_id,
+    unmapped_raw, unreachable_frame,
 };
 pub use runtime_concurrency::*;
 pub use runtime_error::*;
@@ -52,12 +58,13 @@ pub use runtime_os::*;
 // owns it; `Runtime` only holds the tables.
 pub(crate) use actor::{ActorInstance, ActorMessage, ReplySlot, SupervisionAction};
 pub(crate) use interpreter::{
-    CallFrame, Control, Env, ParallelCallable, Runtime, index_into, statement_span,
+    CallFrame, Control, ParallelCallable, Runtime, index_into, statement_span,
 };
 pub(crate) use lullaby_diagnostics::{Span, TraceFrame};
 pub(crate) use lullaby_parser::{
     AssignOp, BinaryOp, Expr, ExprKind, Function, MatchArm, MatchPattern, Place, Stmt, UnaryOp,
 };
+pub(crate) use runtime_env::Env;
 pub(crate) use runtime_net::PipeKind;
 pub(crate) use std::fs;
 pub(crate) use std::net::{TcpListener, TcpStream, UdpSocket};

@@ -49,60 +49,72 @@
 //! index)` the `addr_of` resolved, and an `Env` scope id is never reused, so
 //! resolution either finds the original binding or finds nothing at all.
 //!
-//! # Lifetime: escape is diagnosed, never guessed
+//! # Cross-frame addressing: the env shelf (stage 4)
 //!
-//! A place-backed address is only meaningful while its place exists and is
-//! reachable. Three things end that, and all are detected rather than approximated:
+//! A pointer that leaves the frame that took it — `poke(addr_of(x))`, the
+//! out-parameter idiom — used to be refused, because each frame's `Env` lived on the
+//! Rust stack and a callee could not reach its caller's. That refusal was honest but
+//! wrong-headed: the shapes it rejected are **valid C, not undefined behaviour**
+//! (C11 6.2.4p6 ties an automatic object's lifetime to *its block*, and a call does
+//! not end the caller's block), and native — where `addr_of` is a real `lea` —
+//! compiles them.
+//!
+//! Stage 4 makes them resolve, via an **env shelf**: an explicit, interpreter-owned
+//! stack of the *ancestor* frames' `Env`s. At a call boundary the caller's `Env` is
+//! swapped out of its `&mut Env` slot and pushed onto the shelf for the dynamic
+//! extent of the call, then swapped back. So a callee reaches its caller's locals by
+//! looking the owning `Env` up **by [`RootSlot::env`] id** — the current frame's
+//! `&mut Env`, or a shelf entry.
+//!
+//! Why this shape and not the two obvious alternatives:
+//!
+//! - **`Rc<RefCell<Env>>`** is cheaper to write but puts a runtime borrow check on
+//!   *every variable access* in every program — a hot-path tax paid by code that
+//!   never touches a pointer.
+//! - **One `Vec<Env>` indexed by frame id**, with the current frame living in it too,
+//!   puts a bounds-checked index on every variable access for the same reason.
+//!
+//! Keeping the **current** frame as a plain `&mut Env` and shelving only *ancestors*
+//! avoids both: the hot path is byte-for-byte what it was. The shelf is touched only
+//! at a call boundary, and only once the program has actually taken an address —
+//! [`RawPointerMemory::shelf_needed`] is false until the first `addr_of`, so a
+//! program that never takes one pays a single predictable branch per call and nothing
+//! else. This is sound by construction rather than by luck: with no live region, no
+//! address can resolve to a place at all, so not shelving is unobservable.
+//!
+//! # Lifetime: dangling is diagnosed, never guessed
+//!
+//! A place-backed address is only meaningful while its place exists. Two things end
+//! that, and both are **detected** rather than approximated:
 //!
 //! - **The scope died.** The block holding the root binding was popped, so the
-//!   binding is gone. `Env::at` finds nothing and the access is refused.
+//!   binding is gone. [`RootSlot`] pins a scope id that is never reused, so `Env::at`
+//!   finds nothing and the access is refused.
 //! - **The frame returned.** [`RawPointerMemory::exit_frame`] drops that frame's
-//!   regions, so a pointer that outlived it resolves to [`RawResolve::Dangling`].
-//! - **The frame is not current.** The interpreters keep each frame's `Env` on the
-//!   Rust stack, so a callee cannot reach its caller's bindings at all. A pointer
-//!   that escaped the frame that created it — returned, stored into a heap value, or
-//!   merely passed into a callee — therefore cannot be resolved.
+//!   regions, so a pointer that outlived its frame resolves to
+//!   [`RawResolve::Dangling`].
 //!
-//! All are refused with [`L0459`](../../../documents/diagnostic_registry.md), which
-//! stage 3 **retargets** from "stores are unmodelled" (temporary) to "this `addr_of`
-//! pointer is outside its place's lifetime". A stale or dangling read is a wrong
-//! answer, and a wrong answer is exactly what this model exists to avoid.
+//! Both are refused with [`L0459`](../../../documents/diagnostic_registry.md), and
+//! both are **genuine program errors**: returning `&local`, or using a pointer to a
+//! block that has ended, is undefined behaviour in C, so refusing them forbids no
+//! defined program. `L0459` now means exactly that and nothing else.
 //!
-//! But the three cases are **not** alike, and the diagnostics must not pretend they
-//! are:
+//! A pointer handed to another **thread** (`spawn`/async/`parallel_map`) is a separate
+//! case and not `L0459`: each thread builds its own interpreter with its own
+//! [`RawPointerMemory`], so the address names no region there and is refused as
+//! unmapped ([`unmapped_raw`], `L0406`).
 //!
-//! - The **dead-scope** and **returned-frame** cases are genuine program errors —
-//!   returning `&local` or using a pointer to a dead block is undefined behaviour in
-//!   C, so refusing them forbids no defined program.
-//! - The **other-live-frame** case is a **limitation of this interpreter model, not a
-//!   program error**. Passing `&x` into a callee is well-defined C (C11 6.2.4p6 ties
-//!   an automatic object's lifetime to *its block*; a call does not end the caller's
-//!   block), and it is the canonical out-parameter idiom — `scanf("%d", &x)`,
-//!   `strtol(s, &end, 10)`, `qsort`. The **native backend supports it** for the
-//!   places it lowers (an 8-byte scalar or a struct-field path), because `addr_of`
-//!   there is a real `lea`. The interpreters cannot, because a callee has no access
-//!   to its caller's `Env`. (Native does *not* lower `addr_of` of an array element or
-//!   a whole array — it skips cleanly with `L0339` — so a cross-frame *buffer* walk
-//!   is currently unsupported on every tier: natively by a clean skip, here by
-//!   `L0459`.)
+//! # Honest refusal is the invariant
 //!
-//! # The accepted limitation, stated plainly
-//!
-//! **On the interpreters, an `addr_of` pointer is usable only within the body of the
-//! function that took the address.** Pointer-taking code cannot be factored into a
-//! helper there. This is an **acceptance divergence**: native compiles and runs
-//! `poke(addr_of(x))` (a scalar out-parameter) correctly while the interpreters refuse
-//! it with `L0459` — loudly, never silently. Lifting it needs an explicit interpreter-owned frame stack
-//! (every `Env` in one `Vec<Env>` indexed by frame id), a large change across three
-//! interpreters that all hold `&mut Env` pervasively on the hot path; it is
-//! deliberately not attempted, since native is the tier that does real pointers.
-//!
-//! Stage 2 got *some* of these cross-frame shapes right by luck: it read the
-//! snapshot, which happened to match whenever the place had not changed since the
-//! `addr_of`. That is not a property worth preserving — for a genuine stale-read
-//! (`addr_of(x)`; `x = 99`; `peek(p)`) it silently returned the old value. Stage 3
-//! trades those lucky answers for a loud refusal, and makes every in-frame use — the
-//! whole of the required surface, and every shipped fixture — alias for real.
+//! There are exactly two outcomes for a deref: the owning `Env` is found and the
+//! access goes to the **real, live storage**, or it is not found and the access is a
+//! hard error ([`unreachable_frame`], the fail-closed guard). There is no path that
+//! reads a copy — so even a *missed* shelving site could only ever cost a loud
+//! refusal, never a wrong answer. This matters because the
+//! predecessor of this model *did* read a by-value snapshot, which silently returned
+//! the pre-`addr_of` value for `addr_of(x); x = 99; peek(p)` — a wrong answer dressed
+//! as a right one. A stale read is the failure mode this model exists to prevent, and
+//! no amount of convenience is worth reintroducing it.
 //!
 //! Note this is not the `volatile_*` situation: `volatile_load`/`volatile_store` are
 //! *semantically correct* on the interpreters (only the optimization barrier is
@@ -110,52 +122,55 @@
 
 use crate::{ResolvedPlace, RuntimeError, Value};
 
-/// `L0459` for a raw address whose region exists but belongs to a *live* frame other
-/// than the current one — most often a pointer passed into a callee.
+/// `L0459` **fail-closed guard**: a live region resolved to a place, but the `Env` that
+/// owns it was not reachable — neither the current frame's nor anything on the shelf.
 ///
-/// **This is a limitation of the interpreter model, not a program error.** Passing
-/// `&x` into a callee is perfectly well-defined C: C11 6.2.4p6 ties an automatic
-/// object's lifetime to *its block*, and calling a function does not end the caller's
-/// block, so `x` is alive for the whole call. It is the canonical out-parameter idiom
-/// (`scanf("%d", &x)`, `strtol(s, &end, 10)`). The native backend supports it for the
-/// places it lowers — an 8-byte scalar or a struct-field path — because there
-/// `addr_of` is a real `lea`.
+/// This is not expected to fire in delivered code, and it is deliberately **not**
+/// `unreachable!()` or an `unwrap`. It is the branch that makes the model's central
+/// guarantee true by construction rather than by audit: a deref either finds the owning
+/// `Env` and touches the **real, live storage**, or it is a **hard error**. There is no
+/// third path that reads a copy. If a dispatch site were ever added that runs user code
+/// without shelving the calling frame (see `with_env_shelved`), the cost is a loud,
+/// specific refusal here — never a silent stale read, which is the failure mode this
+/// whole model exists to prevent.
 ///
-/// The interpreters cannot, because each frame's bindings live in that frame's own
-/// `Env` on the Rust stack and a callee has no access to its caller's. So the choice
-/// is to refuse or to read the wrong storage — and refusing loudly is the only honest
-/// option. The diagnostic must say *that*, and must not tell the user their correct
-/// code is undefined.
-pub fn escaped_pointer(name: &str) -> RuntimeError {
+/// Note what this is *not*: a pointer handed to **another thread** (`spawn`, an
+/// `async fn`, `parallel_map`) does not reach this at all. Each thread builds its own
+/// interpreter with its own [`RawPointerMemory`], so the address names no region there
+/// and is refused as unmapped ([`unmapped_raw`], `L0406`) — verified, not assumed.
+pub fn unreachable_frame(name: &str) -> RuntimeError {
     RuntimeError::new(
         "L0459",
         format!(
-            "this `addr_of` pointer refers to `{name}`, a place in a different function \
-             frame, and the interpreters cannot reach another frame's locals, so it \
-             cannot be dereferenced here. This is a limitation of the interpreter \
-             model, not a mistake in your program: passing an address into a function \
-             is valid — it is the out-parameter idiom — and the native backend, where \
-             `addr_of` is a real machine address, supports it for a scalar or \
-             struct-field place. The interpreters refuse it rather than read or write \
-             the wrong storage. To run this on the interpreters, keep the `addr_of` \
-             pointer inside the function that took the address, pass or return the \
-             value itself, or use an `alloc`-backed `ptr<T>`, which has no frame \
-             lifetime and works across frames on every tier"
+            "this `addr_of` pointer refers to `{name}`, whose place is live but whose \
+             environment this execution path cannot reach, so it cannot be dereferenced \
+             here. Passing an address into a called function works — the callee reads \
+             and writes the caller's place for real — so reaching this is unexpected and \
+             is refused rather than answered from storage that cannot be verified. If \
+             you can reproduce it, please report it: it indicates an interpreter \
+             dispatch path that does not shelve its calling frame"
         ),
     )
 }
 
 /// `L0459` for a raw address whose place is gone: either its block was popped, or the
 /// whole frame that owned it has returned. Reading or writing it would be a dangling
-/// access — undefined behaviour in C, and a wrong answer here.
+/// access — **undefined behaviour in C**, and a wrong answer here.
+///
+/// This is a genuine program error, and after the stage-4 env shelf it is essentially
+/// what `L0459` means: passing an address into a callee resolves for real now, so what
+/// is left refusing is code whose place has actually ceased to exist — a returned
+/// `addr_of(local)`, or a pointer to an inner-block or loop-body local used after that
+/// block ended.
 pub fn dangling_place(name: &str) -> RuntimeError {
     RuntimeError::new(
         "L0459",
         format!(
             "this `addr_of` pointer refers to `{name}`, whose block or function has \
              already ended, so the place no longer exists. Reading or writing it would \
-             be a dangling access (undefined behaviour in C); keep the pointer inside \
-             the block that owns the place, or use an `alloc`-backed `ptr<T>`, which \
+             be a dangling access (undefined behaviour in C — the storage may since have \
+             been reused). Keep the pointer inside the block that owns the place, return \
+             the value rather than its address, or use an `alloc`-backed `ptr<T>`, which \
              has no frame lifetime"
         ),
     )
@@ -283,20 +298,20 @@ impl RawRegion {
 /// The outcome of mapping a raw byte address back to a place.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawResolve {
-    /// A live region owned by the current frame: read/write `path` under the root
-    /// binding at `root`. The caller still has to confirm the scope is alive
-    /// (`Env::at`), which fails once the block holding the root binding was popped.
+    /// A live region: read/write `path` under the root binding at `root`. The frame
+    /// that created the region is still on the call stack (a returned frame's regions
+    /// are dropped by [`RawPointerMemory::exit_frame`]), so the place is alive —
+    /// whether it belongs to the current frame or an ancestor.
+    ///
+    /// The caller locates the owning `Env` by [`RootSlot::env`] — the current frame's
+    /// `&mut Env` or an entry on the env shelf — and still has to confirm the *scope*
+    /// is alive (`Env::at`), which fails once the block holding the root binding was
+    /// popped.
     Place {
         root: RootSlot,
         path: Vec<ResolvedPlace>,
         name: String,
     },
-    /// The address belongs to a region created by a *different*, still-live frame —
-    /// typically a pointer passed into a callee. The place is alive and this is valid
-    /// C (and works natively); the interpreters simply cannot reach another frame's
-    /// bindings, so they refuse rather than resolve it wrongly. See
-    /// [`escaped_pointer`].
-    Escaped { name: String },
     /// The address belonged to a region whose frame has since **returned**, so the
     /// place it named no longer exists at all. A pointer that outlived its frame.
     Dangling { name: String },
@@ -329,7 +344,9 @@ pub struct RawPointerMemory {
     tombstones: Vec<RawTombstone>,
     next_base: usize,
     /// The frame currently executing. `addr_of` stamps this onto the region it
-    /// creates; an access from any other frame is [`RawResolve::Escaped`].
+    /// creates, so [`RawPointerMemory::exit_frame`] knows which regions die when that
+    /// frame returns. It deliberately plays **no part in resolution**: a live region's
+    /// place is reachable from a callee through the env shelf.
     current_frame: u64,
     /// Monotonic frame-id source. Ids are never reused, so a region from a returned
     /// frame can never be mistaken for one belonging to a later frame that happens
@@ -374,10 +391,29 @@ impl RawPointerMemory {
         addr >= RAW_POINTER_BASE
     }
 
+    /// Whether the interpreters need to shelve the caller's `Env` at a call boundary
+    /// so a callee can reach it (see the module docs' *env shelf*).
+    ///
+    /// False until the program's first `addr_of`, which is the whole point: shelving
+    /// costs a two-word swap and a `Vec` push per call, and a program that never takes
+    /// an address must not pay it. Gating on it is **sound by construction, not an
+    /// optimization gamble**: with no live region, [`RawPointerMemory::resolve`] can
+    /// only return [`RawResolve::Dangling`] or [`RawResolve::Unmapped`], so no access
+    /// can consult an `Env` and the shelf's contents are unobservable.
+    ///
+    /// Once a region exists it stays until its frame returns, so the flag simply
+    /// tracks "this program is doing raw addressing right now". `#[inline]` because
+    /// this is tested once per call on every interpreter's hot path.
+    #[inline]
+    pub fn shelf_needed(&self) -> bool {
+        !self.regions.is_empty()
+    }
+
     /// Begin a new interpreter frame, returning the id to hand back to
     /// [`RawPointerMemory::exit_frame`] on the way out. Every function invocation on
-    /// every interpreter must be bracketed by these two, or a callee would appear to
-    /// share its caller's frame and could resolve a pointer it must not.
+    /// every interpreter must be bracketed by these two, so that the regions a frame
+    /// creates die exactly when it returns — that bracket is what turns a returned
+    /// `addr_of(local)` into a refusal instead of a read of reused storage.
     pub fn enter_frame(&mut self) -> u64 {
         let previous = self.current_frame;
         self.current_frame = self.next_frame;
@@ -538,11 +574,10 @@ impl RawPointerMemory {
                 None => RawResolve::Unmapped,
             };
         };
-        if region.frame != self.current_frame {
-            return RawResolve::Escaped {
-                name: region.name.clone(),
-            };
-        }
+        // No frame check: a region only exists while its frame is live (`exit_frame`
+        // drops them), so any region we find names a place that is genuinely alive.
+        // Reaching an *ancestor* frame's `Env` is the env shelf's job, not this
+        // function's — addressing metadata says where the place is, not who may see it.
         match region.path_to(addr) {
             Some(path) => RawResolve::Place {
                 root: region.root,
@@ -649,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pointer_from_another_frame_is_escaped_not_resolved() {
+    fn a_pointer_passed_into_a_callee_still_names_its_place() {
         let mut mem = RawPointerMemory::default();
         let Value::Ptr(base) = mem
             .addr_of_element(root(), "a", Vec::new(), &cells(), 0)
@@ -657,20 +692,45 @@ mod tests {
         else {
             panic!("addr_of should yield a pointer");
         };
-        // Entering a callee: the caller's bindings are no longer reachable, so the
-        // pointer must refuse to resolve rather than name the wrong storage.
+        // Entering a callee: the caller's block has NOT ended (C11 6.2.4p6), so the
+        // place is alive and the pointer must still name it. Reaching the owning
+        // `Env` is the interpreter's env shelf's job; the region model must not
+        // pretend the place is gone. (This is the out-parameter idiom.)
         let previous = mem.enter_frame();
-        assert_eq!(
-            mem.resolve(base),
-            RawResolve::Escaped {
-                name: "a".to_string()
-            }
-        );
-        // Arithmetic stays total across the boundary — only the deref is checked.
+        let RawResolve::Place { root: r, path, .. } = mem.resolve(base) else {
+            panic!("a live place must resolve from a callee frame");
+        };
+        assert_eq!(r, root());
+        assert_eq!(path, vec![ResolvedPlace::Index(0)]);
+        // Arithmetic stays total across the boundary, and a callee can walk a buffer
+        // its caller handed it.
         assert_eq!(mem.offset(base, 1), Some(base + 8));
-        // Back in the owning frame it resolves again.
+        let RawResolve::Place { path, .. } = mem.resolve(base + 8) else {
+            panic!("a callee must be able to walk a caller's buffer");
+        };
+        assert_eq!(path, vec![ResolvedPlace::Index(1)]);
+        // Two frames deep is no different — depth is irrelevant to liveness.
+        let inner = mem.enter_frame();
+        assert!(matches!(mem.resolve(base), RawResolve::Place { .. }));
+        mem.exit_frame(inner);
         mem.exit_frame(previous);
         assert!(matches!(mem.resolve(base), RawResolve::Place { .. }));
+    }
+
+    #[test]
+    fn the_shelf_is_only_needed_once_an_address_has_been_taken() {
+        let mut mem = RawPointerMemory::default();
+        // A program that never calls `addr_of` must not pay for the shelf, and it is
+        // sound not to: with no region, nothing can resolve to a place anyway.
+        assert!(!mem.shelf_needed());
+        assert_eq!(mem.resolve(RAW_POINTER_BASE), RawResolve::Unmapped);
+        let previous = mem.enter_frame();
+        mem.addr_of_element(root(), "a", Vec::new(), &cells(), 0)
+            .expect("addr_of");
+        assert!(mem.shelf_needed());
+        // The region dies with its frame, and so does the need to shelve.
+        mem.exit_frame(previous);
+        assert!(!mem.shelf_needed());
     }
 
     #[test]

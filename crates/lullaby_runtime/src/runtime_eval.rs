@@ -216,14 +216,20 @@ impl<'a> Runtime<'a> {
                 // top-level call, where `name` is not a local at all — free of the
                 // clone and the discarded "unknown variable" error a bare
                 // `env.get` allocates on every such call.
+                // Every dispatch below runs user/builtin code that may deref an
+                // `addr_of` pointer naming a place in *this* frame, so this frame's
+                // `env` goes on the shelf for the extent of the call. See
+                // `Runtime::with_env_shelved`.
                 let target: &str = match env.get_ref(name) {
                     Some(Value::Closure(closure)) => {
                         let closure = closure.clone();
-                        return self.invoke_closure(&closure, values);
+                        return self
+                            .with_env_shelved(env, |me| me.invoke_closure(&closure, values));
                     }
                     Some(Value::Func(func)) => {
                         let func = func.clone();
-                        return self.dispatch_named_call(&func, values);
+                        return self
+                            .with_env_shelved(env, |me| me.dispatch_named_call(&func, values));
                     }
                     _ => name,
                 };
@@ -234,7 +240,9 @@ impl<'a> Runtime<'a> {
                 // `raw_pointer.rs`.
                 match self.eval_raw_deref(target, values, env) {
                     Ok(result) => result,
-                    Err(values) => self.dispatch_named_call(target, values),
+                    Err(values) => {
+                        self.with_env_shelved(env, |me| me.dispatch_named_call(target, values))
+                    }
                 }
             }
             ExprKind::Await { expr } => {
@@ -315,7 +323,7 @@ impl<'a> Runtime<'a> {
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                self.call_function(name, ordered)
+                self.with_env_shelved(env, |me| me.call_function(name, ordered))
             }
             // `match` normally arrives as a statement and is handled in
             // `eval_statement`; this path covers a `match` nested as a value and
@@ -677,20 +685,26 @@ impl<'a> Runtime<'a> {
     }
 
     /// Read a raw pointer's pointee (`ptr_read`/`volatile_load`) on the paths that
-    /// have no `env` — a builtin reached as a first-class function value rather than
-    /// through `eval_expr`'s deref hook. An `addr_of` address names a place that
-    /// only `env` can reach, so it is refused here rather than approximated; the
-    /// heap-slot model needs no `env` and is unaffected.
+    /// have no `env` — a builtin reached as a first-class function value (`let f =
+    /// load; f(p)`) rather than through `eval_expr`'s deref hook. The env shelf covers
+    /// it: that dispatch shelved the calling frame's environment, so the owning `Env`
+    /// is reachable by id. The heap-slot model needs no `env` and is unaffected.
     pub(crate) fn raw_or_heap_load(&self, ptr: Value) -> Result<Value, RuntimeError> {
         let addr = ptr.as_ptr()?;
         if crate::RawPointerMemory::is_raw(addr) {
-            return Err(match self.raw_ptrs.resolve(addr) {
-                crate::RawResolve::Unmapped => crate::unmapped_raw(addr),
-                crate::RawResolve::Dangling { name } => crate::dangling_place(&name),
-                crate::RawResolve::Escaped { name } | crate::RawResolve::Place { name, .. } => {
-                    crate::escaped_pointer(&name)
+            return match self.raw_ptrs.resolve(addr) {
+                crate::RawResolve::Place { root, path, name } => {
+                    let owner = self
+                        .shelf_env(root.env)
+                        .ok_or_else(|| crate::unreachable_frame(&name))?;
+                    let base = owner
+                        .at(&root)
+                        .ok_or_else(|| crate::dangling_place(&name))?;
+                    get_place(base, &path)
                 }
-            });
+                crate::RawResolve::Dangling { name } => Err(crate::dangling_place(&name)),
+                crate::RawResolve::Unmapped => Err(crate::unmapped_raw(addr)),
+            };
         }
         self.heap
             .get(addr)
@@ -703,19 +717,23 @@ impl<'a> Runtime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("store", 2, args.len()))?;
         let slot = ptr.as_ptr()?;
-        // The `env`-less counterpart of `raw_or_heap_load`: a store through an
-        // `addr_of` pointer must reach the original place, which needs this frame's
-        // `env`. `eval_expr`'s deref hook handles every ordinary call; this path is
-        // only reachable for a builtin used as a first-class function value, so it
-        // fails closed rather than writing somewhere it cannot verify.
+        // The `env`-less counterpart of `raw_or_heap_load`: the store lands on the
+        // owning frame's real storage, found on the env shelf by id.
         if crate::RawPointerMemory::is_raw(slot) {
-            return Err(match self.raw_ptrs.resolve(slot) {
-                crate::RawResolve::Unmapped => crate::unmapped_raw(slot),
-                crate::RawResolve::Dangling { name } => crate::dangling_place(&name),
-                crate::RawResolve::Escaped { name } | crate::RawResolve::Place { name, .. } => {
-                    crate::escaped_pointer(&name)
+            return match self.raw_ptrs.resolve(slot) {
+                crate::RawResolve::Place { root, path, name } => {
+                    let owner = self
+                        .shelf_env_mut(root.env)
+                        .ok_or_else(|| crate::unreachable_frame(&name))?;
+                    let base = owner
+                        .at_mut(&root)
+                        .ok_or_else(|| crate::dangling_place(&name))?;
+                    set_place(base, &path, value)?;
+                    Ok(Value::Void)
                 }
-            });
+                crate::RawResolve::Dangling { name } => Err(crate::dangling_place(&name)),
+                crate::RawResolve::Unmapped => Err(crate::unmapped_raw(slot)),
+            };
         }
         let Some(target) = self.heap.get_mut(slot) else {
             return Err(RuntimeError::new(
@@ -947,23 +965,34 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    /// Read the place a raw byte address names, through this frame's `env`. Because
-    /// this reaches the *original* storage rather than a copy, a `ptr_read` after an
-    /// independent `x = …` observes the new value.
+    /// Read the place a raw byte address names — this frame's `env` for an in-frame
+    /// pointer, or the owning ancestor frame's environment from the env shelf for one
+    /// the caller passed in. Because this reaches the *original* storage rather than a
+    /// copy, a `ptr_read` after an independent `x = …` observes the new value.
+    ///
+    /// The two failure shapes are distinct and both honest: the *scope* holding the
+    /// root binding was popped (`Env::at` misses → the place is dead), or the owning
+    /// frame belongs to another thread and is unreachable. Neither ever falls back to
+    /// reading a copy.
     fn raw_place_load(&self, addr: usize, env: &Env) -> Result<Value, RuntimeError> {
         match self.raw_ptrs.resolve(addr) {
             crate::RawResolve::Place { root, path, name } => {
-                let base = env.at(&root).ok_or_else(|| crate::dangling_place(&name))?;
+                let owner = self
+                    .owning_env(&root, env)
+                    .ok_or_else(|| crate::unreachable_frame(&name))?;
+                let base = owner
+                    .at(&root)
+                    .ok_or_else(|| crate::dangling_place(&name))?;
                 get_place(base, &path)
             }
-            crate::RawResolve::Escaped { name } => Err(crate::escaped_pointer(&name)),
             crate::RawResolve::Dangling { name } => Err(crate::dangling_place(&name)),
             crate::RawResolve::Unmapped => Err(crate::unmapped_raw(addr)),
         }
     }
 
-    /// Write the place a raw byte address names, through this frame's `env`. This is
-    /// what makes `ptr_write(addr_of(x), 5)` set `x` to `5`.
+    /// Write the place a raw byte address names. This is what makes
+    /// `ptr_write(addr_of(x), 5)` set `x` to `5` — including from a callee, where `x`
+    /// belongs to the caller's environment on the env shelf (the out-parameter idiom).
     fn raw_place_store(
         &mut self,
         addr: usize,
@@ -972,13 +1001,20 @@ impl<'a> Runtime<'a> {
     ) -> Result<Value, RuntimeError> {
         match self.raw_ptrs.resolve(addr) {
             crate::RawResolve::Place { root, path, name } => {
-                let base = env
+                // In-frame first (the common case), then the shelf. The two arms
+                // borrow disjointly, so the write always lands on the real storage.
+                let owner = if env.id() == root.env {
+                    Some(env)
+                } else {
+                    self.shelf_env_mut(root.env)
+                };
+                let owner = owner.ok_or_else(|| crate::unreachable_frame(&name))?;
+                let base = owner
                     .at_mut(&root)
                     .ok_or_else(|| crate::dangling_place(&name))?;
                 set_place(base, &path, value)?;
                 Ok(Value::Void)
             }
-            crate::RawResolve::Escaped { name } => Err(crate::escaped_pointer(&name)),
             crate::RawResolve::Dangling { name } => Err(crate::dangling_place(&name)),
             crate::RawResolve::Unmapped => Err(crate::unmapped_raw(addr)),
         }

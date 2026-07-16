@@ -1,29 +1,32 @@
-//! The IR/bytecode interpreters' lexical environment. Split out of `bytecode_vm.rs`
-//! (which is over the file-size cap) as a cohesive module: `Env` is shared by the IR
-//! tree-walker and the bytecode VM, and is independent of both.
+//! The AST interpreter's lexical environment. Split out of `interpreter.rs` (which
+//! this change would otherwise push past the file-size cap) as a cohesive module,
+//! mirroring the IR/bytecode tiers' `ir_env.rs` one-to-one — `Env` is independent of
+//! the evaluator that drives it.
 //!
-//! Mirrors the AST runtime's `Env` (`lullaby_runtime::interpreter`) one-to-one,
-//! including the monotonic scope ids that let the place-backed raw-pointer model
-//! name a binding by [`RootSlot`] rather than by name. See
-//! `lullaby_runtime::raw_pointer` for why that matters.
+//! A behavior-preserving code move: `Scope`/`Env` and every method are unchanged.
+//! `Env` carries the monotonic scope ids and the process-unique env id that let the
+//! place-backed raw-pointer model name a binding by `RootSlot` rather than by name,
+//! and that let the **env shelf** find an ancestor frame's environment by id. See
+//! `crate::raw_pointer` for why both matter.
 
-use crate::unpack_slot;
-use lullaby_runtime::{RootSlot, RuntimeError, Value};
+use crate::*;
 use std::collections::HashMap;
 
 /// A lexical environment: a stack of scopes, each an insertion-ordered
 /// association list of `(name, value)`. Function-call and block scopes are
-/// small, so a linear-scan `Vec` beats a `HashMap` — it avoids a per-scope
-/// bucket allocation and per-access string hashing, and its contiguous layout
-/// is cache-friendly. `define` keeps at most one binding per name per scope
-/// (replacing in place, like the previous `HashMap::insert`), so resolution
-/// never disambiguates duplicates within a scope; cross-scope shadowing is
-/// innermost-first. Mirrors the AST runtime's `Env` one-to-one.
+/// small (a handful of bindings), so a linear-scan `Vec` beats a `HashMap`
+/// here — it avoids a per-scope bucket allocation and per-access string
+/// hashing, and its contiguous layout is cache-friendly. `define` keeps at
+/// most one binding per name per scope (replacing in place, exactly like the
+/// previous `HashMap::insert`), so resolution never has to disambiguate
+/// duplicates within a scope; shadowing across scopes is innermost-first.
 ///
-/// Each scope carries a monotonic `id` that is **never reused**, so a raw pointer
-/// can pin the exact binding whose address was taken via a [`RootSlot`]
-/// (`(scope id, entry index)`) instead of re-resolving a name that a nested `let`
-/// may since have shadowed.
+/// Each scope carries a monotonic `id`. Ids are **never reused** — not across
+/// `push_scope`/`pop_scope`, and not across a pooled `reset` — which is what lets a
+/// raw pointer name a binding by [`RootSlot`] (`(scope id, entry index)`) instead of
+/// by name: resolution either finds the exact binding whose address was taken, or
+/// finds nothing because its scope is gone. Resolving by name would silently follow
+/// a nested shadowing `let`. See `raw_pointer.rs`.
 #[derive(Debug, Clone)]
 pub(crate) struct Scope {
     id: u64,
@@ -43,7 +46,7 @@ pub(crate) struct Env {
 impl Default for Env {
     fn default() -> Self {
         Self {
-            id: lullaby_runtime::next_env_id(),
+            id: crate::raw_pointer::next_env_id(),
             scopes: vec![Scope {
                 id: 0,
                 entries: Vec::new(),
@@ -58,7 +61,7 @@ impl Env {
     /// [`RootSlot::env`] an `addr_of` recorded, which is what lets a callee reach its
     /// caller's locals. Ids are unique among *live* environments: a pooled `Env` is
     /// only reused after its frame returned, so at any instant no two live frames
-    /// share one.
+    /// share one. Mirrors the IR/bytecode `Env`.
     pub(crate) fn id(&self) -> u64 {
         self.id
     }
@@ -69,8 +72,8 @@ impl Env {
     /// Left behind in a caller's `&mut Env` slot while its real environment sits on
     /// the env shelf for the duration of a call. It is never read: the swap back
     /// happens before the caller resumes. Its id is `0`, which
-    /// [`lullaby_runtime::next_env_id`] never hands out, so even a stray [`RootSlot`]
-    /// cannot resolve against it.
+    /// [`crate::raw_pointer::next_env_id`] never hands out, so even a stray
+    /// [`RootSlot`] cannot resolve against it.
     pub(crate) fn hollow() -> Self {
         Self {
             id: 0,
@@ -88,9 +91,43 @@ impl Env {
         }
     }
 
+    pub(crate) fn push_scope(&mut self) {
+        let scope = self.fresh_scope();
+        self.scopes.push(scope);
+    }
+
+    pub(crate) fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    /// Reset to a single empty scope so a pooled environment can be reused for the
+    /// next call. Each scope's backing `Vec` keeps its capacity, so a repeated
+    /// call re-binds its locals without reallocating; clearing every entry means
+    /// no stale binding can leak into the reused environment.
+    ///
+    /// The surviving scope takes a **fresh id**: a pooled env is a different frame's
+    /// storage, and reusing the id would let a raw pointer from the previous
+    /// occupant resolve against the new one's bindings.
+    pub(crate) fn reset(&mut self) {
+        self.scopes.truncate(1);
+        let id = self.next_scope_id;
+        self.next_scope_id += 1;
+        match self.scopes.first_mut() {
+            Some(first) => {
+                first.entries.clear();
+                first.id = id;
+            }
+            None => self.scopes.push(Scope {
+                id,
+                entries: Vec::new(),
+            }),
+        }
+    }
+
     /// Locate the nearest binding of `name` as a stable [`RootSlot`], resolving
-    /// innermost-first exactly like [`Env::get`]. The `addr_of` half of the
-    /// place-backed raw-pointer model.
+    /// innermost-first exactly like [`Env::get`]. This is the `addr_of` half of the
+    /// place-backed raw-pointer model: it pins the binding at address-taking time so
+    /// later reads/writes through the pointer cannot drift to a different one.
     pub(crate) fn locate(&self, name: &str) -> Option<RootSlot> {
         for scope in self.scopes.iter().rev() {
             for (entry, (existing, _)) in scope.entries.iter().enumerate() {
@@ -106,8 +143,8 @@ impl Env {
         None
     }
 
-    /// Borrow the binding a [`RootSlot`] names, or `None` once its scope has been
-    /// popped (the place is dead, so a raw pointer to it is dangling).
+    /// Borrow the binding a [`RootSlot`] names, or `None` if its scope has since
+    /// been popped (the place is dead — a raw pointer to it is dangling).
     pub(crate) fn at(&self, slot: &RootSlot) -> Option<&Value> {
         if slot.env != self.id {
             return None;
@@ -131,36 +168,23 @@ impl Env {
             .and_then(|scope| scope.entries.get_mut(slot.entry))
             .map(|(_, value)| value)
     }
-    /// Reset to a single empty scope so a pooled environment can be reused for the
-    /// next call, keeping each scope's `Vec` capacity. Clearing every entry means
-    /// no stale binding can leak into the reused environment.
-    ///
-    /// The surviving scope takes a **fresh id**: a pooled env is a different frame's
-    /// storage, and reusing the id would let a raw pointer from the previous
-    /// occupant resolve against the new one's bindings.
-    pub(crate) fn reset(&mut self) {
-        self.scopes.truncate(1);
-        let id = self.next_scope_id;
-        self.next_scope_id += 1;
-        match self.scopes.first_mut() {
-            Some(first) => {
-                first.entries.clear();
-                first.id = id;
+
+    pub(crate) fn define(&mut self, name: String, value: Value) {
+        let scope = &mut self
+            .scopes
+            .last_mut()
+            .expect("env always has a scope")
+            .entries;
+        // `let` may redefine a name already bound in this scope; replace that
+        // binding in place so there is exactly one entry per name per scope
+        // (matching the previous `HashMap::insert` semantics).
+        for (existing, slot) in scope.iter_mut() {
+            if *existing == name {
+                *slot = value;
+                return;
             }
-            None => self.scopes.push(Scope {
-                id,
-                entries: Vec::new(),
-            }),
         }
-    }
-
-    pub(crate) fn push_scope(&mut self) {
-        let scope = self.fresh_scope();
-        self.scopes.push(scope);
-    }
-
-    pub(crate) fn pop_scope(&mut self) {
-        self.scopes.pop();
+        scope.push((name, value));
     }
 
     /// Update the loop variable's binding in the innermost scope in place. The
@@ -182,23 +206,9 @@ impl Env {
         scope.push((name.to_string(), value));
     }
 
-    pub(crate) fn define(&mut self, name: String, value: Value) {
-        let scope = &mut self
-            .scopes
-            .last_mut()
-            .expect("env always has a scope")
-            .entries;
-        for (existing, slot) in scope.iter_mut() {
-            if *existing == name {
-                *slot = value;
-                return;
-            }
-        }
-        scope.push((name, value));
-    }
-
-    /// Borrow the nearest binding of `name` mutably for in-place element/field
-    /// mutation (`a[i] = v`), avoiding a whole-container clone + write-back.
+    /// Borrow the nearest binding of `name` mutably, for in-place mutation of an
+    /// element/field (`a[i] = v`, `s.field = v`) without cloning the whole
+    /// container and writing it back. Resolves nearest-first like `assign`.
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         for scope in self.scopes.iter_mut().rev() {
             for (existing, slot) in scope.entries.iter_mut() {
@@ -231,9 +241,10 @@ impl Env {
             .ok_or_else(|| RuntimeError::new("L0403", format!("unknown variable `{name}`")))
     }
 
-    /// Borrow a binding's value without cloning it (innermost-first, like
-    /// [`Env::get`]). Used to classify a call target on the
-    /// move-on-functional-update fast path without paying for a clone.
+    /// Borrow a binding's value without cloning it, resolving innermost-first
+    /// exactly like [`Env::get`]. Used to classify a call target (closure/func
+    /// value vs. builtin) on the move-on-functional-update fast path without
+    /// paying for a clone.
     pub(crate) fn get_ref(&self, name: &str) -> Option<&Value> {
         for scope in self.scopes.iter().rev() {
             for (existing, value) in scope.entries.iter() {
@@ -245,25 +256,10 @@ impl Env {
         None
     }
 
-    /// Borrow a slot-resolved binding directly, with no name scan. `packed` is a
-    /// `(depth, slot)` pair produced by [`resolve_slots`]: `depth` counts scopes up
-    /// from the innermost and `slot` indexes within that scope. The lookup is
-    /// **validated** — it confirms the binding at that position still carries
-    /// `name` before returning it, and returns `None` (so the caller falls back to
-    /// the name scan) if the position is out of range or the name does not match.
-    /// That validation makes the fast path correct-or-slower by construction: a
-    /// mis-resolved slot can never read the wrong binding, only miss and fall back.
-    pub(crate) fn get_slot(&self, packed: u32, name: &str) -> Option<&Value> {
-        let (depth, slot) = unpack_slot(packed);
-        let idx = self.scopes.len().checked_sub(1 + depth)?;
-        let (existing, value) = self.scopes.get(idx)?.entries.get(slot)?;
-        (existing == name).then_some(value)
-    }
-
     /// True when `name` is bound in the innermost (current) scope. A `let x =
     /// f(x, …)` re-binding only moves when the consumed binding lives here,
-    /// because `let` shadows into the innermost scope rather than overwriting an
-    /// outer binding.
+    /// because `let` shadows (defines into the innermost scope) rather than
+    /// overwriting an outer binding — moving from an outer scope would corrupt it.
     pub(crate) fn innermost_has(&self, name: &str) -> bool {
         self.scopes
             .last()
@@ -283,7 +279,9 @@ impl Env {
     /// [`Value::Void`] placeholder in the same slot (no clone), and return the old
     /// value. Nearest-first, matching [`Env::get`]/[`Env::assign`] resolution, so
     /// the caller's write-back overwrites this exact slot. The placeholder is
-    /// never observable (see the AST runtime twin for the full argument).
+    /// never observable: on the fast path all other work is already done and the
+    /// result is written back immediately, and the gating builtin cannot raise a
+    /// catchable error mid-call.
     pub(crate) fn move_out_nearest(&mut self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter_mut().rev() {
             for (existing, slot) in scope.entries.iter_mut() {
@@ -295,11 +293,15 @@ impl Env {
         None
     }
 
-    /// Snapshot every in-scope local by value for closure frame capture, mirroring
-    /// the AST runtime: one `(name, value.clone())` per visible binding, inner
-    /// scopes shadowing outer ones, sorted by name for a deterministic order.
+    /// Snapshot every in-scope local by value: one `(name, value.clone())` per
+    /// visible binding, with an inner scope's binding shadowing an outer one of
+    /// the same name. This is the frame-capture-by-value used when a closure
+    /// literal is evaluated. The order is deterministic (outer-to-inner insertion
+    /// with later scopes overwriting), which is all closure invocation needs.
     pub(crate) fn snapshot_locals(&self) -> Vec<(String, Value)> {
         let mut flattened: HashMap<&str, &Value> = HashMap::new();
+        // Iterate outermost-to-innermost so an inner scope overwrites an outer
+        // binding of the same name.
         for scope in &self.scopes {
             for (name, value) in &scope.entries {
                 flattened.insert(name.as_str(), value);
@@ -309,6 +311,7 @@ impl Env {
             .into_iter()
             .map(|(name, value)| (name.to_string(), value.clone()))
             .collect();
+        // Sort by name for a stable, reproducible capture order.
         captured.sort_by(|(a, _), (b, _)| a.cmp(b));
         captured
     }

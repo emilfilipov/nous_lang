@@ -1,0 +1,19 @@
+# An `addr_of` pointer to a local in an INNER BLOCK is dangling once that block ends:
+# the binding is gone, so dereferencing it is refused with L0459 naming the dead place.
+#
+# Unlike passing an address into a callee — which is valid C and now works on every
+# tier (see tests/fixtures/valid/raw_ptr_cross_frame.lby) — this is a genuine program
+# error. C11 6.2.4p6 ties an automatic object's lifetime to its *block*, and this block
+# has ended, so the pointer is dangling and reading it is undefined behaviour.
+#
+# The refusal must stay loud. Reading here would report `42` from storage the program
+# no longer owns — a wrong answer dressed as a right one, which is exactly what the
+# place-backed model exists to prevent.
+fn main -> i64
+    unsafe
+        let p ptr<i64> = int_to_ptr(0)
+        if true
+            let inner i64 = 42
+            p = addr_of(inner)
+        # `inner`'s block has ended: the place no longer exists.
+        ptr_read(p)

@@ -1,0 +1,90 @@
+# CROSS-FRAME `addr_of` in the freestanding (`no-runtime`) tier, on ALL FOUR TIERS.
+#
+# The companion to `tests/fixtures/valid/raw_ptr_cross_frame.lby`: that fixture covers
+# the cross-frame surface broadly but uses an `i32` buffer, which puts it outside the
+# native i64-scalar subset (a clean `L0339` skip). This one stays inside that subset,
+# so native compiles it and must agree with the interpreters bit-for-bit — which is
+# the point: `addr_of` is a real `lea` natively, and the interpreters' env shelf has
+# to produce exactly the same answers.
+#
+# Every shape here is well-defined C (C11 6.2.4p6: a call does not end the caller's
+# block), and every one of them used to be refused with `L0459` on the interpreters.
+#
+# main = 5 (out-parameter write-through) + 99 (callee read after a later write)
+#      + 99 (two frames deep) + 100 (buffer walked in a callee)
+#      + 6 (buffer filled by a callee, read back by index) + 8 (size law in a callee)
+#      + 10 (negative offset in a callee) = 327.
+no-runtime
+
+# The out-parameter idiom: the callee writes the caller's local.
+fn poke p ptr<i64> -> i64
+    unsafe
+        ptr_write(p, 5)
+    0
+
+# A callee reads through a pointer parameter.
+fn peek p ptr<i64> -> i64
+    unsafe
+        ptr_read(p)
+
+# Two frames deep: `main` -> `deep` -> `peek`, both reaching `main`'s local.
+fn deep p ptr<i64> -> i64
+    peek(p)
+
+# A buffer passed to a callee and walked with `ptr_offset` — the kernel idiom (a
+# driver reading a descriptor ring, a memcpy, a page-table scan).
+fn total p ptr<i64> n i64 -> i64
+    let sum i64 = 0
+    let i i64 = 0
+    unsafe
+        while i < n
+            sum = sum + ptr_read(ptr_offset(p, i))
+            i = i + 1
+    sum
+
+# A buffer passed to a callee and FILLED through the pointer. The caller reads it back
+# by ordinary indexing, which only agrees if the stores genuinely aliased the buffer.
+fn fill p ptr<i64> n i64 -> i64
+    let i i64 = 0
+    unsafe
+        while i < n
+            ptr_write(ptr_offset(p, i), i + 1)
+            i = i + 1
+    0
+
+# The size law holds on a pointer the caller passed in.
+fn stride_i64 p ptr<i64> -> i64
+    unsafe
+        ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p)
+
+# A negative offset walks back through a caller's buffer.
+fn back_two p ptr<i64> -> i64
+    unsafe
+        ptr_read(ptr_offset(p, -2))
+
+fn main -> i64
+    let x i64 = 1
+    let a array<i64> = [10, 20, 30, 40]
+    let b array<i64> = [0, 0, 0]
+    let out i64 = 0
+    unsafe
+        let p ptr<i64> = addr_of(x)
+        # 1. The callee writes `main`'s `x` for real.
+        poke(p)
+        out = out + x
+        # 2. The callee observes a LATER, independent write to `x`. A by-value
+        #    snapshot would still report 5 here; the place-backed pointer reports 99.
+        x = 99
+        out = out + peek(p)
+        # 3. Two frames deep — depth is irrelevant, the place is alive either way.
+        out = out + deep(p)
+        # 4. A buffer passed to a callee and walked with `ptr_offset`.
+        out = out + total(addr_of(a[0]), 4)
+        # 5. The callee fills the caller's buffer; read back by index.
+        fill(addr_of(b[0]), 3)
+        out = out + b[0] + b[1] + b[2]
+        # 6. The size law survives the frame crossing.
+        out = out + stride_i64(addr_of(a[0]))
+        # 7. A negative offset in a callee steps back to `a[0]`.
+        out = out + back_two(addr_of(a[2]))
+    out

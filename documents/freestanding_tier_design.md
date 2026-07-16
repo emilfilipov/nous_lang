@@ -253,7 +253,7 @@ fn poke_and_peek base ptr<u32> -> u32
 - **`ptr_offset(p ptr<T>, n i64) -> ptr<T>`** — element-scaled arithmetic (`p + n*size_of(T)`), the common and least error-prone form.
 - **`ptr_offset_bytes(p ptr<T>, n i64) -> ptr<T>`** — raw byte arithmetic, for unaligned/device layouts. Two names make the scaling *explicit* (the one real footgun in C pointer math).
 - **`ptr_read(p ptr<T>) -> T`** / **`ptr_write(p ptr<T>, v T) -> void`** — deref read/write (delivered).
-- **`addr_of(x) -> ptr<T>`** — address-of an addressable lvalue (local, global, struct field, array element). The value must be *addressable*; taking the address of a temporary is **`L0458`** (the delivered code — see §10.4; the `L0442` this bullet originally proposed was never implemented or registered). **As delivered**, `addr_of` is *place-backed* on the interpreters and genuinely aliases: `ptr_write(addr_of(x), 5)` makes `x == 5`, and a read after an independent write to `x` observes the new value (see §10.4). On the interpreters an `addr_of` pointer is usable only within the body of the function that took the address: dereferencing one whose block or frame has ended (a genuine error — undefined behaviour in C) *or* one merely passed into a callee (valid C, and supported natively — an interpreter-model limitation) is refused with **`L0459`**. See §10.4 for that divergence. The native raw-pointer codegen increment (§10.5) makes **native** `addr_of` a real `lea`, so native supports the cross-frame case for a **scalar or struct-field** place; an array-element or whole-array `addr_of` is refused natively (`L0339`) while native aggregates still lay out at descending addresses, so a cross-frame *buffer* walk is currently unsupported on every tier.
+- **`addr_of(x) -> ptr<T>`** — address-of an addressable lvalue (local, global, struct field, array element). The value must be *addressable*; taking the address of a temporary is **`L0458`** (the delivered code — see §10.4; the `L0442` this bullet originally proposed was never implemented or registered). **As delivered**, `addr_of` is *place-backed* on the interpreters and genuinely aliases: `ptr_write(addr_of(x), 5)` makes `x == 5`, and a read after an independent write to `x` observes the new value (see §10.4). An `addr_of` pointer **may be passed into a callee**, which reads and writes the caller's place for real — the out-parameter idiom, and valid C (C11 6.2.4p6: a call does not end the caller's block). The interpreters reach the caller's environment through the **env shelf** (§10.4); the native raw-pointer codegen increment (§10.5) makes native `addr_of` a real `lea`. **`L0459`** is now reserved for a *genuinely dangling* pointer — one whose block or function has already ended (a real program error, undefined behaviour in C) — plus the one residue of a pointer handed to another **thread**, which runs its own interpreter and address space. See §10.4.
 - **`ptr_cast<U>(p ptr<T>) -> ptr<U>`** — reinterpret the element type (no value conversion). `ptr_to_int`/`int_to_ptr` (delivered) round-trip a pointer to/from an integer address.
 - **`ptr_null<T>() -> ptr<T>`** and **`is_null(p)`** (the latter delivered) — the null pointer and its test. There is no implicit null: a `ptr<T>` is never checked for you (that is the point of `unsafe`), but `is_null` is available where you want it.
 - Interpreter behavior: on the AST/IR/bytecode interpreters a `ptr<T>` from `alloc`/`int_to_ptr` is a heap-slot handle (delivered semantics). **As delivered (§10.4),** `addr_of` introduces a second *byte-addressed* address space so `ptr_offset`/`ptr_read` walk place-backed regions and the size law `ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p) == size_of(T)` holds; `ptr_cast` is the identity on the address (a static-only pointee reinterpretation). Aliasing through an `addr_of` pointer *is* modelled — the region names the original place, so reads and writes update and observe it — for the pointer's frame; an escaped pointer is refused (`L0459`), never approximated. What remains a native-codegen concern is byte-exact *reinterpretation* of storage (reading an `i64`'s bytes through a `ptr<byte>`), since the interpreters address typed cells rather than raw bytes.
@@ -1154,44 +1154,68 @@ and test-locked, extending the delivered `ptr_read`/`ptr_write`/`ptr_to_int`/
   Resolving by name at access time would silently follow a nested shadowing `let` and
   address a *different* binding. Pinning means resolution either finds the exact
   binding whose address was taken, or finds nothing.
-- **Escape is diagnosed, never guessed (`L0459`, retargeted).** A place-backed address
-  is only meaningful while its place is reachable. Each interpreter frame's locals live
-  in that frame's own `Env` (on the Rust stack), so a pointer that leaves the frame
-  that took the address — passed into a callee, returned, or stored — genuinely cannot
-  be resolved; likewise once its block or frame has ended. All such dereferences are
-  refused with `L0459`, whose meaning stage 3 **retargets** from "stores are
-  unmodelled" (temporary) to "this `addr_of` pointer is outside its place's lifetime".
-  The refused cases are **not all alike**, and the diagnostics must not pretend they
-  are:
-  - **Dead block / returned frame** — a genuine program error. Returning `&local`, or
-    using a pointer to a block that has ended, is undefined behaviour in C, so
-    refusing forbids no defined program.
-  - **A different, still-live frame** (a pointer passed into a callee) — a
-    **limitation of the interpreter model, not a program error**. This is well-defined
-    C (C11 6.2.4p6 ties a local's lifetime to *its block*; a call does not end the
-    caller's block) and the canonical out-parameter idiom (`scanf("%d", &x)`,
-    `strtol(s, &end, 10)`). **Native supports it** for the places it lowers — an
-    8-byte scalar or a struct-field path — since `addr_of` there is a real `lea`.
-    (Native does not lower `addr_of` of an array element or a whole array, skipping
-    cleanly with `L0339`, so a cross-frame *buffer* walk is unsupported on every tier.) The interpreters cannot, because a callee has no access to its
-    caller's `Env`, so they refuse rather than touch the wrong storage.
-  This is a deliberate narrowing. Stage 2 got *some* cross-frame shapes right by luck
-  (it read the snapshot, which matched whenever the place had not changed since the
-  `addr_of`), but for a genuine stale read (`addr_of(x)`; `x = 99`; `peek(p)`) it
-  silently returned the old value. Loud refusal beats luck-correctness, and every
-  in-frame use now aliases for real. (This is **not** the `volatile_*` situation:
+- **Cross-frame `addr_of` resolves: the env shelf (stage 4).** A pointer passed into a
+  callee names the caller's live place, and the callee reads and writes that place for
+  real. This is the out-parameter idiom (`scanf("%d", &x)`, `strtol(s, &end, 10)`,
+  `qsort`) and it is **well-defined C, not undefined behaviour**: C11 6.2.4p6 ties an
+  automatic object's lifetime to its *block*, and a call does not end the caller's
+  block.
+
+  Stage 3 refused these because each frame's locals live in that frame's own `Env` on
+  the Rust stack. Stage 4 adds an **env shelf**: an interpreter-owned stack of the
+  *ancestor* frames' `Env`s. At a call boundary the caller's `Env` is swapped out of
+  its `&mut Env` slot and pushed onto the shelf for the dynamic extent of the call, so
+  a callee reaches it by the `RootSlot::env` id the `addr_of` already recorded.
+  `RawResolve::Escaped` is gone: a live region always resolves, because a returned
+  frame's regions are dropped by `exit_frame`.
+
+  **Why this shape.** Keeping the *current* frame as a plain `&mut Env` and shelving
+  only ancestors is what makes it free. The two obvious alternatives both tax every
+  program: `Rc<RefCell<Env>>` puts a runtime borrow check on **every variable access**,
+  and one frame-id-indexed `Vec<Env>` (current frame included) puts a bounds check
+  there. The shelf is touched only at a call boundary, and only once the program has
+  taken an address — `RawPointerMemory::shelf_needed()` is false until the first
+  `addr_of`. That gate is **sound by construction, not an optimization gamble**: with
+  no live region nothing can resolve to a place, so the shelf's contents are
+  unobservable. Measured cost on the interpreter hot path (interleaved A/B, fib and
+  the loop, all three tiers): within the ±2% run-to-run noise floor.
+
+  The invariant: **every live region's `Env` is either the current frame's `&mut Env`
+  or on the shelf.** A region created in frame `F` keeps `shelf_needed` true for as
+  long as `F` lives, so every call `F` makes shelves `F`'s environment; and `F`'s
+  region cannot outlive `F`, because `exit_frame` drops it.
+- **`L0459` now means genuinely dangling, and only that.** A place-backed address is
+  meaningful only while its place exists. Two things end that, and both are *detected*:
+  the **scope died** (the block holding the root binding was popped — `Env::at` finds
+  nothing) or the **frame returned** (`exit_frame` dropped its regions). Both are
+  **genuine program errors**: returning `&local`, or using a pointer to an inner-block
+  or loop-body local after that block ended, is undefined behaviour in C, so refusing
+  forbids no defined program. A pointer handed to **another thread** (`spawn`, an
+  `async fn`, `parallel_map`) is a separate case and **not** `L0459`: each thread builds
+  its own interpreter with its own `RawPointerMemory`, so the address names no region
+  there and is refused as unmapped (`L0406`) — verified, not assumed.
+
+  **Honest refusal is the invariant.** A deref has exactly two outcomes: the owning
+  `Env` is found and the access touches the **real, live storage**, or it is a hard
+  error (`unreachable_frame`, a deliberate **fail-closed guard** rather than an
+  `unwrap`/`unreachable!()` — not expected to fire, and the reason a *missed* shelving
+  site could only ever cost a loud refusal rather than a wrong answer). No path reads a
+  copy. This matters because stage 2 *did* read a by-value
+  snapshot and so got some cross-frame shapes right by luck while silently returning
+  the old value for a genuine stale read (`addr_of(x)`; `x = 99`; `peek(p)`). A silent
+  wrong answer is the failure mode this model exists to prevent, and stage 4 removes
+  the refusals without reintroducing it. (This is **not** the `volatile_*` situation:
   `volatile_load`/`store` are semantically *correct*, with only an unobservable
   single-threaded optimization barrier unmodelled.)
-- **Accepted limitation + acceptance divergence (interpreters only).** As shipped, an
-  `addr_of` pointer is usable **only within the body of the function that took the
-  address** on the AST/IR/bytecode interpreters — pointer-taking code cannot be
-  factored into a helper there. Native has no such limit, so the tiers diverge on
-  *acceptance*: `poke(addr_of(x))` compiles and runs correctly natively while the
-  interpreters refuse it with `L0459` — loudly, never silently, so it can never become
-  a wrong answer. Lifting it needs an explicit interpreter-owned frame stack (every
-  `Env` in one `Vec<Env>` indexed by frame id), a large change across three
-  interpreters that all hold `&mut Env` pervasively on the hot path; deliberately not
-  attempted, since native is the tier that does real pointers.
+- **No acceptance divergence remains for cross-frame `addr_of`.** The stage-3
+  divergence — native compiling `poke(addr_of(x))` while the interpreters refused it —
+  is retired. `tests/fixtures/valid/no_runtime/freestanding_cross_frame.lby` pins the
+  out-parameter idiom, a callee read after a later independent write, two frames deep,
+  a buffer walked and filled in a callee, the size law and negative offsets across the
+  frame boundary at **327 on all four tiers** (native included);
+  `tests/fixtures/valid/raw_ptr_cross_frame.lby` covers the surface more broadly at
+  **432** on the three interpreters (its `i32` buffer puts it outside the native
+  i64-scalar subset, so native skips it cleanly with `L0339`).
 - **An unmapped raw address is `L0406`, not `L0459`.** An `int_to_ptr` value that
   merely lands in raw space (an MMIO register, a fixed physical address) is not an
   `addr_of` pointer and the diagnostic must not blame one: it reports an unmapped
@@ -1206,7 +1230,9 @@ and test-locked, extending the delivered `ptr_read`/`ptr_write`/`ptr_to_int`/
   is a later increment.
 - **New diagnostics.** `L0458` (semantic — `addr_of` of a non-addressable place /
   temporary) and `L0459` (runtime — an `addr_of` pointer dereferenced outside its
-  place's lifetime: escaped its frame, or its block/frame has ended). `ptr_offset` on an unsized pointee reuses `L0431`; a non-pointer argument
+  place's lifetime: its block or function has already ended. Stage 4 narrowed this to
+  genuinely dangling pointers only; a pointer merely *passed into a callee* resolves
+  for real). `ptr_offset` on an unsized pointee reuses `L0431`; a non-pointer argument
   reuses `L0331`; the `unsafe` gate reuses `L0330` (the proposed `L0442` was not
   needed and remains unregistered).
 - **Tests.** `crates/lullaby_cli/tests/cli/suite15.rs` (the `addr_of`/`ptr_offset`/
@@ -1240,14 +1266,17 @@ records what the native backend does with it.)
   `body_takes_address`. No interpreter, runtime, semantics, parser, WASM, or
   AArch64 file was touched.
 - **`addr_of` is a real `lea`.** `ptr_write(addr_of(x), 5)` genuinely makes
-  `x == 5` — the direct-PE exe exits **5**. This is exactly the semantics the
-  interpreters cannot model: their `addr_of` snapshots the place by value, so they
-  refuse the store at run time with **`L0459`** rather than return `1`.
-- **`L0459` is untouched and still fires on the interpreters.** Retiring it (making
-  the interpreter model place-backed so it aliases too) is separate, parallel work
-  and is deliberately *not* part of this increment. Until it lands, the honest
-  state is: **native aliases correctly; the interpreters loudly refuse the store.**
-  A loud refusal, never a silent wrong answer, on every tier.
+  `x == 5` — the direct-PE exe exits **5**.
+- **`L0459` was untouched by this increment** (superseded — see below). At the time
+  this increment landed, the interpreters' `addr_of` snapshotted the place by value and
+  so refused the store with `L0459` while native aliased correctly.
+
+  **Superseded twice since.** Stage 3 (§10.4) made the interpreter model place-backed,
+  so an in-frame store aliases there too and the store refusal is gone; stage 4 (§10.4)
+  added the env shelf, so a pointer passed into a callee resolves as well. The tiers no
+  longer diverge on either, and `L0459` now fires only for a genuinely dangling
+  pointer. The invariant that survived every stage: **a loud refusal, never a silent
+  wrong answer, on every tier.**
 - **`ptr<T>` needed no eligibility change.** It was already a pointer-sized scalar
   in the native value model (`resolve_native_type` → `NativeType::I64`), so
   `ptr<T>` parameters, locals, and returns pass and return in a GPR like any `i64`.
@@ -1344,9 +1373,12 @@ the fixture pinning the *refusal* — now compiles and returns **127** on all fo
 tiers (`addr_of_addressing_surface_matches_the_interpreters`): an array walked with
 a runtime `ptr_offset(base, i)` in a `while` loop, the size law, a
 `ptr<i64>`→`ptr<byte>`→`ptr<i64>` cast round-trip, and a struct-field read.
-`freestanding_buffer_write.lby` is the write-through walk: **105** natively, and
-asserted to be *refused* with `L0459` on all three interpreters — native-only by
-design, so no parity is claimed where the interpreters do not define the program.
+`freestanding_buffer_write.lby` is the write-through walk: **105** natively. (At the
+time of this increment it was asserted to be *refused* with `L0459` on the three
+interpreters, the snapshot model having no way to alias. Superseded: stage 3's
+place-backed model made it **105 on all four tiers**, and
+`freestanding_cross_frame.lby` now pins the same parity for the *cross-frame* shapes
+at **327 on all four tiers** — see §10.4.)
 
 Differential fuzz:
 `fuzz_raw_pointer_reads_agree_across_interpreters` (150 programs) and

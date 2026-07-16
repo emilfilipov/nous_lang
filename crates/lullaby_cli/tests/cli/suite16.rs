@@ -193,13 +193,17 @@ fn native_asm_branch_tail_compiles_and_runs() {
 /// caller-supplied out-parameter. This is the shape every MMIO/kernel routine
 /// wants, and the reason void eligibility matters.
 ///
-/// This is a NATIVE-ONLY program by design, not by omission: the interpreters
-/// refuse a cross-frame `addr_of` store with `L0459` (they keep each frame's
-/// locals in that frame's own environment and cannot reach another frame's), so
-/// there is no interpreter result to compare against — the documented acceptance
-/// divergence also pinned by `an_addr_of_pointer_that_escapes_its_frame_is_refused`
-/// in `suite15.rs`. The exe's exit code IS the verification: `addr_of` is a real
+/// This test stays native-scoped because what it pins is the **void `export fn`
+/// eligibility and lowering** — a `void` driver compiling at all, and its tail shapes —
+/// not the aliasing. The exe's exit code IS that verification: `addr_of` is a real
 /// machine address natively, so `poke` genuinely mutates `main`'s local.
+///
+/// (This program used to be native-only *by design*: the interpreters refused a
+/// cross-frame `addr_of` store with `L0459`, keeping each frame's locals in its own
+/// environment. The **env shelf** retired that divergence — the interpreters now
+/// resolve a cross-frame `addr_of` for real, and the four-tier agreement on exactly
+/// this shape is pinned by `native_cross_frame_addr_of_matches_the_interpreters` and
+/// `cross_frame_addr_of_reaches_the_callers_place` in `suite15.rs`.)
 #[test]
 fn native_void_driver_spelling_compiles_and_runs() {
     let source = concat!(

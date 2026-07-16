@@ -68,6 +68,19 @@ pub(crate) struct IrRuntime<'a> {
     /// path lets deep/repeated calls reuse the scope buffers instead of
     /// reallocating. Only returned on success; error paths drop theirs.
     env_pool: Vec<Env>,
+    /// The **env shelf**: the ancestor frames' environments, innermost last.
+    ///
+    /// At a call boundary the caller's `Env` is swapped out of its `&mut Env` slot
+    /// and pushed here for the dynamic extent of the call, so a callee can reach its
+    /// caller's locals — the out-parameter idiom, `poke(addr_of(x))`. The *current*
+    /// frame is deliberately **not** here: it stays a plain `&mut Env`, which is what
+    /// keeps every variable access exactly as cheap as it was (see
+    /// `lullaby_runtime::raw_pointer`'s module docs for why this beats
+    /// `Rc<RefCell<Env>>` and a frame-id-indexed `Vec<Env>`).
+    ///
+    /// Only populated once the program has taken an address
+    /// ([`RawPointerMemory::shelf_needed`]), so ordinary code never touches it.
+    env_shelf: Vec<Env>,
     /// The bytecode tier sets this: eligible functions are compiled to the flat
     /// [`VmProgram`] and executed by the dispatch-loop VM ([`Self::run_vm`])
     /// instead of the recursive tree-walker, so the bytecode tier is distinctly
@@ -177,6 +190,7 @@ impl<'a> IrRuntime<'a> {
             extern_functions,
             closures,
             env_pool: Vec::new(),
+            env_shelf: Vec::new(),
             use_vm: false,
             vm_cache: HashMap::new(),
         })
@@ -311,7 +325,9 @@ impl<'a> IrRuntime<'a> {
                 }
             })
             .collect();
-        Ok(Some(self.call_function(callee, values)?))
+        Ok(Some(self.with_env_shelved(env, |me| {
+            me.call_function(callee, values)
+        })?))
     }
 
     /// `x = x <binop> e` / `x = e <binop> x` arm of
@@ -378,6 +394,81 @@ impl<'a> IrRuntime<'a> {
         } else {
             self.call_function(name, args)
         }
+    }
+
+    /// Run `body` with `env` — the *calling* frame's environment — moved onto the env
+    /// shelf, so anything `body` invokes can reach it by [`RootSlot::env`]. This is
+    /// what makes `poke(addr_of(x))` write the caller's real `x`.
+    ///
+    /// The swap leaves an [`Env::hollow`] placeholder in the caller's slot. Nothing
+    /// reads it: the caller is suspended for exactly the extent of `body`, and the
+    /// real environment is swapped back before it resumes.
+    ///
+    /// Wrapping `body` in a closure rather than exposing raw push/pop is deliberate —
+    /// it makes the restore unconditional, so a `?` anywhere inside cannot leave the
+    /// caller holding a hollow environment or the shelf unbalanced.
+    ///
+    /// # Why the gate is sound
+    ///
+    /// Shelving is skipped entirely unless a raw region is live. That is not a
+    /// heuristic: with no region, [`RawPointerMemory::resolve`] cannot return a place
+    /// at all, so nothing can consult the shelf and its contents are unobservable. The
+    /// decision is captured in a local rather than re-tested on the way out, so a
+    /// callee that takes the program's *first* address mid-`body` cannot desynchronize
+    /// the push from the pop.
+    ///
+    /// The invariant it maintains: **every live region's `Env` is either the current
+    /// frame's `&mut Env` or on the shelf.** A region created in frame `F` keeps
+    /// `shelf_needed` true for as long as `F` lives, so every call `F` makes from that
+    /// point on shelves `F`'s environment — and `F`'s region cannot outlive `F`,
+    /// because [`RawPointerMemory::exit_frame`] drops it.
+    ///
+    /// `#[inline]` matters: this wraps every call the tree-walker makes, and inlining
+    /// is what collapses the untaken branch into a single predictable test next to the
+    /// dispatch rather than a closure call through a function boundary.
+    #[inline]
+    fn with_env_shelved<R>(&mut self, env: &mut Env, body: impl FnOnce(&mut Self) -> R) -> R {
+        if !self.raw_ptrs.shelf_needed() {
+            return body(self);
+        }
+        self.shelve_and_run(env, body)
+    }
+
+    /// The cold half of [`Self::with_env_shelved`], kept out of line so the fast path
+    /// stays small enough to inline into each call site.
+    #[inline(never)]
+    fn shelve_and_run<R>(&mut self, env: &mut Env, body: impl FnOnce(&mut Self) -> R) -> R {
+        let mut hollow = Env::hollow();
+        std::mem::swap(env, &mut hollow);
+        self.env_shelf.push(hollow);
+        let result = body(self);
+        let mut restored = self
+            .env_shelf
+            .pop()
+            .expect("env shelf push/pop are paired by `with_env_shelved`");
+        std::mem::swap(env, &mut restored);
+        result
+    }
+
+    /// Find a shelved ancestor frame's environment by its [`RootSlot::env`] id.
+    /// Ancestors only — the current frame is never on the shelf.
+    fn shelf_env(&self, id: u64) -> Option<&Env> {
+        self.env_shelf.iter().find(|env| env.id() == id)
+    }
+
+    /// Mutable counterpart of [`Self::shelf_env`] — the write half of a cross-frame
+    /// `ptr_write`.
+    fn shelf_env_mut(&mut self, id: u64) -> Option<&mut Env> {
+        self.env_shelf.iter_mut().find(|env| env.id() == id)
+    }
+
+    /// Locate the environment owning `root`, checking the current frame first (the
+    /// overwhelmingly common in-frame case) and then the shelf.
+    fn owning_env<'e>(&'e self, root: &RootSlot, env: &'e Env) -> Option<&'e Env> {
+        if env.id() == root.env {
+            return Some(env);
+        }
+        self.shelf_env(root.env)
     }
 
     pub(crate) fn call_function(
@@ -1346,14 +1437,20 @@ impl<'a> IrRuntime<'a> {
                 // keeps the common case — an ordinary top-level call, where `name`
                 // is not a local — free of the clone and the discarded "unknown
                 // variable" error a bare `env.get` allocates on every such call.
+                // Every dispatch below runs user/builtin code that may deref an
+                // `addr_of` pointer naming a place in *this* frame, so this frame's
+                // `env` goes on the shelf for the extent of the call. See
+                // `with_env_shelved`.
                 let target: &str = match env.get_ref(name) {
                     Some(Value::Closure(closure)) => {
                         let closure = closure.clone();
-                        return self.invoke_closure(&closure, values);
+                        return self
+                            .with_env_shelved(env, |me| me.invoke_closure(&closure, values));
                     }
                     Some(Value::Func(func)) => {
                         let func = func.clone();
-                        return self.dispatch_named_call(&func, values);
+                        return self
+                            .with_env_shelved(env, |me| me.dispatch_named_call(&func, values));
                     }
                     _ => name,
                 };
@@ -1363,7 +1460,9 @@ impl<'a> IrRuntime<'a> {
                 // is still in scope. See runtime `raw_pointer.rs`.
                 match self.eval_raw_deref(target, values, env) {
                     Ok(result) => result,
-                    Err(values) => self.dispatch_named_call(target, values),
+                    Err(values) => {
+                        self.with_env_shelved(env, |me| me.dispatch_named_call(target, values))
+                    }
                 }
             }
             IrExprKind::Await { expr } => {
@@ -1603,17 +1702,22 @@ impl<'a> IrRuntime<'a> {
             .map_err(|args: Vec<Value>| Self::wrong_arity("load", 1, args.len()))?;
         let addr = ptr.as_ptr()?;
         // The `env`-less path: a builtin reached as a first-class function value
-        // rather than through `eval_expr`'s deref hook. An `addr_of` address names a
-        // place only `env` can reach, so fail closed rather than approximate. See
-        // the AST interpreter's `raw_or_heap_load` and runtime `raw_pointer.rs`.
+        // (`let f = load; f(p)`) rather than through `eval_expr`'s deref hook, so
+        // there is no `&mut Env` parameter here. The env shelf covers it: that
+        // dispatch shelved the calling frame's environment, so the owning `Env` — the
+        // caller's included — is reachable by id. See runtime `raw_pointer.rs`.
         if RawPointerMemory::is_raw(addr) {
-            return Err(match self.raw_ptrs.resolve(addr) {
-                RawResolve::Unmapped => unmapped_raw(addr),
-                RawResolve::Dangling { name } => dangling_place(&name),
-                RawResolve::Escaped { name } | RawResolve::Place { name, .. } => {
-                    escaped_pointer(&name)
+            return match self.raw_ptrs.resolve(addr) {
+                RawResolve::Place { root, path, name } => {
+                    let owner = self
+                        .shelf_env(root.env)
+                        .ok_or_else(|| unreachable_frame(&name))?;
+                    let base = owner.at(&root).ok_or_else(|| dangling_place(&name))?;
+                    get_place(base, &path)
                 }
-            });
+                RawResolve::Dangling { name } => Err(dangling_place(&name)),
+                RawResolve::Unmapped => Err(unmapped_raw(addr)),
+            };
         }
         self.heap
             .get(addr)
@@ -1626,16 +1730,21 @@ impl<'a> IrRuntime<'a> {
             .try_into()
             .map_err(|args: Vec<Value>| Self::wrong_arity("store", 2, args.len()))?;
         let slot = ptr.as_ptr()?;
-        // The `env`-less counterpart of `builtin_load`'s raw branch: a place-backed
-        // store needs this frame's `env`, so fail closed here.
+        // The `env`-less counterpart of `builtin_load`'s raw branch: the store lands
+        // on the owning frame's real storage, found on the env shelf by id.
         if RawPointerMemory::is_raw(slot) {
-            return Err(match self.raw_ptrs.resolve(slot) {
-                RawResolve::Unmapped => unmapped_raw(slot),
-                RawResolve::Dangling { name } => dangling_place(&name),
-                RawResolve::Escaped { name } | RawResolve::Place { name, .. } => {
-                    escaped_pointer(&name)
+            return match self.raw_ptrs.resolve(slot) {
+                RawResolve::Place { root, path, name } => {
+                    let owner = self
+                        .shelf_env_mut(root.env)
+                        .ok_or_else(|| unreachable_frame(&name))?;
+                    let base = owner.at_mut(&root).ok_or_else(|| dangling_place(&name))?;
+                    set_place(base, &path, value)?;
+                    Ok(Value::Void)
                 }
-            });
+                RawResolve::Dangling { name } => Err(dangling_place(&name)),
+                RawResolve::Unmapped => Err(unmapped_raw(slot)),
+            };
         }
         let Some(target) = self.heap.get_mut(slot) else {
             return Err(RuntimeError::new(
@@ -1775,21 +1884,31 @@ impl<'a> IrRuntime<'a> {
         }
     }
 
-    /// Read the place a raw byte address names, through this frame's `env`.
+    /// Read the place a raw byte address names — this frame's `env` for an in-frame
+    /// pointer, or the owning ancestor frame's environment from the env shelf for one
+    /// the caller passed in.
+    ///
+    /// The two failure shapes are distinct and both honest: the *scope* holding the
+    /// root binding was popped (`Env::at` misses → the place is dead), or the owning
+    /// frame belongs to another thread and is unreachable. Neither ever falls back to
+    /// reading a copy.
     fn raw_place_load(&self, addr: usize, env: &Env) -> Result<Value, RuntimeError> {
         match self.raw_ptrs.resolve(addr) {
             RawResolve::Place { root, path, name } => {
-                let base = env.at(&root).ok_or_else(|| dangling_place(&name))?;
+                let owner = self
+                    .owning_env(&root, env)
+                    .ok_or_else(|| unreachable_frame(&name))?;
+                let base = owner.at(&root).ok_or_else(|| dangling_place(&name))?;
                 get_place(base, &path)
             }
-            RawResolve::Escaped { name } => Err(escaped_pointer(&name)),
             RawResolve::Dangling { name } => Err(dangling_place(&name)),
             RawResolve::Unmapped => Err(unmapped_raw(addr)),
         }
     }
 
-    /// Write the place a raw byte address names, through this frame's `env`. This is
-    /// what makes `ptr_write(addr_of(x), 5)` set `x` to `5`.
+    /// Write the place a raw byte address names. This is what makes
+    /// `ptr_write(addr_of(x), 5)` set `x` to `5` — including from a callee, where `x`
+    /// belongs to the caller's environment on the env shelf (the out-parameter idiom).
     fn raw_place_store(
         &mut self,
         addr: usize,
@@ -1798,11 +1917,18 @@ impl<'a> IrRuntime<'a> {
     ) -> Result<Value, RuntimeError> {
         match self.raw_ptrs.resolve(addr) {
             RawResolve::Place { root, path, name } => {
-                let base = env.at_mut(&root).ok_or_else(|| dangling_place(&name))?;
+                // In-frame first (the common case), then the shelf. The two arms
+                // borrow disjointly, so the write always lands on the real storage.
+                let owner = if env.id() == root.env {
+                    Some(env)
+                } else {
+                    self.shelf_env_mut(root.env)
+                };
+                let owner = owner.ok_or_else(|| unreachable_frame(&name))?;
+                let base = owner.at_mut(&root).ok_or_else(|| dangling_place(&name))?;
                 set_place(base, &path, value)?;
                 Ok(Value::Void)
             }
-            RawResolve::Escaped { name } => Err(escaped_pointer(&name)),
             RawResolve::Dangling { name } => Err(dangling_place(&name)),
             RawResolve::Unmapped => Err(unmapped_raw(addr)),
         }

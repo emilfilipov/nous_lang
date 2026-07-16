@@ -446,27 +446,35 @@ fn addr_of_aliases_the_place_it_addresses() {
     }
 }
 
-/// A pointer that leaves the frame that took the address is **diagnosed, never
-/// guessed**: the interpreters keep each frame's locals in that frame's own
-/// environment, so such a pointer cannot be resolved, and `L0459` is raised rather
-/// than reading or writing the wrong storage.
+/// A **genuinely dangling** `addr_of` pointer is diagnosed, never guessed: the place
+/// it named no longer exists, so `L0459` is raised rather than reading storage the
+/// program no longer owns.
 ///
-/// The two shapes pinned here are **not** the same kind of thing, and the diagnostics
-/// say so:
+/// All three shapes are undefined behaviour in C (C11 6.2.4p6 ties an automatic
+/// object's lifetime to its *block*), so refusing them forbids no defined program:
 ///
-/// - `addr_of_escapes_frame.lby` passes a pointer into a callee. That is **valid C**
-///   (the out-parameter idiom) and the **native backend supports it** for the places
-///   it lowers (an 8-byte scalar or a struct-field path); the
-///   refusal is a limitation of the interpreter model, not a program error. This is a
-///   known acceptance divergence between the tiers — loud on the interpreters, never
-///   silent.
-/// - `addr_of_outlives_frame.lby` returns a pointer to a dead local. That is a
-///   genuine program error (undefined behaviour in C), correctly refused everywhere.
+/// - `addr_of_outlives_frame.lby` returns a pointer to a dead local — the frame
+///   returned, so `RawPointerMemory::exit_frame` dropped its regions.
+/// - `addr_of_inner_block_dies.lby` uses a pointer to an inner-block local after that
+///   block ended — the region survives (its frame is alive) but the *scope* is gone,
+///   so `Env::at` misses.
+/// - `addr_of_loop_body_dies.lby` is the same, for a loop-body local after the loop.
+///
+/// This is what `L0459` means after the env shelf, and essentially all it means:
+/// passing an address *into a callee* is valid C and now resolves for real on every
+/// tier (`cross_frame_addr_of_reaches_the_callers_place`). What is left refusing is
+/// code whose place has actually ceased to exist.
+///
+/// The refusal must never soften into a stale read. Each of these would report a
+/// plausible-looking value (`7`, `42`, `9`) out of storage the program has released —
+/// a wrong answer dressed as a right one, which is the exact failure mode the
+/// place-backed model exists to prevent.
 #[test]
-fn an_addr_of_pointer_that_escapes_its_frame_is_refused() {
+fn a_dangling_addr_of_pointer_is_refused_not_read() {
     for fixture in [
-        "tests/fixtures/invalid/raw_ptr/addr_of_escapes_frame.lby",
         "tests/fixtures/invalid/raw_ptr/addr_of_outlives_frame.lby",
+        "tests/fixtures/invalid/raw_ptr/addr_of_inner_block_dies.lby",
+        "tests/fixtures/invalid/raw_ptr/addr_of_loop_body_dies.lby",
     ] {
         let path = workspace_root().join(fixture);
         for backend in ["ast", "ir", "bytecode"] {
@@ -482,15 +490,130 @@ fn an_addr_of_pointer_that_escapes_its_frame_is_refused() {
             let errors = stderr(&output);
             assert!(
                 !output.status.success(),
-                "[{backend}] {fixture}: an escaped addr_of pointer must not silently \
+                "[{backend}] {fixture}: a dangling addr_of pointer must not silently \
                  resolve. stderr: {errors}"
             );
             assert!(
                 errors.contains("L0459"),
-                "[{backend}] {fixture}: expected the L0459 escaped/dangling refusal. \
+                "[{backend}] {fixture}: expected the L0459 dangling refusal. \
                  stderr: {errors}"
             );
+            // The refusal must name the dead place, not an anonymous bad address —
+            // that is what the tombstone/scope bookkeeping buys.
+            assert!(
+                errors.contains("already ended"),
+                "[{backend}] {fixture}: the L0459 text must say the place's block or \
+                 function has ended. stderr: {errors}"
+            );
         }
+    }
+}
+
+/// **Cross-frame `addr_of` resolves for real.** A pointer passed into a callee names
+/// the caller's live place, so the callee reads and writes the caller's actual
+/// storage — the out-parameter idiom (`scanf("%d", &x)`, `strtol(s, &end, 10)`).
+///
+/// This is well-defined C, not undefined behaviour: C11 6.2.4p6 ties an automatic
+/// object's lifetime to its *block*, and calling a function does not end the caller's
+/// block. Native has always compiled it (`addr_of` is a real `lea`); the interpreters
+/// reach the caller's environment through the **env shelf** (see
+/// `lullaby_runtime::raw_pointer`), which retired the acceptance divergence that used
+/// to make these programs `L0459` on the interpreters while native ran them.
+///
+/// The two fixtures split by native eligibility:
+///
+/// - `raw_ptr_cross_frame.lby` (432) covers the surface broadly — out-parameter
+///   write-through, a callee read *after a later independent write* (the case a
+///   snapshot would get wrong), two frames deep, a buffer walked and filled in a
+///   callee, whole-array decay, the size law at two element widths, negative offsets,
+///   and region dedup in a loop. Its `i32` buffer puts it outside the native
+///   i64-scalar subset, so native skips it cleanly with `L0339`.
+/// - `freestanding_cross_frame.lby` (327) stays inside that subset, so **all four
+///   tiers** run it and must agree bit-for-bit — pinning the interpreters' shelf
+///   against native's real machine addresses.
+#[test]
+fn cross_frame_addr_of_reaches_the_callers_place() {
+    for (fixture, expected) in [
+        ("tests/fixtures/valid/raw_ptr_cross_frame.lby", "432"),
+        (
+            "tests/fixtures/valid/no_runtime/freestanding_cross_frame.lby",
+            "327",
+        ),
+    ] {
+        let path = workspace_root().join(fixture);
+        for backend in ["ast", "ir", "bytecode"] {
+            let output = lullaby()
+                .args([
+                    "run",
+                    "--backend",
+                    backend,
+                    path.to_str().expect("fixture path"),
+                ])
+                .output()
+                .expect("run cli");
+            let errors = stderr(&output);
+            assert!(
+                output.status.success(),
+                "[{backend}] {fixture}: passing an addr_of pointer into a callee is \
+                 valid C and must run. stderr: {errors}"
+            );
+            assert_eq!(
+                stdout(&output).trim(),
+                expected,
+                "[{backend}] {fixture}: a callee must read and write the caller's real \
+                 place. stderr: {errors}"
+            );
+        }
+    }
+}
+
+/// An `addr_of` pointer sent to **another thread** is refused — and refused as
+/// `L0406`, not `L0459`.
+///
+/// The env shelf reaches a *caller's* frame, which is same-thread by construction. A
+/// `spawn`/`async fn` builds its own interpreter with its own `RawPointerMemory`, so
+/// the address names no region there at all: it is unmapped, not dangling. This is
+/// pinned because the distinction is easy to get wrong in the docs (an earlier draft of
+/// this very change claimed `L0459` here), and because the property that actually
+/// matters — **a stack address never silently resolves on the wrong thread** — must not
+/// regress into a read of unrelated storage.
+#[test]
+fn an_addr_of_pointer_cannot_cross_a_thread_boundary() {
+    let source = "async fn worker p ptr<i64> -> i64\n\
+                  \x20   unsafe\n\
+                  \x20       ptr_read(p)\n\
+                  \n\
+                  fn main -> i64\n\
+                  \x20   let x i64 = 7\n\
+                  \x20   unsafe\n\
+                  \x20       let p ptr<i64> = addr_of(x)\n\
+                  \x20       let f = worker(p)\n\
+                  \x20       await f\n";
+    let scratch = ScratchDir::new("cross_thread_addr_of");
+    let path = scratch.join("cross_thread_addr_of.lby");
+    std::fs::write(&path, source).expect("write fixture");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                path.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        let errors = stderr(&output);
+        assert!(
+            !output.status.success(),
+            "[{backend}] a stack address must not resolve on another thread. \
+             stderr: {errors}"
+        );
+        assert!(
+            errors.contains("L0406"),
+            "[{backend}] a cross-thread addr_of pointer names no region in the child \
+             interpreter's address space, so it is unmapped (L0406), not dangling \
+             (L0459). stderr: {errors}"
+        );
     }
 }
 
@@ -824,6 +947,32 @@ fn native_buffer_walk_matches_the_interpreters() {
         exit, 124,
         "native must agree with all three interpreters on the buffer walk \
          (a mismatch means the aggregate layout no longer ascends)"
+    );
+}
+
+/// **Native agrees with the env shelf on cross-frame `addr_of`.** The fourth tier for
+/// `cross_frame_addr_of_reaches_the_callers_place`: `freestanding_cross_frame.lby`
+/// stays inside the native i64-scalar subset, so native compiles every one of its
+/// out-parameter / callee-read / two-frames-deep / buffer-walk shapes to real `lea`
+/// addressing and must land on exactly the interpreters' 327.
+///
+/// This is the assertion that keeps the shelf honest. The interpreters model memory
+/// abstractly; native does not. If the shelf ever resolved to the wrong storage — a
+/// copy, a stale scope, the wrong frame's binding — the two would part company here.
+#[test]
+fn native_cross_frame_addr_of_matches_the_interpreters() {
+    let fixture = "tests/fixtures/valid/no_runtime/freestanding_cross_frame.lby";
+    let Some(exit) = native_exit_code(
+        fixture,
+        "lullaby_cross_frame_freestanding.exe",
+        &["--freestanding"],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        exit, 327,
+        "native `addr_of` is a real `lea`, so it must agree with the interpreters' env \
+         shelf on every cross-frame shape"
     );
 }
 

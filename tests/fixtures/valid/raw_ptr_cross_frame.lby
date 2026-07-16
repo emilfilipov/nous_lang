@@ -1,0 +1,115 @@
+# CROSS-FRAME `addr_of`: a pointer handed to a callee names the caller's real place.
+#
+# This is the out-parameter idiom — C's `scanf("%d", &x)`, `strtol(s, &end, 10)`,
+# `qsort` — and it is well-defined C, not undefined behaviour: C11 6.2.4p6 ties an
+# automatic object's lifetime to its *block*, and calling a function does not end the
+# caller's block, so `x` is alive for the whole call.
+#
+# Every tier defines this program and they all agree (432). Native `addr_of` is a real
+# `lea`; the interpreters reach the caller's environment through the **env shelf** (see
+# `lullaby_runtime::raw_pointer`), so a callee reads and writes the caller's storage
+# for real rather than a copy. Case 2 is the one that proves it is not a snapshot: the
+# caller writes `x = 99` *after* taking the address, and the callee must observe `99`.
+#
+# `L0459` now covers only genuinely dangling pointers — see
+# `tests/fixtures/invalid/raw_ptr/`.
+#
+# main = 5 (out-parameter write-through) + 99 (callee read after a later write)
+#      + 99 (two frames deep) + 100 (buffer walked in a callee)
+#      + 100 (whole-array decay passed to a callee) + 6 (buffer written by a callee)
+#      + 8 (i64 size law in a callee) + 4 (i32 size law in a callee)
+#      + 10 (negative offset in a callee) + 1 (region dedup in a loop) = 432.
+
+# The out-parameter idiom: the callee writes the caller's local.
+fn poke p ptr<i64> -> i64
+    unsafe
+        ptr_write(p, 5)
+    0
+
+# A callee reads through a pointer parameter.
+fn peek p ptr<i64> -> i64
+    unsafe
+        ptr_read(p)
+
+# Two frames deep: `main` -> `deep` -> `peek`, all reaching `main`'s local.
+fn deep p ptr<i64> -> i64
+    peek(p)
+
+# A buffer passed to a callee and walked with `ptr_offset` — the kernel idiom.
+fn total p ptr<i64> n i64 -> i64
+    let sum i64 = 0
+    let i i64 = 0
+    unsafe
+        while i < n
+            sum = sum + ptr_read(ptr_offset(p, i))
+            i = i + 1
+    sum
+
+# A buffer passed to a callee and FILLED through the pointer; the caller reads the
+# result back by ordinary indexing, which only works if the stores genuinely aliased.
+fn fill p ptr<i64> n i64 -> i64
+    let i i64 = 0
+    unsafe
+        while i < n
+            ptr_write(ptr_offset(p, i), i + 1)
+            i = i + 1
+    0
+
+# The size law holds on a pointer the caller passed in: (p+1) - p == size_of(T).
+fn stride_i64 p ptr<i64> -> i64
+    unsafe
+        ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p)
+
+fn stride_i32 p ptr<i32> -> i64
+    unsafe
+        ptr_to_int(ptr_offset(p, 1)) - ptr_to_int(p)
+
+# A negative offset walks back through a caller's buffer.
+fn back_two p ptr<i64> -> i64
+    unsafe
+        ptr_read(ptr_offset(p, -2))
+
+fn main -> i64
+    let x i64 = 1
+    let a array<i64> = [10, 20, 30, 40]
+    let b array<i64> = [0, 0, 0]
+    let n array<i32> = [to_i32(1), to_i32(2)]
+    let d array<i64> = [7, 8]
+    let out i64 = 0
+    unsafe
+        let p ptr<i64> = addr_of(x)
+        # 1. The callee writes `main`'s `x` for real.
+        poke(p)
+        out = out + x
+        # 2. The callee observes a LATER, independent write to `x`. A by-value
+        #    snapshot would still report 5 here; the place-backed pointer reports 99.
+        x = 99
+        out = out + peek(p)
+        # 3. Two frames deep — depth is irrelevant, the place is alive either way.
+        out = out + deep(p)
+        # 4. A buffer passed to a callee and walked with `ptr_offset`.
+        out = out + total(addr_of(a[0]), 4)
+        # 5. Whole-array decay across a frame: `addr_of(a)` is `addr_of(a[0])`.
+        out = out + total(addr_of(a), 4)
+        # 6. The callee fills the caller's buffer; read back by index.
+        fill(addr_of(b[0]), 3)
+        out = out + b[0] + b[1] + b[2]
+        # 7. The size law survives the frame crossing, for two element widths.
+        out = out + stride_i64(addr_of(a[0]))
+        out = out + stride_i32(addr_of(n[0]))
+        # 8. A negative offset in a callee steps back to `a[0]`.
+        out = out + back_two(addr_of(a[2]))
+        # 9. Region dedup: `addr_of` of the same place in a loop yields ONE stable
+        #    address, exactly as a real `lea` would, rather than drifting per turn.
+        let first i64 = 0
+        let same i64 = 1
+        let i i64 = 0
+        while i < 4
+            let q ptr<i64> = addr_of(d[0])
+            if i == 0
+                first = ptr_to_int(q)
+            if ptr_to_int(q) != first
+                same = 0
+            i = i + 1
+        out = out + same
+    out

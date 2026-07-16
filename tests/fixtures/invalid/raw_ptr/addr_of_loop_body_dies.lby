@@ -1,0 +1,20 @@
+# An `addr_of` pointer to a LOOP-BODY local is dangling once the loop ends: each turn
+# of the body is its own block, so the binding whose address was taken is gone.
+# Dereferencing it is refused with L0459 naming the dead place.
+#
+# This is a genuine program error (C11 6.2.4p6 — the block has ended), not the
+# interpreter model declining to reach a live place. Passing an address into a callee
+# works on every tier now; see tests/fixtures/valid/raw_ptr_cross_frame.lby.
+#
+# The refusal must stay loud: `9` is sitting in storage the program no longer owns, and
+# reporting it would be a silent wrong answer.
+fn main -> i64
+    unsafe
+        let p ptr<i64> = int_to_ptr(0)
+        let i i64 = 0
+        while i < 2
+            let body i64 = 9
+            p = addr_of(body)
+            i = i + 1
+        # Every turn's `body` block has ended: the place no longer exists.
+        ptr_read(p)

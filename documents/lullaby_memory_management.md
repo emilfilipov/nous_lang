@@ -503,28 +503,34 @@ struct Mixed
   > write through `ptr_offset(addr_of(a[0]), i)` mutates `a[i]`. This matches real
   > `lea`-based native addressing.
   >
-  > **Limitation — on the interpreters, an `addr_of` pointer is usable only within the
-  > body of the function that took the address.** Pointer-taking code cannot be
-  > factored into a helper there. Dereferencing a pointer from another frame is
-  > **refused at run time with `L0459`** rather than reading or writing the wrong
-  > storage. Two different things are refused, and only one is your program's fault:
+  > **An `addr_of` pointer may be passed into a callee**, which reads and writes the
+  > caller's place for real — `poke(addr_of(x))` sets the caller's `x`. This is the
+  > out-parameter idiom (C's `scanf("%d", &x)`, `strtol(s, &end, 10)`) and it is
+  > well-defined: C11 6.2.4p6 ties an automatic object's lifetime to *its block*, and a
+  > call does not end the caller's block. Native `addr_of` is a real `lea`; the
+  > interpreters reach the caller's locals through an **env shelf** (a stack of the
+  > ancestor frames' environments — see `crates/lullaby_runtime/src/raw_pointer.rs`).
+  > All four tiers agree.
   >
-  > - **Dangling** — using a pointer whose block has ended, or returning `addr_of` of a
-  >   local. A genuine error: undefined behaviour in C, refused everywhere.
-  > - **Passed into a callee** — e.g. `poke(addr_of(x))`. This is **correct code**: the
-  >   out-parameter idiom, well-defined in C (a call does not end the caller's block),
-  >   and the **native backend supports it** for a scalar or struct-field place
-  >   (`addr_of` of an array element is not lowered natively either). The interpreters
-  >   refuse it only because each frame's locals live in that frame's own environment
-  >   and a callee cannot reach its caller's. This is an accepted **acceptance
-  >   divergence** between the tiers — loud on the interpreters, never silent.
+  > **What is refused: a genuinely dangling pointer (`L0459`).** An address is only
+  > meaningful while its place exists, and two things end that — both **your program's
+  > error**, and both undefined behaviour in C:
   >
-  > On the interpreters, pass or return the *value* instead of its address, or use an
+  > - **The block ended** — a pointer to an inner-block or loop-body local, used after
+  >   that block.
+  > - **The function returned** — returning `addr_of` of a local.
+  >
+  > These are refused rather than read, because the storage is no longer the program's:
+  > reporting the value still sitting there would be a silent wrong answer.
+  >
+  > A pointer handed to **another thread** (`spawn`, an `async fn`) is a separate case:
+  > each thread runs its own interpreter with its own raw-pointer space, so the address
+  > names nothing there and is refused as an invalid pointer (`L0406`).
+  >
+  > To share memory across a thread boundary, send the *value* instead, or use an
   > `alloc`-backed pointer, which has no frame lifetime and is unaffected by any of
   > this. (Note the spelling: an `alloc` result is typed `ptr_T` — e.g. `ptr_i64` —
-  > **not** `ptr<T>`; the two are distinct and not convertible. An `alloc` box is the
-  > one pointer form that crosses a frame boundary on all four tiers, including the
-  > native backend.)
+  > **not** `ptr<T>`; the two are distinct and not convertible.)
 
 ### Memory Safety Features
 
