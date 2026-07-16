@@ -311,6 +311,151 @@ fn void_is_not_resolvable_as_a_non_return_type() {
     );
 }
 
+// -- Void `main`: the entry stub must not read `rax` ---------------------------
+//
+// REGRESSION PIN for a real MISCOMPILE this surface newly admitted. `main` is the
+// one void function whose "no value" is externally observable: the entry stub is
+// a CALLER of it, and every stub unconditionally read `eax` as the process exit
+// code. So a void `main` exited with whatever its body last left in `rax` —
+// `fn main -> void` after a call returning 77 exited 77, and 1234 exited 210
+// (1234 & 0xFF), where all three interpreters exit 0. The old `has_main: bool`
+// was keyed on the function NAME alone and carried no return-shape information,
+// so no stub could have known better; `EntryStub` replaces it.
+//
+// The fix is at the STUB, not the epilogue: `rax` genuinely IS undefined after a
+// void function, so the stub must stop reading it. That covers every return path
+// of `main` at once (fallthrough, an explicit `return`, and a `return` nested in a
+// branch or loop) rather than needing each to zero `rax` itself.
+
+/// The direct-PE entry stub — the DEFAULT path, and the one that produced the
+/// observed exit 77 — must zero the exit-code register for a void `main` and read
+/// `eax` for a value-returning one.
+///
+/// `FF 15` is the stub's indirect `call [rip + __imp_ExitProcess]`, so the
+/// two-byte sequence immediately before it is exactly the exit-code setup; both
+/// directions are asserted, so a stub that always emitted one form fails here.
+#[test]
+fn void_main_entry_stub_zeroes_the_exit_code() {
+    let void_main = emit_native_program(&module_for(concat!(
+        "fn f -> i64\n",
+        "    77\n",
+        "\n",
+        "fn main -> void\n",
+        "    let x i64 = f()\n",
+        "    return\n",
+    )))
+    .expect("emit void-main program");
+    let image = void_main
+        .pe_image
+        .expect("a void main is still a runnable image");
+    assert!(
+        image.windows(4).any(|w| w == [0x31, 0xC9, 0xFF, 0x15]),
+        "a void `main`'s entry stub must `xor ecx, ecx` — `rax` is undefined after it"
+    );
+    assert!(
+        !image.windows(4).any(|w| w == [0x89, 0xC1, 0xFF, 0x15]),
+        "a void `main`'s entry stub must NOT `mov ecx, eax`: that leaks whatever the \
+         body last computed as the process exit code (the observed 77-vs-0 miscompile)"
+    );
+
+    // The value-returning stub is unchanged — the fix must not zero a real result.
+    let value_main = emit_native_program(&module_for(concat!(
+        "fn f -> i64\n",
+        "    77\n",
+        "\n",
+        "fn main -> i64\n",
+        "    return f()\n",
+    )))
+    .expect("emit value-main program");
+    let image = value_main
+        .pe_image
+        .expect("a value main is a runnable image");
+    assert!(
+        image.windows(4).any(|w| w == [0x89, 0xC1, 0xFF, 0x15]),
+        "a value-returning `main`'s entry stub must still `mov ecx, eax`"
+    );
+    assert!(
+        !image.windows(4).any(|w| w == [0x31, 0xC9, 0xFF, 0x15]),
+        "a value-returning `main`'s exit code must not be zeroed"
+    );
+}
+
+/// `EntryStub::classify` keys on `main`'s declared RETURN SHAPE, not just its
+/// name — the hardening of the old `has_main = lowered.iter().any(|f| f.name ==
+/// "main")`, which could not distinguish the two.
+#[test]
+fn entry_stub_classifies_main_by_return_shape() {
+    let void_module = module_for("fn main -> void\n    let x i64 = 1\n");
+    let value_module = module_for("fn main -> i64\n    7\n");
+
+    let void_lowered = [LoweredNativeFunction {
+        name: "main".to_string(),
+        code: Vec::new(),
+        relocations: Vec::new(),
+        line: 1,
+    }];
+    assert_eq!(
+        EntryStub::classify(&void_lowered, &void_module),
+        EntryStub::MainVoid,
+        "a `main` with no declared return type must classify as MainVoid"
+    );
+    assert_eq!(
+        EntryStub::classify(&void_lowered, &value_module),
+        EntryStub::MainValue,
+        "an i64-returning `main` must classify as MainValue"
+    );
+    // No compiled `main` -> a library object with no stub and no exit dependency.
+    assert_eq!(
+        EntryStub::classify(&[], &value_module),
+        EntryStub::None,
+        "a program with no compiled `main` must emit no entry stub"
+    );
+    assert!(!EntryStub::None.emits());
+    assert!(EntryStub::MainVoid.emits());
+    assert!(EntryStub::MainValue.emits());
+}
+
+/// A void `main` must compile on every return-path shape the stub has to cover:
+/// fallthrough (no `return` at all), an explicit tail `return`, a `return` inside
+/// a branch, and a `return` inside a loop. The stub fix makes all four exit 0 by
+/// construction; the exit codes themselves are asserted end-to-end in
+/// `crates/lullaby_cli/tests/cli/suite16.rs`.
+#[test]
+fn void_main_compiles_on_every_return_path() {
+    let cases: &[(&str, &str)] = &[
+        ("fallthrough", "fn main -> void\n    let x i64 = f()\n"),
+        (
+            "tail return",
+            "fn main -> void\n    let x i64 = f()\n    return\n",
+        ),
+        (
+            "return in a branch",
+            "fn main -> void\n    let x i64 = f()\n    if x > 0\n        return\n    let y i64 = 5\n",
+        ),
+        (
+            "return in a loop",
+            "fn main -> void\n    let i i64 = 0\n    while i < 4\n        let x i64 = f()\n        if x > 0\n            return\n        i = i + 1\n",
+        ),
+    ];
+    for (label, main_src) in cases {
+        let source = format!("fn f -> i64\n    77\n\n{main_src}");
+        let program = emit_native_program(&module_for(&source))
+            .unwrap_or_else(|e| panic!("emit void main ({label}): {}", e.message));
+        assert!(
+            program.compiled.contains(&"main".to_string()),
+            "a void `main` ({label}) must compile: {:?}",
+            program.skipped
+        );
+        let image = program
+            .pe_image
+            .unwrap_or_else(|| panic!("void main ({label}) must still produce an image"));
+        assert!(
+            image.windows(4).any(|w| w == [0x31, 0xC9, 0xFF, 0x15]),
+            "a void `main` ({label}) must zero its exit code"
+        );
+    }
+}
+
 /// `NativeType::Void` is not an aggregate and occupies no words — the two
 /// properties the frame planner and call ABI depend on to leave a void call's
 /// registers and scratch untouched.

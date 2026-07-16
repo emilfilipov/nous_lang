@@ -478,7 +478,11 @@ pub fn emit_native_program_for_target(
             }
         }
 
-        let has_main = lowered.iter().any(|f| f.name == "main");
+        // The entry classification carries `main`'s RETURN SHAPE, not just its
+        // presence: a void `main` leaves `rax` undefined, so its stub must not read
+        // it as the exit code (see `EntryStub`).
+        let entry_stub = EntryStub::classify(&lowered, module);
+        let has_main = entry_stub.emits();
         // Whether any compiled function is a C-callable export. An export-only
         // program (no `main`) is a *library object*: it has no entry stub, so a C
         // (or other) `main` can link against it and call the exported symbols.
@@ -512,7 +516,7 @@ pub fn emit_native_program_for_target(
         // freestanding `exit`-syscall entry stub.
         let (bytes, entry_symbol) = match target.object_format {
             NativeObjectFormat::Coff => {
-                let bytes = write_native_program_object(&lowered, &strings, has_main, debug);
+                let bytes = write_native_program_object(&lowered, &strings, entry_stub, debug);
                 let entry = if has_main {
                     NATIVE_ENTRY_SYMBOL.to_string()
                 } else {
@@ -521,12 +525,12 @@ pub fn emit_native_program_for_target(
                 (bytes, entry)
             }
             NativeObjectFormat::Elf => {
-                let model = build_object_model(&lowered, &strings, has_main, PlatformAbi::Linux);
+                let model = build_object_model(&lowered, &strings, entry_stub, PlatformAbi::Linux);
                 let entry = model.entry_symbol.clone().unwrap_or_default();
                 (elf_object::write_elf64(&model), entry)
             }
             NativeObjectFormat::MachO => {
-                let model = build_object_model(&lowered, &strings, has_main, PlatformAbi::MacOs);
+                let model = build_object_model(&lowered, &strings, entry_stub, PlatformAbi::MacOs);
                 let entry = model.entry_symbol.clone().unwrap_or_default();
                 (macho_object::write_macho64(&model), entry)
             }
@@ -547,7 +551,7 @@ pub fn emit_native_program_for_target(
             && has_main
             && import_libs.is_empty()
         {
-            write_pe_executable(&lowered, &strings)
+            write_pe_executable(&lowered, &strings, entry_stub)
         } else {
             None
         };

@@ -5,6 +5,60 @@
 
 use super::*;
 
+/// What entry stub a program's object/image gets, and how that stub derives the
+/// process exit code from `main`.
+///
+/// This replaces a bare `has_main: bool`. That bool was keyed on the function
+/// **name alone** and told the four stub emitters nothing about `main`'s return
+/// shape, so every one of them unconditionally read `eax` as the exit code. For a
+/// **void `main`** that is a real miscompile: `rax` is undefined on return from a
+/// void function, so the process exited with whatever the body happened to leave
+/// there (`fn main -> void` after a call returning 77 exited **77**; the
+/// interpreters exit **0**). `main` is the one void function whose "no value" is
+/// externally observable — the stub *is* a caller of it, and the void contract
+/// says a caller must not read `rax`.
+///
+/// Making the distinction a type rather than a bool means a stub emitter cannot
+/// read the exit code without first saying which `main` it has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryStub {
+    /// No stub: a library object with no `main` (a C `main` links against its
+    /// exported symbols), so no `ExitProcess`/`exit` dependency is introduced.
+    None,
+    /// `main` returns a value: its result is in `rax` and becomes the exit code.
+    MainValue,
+    /// `main` returns NOTHING. `rax` is **undefined** on return, so the stub must
+    /// not read it — the process exits **0**, matching all three interpreters.
+    MainVoid,
+}
+
+impl EntryStub {
+    /// Whether an entry stub is emitted at all (both `main` shapes emit one).
+    pub(crate) fn emits(self) -> bool {
+        !matches!(self, EntryStub::None)
+    }
+
+    /// Classify the program's entry from the module's `main`, if it compiled.
+    /// `lowered` is consulted for presence (only a *compiled* `main` gets a stub)
+    /// and the module for its declared return shape — the bool this replaces
+    /// checked only the former.
+    pub(crate) fn classify(
+        lowered: &[LoweredNativeFunction],
+        module: &BytecodeModule,
+    ) -> EntryStub {
+        if !lowered.iter().any(|f| f.name == "main") {
+            return EntryStub::None;
+        }
+        // A compiled `main` always originates from a module function, so the
+        // lookup succeeds. If it somehow did not, treating it as value-returning
+        // reproduces the historical stub exactly.
+        match module.functions.iter().find(|f| f.name == "main") {
+            Some(f) if f.return_type.is_void() => EntryStub::MainVoid,
+            _ => EntryStub::MainValue,
+        }
+    }
+}
+
 // -- COFF object writer (multi-function, relocations, imports) ---------------
 //
 // The object has a single `.text` section holding the entry stub followed by
@@ -22,7 +76,7 @@ use super::*;
 pub(crate) fn write_native_program_object(
     functions: &[LoweredNativeFunction],
     strings: &StringPool,
-    emit_stub: bool,
+    entry_stub: EntryStub,
     debug: Option<&DebugOptions>,
 ) -> Vec<u8> {
     // The heap path (bump allocator + `.bss` region + helpers) is needed when the
@@ -30,9 +84,26 @@ pub(crate) fn write_native_program_object(
     // string runtime helper. A program using none keeps the exact prior text-only
     // layout.
     if strings.is_empty() && !program_uses_heap_helpers(functions) {
-        write_text_only_object(functions, emit_stub, debug)
+        write_text_only_object(functions, entry_stub, debug)
     } else {
-        write_object_with_data(functions, strings, emit_stub, debug)
+        write_object_with_data(functions, strings, entry_stub, debug)
+    }
+}
+
+/// Emit the entry stub's exit-code setup into `reg`-in-`ecx` form (the Win64
+/// `ExitProcess` argument register).
+///
+/// A **value-returning** `main` leaves its result in `rax`: `mov ecx, eax`.
+/// A **void** `main` leaves `rax` UNDEFINED — reading it would leak whatever the
+/// body last computed as the process exit code (the observed miscompile: exit 77
+/// where the interpreters exit 0). So the stub zeroes `ecx` instead and never
+/// reads `rax`, which is exactly what the void contract requires of a caller, and
+/// which covers every return path of `main` at once (fallthrough, an explicit
+/// `return`, and a `return` nested in a branch or loop).
+fn emit_exit_code_into_ecx(text: &mut Vec<u8>, entry_stub: EntryStub) {
+    match entry_stub {
+        EntryStub::MainVoid => text.extend_from_slice(&[0x31, 0xC9]), // xor ecx, ecx
+        _ => text.extend_from_slice(&[0x89, 0xC1]),                   // mov ecx, eax
     }
 }
 
@@ -79,13 +150,14 @@ struct NamedTextReloc {
 /// the only machine-code difference between the platforms. The shared internal
 /// calling convention is kept unchanged (see `documents/native_backend_contract.md`).
 ///
-/// When `emit_stub` is true the object is a runnable program led by the entry
-/// stub; when false it is a library object (no `main`) with no entry stub and no
-/// exit dependency.
+/// When `entry_stub` emits, the object is a runnable program led by the entry
+/// stub; for [`EntryStub::None`] it is a library object (no `main`) with no entry
+/// stub and no exit dependency. A void `main` ([`EntryStub::MainVoid`]) zeroes the
+/// exit-code register instead of reading `eax`, which is undefined after it.
 pub(crate) fn build_object_model(
     functions: &[LoweredNativeFunction],
     strings: &StringPool,
-    emit_stub: bool,
+    entry_stub: EntryStub,
     abi: PlatformAbi,
 ) -> ObjectModel {
     let use_heap = !strings.is_empty() || program_uses_heap_helpers(functions);
@@ -94,12 +166,14 @@ pub(crate) fn build_object_model(
     let mut text: Vec<u8> = Vec::new();
     let mut relocations: Vec<NamedTextReloc> = Vec::new();
 
-    if emit_stub {
+    if entry_stub.emits() {
         // Freestanding entry stub. `sub rsp, 32` reserves the internal ABI's
         // shadow space and lands `rsp` 16-byte aligned for the `call main`
         // (the OS enters `_start`/`start` with a 16-aligned stack). After `main`
         // returns its exit code in `eax`, the stub moves it to `edi` and issues
-        // the platform `exit` syscall, so the object needs no libc.
+        // the platform `exit` syscall, so the object needs no libc. A VOID `main`
+        // leaves `rax` undefined, so `edi` is zeroed instead of read from `eax`
+        // (the SysV mirror of the Win64 `xor ecx, ecx`); the process exits 0.
         text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
         text.push(0xE8); // call main (rel32)
         relocations.push(NamedTextReloc {
@@ -107,7 +181,10 @@ pub(crate) fn build_object_model(
             symbol: "main".to_string(),
         });
         text.extend_from_slice(&[0, 0, 0, 0]);
-        text.extend_from_slice(&[0x89, 0xC7]); // mov edi, eax (exit code)
+        match entry_stub {
+            EntryStub::MainVoid => text.extend_from_slice(&[0x31, 0xFF]), // xor edi, edi
+            _ => text.extend_from_slice(&[0x89, 0xC7]),                   // mov edi, eax
+        }
         match abi {
             PlatformAbi::Linux => {
                 // mov eax, 60 (SYS_exit); syscall.
@@ -208,7 +285,7 @@ pub(crate) fn build_object_model(
 
     // -- Symbols (defined first, then undefined externs) ---------------------
     let mut symbols: Vec<ObjectSymbol> = Vec::new();
-    if emit_stub {
+    if entry_stub.emits() {
         symbols.push(ObjectSymbol {
             name: abi.entry_symbol().to_string(),
             section: Some(0),
@@ -306,7 +383,7 @@ pub(crate) fn build_object_model(
     ObjectModel {
         sections,
         symbols,
-        entry_symbol: emit_stub.then(|| abi.entry_symbol().to_string()),
+        entry_symbol: entry_stub.emits().then(|| abi.entry_symbol().to_string()),
         // This builder lowers x86-64 machine code (shared by the ELF and Mach-O
         // paths). The AArch64 ELF path has its own model builder in `aarch64`.
         machine: crate::object_model::ObjectMachine::X86_64,
@@ -420,7 +497,7 @@ pub(crate) fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> 
 /// relocations, then write the COFF headers, section data, symbol table, and
 /// string table.
 ///
-/// When `emit_stub` is true the object leads with the `_lullaby_start` entry stub
+/// When `entry_stub` emits, the object leads with the `_lullaby_start` entry stub
 /// that calls `main` and forwards its result to `ExitProcess` (a runnable
 /// program). When false, no stub is emitted and no `ExitProcess` dependency is
 /// introduced: the object is a *library* whose exported functions a C `main` (or
@@ -428,7 +505,7 @@ pub(crate) fn program_uses_heap_helpers(functions: &[LoweredNativeFunction]) -> 
 /// its exact prior byte-for-byte layout.
 fn write_text_only_object(
     functions: &[LoweredNativeFunction],
-    emit_stub: bool,
+    entry_stub: EntryStub,
     debug: Option<&DebugOptions>,
 ) -> Vec<u8> {
     // Lay out `.text`: entry stub first, then each function. Record each
@@ -436,10 +513,11 @@ fn write_text_only_object(
     let mut text: Vec<u8> = Vec::new();
     let mut relocations: Vec<TextRelocation> = Vec::new();
 
-    if emit_stub {
-        // Entry stub: sub rsp, 40 (align + shadow); call main; mov ecx, eax;
-        // call ExitProcess; (int3 padding). The `sub rsp,40` keeps rsp 16-aligned
-        // at each `call` (return address makes 8; 40 = 0x28 restores alignment).
+    if entry_stub.emits() {
+        // Entry stub: sub rsp, 40 (align + shadow); call main; set the exit code
+        // (from `eax`, or zeroed for a void `main`); call ExitProcess; (int3
+        // padding). The `sub rsp,40` keeps rsp 16-aligned at each `call` (return
+        // address makes 8; 40 = 0x28 restores alignment).
         text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 40
         text.push(0xE8); // call main (rel32)
         relocations.push(TextRelocation {
@@ -448,7 +526,7 @@ fn write_text_only_object(
             symbol_name: "main".to_string(),
         });
         text.extend_from_slice(&[0, 0, 0, 0]);
-        text.extend_from_slice(&[0x89, 0xC1]); // mov ecx, eax (exit code = main's result)
+        emit_exit_code_into_ecx(&mut text, entry_stub);
         text.push(0xE8); // call ExitProcess (rel32)
         relocations.push(TextRelocation {
             offset: (text.len()) as u32,
@@ -491,7 +569,7 @@ fn write_text_only_object(
     }
 
     let mut symbols: Vec<SymbolDef> = Vec::new();
-    if emit_stub {
+    if entry_stub.emits() {
         symbols.push(SymbolDef {
             name: NATIVE_ENTRY_SYMBOL.to_string(),
             section_number: 1,
@@ -505,7 +583,7 @@ fn write_text_only_object(
             value: *func_offsets.get(&function.name).expect("function offset"),
         });
     }
-    if emit_stub {
+    if entry_stub.emits() {
         symbols.push(SymbolDef {
             name: EXIT_PROCESS_SYMBOL.to_string(),
             section_number: 0,
@@ -726,14 +804,14 @@ pub(crate) struct HelperFunction {
 fn write_object_with_data(
     functions: &[LoweredNativeFunction],
     strings: &StringPool,
-    emit_stub: bool,
+    entry_stub: EntryStub,
     debug: Option<&DebugOptions>,
 ) -> Vec<u8> {
     // -- Build .text: entry stub, user functions, heap helpers ---------------
     let mut text: Vec<u8> = Vec::new();
     let mut relocations: Vec<TextRelocation> = Vec::new();
 
-    if emit_stub {
+    if entry_stub.emits() {
         // Entry stub (identical to the text-only path).
         text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 40
         text.push(0xE8); // call main
@@ -743,7 +821,7 @@ fn write_object_with_data(
             symbol_name: "main".to_string(),
         });
         text.extend_from_slice(&[0, 0, 0, 0]);
-        text.extend_from_slice(&[0x89, 0xC1]); // mov ecx, eax
+        emit_exit_code_into_ecx(&mut text, entry_stub);
         text.push(0xE8); // call ExitProcess
         relocations.push(TextRelocation {
             offset: text.len() as u32,
@@ -918,7 +996,7 @@ fn write_object_with_data(
     }
 
     let mut symbols: Vec<SymbolDef> = Vec::new();
-    if emit_stub {
+    if entry_stub.emits() {
         symbols.push(SymbolDef {
             name: NATIVE_ENTRY_SYMBOL.to_string(),
             section_number: 1,
@@ -980,7 +1058,7 @@ fn write_object_with_data(
             is_function: true,
         });
     }
-    if emit_stub {
+    if entry_stub.emits() {
         symbols.push(SymbolDef {
             name: EXIT_PROCESS_SYMBOL.to_string(),
             section_number: 0,

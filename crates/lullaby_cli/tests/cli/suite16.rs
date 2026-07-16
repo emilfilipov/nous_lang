@@ -306,6 +306,91 @@ fn native_void_call_in_a_loop_runs() {
     }
 }
 
+/// REGRESSION PIN: a void `main` must exit **0**, matching the interpreters —
+/// not leak whatever its body left in `rax`.
+///
+/// `main` is the one void function whose "no value" is externally observable: the
+/// entry stub is a CALLER of it, and it read `eax` unconditionally as the process
+/// exit code. So a void `main` exited with the body's last computed value —
+/// `77` for the shape below, and `210` (= `1234 & 0xFF`) for the 1234 variant —
+/// where all three interpreters exit `0`.
+///
+/// The body is what makes this a real pin: a preceding `i64` call makes a NONZERO
+/// `rax` overwhelmingly likely at the epilogue. An empty-bodied void `main` (as in
+/// `tests/fixtures/valid/main.lby`) passes even on the broken backend, because the
+/// fallthrough path's `xor rax, rax` zeroes `rax` by coincidence — which is
+/// exactly why no existing test caught this.
+///
+/// Both nonzero values are checked, and both a value that survives `& 0xFF` (77)
+/// and one that does not (1234 -> 210), so a fix that merely truncated would fail.
+#[test]
+fn native_void_main_exits_zero_like_the_interpreters() {
+    for (leak, tag) in [(77, "77"), (1234, "1234")] {
+        let source = format!(
+            "fn f -> i64\n    {leak}\n\nfn main -> void\n    let x i64 = f()\n    return\n"
+        );
+        // The interpreters are the oracle: a void `main` produces no exit code, so
+        // the process exits 0.
+        for backend in ["ast", "ir", "bytecode"] {
+            let path = std::env::temp_dir().join(format!("lullaby_void_main_{tag}_{backend}.lby"));
+            std::fs::write(&path, &source).expect("write source");
+            let output = lullaby()
+                .args([
+                    "run",
+                    "--backend",
+                    backend,
+                    path.to_str().expect("src path"),
+                ])
+                .output()
+                .expect("run cli");
+            assert_eq!(
+                output.status.code().expect("exit code"),
+                0,
+                "[{backend}] a void `main` must exit 0"
+            );
+        }
+        if let Some(exit) = native_exit_for(&source, &format!("lullaby_void_main_{tag}")) {
+            assert_eq!(
+                exit, 0,
+                "a void `main` must exit 0 like the interpreters, not leak `rax` \
+                 (this returned {leak} from a call; the broken stub exited with it)"
+            );
+        }
+    }
+}
+
+/// The void `main` fix must hold on EVERY return path the entry stub has to cover
+/// — fallthrough (no `return` at all), an explicit tail `return`, a `return`
+/// inside a branch, and a `return` inside a loop — since fixing at the stub rather
+/// than at each epilogue is what makes that structural.
+#[test]
+fn native_void_main_exits_zero_on_every_return_path() {
+    let cases: &[(&str, &str)] = &[
+        ("fallthrough", "fn main -> void\n    let x i64 = f()\n"),
+        (
+            "tail_return",
+            "fn main -> void\n    let x i64 = f()\n    return\n",
+        ),
+        (
+            "return_in_branch",
+            "fn main -> void\n    let x i64 = f()\n    if x > 0\n        return\n    let y i64 = 5\n",
+        ),
+        (
+            "return_in_loop",
+            "fn main -> void\n    let i i64 = 0\n    while i < 4\n        let x i64 = f()\n        if x > 0\n            return\n        i = i + 1\n",
+        ),
+    ];
+    for (label, main_src) in cases {
+        let source = format!("fn f -> i64\n    77\n\n{main_src}");
+        if let Some(exit) = native_exit_for(&source, &format!("lullaby_void_main_path_{label}")) {
+            assert_eq!(
+                exit, 0,
+                "a void `main` must exit 0 on the `{label}` path (77 = the leaked `rax`)"
+            );
+        }
+    }
+}
+
 /// Cross-tier PARITY for void functions, over the interpreter-defined subset.
 ///
 /// `native_void_effects.lby` keeps every void helper's effect inside its own

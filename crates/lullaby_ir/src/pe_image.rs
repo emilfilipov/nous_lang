@@ -98,10 +98,13 @@ fn push_u64(bytes: &mut Vec<u8>, value: u64) {
 ///
 /// The caller guarantees the program is freestanding-eligible (a `main` is
 /// present and no `extern fn` C import is required); this writer emits the entry
-/// stub that calls `main` and forwards its result to `ExitProcess`.
+/// stub that calls `main` and forwards its result to `ExitProcess`. `entry_stub`
+/// carries `main`'s RETURN SHAPE: a void `main` leaves `rax` undefined, so its
+/// stub must zero the exit code rather than read it (see [`EntryStub`]).
 pub(crate) fn write_pe_executable(
     functions: &[LoweredNativeFunction],
     strings: &StringPool,
+    entry_stub: EntryStub,
 ) -> Option<Vec<u8>> {
     let use_heap = !strings.entries.is_empty() || program_uses_heap_helpers(functions);
     let has_rdata = !strings.entries.is_empty();
@@ -112,10 +115,12 @@ pub(crate) fn write_pe_executable(
     let mut func_offsets: HashMap<String, u32> = HashMap::new();
 
     // Entry stub `_lullaby_start`: `sub rsp, 40` (align + shadow) ; `call main`
-    // (rel32) ; `mov ecx, eax` (exit code = main's result) ; an INDIRECT
-    // `call qword ptr [rip + __imp_ExitProcess]` (FF 15) through the IAT slot ;
-    // `int3` (unreachable; ExitProcess does not return). The `sub rsp, 40` keeps
-    // `rsp` 16-aligned at each `call`, identical to the linked COFF entry stub.
+    // (rel32) ; the exit code into `ecx` — `mov ecx, eax` for a value-returning
+    // `main`, or `xor ecx, ecx` for a VOID `main`, whose `rax` is undefined and
+    // must not be read ; an INDIRECT `call qword ptr [rip + __imp_ExitProcess]`
+    // (FF 15) through the IAT slot ; `int3` (unreachable; ExitProcess does not
+    // return). The `sub rsp, 40` keeps `rsp` 16-aligned at each `call`, identical
+    // to the linked COFF entry stub.
     text.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]); // sub rsp, 40
     text.push(0xE8); // call main (rel32)
     relocs.push(PeTextReloc {
@@ -123,7 +128,10 @@ pub(crate) fn write_pe_executable(
         symbol: "main".to_string(),
     });
     text.extend_from_slice(&[0, 0, 0, 0]);
-    text.extend_from_slice(&[0x89, 0xC1]); // mov ecx, eax
+    match entry_stub {
+        EntryStub::MainVoid => text.extend_from_slice(&[0x31, 0xC9]), // xor ecx, ecx
+        _ => text.extend_from_slice(&[0x89, 0xC1]),                   // mov ecx, eax
+    }
     text.extend_from_slice(&[0xFF, 0x15]); // call qword ptr [rip + disp32]
     relocs.push(PeTextReloc {
         offset: text.len() as u32,

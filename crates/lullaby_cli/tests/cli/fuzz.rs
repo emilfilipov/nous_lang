@@ -88,12 +88,34 @@ impl Gen {
     ///
     /// The helper's work is deliberately **unobservable**: it computes into its own
     /// locals and returns nothing, so `main`'s value must be **identical whether or
-    /// not the call is there**. That is precisely what makes this a differential
-    /// net for void codegen — a void call that clobbered a callee-saved register,
-    /// misaligned the stack, scribbled on the caller's frame, or wrongly reserved a
-    /// hidden result pointer (shifting every argument register by one) would change
-    /// `main`'s result and diverge from the interpreters, which model the call as a
-    /// pure no-op on the caller.
+    /// not the call is there**. The interpreters model the call as a pure no-op on
+    /// the caller, so any native deviation diverges.
+    ///
+    /// **What this actually catches (measured, not assumed):**
+    ///
+    /// * a void call that **misaligns the stack**, scribbles on the caller's frame,
+    ///   or returns down a wrong epilogue path — `main`'s value changes;
+    /// * a regression that makes the shape **stop compiling**, via
+    ///   `fuzz_native_exit`'s "an exe must be produced" assertion. This is the live
+    ///   one: injecting `NativeType::Void::is_aggregate() -> true` makes the fuzzer
+    ///   FAIL, because the void call statement then trips the "aggregate-returning
+    ///   call is only supported in a binding or return position" gate, its caller
+    ///   skips, and no exe is produced.
+    ///
+    /// **What it does NOT catch, despite the intuition:**
+    ///
+    /// * a **clobbered callee-saved register**. A void call disables register
+    ///   promotion in the *entire calling function*: `plan_register_promotion`
+    ///   requires ALL instructions to pass `instr_reg_promotable`, and a void call
+    ///   statement is an `Expr` whose `Call` arm demands `expr.ty.name == "i64"`.
+    ///   So `rbx`/`rsi` are never live across a void call — there is nothing to
+    ///   clobber. (Verified by injection: the bug is invisible to this fuzzer,
+    ///   correctly.) See the register-promotion footgun in
+    ///   `documents/native_backend_contract.md`.
+    /// * an **argument-register shift** from a wrongly reserved hidden result
+    ///   pointer. That never reaches codegen — it is refused earlier as a clean
+    ///   skip, which is why the `is_aggregate` injection above surfaces as a
+    ///   compile failure rather than a wrong value.
     ///
     /// The body shapes cover the void-specific lowering paths: a body ending in a
     /// NON-EXHAUSTIVE `if` and one ending in a `match` (both STATEMENT tails — a
@@ -980,10 +1002,8 @@ fn fuzz_native_matches_interpreter_when_linkable() {
     let dir = std::env::temp_dir().join("lullaby_fuzz_native");
     let _ = std::fs::create_dir_all(&dir);
 
-    // Counts what ACTUALLY executed. Without this the test can pass having run
-    // nothing (the toolchain gate returns early), so a green result would say
-    // nothing about the emitter — report the real number instead of inferring it
-    // from the absence of a skip message.
+    // Counts what ACTUALLY executed, so the batch cannot silently do nothing and
+    // still pass green (asserted after the loop).
     let mut ran = 0u64;
     let mut with_void = 0u64;
 
@@ -992,8 +1012,9 @@ fn fuzz_native_matches_interpreter_when_linkable() {
         let source = gen_program(seed);
         // Void helpers are generated into a fraction of the programs; track how
         // many so the void surface's differential coverage is visible rather than
-        // assumed.
-        if source.contains("\nfn h") {
+        // assumed. Helpers are prepended, so the first one starts the source with
+        // no preceding newline — check both, or the count silently undercounts.
+        if source.starts_with("fn h") || source.contains("\nfn h") {
             with_void += 1;
         }
 
@@ -1021,10 +1042,22 @@ fn fuzz_native_matches_interpreter_when_linkable() {
              interpreter={expected}, native exit={exit}"
         );
     }
+    // ASSERT, don't just report. The `native_exe_runnable()` gate above already
+    // established a Windows host, and every program this generator emits is
+    // direct-PE eligible (it has a `main` and needs no C runtime), so its exe is
+    // written in-house with no external linker — `fuzz_native_exit` cannot take its
+    // no-toolchain escape here, and all `PROGRAMS` must have run. Merely REPORTING
+    // the count still let `ran == 0` pass green, which would prove nothing about
+    // the emitter; this makes an empty batch a failure.
+    assert!(
+        ran > 0,
+        "the native differential fuzz executed NO programs on a Windows host — a \
+         green result here would prove nothing about the emitter"
+    );
     // Visible under `--nocapture`. `with_void` counts programs carrying a void
     // helper called for effect: such a call contributes nothing to `main`'s value,
-    // so any divergence it causes is a void-codegen bug (a clobbered callee-saved
-    // register, a misaligned stack, a wrongly reserved hidden result pointer).
+    // so any divergence it causes is a void-codegen bug. See `Gen::void_helper` for
+    // what that does and does not catch.
     eprintln!(
         "scalar native fuzz: ran {ran}/{PROGRAMS} real exes ({with_void} carried void helpers)"
     );
