@@ -1849,32 +1849,50 @@ fn wasm_defers_deeper_heap_generic_struct() {
 }
 
 #[test]
-fn wasm_defers_generic_methods_but_compiles_plain_generic_functions() {
-    // Generic METHODS (inherent `impl` methods on a generic type) are not in the
-    // WASM subset — a method call lowers to an unknown function and the calling
-    // function skips cleanly (matching native, where generic methods are also
-    // ineligible). But a PLAIN generic function is unaffected: `multi_param`'s
-    // `fold` (a `match` over `Either<i64, string>`, a one-level `string` generic
-    // enum) COMPILES, while its `main` (which calls `.get_value()`) skips.
+fn wasm_compiles_generic_methods_and_plain_generic_functions() {
+    // Generic inherent-`impl` METHODS on a generic type now compile via the WASM
+    // method pre-pass (mirroring native): each `recv.method(args)` call is rewritten
+    // to a direct call to a monomorphized instance function. `multi_param`'s `main`
+    // dispatches `a.get_key()`/`a.get_value()`/`b.get_value()` on `Pair<i64, bool>`
+    // and `Pair<string, i64>`; its plain generic `fold` also compiles. Nothing skips.
+    // Documented result: get_key(a)=10 + get_value(b)=32 + extra(5) + fold(3) + fold(5)
+    // = 55.
     let module = fixture_module("generics/multi_param.lby");
-    let artifact = emit_wasm_module(&module).expect("fold still compiles");
+    let artifact = emit_wasm_module(&module).expect("multi_param compiles");
     assert!(
-        artifact.compiled.iter().any(|n| n == "fold"),
-        "plain generic function compiles"
-    );
-    assert!(
-        artifact
-            .skipped
-            .iter()
-            .any(|s| s.name == "main" && s.reason.contains("get_value")),
-        "generic method call skips cleanly: {:?}",
+        artifact.skipped.is_empty(),
+        "no function skips: {:?}",
         artifact.skipped
     );
+    for f in ["fold", "main"] {
+        assert!(artifact.compiled.iter().any(|n| n == f), "{f} compiled");
+    }
+    assert_eq!(interp_i64(&module), 55);
 
-    // A method-only generic program has no eligible function -> clean `L0338`.
+    // The `methods.lby` fixture now compiles fully: every method instance
+    // (`Box<i64>`/`Box<bool>`/`Opt<i64>`) is a monomorphized function in the module.
     let methods = fixture_module("generics/methods.lby");
-    let err = emit_wasm_module(&methods).expect_err("method-only generics defer");
-    assert_eq!(err.code, "L0338");
+    let artifact = emit_wasm_module(&methods).expect("methods.lby compiles");
+    assert!(
+        artifact.skipped.is_empty(),
+        "no method function skips: {:?}",
+        artifact.skipped
+    );
+    assert!(artifact.compiled.iter().any(|n| n == "main"));
+    for instance in [
+        "$mth$Box_i64_$peek",
+        "$mth$Box_bool_$peek",
+        "$mth$Box_i64_$rewrap",
+        "$mth$Opt_i64_$unwrap_or",
+    ] {
+        assert!(
+            artifact.compiled.iter().any(|n| n == instance),
+            "instance {instance} compiled; compiled={:?}",
+            artifact.compiled
+        );
+    }
+    // Ground truth from the interpreter (documented in the fixture): 151.
+    assert_eq!(interp_i64(&methods), 151);
 }
 
 #[test]
@@ -1887,4 +1905,249 @@ fn wasm_defers_recursive_indirection_generic_enum() {
     assert_eq!(err.code, "L0338");
     assert!(err.skipped.iter().any(|s| s.name == "sum_tree"));
     assert_eq!(interp_i64(&module), 17);
+}
+
+// -- Inherent-method dispatch (WASM parity with native) ----------------------
+//
+// A source `recv.method(args)` reaches the backend as a UFCS `Call { name: method,
+// args: [recv, ...] }`. The WASM method pre-pass (`wasm_method::expand_method_instances`,
+// mirroring `native_object_method`) rewrites each call whose receiver resolves to a
+// CONCRETE struct/enum with a matching `impl` into a direct call to a synthesized,
+// monomorphized method-instance function (`$mth$Box_i64_$peek`), passing `self` through
+// the existing aggregate-argument ABI (an `i32` pointer, deep-copied at the call site
+// for value semantics). Because the instance is an ordinary free function with `self`
+// as its first parameter, the emitted CODE is byte-identical to a hand-written
+// free-function-with-self — the same equivalence the generic-type pass is verified by —
+// so it is result-identical to the interpreters by construction. A receiver that is not
+// a concrete user type (a bare `T`, a trait/dynamic dispatch) or whose monomorphized
+// shape is outside the WASM subset is left untouched and skips cleanly (`L0338`),
+// exactly like native's `L0339`.
+
+/// The native backend's compiled/skipped verdict for a module, as a `Result` whose
+/// `Ok` is the sorted compiled-name set and `Err` is the skip diagnostic code. Used to
+/// diff the native method boundary against the WASM one.
+fn native_verdict(module: &IrModule) -> Result<Vec<String>, &'static str> {
+    let bc = crate::lower_to_bytecode(module);
+    match crate::emit_native_program(&bc) {
+        Ok(p) => {
+            let mut c = p.compiled.clone();
+            c.sort();
+            Ok(c)
+        }
+        Err(e) => Err(e.code),
+    }
+}
+
+/// The WASM backend's verdict in the same shape as [`native_verdict`].
+fn wasm_verdict(module: &IrModule) -> Result<Vec<String>, &'static str> {
+    match emit_wasm_module(module) {
+        Ok(a) => {
+            let mut c = a.compiled.clone();
+            c.sort();
+            Ok(c)
+        }
+        Err(e) => Err(e.code),
+    }
+}
+
+#[test]
+fn wasm_non_generic_method_is_byte_identical_to_free_function() {
+    // A non-generic `Counter.value` method compiles to the same code a hand-written
+    // free function taking `self: Counter` as its first parameter emits. The two
+    // modules have the SAME function set and order — `[main, <the method/free fn>]`,
+    // so their function INDICES (hence `call` bytes) line up — and the receiver crosses
+    // the call through the same deep-copied aggregate ABI, so the whole CODE section is
+    // byte-identical. The method version is thus result-identical to the free version,
+    // which runs identically on the interpreters.
+    let method = concat!(
+        "struct Counter\n    n i64\n\n",
+        "impl Counter\n    fn value self -> i64\n        self.n\n\n",
+        "fn main -> i64\n    let c Counter = Counter(10)\n    c.value()\n",
+    );
+    let free = concat!(
+        "struct Counter\n    n i64\n\n",
+        "fn main -> i64\n    let c Counter = Counter(10)\n    value(c)\n\n",
+        "fn value self Counter -> i64\n    self.n\n",
+    );
+    let m = emit_wasm_module(&module_for(method)).expect("method module compiles");
+    let f = emit_wasm_module(&module_for(free)).expect("free module compiles");
+    assert!(m.skipped.is_empty(), "no method skip: {:?}", m.skipped);
+    assert!(
+        m.compiled.iter().any(|n| n == "$mth$Counter$value"),
+        "method instance compiled: {:?}",
+        m.compiled
+    );
+    assert_eq!(
+        section_body(&m.bytes, 10),
+        section_body(&f.bytes, 10),
+        "method-dispatch code section is byte-identical to hand-written free function"
+    );
+    assert_eq!(interp_i64(&module_for(method)), 10);
+}
+
+#[test]
+fn wasm_generic_method_instance_is_byte_identical_to_free_function() {
+    // A generic `Box<i64>.peek` monomorphizes to the same code a hand-written
+    // `fn peek self BoxI64 -> i64` emits: the instance's `self: Box<i64>` uses the
+    // registered monomorphized layout, identical to the hand-written concrete struct.
+    let method = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "impl Box<T>\n    fn peek self -> T\n        self.value\n\n",
+        "fn main -> i64\n    let b Box<i64> = Box(7)\n    b.peek()\n",
+    );
+    let free = concat!(
+        "struct BoxI64\n    value i64\n\n",
+        "fn main -> i64\n    let b BoxI64 = BoxI64(7)\n    peek(b)\n\n",
+        "fn peek self BoxI64 -> i64\n    self.value\n",
+    );
+    let m = emit_wasm_module(&module_for(method)).expect("generic method compiles");
+    let f = emit_wasm_module(&module_for(free)).expect("free module compiles");
+    assert!(m.skipped.is_empty(), "no skip: {:?}", m.skipped);
+    assert!(m.compiled.iter().any(|n| n == "$mth$Box_i64_$peek"));
+    assert_eq!(
+        section_body(&m.bytes, 10),
+        section_body(&f.bytes, 10),
+        "monomorphized generic method is byte-identical to hand-written free function"
+    );
+    assert_eq!(interp_i64(&module_for(method)), 7);
+}
+
+#[test]
+fn wasm_method_value_semantics_receiver_unchanged() {
+    // A method that returns a fresh aggregate must not change the caller's receiver:
+    // `self` crosses the call as a deep-copied aggregate. `a` is still `Box(5)` after
+    // `a.rewrap(9)`, so a.peek()=5 + b.peek()=9 = 14.
+    let source = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "impl Box<T>\n",
+        "    fn peek self -> T\n        self.value\n",
+        "    fn rewrap self v T -> Box<T>\n        Box(v)\n\n",
+        "fn main -> i64\n",
+        "    let a Box<i64> = Box(5)\n",
+        "    let b Box<i64> = a.rewrap(9)\n",
+        "    a.peek() + b.peek()\n",
+    );
+    let module = module_for(source);
+    let artifact = emit_wasm_module(&module).expect("compiles");
+    assert!(artifact.skipped.is_empty(), "{:?}", artifact.skipped);
+    assert_eq!(interp_i64(&module), 14);
+}
+
+#[test]
+fn wasm_trait_dispatch_through_generic_bound_skips() {
+    // A trait method called on a bare `T` inside a bounded generic function is genuine
+    // DYNAMIC dispatch on a non-concrete receiver: the call is left untouched and the
+    // function skips cleanly (`L0338`) — matching native's default-deny exactly.
+    let source = concat!(
+        "trait Show\n    fn show self -> string\n\n",
+        "struct Point\n    x i64\n    y i64\n\n",
+        "impl Show for Point\n    fn show self -> string\n        to_string(self.x)\n\n",
+        "fn describe<T: Show> v T -> string\n    v.show()\n\n",
+        "fn main -> i64\n    let p Point = Point(3, 4)\n    len(describe(p))\n",
+    );
+    let module = module_for(source);
+    let err = emit_wasm_module(&module).expect_err("dynamic dispatch skips");
+    assert_eq!(err.code, "L0338");
+    assert!(err.skipped.iter().any(|s| s.name == "describe"));
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn wasm_deeper_heap_generic_receiver_method_skips() {
+    // A generic method whose receiver monomorphizes to a deeper-than-one-level heap
+    // layout (`Box<list<i64>>` — a `list<i64>` field) is outside the WASM aggregate
+    // subset: `wasm_generics` never registers `Box<list<i64>>`, so the instance's
+    // `self` type stays unresolvable and both the instance and `main` skip (`L0338`).
+    // This matches native's boundary exactly (native skips the same shape with `L0339`).
+    let source = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "impl Box<T>\n    fn peek self -> T\n        self.value\n\n",
+        "fn main -> i64\n",
+        "    let xs list<i64> = list_new()\n",
+        "    xs = push(xs, 7)\n",
+        "    let b Box<list<i64>> = Box(xs)\n",
+        "    len(b.peek())\n",
+    );
+    let module = module_for(source);
+    let err = emit_wasm_module(&module).expect_err("deeper-heap generic receiver skips");
+    assert_eq!(err.code, "L0338");
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+    // Still runs on the interpreters (documented: len of a one-element list = 1).
+    assert_eq!(interp_i64(&module), 1);
+}
+
+#[test]
+fn wasm_out_of_subset_param_method_skips() {
+    // A method parameter outside the WASM subset — a `list<list<list<i64>>>` (nested
+    // beyond the one mutable-aggregate level the collection deep copy supports) — makes
+    // the instance ineligible, so `main` (which calls it) skips cleanly (`L0338`) rather
+    // than miscompiling.
+    let source = concat!(
+        "struct Wrap\n    n i64\n\n",
+        "impl Wrap\n    fn lookup self table list<list<list<i64>>> -> i64\n        self.n\n\n",
+        "fn main -> i64\n",
+        "    let t list<list<list<i64>>> = list_new()\n",
+        "    let w Wrap = Wrap(9)\n",
+        "    w.lookup(t)\n",
+    );
+    let module = module_for(source);
+    let err = emit_wasm_module(&module).expect_err("out-of-subset param method skips");
+    assert_eq!(err.code, "L0338");
+    assert!(err.skipped.iter().any(|s| s.name == "main"));
+}
+
+#[test]
+fn wasm_method_dispatch_boundary_matches_native() {
+    // The method-DISPATCH boundary matches native exactly: a concrete-receiver method
+    // resolves identically on both, and genuine dynamic dispatch (a bare `T` receiver)
+    // and a deeper-heap generic receiver default-deny on both. Verified by diffing the
+    // compiled/skipped verdict of the two backends on shared-dispatch probes.
+    //
+    // (WASM's aggregate value subset is independently BROADER than native's — it lays
+    // out `struct { list }` receivers and `map` parameters native defers — so those
+    // shapes are NOT part of this shared-dispatch boundary; that difference is a
+    // pre-existing per-backend aggregate-breadth difference, not a method-dispatch one,
+    // and either way WASM compiles them correctly rather than miscompiling.)
+    let non_generic = concat!(
+        "struct Counter\n    n i64\n\n",
+        "impl Counter\n    fn value self -> i64\n        self.n\n\n",
+        "fn main -> i64\n    let c Counter = Counter(10)\n    c.value()\n",
+    );
+    let generic = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "impl Box<T>\n    fn peek self -> T\n        self.value\n\n",
+        "fn main -> i64\n    let b Box<i64> = Box(7)\n    b.peek()\n",
+    );
+    let dynamic = concat!(
+        "trait Show\n    fn show self -> string\n\n",
+        "struct Point\n    x i64\n\n",
+        "impl Show for Point\n    fn show self -> string\n        to_string(self.x)\n\n",
+        "fn describe<T: Show> v T -> string\n    v.show()\n\n",
+        "fn main -> i64\n    let p Point = Point(3)\n    len(describe(p))\n",
+    );
+    let deeper_generic = concat!(
+        "struct Box<T>\n    value T\n\n",
+        "impl Box<T>\n    fn peek self -> T\n        self.value\n\n",
+        "fn main -> i64\n",
+        "    let xs list<i64> = list_new()\n    xs = push(xs, 7)\n",
+        "    let b Box<list<i64>> = Box(xs)\n    len(b.peek())\n",
+    );
+    for (name, src) in [
+        ("non_generic", non_generic),
+        ("generic", generic),
+        ("dynamic", dynamic),
+        ("deeper_generic", deeper_generic),
+    ] {
+        let module = module_for(src);
+        let native = native_verdict(&module);
+        let wasm = wasm_verdict(&module);
+        // For the compile cases the compiled sets are identical (same mangled instance
+        // symbols); for the skip cases both backends error (native `L0339`, WASM
+        // `L0338`). Compare the shape: both Ok with equal sets, or both Err.
+        match (native, wasm) {
+            (Ok(n), Ok(w)) => assert_eq!(n, w, "{name}: compiled sets must match"),
+            (Err(_), Err(_)) => {}
+            (n, w) => panic!("{name}: native and WASM disagree: native={n:?} wasm={w:?}"),
+        }
+    }
 }

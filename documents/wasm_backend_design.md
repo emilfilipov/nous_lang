@@ -316,11 +316,12 @@ native backend. Lives in `crates/lullaby_ir/src/wasm_generics.rs`
   never miscompiled: a mutable heap field/payload (`Box<list<i64>>`, `Stack<i64>`'s
   `list<i64>`), a recursion-through-indirection generic enum (`Tree<T>` via
   `list<Tree<T>>`), a nested heap-carrying aggregate, or a two-level `string` nesting.
-- **Generic methods are deferred** (skip cleanly). An inherent-`impl` method call on a
-  generic type lowers to an unknown function and the calling function is skipped —
-  matching native, where inherent methods on generic types are also ineligible. A
-  PLAIN generic function is unaffected (`multi_param`'s `fold`, a `match` over
-  `Either<i64, string>`, compiles).
+- **Generic (and non-generic) inherent methods are delivered** (see the
+  "Inherent-method dispatch" section below). An inherent-`impl` method call whose
+  receiver resolves to a concrete struct/enum is rewritten to a direct call to a
+  monomorphized instance function; a bare-`T`/dynamic receiver defers. A PLAIN generic
+  function is unaffected (`multi_param`'s `fold`, a `match` over `Either<i64, string>`,
+  compiles).
 - **Verification.** `wasm_tests.rs` proves the monomorphized code section is
   **byte-identical** to the equivalent hand-written concrete type
   (`monomorphized_*_matches_handwritten_bytes`) — since the hand-written path is
@@ -330,6 +331,59 @@ native backend. Lives in `crates/lullaby_ir/src/wasm_generics.rs`
   (interpreter result 141) compile with no function skipped; `generics/tree_indirection.lby`
   and a `Box<list<i64>>` probe defer with `L0338`. Purely additive — a module without
   generics leaves both tables untouched, so non-generic output is byte-identical.
+
+### Inherent-method dispatch — monomorphized instance functions (landed, parity with native)
+
+A source `recv.method(args)` reaches the backend as an ordinary UFCS
+`Call { name: "method", args: [recv, ...] }` (the receiver is `args[0]`); the method
+bodies live in `IrModule::impls` (keyed by `(type_name, method_name)`), and the set of
+receiver-dispatched names is `IrModule::trait_methods`. A **pre-pass**
+(`crates/lullaby_ir/src/wasm_method.rs`, `expand_method_instances`, run by
+`emit_wasm_module` **before** generic-type expansion) rewrites each such call whose
+type-substituted receiver resolves to a **concrete** user struct/enum with a matching
+`impl` into a direct call to a unique **mangled** instance name (`$mth$Box_i64_$peek`,
+sanitized), and appends the **monomorphized** method body (every `TypeRef` substituted
+via the semantic `substitute_type`, `{T: i64}`) as an ordinary function. A worklist
+drains chained calls to a fixpoint. The mangling scheme is kept **identical** to
+native's (`native_object_method`), so both backends name a given instance the same.
+
+- **`self` ABI.** The instance's `self` is an ordinary aggregate parameter
+  (`self: Box<i64>`), so it flows through the **existing** WASM aggregate-argument ABI —
+  an `i32` pointer, **deep-copied at the call site** for a mutable aggregate. This gives
+  by-value `self` matching the interpreters (mutating `self`, or returning a fresh
+  aggregate, never affects the caller). No new ABI.
+- **Trait vs inherent.** Resolution keys on receiver **concreteness**, exactly like
+  native: a trait method on a concrete receiver resolves identically to an inherent
+  method, while genuine dynamic dispatch (a bare-`T`/trait-object receiver, e.g. inside
+  a bounded generic function `describe<T: Show>`) is left untouched and skips cleanly.
+  The checker forbids the only collision cases (`L0398`), so concreteness keying is
+  unambiguous.
+- **Default-deny.** A call is rewritten only for a concrete user receiver with a
+  resolvable impl. Anything else is left untouched; an untouched non-function name, or a
+  synthesized instance that fails WASM eligibility/lowering (an out-of-subset receiver/
+  param/return, or a closure-bearing generic body), demotes its caller through the
+  existing WASM skip fixpoint, so the affected function skips cleanly (`L0338`) rather
+  than miscompiling.
+- **Boundary vs native.** The method-**dispatch** logic matches native exactly:
+  concrete receivers resolve identically on both, and dynamic/bare-`T` receivers and
+  deeper-heap **generic** receivers (`Box<list<i64>>`) default-deny on both (verified by
+  `wasm_method_dispatch_boundary_matches_native`, which diffs the two backends'
+  compiled/skipped verdicts). Where the compile-vs-skip set differs it is purely the
+  **pre-existing** per-backend aggregate-breadth difference — WASM's aggregate value
+  subset is independently **broader** than native's (it lays out `struct { list }`
+  receivers and `map` parameters that native defers) — not a method-dispatch difference,
+  and WASM compiles those shapes **correctly** (through the same verified free-function
+  machinery) rather than miscompiling.
+- **Verification.** `wasm_tests.rs` proves each method instance's emitted code is
+  **byte-identical** to the equivalent hand-written free-function-with-`self`
+  (`wasm_non_generic_method_is_byte_identical_to_free_function`,
+  `wasm_generic_method_instance_is_byte_identical_to_free_function`) — since the
+  free-function path is already verified against the interpreters and native, this proves
+  result-parity by construction. `generics/methods.lby` (interpreter result 151) and
+  `generics/multi_param.lby` (result 55) now compile fully; skip-pins cover dynamic
+  dispatch, a deeper-heap generic receiver, and an out-of-subset parameter (all clean
+  `L0338`). Purely additive — a module with no receiver-dispatched methods is left
+  structurally unchanged, so non-method WASM output stays byte-identical.
 
 ### Growable `list<T>` — scalar and `string` elements (landed)
 

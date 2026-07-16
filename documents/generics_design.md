@@ -16,10 +16,15 @@ types ship in 1.0.
   concrete layout into the WASM `structs`/`enums` tables so the existing linear-
   memory machinery (construction, field/payload read, value-semantic deep copy,
   `match`, by-pointer boundary) lays it out byte-identically to a hand-written
-  concrete type. Deeper-than-one-level heap shapes (`Box<list<i64>>`, recursive
-  `Tree<T>` through `list<Tree<T>>`) and generic **methods** are deferred cleanly
-  (`L0338`), matching native's boundary exactly. See
-  [wasm_backend_design.md](wasm_backend_design.md).
+  concrete type. **Inherent-method dispatch on generic AND non-generic types is now
+  delivered on WASM too** (`crates/lullaby_ir/src/wasm_method.rs`,
+  `expand_method_instances`) — the same UFCS rewrite / `substitute_type`
+  monomorphization / `$mth$…` mangling as native, with `self` through WASM's existing
+  deep-copied aggregate ABI; each instance's code is byte-identical to the equivalent
+  hand-written free-function-with-`self`. Deeper-than-one-level heap shapes
+  (`Box<list<i64>>`, recursive `Tree<T>` through `list<Tree<T>>`) and genuine
+  dynamic/bare-`T` dispatch are deferred cleanly (`L0338`), matching native's
+  dispatch boundary exactly. See [wasm_backend_design.md](wasm_backend_design.md).
 
 **Scope.** How `struct Stack<T>` / `enum Opt<T>` should parse, type-check, lower,
 and reclaim across Lullaby's five execution paths (AST tree-walker, IR
@@ -335,6 +340,19 @@ free.
     `native_object_method` unit tests, the `generics/methods.lby` link-and-run
     (exit 151), and the `fuzz_method_*` differential fuzzers (2000 interpreter +
     120 native link-and-run programs).
+  - **DELIVERED on WASM (parity with native).** The same pre-pass is mirrored for
+    the WASM backend in `crates/lullaby_ir/src/wasm_method.rs`
+    (`expand_method_instances`, run by `emit_wasm_module` before generic-type
+    expansion): the same UFCS rewrite over the WASM `IrModule` (reading
+    `IrModule::impls`/`trait_methods`), the same `substitute_type` monomorphization,
+    the same `$mth$…` mangling, and `self` through WASM's existing deep-copied
+    aggregate-argument ABI (by-value `self`). Default-deny is identical (a bare-`T`/
+    dynamic receiver or an out-of-subset instance skips cleanly with `L0338`). Proven
+    by `wasm_tests.rs`: each instance's code is **byte-identical** to the equivalent
+    hand-written free-function-with-`self`; `generics/methods.lby` (result 151) and
+    `generics/multi_param.lby` (result 55) compile fully; skip-pins cover dynamic
+    dispatch, a deeper-heap generic receiver, and an out-of-subset param; and
+    `wasm_method_dispatch_boundary_matches_native` diffs the two backends' verdicts.
 
 ### 4.4 Name mangling for monomorphized defs (native/WASM only)
 
@@ -347,7 +365,8 @@ native **method** instances follow the same principle with a `$mth$` prefix that
 cannot collide with any source identifier: `Box<i64>::peek` →
 `$mth$Box_i64_$peek`, `Counter::bump` → `$mth$Counter$bump` (non-identifier
 characters in the receiver spelling are sanitized to `_`, keeping distinct
-instantiations distinct).
+instantiations distinct). The WASM method instances (`wasm_method.rs`) use the
+**identical** mangling, so both backends name a given instance the same symbol.
 
 ### 4.5 New diagnostics (numbers assigned in `diagnostic_registry.md` at build time)
 

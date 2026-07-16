@@ -858,7 +858,25 @@ pub(crate) struct Local {
 /// Every top-level function is examined: an eligible one is lowered and exported
 /// by its Lullaby name; an ineligible one is recorded in `skipped` with a reason.
 /// If no function is eligible, this returns `Err(WasmError)` with code `L0338`.
+///
+/// Runs the inherent-method pre-pass ([`expand_method_instances`]) exactly ONCE, up
+/// front: it rewrites each resolvable `recv.method(args)` UFCS call into a direct call
+/// to a synthesized, monomorphized method-instance function appended to the module,
+/// mirroring the native backend. The expansion is deliberately kept out of the
+/// recursive skip fixpoint below (which reduces the function set on a lowering
+/// failure) so an already-expanded module is never expanded again (that would
+/// duplicate instance functions). A module with no receiver-dispatched methods is
+/// left structurally unchanged, so non-method WASM output stays byte-identical.
 pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
+    let expanded = expand_method_instances(module);
+    emit_wasm_module_expanded(&expanded)
+}
+
+/// Emit the module after inherent-method expansion. This is the recursive core of
+/// [`emit_wasm_module`]: on a per-function lowering failure it retries over the reduced
+/// function set (re-invoking itself, NOT the public entry, so methods are not
+/// re-expanded).
+fn emit_wasm_module_expanded(module: &IrModule) -> Result<WasmArtifact, WasmError> {
     // A struct name -> ordered `(field, type)` map, used everywhere we classify a
     // type (pointer vs scalar) or compute a struct's field layout.
     let mut structs = struct_table(&module.structs);
@@ -939,7 +957,7 @@ pub fn emit_wasm_module(module: &IrModule) -> Result<WasmArtifact, WasmError> {
                 };
                 let mut reduced = module.clone();
                 reduced.functions.retain(|f| f.name != demoted.name);
-                return match emit_wasm_module(&reduced) {
+                return match emit_wasm_module_expanded(&reduced) {
                     Ok(mut artifact) => {
                         artifact.compiled.retain(|n| n != &demoted.name);
                         merge_skip(&mut artifact.skipped, demoted);
@@ -1871,6 +1889,9 @@ fn lower_for(
 #[path = "wasm_generics.rs"]
 mod generics;
 pub(crate) use generics::*;
+#[path = "wasm_method.rs"]
+mod method;
+pub(crate) use method::*;
 #[path = "wasm_lowering.rs"]
 mod lowering;
 pub(crate) use lowering::*;
