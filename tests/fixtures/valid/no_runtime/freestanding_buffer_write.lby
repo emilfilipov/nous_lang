@@ -2,14 +2,11 @@
 # pointer forward with `ptr_offset` and `ptr_write` each cell, then read the
 # buffer back through ordinary indexing to prove the stores genuinely aliased it.
 #
-# This is a NATIVE-ONLY program by design. The interpreters model `addr_of` as a
-# by-value snapshot, so a store through such a pointer would not update the
-# original place; rather than answer wrongly they REFUSE it at run time with a
-# loud `L0459`. Native is the tier where the store really aliases. So this fixture
-# is asserted for its native exit code only — there is no interpreter result to
-# match, and claiming parity here would be dishonest. (The read/walk half of the
-# surface IS interpreter-defined and IS checked against all three interpreters in
-# `freestanding_buffer_walk.lby`.)
+# Every tier defines this program and they all agree (105). Native `addr_of` is a
+# real `lea`; the interpreters' `addr_of` is place-backed, so an in-frame store
+# aliases the original buffer there too. `L0459` refuses only a pointer used
+# outside the frame that owns its place — which this program never does, since the
+# pointer never leaves `fill_and_sum`/`poke_at`.
 no-runtime
 
 # Fill a buffer by walking a write pointer forward, then sum it back by index.

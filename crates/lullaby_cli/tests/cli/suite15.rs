@@ -847,27 +847,32 @@ fn native_freestanding_buffer_walk_runs() {
 }
 
 /// A WRITE-THROUGH buffer walk: `ptr_write` each cell through a forward-walked
-/// pointer, then read the buffer back by index. NATIVE-ONLY by design — the
-/// interpreters refuse an `addr_of` store with `L0459` (their `addr_of` is a
-/// by-value snapshot), so there is no interpreter result to match here and none
-/// is claimed. What IS asserted: the stores genuinely alias the buffer, and they
-/// land on the RIGHT cells (a descending layout would write backwards off the
-/// front of the buffer instead of filling it).
+/// pointer, then read the buffer back by index. Asserted on ALL FOUR tiers: the
+/// stores genuinely alias the buffer, and they land on the RIGHT cells (a
+/// descending native layout would write backwards off the front of the buffer
+/// instead of filling it, and a snapshot-backed `addr_of` would drop the writes).
+///
+/// The interpreters answer this too: `addr_of` is place-backed, so an in-frame
+/// store aliases for real. (An earlier revision of this test pinned an `L0459`
+/// refusal here — correct when the interpreters' `addr_of` was a by-value
+/// snapshot, stale once it became place-backed. The refusal now applies only to
+/// a pointer used outside the frame owning its place, which this program never
+/// does.)
 #[test]
 fn native_buffer_write_through_walk_aliases_the_buffer() {
     let fixture = "tests/fixtures/valid/no_runtime/freestanding_buffer_write.lby";
-    // The interpreters REFUSE this program — loudly, never a wrong answer. Pin
-    // that, so the honest native-only boundary stays visible and intentional.
+    // Every interpreter aliases the buffer and agrees with native.
     for backend in ["ast", "ir", "bytecode"] {
         let output = run_backend(fixture, backend);
         assert!(
-            !output.status.success(),
-            "[{backend}] an addr_of store must be refused, not answered"
-        );
-        assert!(
-            stderr(&output).contains("L0459"),
-            "[{backend}] expected the L0459 addr_of-store refusal: {}",
+            output.status.success(),
+            "[{backend}] an in-frame addr_of store must alias, not fail: {}",
             stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output).trim(),
+            "105",
+            "[{backend}] the write-through walk must fill the buffer forward (15) and poke index 1 (90)"
         );
     }
     let Some(exit) = native_exit_code(fixture, "lullaby_buffer_write.exe", &["--freestanding"])
