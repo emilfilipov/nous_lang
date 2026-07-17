@@ -105,8 +105,14 @@ Base FFI ships; deferred today (L0424): callbacks (fn pointers), struct-by-value
 and `string`/`list`/`map` marshalling.
 - **Decision: callbacks (fn pointers across the C ABI) in 1.0.** Deep
   struct/collection marshalling stays post-1.0.
-- **Next:** semantics marshalling-rule extension + native codegen for fn-pointer
-  params/returns. Queued behind native-aggregate (native codegen is occupied).
+- **Fn-pointer PARAMETERS: SHIPPED (`66971f5`).** A Lullaby function passes to C as a
+  C-ABI function pointer: `extern fn apply_cmp cmp fn(i64, i64) -> i64 a i64 b i64
+  -> i64`, and a C driver calls the passed callback back under the Win64 ABI
+  (`ffi_callback_roundtrip_when_compilable`, `ffi_callbacks.rs`). The interpreters
+  reject the extern call (`L0423`, no C to call) as with all FFI.
+- **Next (remaining A3):** fn-pointer **returns/storage** (a C function that returns a
+  fn pointer, or storing one) — the narrower remaining case. Deep struct/collection
+  marshalling stays post-1.0.
 
 ### A4. Integer overflow semantics — **DECIDED: wrapping default + checked ops**
 Arithmetic is wrapping everywhere today.
@@ -338,7 +344,9 @@ These are all **loud refusals, never miscompiles** — but each was a deferral, 
   implemented (in review). Deferred: heap-`T` native monomorphization
   (per-instantiation drop-glue) and native inherent-method dispatch.
 - **A2 const — SHIPPED** (named compile-time constants; const-sized arrays deferred).
-- **A3 FFI callbacks — not started** (queued behind native).
+- **A3 FFI callbacks — fn-pointer PARAMETERS shipped** (`66971f5`; a Lullaby fn passes
+  to C as a C-ABI fn pointer and is called back under the Win64 ABI). Fn-pointer
+  returns/storage remain.
 - **A4 wrapping default + checked ops — SHIPPED** (i64 + fixed-width
   `checked_`/`saturating_`/`wrapping_` + `checked_div`/`checked_rem`; wrapping default
   documented).
