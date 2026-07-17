@@ -199,9 +199,15 @@ fn two_cells -> i64
 
 - The arena's extent is the buffer's; it **never grows and never calls an
   allocator**, which is exactly why the `no-runtime` gate permits it.
-- The bump unit is the **8-byte cell** (hence `array<i64>`), because every Lullaby
-  scalar is stored as a normalized 8-byte cell — the same reason `addr_of` is
-  8-byte-only.
+- The bump unit is the **8-byte cell** (hence `array<i64>`), because `arena_alloc`
+  yields a `ptr<T>` for an **8-byte pointee** (`i64`/`u64`/`isize`/`usize`): the
+  buffer's element width and the returned pointer's stride must agree, or
+  `ptr_read`/`ptr_write` and `ptr_offset` would disagree with the memory underneath
+  them. This is *not* because narrow arrays are unpacked — an `array<u8>` stores one
+  byte per element and `addr_of(a[i])` into one is lowered natively (see
+  [native_backend_contract.md](native_backend_contract.md), "Narrow array elements
+  are PACKED"). What is still true is that a narrow *scalar* remains a normalized
+  8-byte cell; only array **elements** pack.
 - **Overflow is a defined, deterministic edge**: a bump past the buffer traps
   (`ud2`) natively and aborts with **`L0460`** on the interpreters — the same
   relationship the array-bounds failure already has (`L0413` / `ud2`), and what

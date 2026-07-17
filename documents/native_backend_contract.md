@@ -1725,14 +1725,28 @@ interpreter-refused (`L0459`) and native implements it
 
 Both remaining refusals are precise `L0339` skips naming the reason.
 
-1. **Every Lullaby scalar is a normalized 8-byte cell.** An `i32` local occupies a
+1. **Every Lullaby SCALAR is a normalized 8-byte cell.** An `i32` local occupies a
    full sign-extended word, not 4 bytes. A width-correct 4-byte store through its
    address would leave the upper half stale and corrupt the cell invariant. So
-   `addr_of` is lowered **only for an 8-byte scalar** (`i64`/`u64`/`isize`/`usize`/
-   `ptr<T>`), where the C width and the cell width coincide. This also refuses an
-   `array<i32>` element/decay: the cell is 8 bytes but `ptr_offset` strides by
-   `size_of(i32) == 4`, so a walk would desynchronize. Lifting it needs a
-   narrow-cell array representation — separate work, not a layout question.
+   `addr_of` of a narrow **scalar** is refused: its storage is 8 bytes against a
+   4-byte pointee. An 8-byte scalar (`i64`/`u64`/`isize`/`usize`/`ptr<T>`) is
+   lowered, because the C width and the cell width coincide.
+
+   A narrow **array element** is *not* refused — see "Narrow array elements are
+   PACKED" above: an `array<i32>` stores packed 4-byte elements, so the element's
+   storage width and the `ptr<i32>` pointee width agree exactly and the element,
+   the runtime-index element, and the whole-array decay all lower. Both cases spell
+   `i32`, so the gate is not a name test: it is the **width-agreement law** in
+   `native_object_rawptr.rs`, checked against the resolved layout.
+
+   > **Note (superseded reasoning).** This item previously read "`addr_of` is
+   > lowered **only for an 8-byte scalar** … This also refuses an `array<i32>`
+   > element/decay: the cell is 8 bytes but `ptr_offset` strides by
+   > `size_of(i32) == 4`, so a walk would desynchronize. Lifting it needs a
+   > narrow-cell array representation — separate work." That work is **done**: the
+   > narrow representation shipped as packed array elements, the desync no longer
+   > exists, and the element/decay refusal is retired. Only the narrow *scalar*
+   > refusal survives, and only for the upper-half reason above.
 2. **A pointer may only be taken to storage that exists, and only where handing it
    out is sound.** A register-promoted local lives in `rbx`/`rsi` and has no
    address (the promotion gate excludes any address-taking function — see below);
@@ -2011,13 +2025,28 @@ position.
 ### Cells, not bytes
 
 The bump unit is the **8-byte cell** and the buffer is `array<i64>`, not the
-`array<byte>` §5's prose sketches. **Every Lullaby scalar is a normalized 8-byte
-cell** natively (an `i32` local occupies a full sign-extended word) — the same fact
-that makes `addr_of` 8-byte-only (see "Default-deny scope" above). An `array<byte>`
-is an array of 8-byte cells, not packed bytes, so a byte-granular arena over one
-would hand back pointers whose stores corrupt the cell invariant every other native
-path relies on. Bumping in cells makes every arena pointer exactly as well-formed as
-an `addr_of(buf[i])` — the delivered, tested buffer-walk idiom this reuses.
+`array<byte>` §5's prose sketches. The reason is `arena_alloc`'s **own contract**:
+it yields a `ptr<T>` for an **8-byte pointee** (`i64`/`u64`/`isize`/`usize`), so the
+buffer it bumps must be made of 8-byte cells for the returned pointer's stride and
+its storage to agree. A buffer of any other element width would hand back pointers
+whose `ptr_read`/`ptr_write` and `ptr_offset` disagree with the memory underneath
+them. Bumping in cells makes every arena pointer exactly as well-formed as an
+`addr_of(buf[i])` — the delivered, tested buffer-walk idiom this reuses.
+
+A packed buffer is therefore refused, and refused on the right property: the backend
+gate checks the element's **byte width** (`byte_size() != 8`), not its word count. A
+word-count gate would silently admit a packed `array<u8>` (whose `words()` is 1) and
+let the arena over-run it 8x.
+
+> **Note (superseded reasoning).** An earlier version of this section justified the
+> `array<i64>` buffer by claiming an `array<byte>` "is an array of 8-byte cells, not
+> packed bytes", and that this is "the same fact that makes `addr_of` 8-byte-only".
+> **Both are now false** — and contradicted by "Narrow array elements are PACKED"
+> above, in this same document. An `array<byte>` stores **one byte per element**,
+> and `addr_of(a[i])` into a narrow-element array **is** lowered. What remains true,
+> and is all this section actually needs, is that a narrow *scalar* is still a
+> normalized 8-byte cell and that an arena's pointee is 8 bytes. A byte-granular
+> arena is no longer blocked by the value model; it is simply not a 1.0 item.
 
 ### Overflow: `ud2`, and the §8 seam
 
@@ -2108,4 +2137,4 @@ a *value* oracle; teeth measured by two reverted bug injections).
 
 ## Deferred Native Work
 
-Deferred beyond the current increment: within the raw-pointer surface — **`addr_of` of an array element and of a whole array are now DELIVERED** (the native frame lays aggregates out at ASCENDING, C-compatible addresses, so a pointer into an array walks forward correctly — buffer walking works; see "Aggregate word order"). Still deferred: `addr_of` of a narrower-than-8-byte scalar (normalized 8-byte cells — this also covers an `array<i32>` element, whose 8-byte cell and 4-byte `ptr_offset` stride would desynchronize), `addr_of` into a fat-pointer (runtime-length) array parameter (the descriptor shares the caller's storage read-only), a `bool`/`char`/`f64`/`f32` pointee, a struct/array pointee for `ptr_offset`, and `addr_of` of a closure-captured variable — each a precise `L0339` skip today; a `void`-returning function of any kind (a pre-existing, raw-pointer-independent gap that blocks the natural `fn poke p ptr<T> v T` kernel spelling); more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.
+Deferred beyond the current increment: within the raw-pointer surface — **`addr_of` of an array element and of a whole array are now DELIVERED** (the native frame lays aggregates out at ASCENDING, C-compatible addresses, so a pointer into an array walks forward correctly — buffer walking works; see "Aggregate word order"). Still deferred: `addr_of` of a narrower-than-8-byte **scalar** (a narrow scalar is still stored as a normalized 8-byte cell, so a width-correct store through its address would corrupt its upper half — refused by the width-agreement law; this no longer covers an `array<i32>` **element** or decay, which now lower because narrow array ELEMENTS are packed at their C width — see "Narrow array elements are PACKED"), `addr_of` into a fat-pointer (runtime-length) array parameter (the descriptor shares the caller's storage read-only), a `bool`/`char`/`f64`/`f32` pointee, a struct/array pointee for `ptr_offset`, and `addr_of` of a closure-captured variable — each a precise `L0339` skip today; a `void`-returning function of any kind (a pre-existing, raw-pointer-independent gap that blocks the natural `fn poke p ptr<T> v T` kernel spelling); more than four **effective** register arguments (stack arguments; the count now includes a hidden aggregate-return pointer), a top-level `f64`/`f32` **scalar** parameter/return across a function boundary (needs XMM argument routing), aggregates (structs/arrays) containing heap values as boundary values, trapping native array bounds checks, `to_string(f64)`/`to_string(f32)` and the remaining string builtins (`replace`/`words`/`chars`/`string_from_chars`), string comparison, strings as struct/array fields/elements, string-keyed or float-keyed maps, a mutable-aggregate map KEY, collection elements/values or enum payloads nested past **one** mutable-aggregate level (`list<list<list<…>>>`) or of `map`/`array` type, field access directly on an unbound `get`/`map_get` result, heap allocation exposed beyond the delivered string/list/map/struct helpers, a heap `free`/reclamation path, cross-platform ELF/Mach-O object emission, CRT-driven `mainCRTStartup` entry, and true bare-metal (no-OS-import) freestanding. (First-class `string` **values** — locals/parameters/returns/arguments, literal values, `+` concatenation, `len`, `to_string` for integers/`bool`/`char`/`byte`, and the index-based `substring`/`find`/`contains`/`starts_with`/`ends_with` operations; scalar-field aggregates as parameters, returns, and call arguments; `f64`/`f32`/`bool`/`char`/`byte` scalar lowering within i64-signature functions; `match` over enums with a scalar, `string`, **or one-level mutable-aggregate** payload; growable `list<T>` with a scalar, `string`, **or one-level mutable-aggregate** (`list<struct>`, `list<list<scalar>>`) element; and growable `map<K, V>` with a scalar key and a scalar, `string`, **or one-level mutable-aggregate** (`map<K, struct>`) value are **delivered** — see the sections above.) This work must not bypass the AST runtime, typed IR validation, bytecode VM, or existing release verification.

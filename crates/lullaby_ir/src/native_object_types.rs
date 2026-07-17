@@ -83,7 +83,7 @@ pub(crate) enum NativeType {
     /// fixed [`NativeType::Array`]. A narrow *scalar* (a local, parameter, field,
     /// list element, or enum payload) is still a full sign-extended `I64` cell —
     /// see [`resolve_native_type`], which keeps mapping `i32` and friends to
-    /// [`NativeType::I64`]. Only [`array_element_native_type`] produces a `Narrow`.
+    /// [`NativeType::I64`]. Only [`narrow_array_element`] produces a `Narrow`.
     ///
     /// # Why it exists
     ///

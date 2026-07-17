@@ -1,8 +1,10 @@
 # L0445: a static-buffer arena must be backed by a fixed `array<i64>`.
 #
-# The arena bumps in 8-byte CELLS because every Lullaby scalar is stored as a
-# normalized 8-byte cell — the same reason `addr_of` is 8-byte-only. A scalar is
-# not a buffer at all, so there is nothing to carve.
+# The arena bumps in 8-byte CELLS because `arena_alloc` yields a `ptr<T>` for an
+# 8-byte pointee, so the buffer's element width and the returned pointer's stride
+# must agree. (NOT because narrow arrays are unpacked — they are packed at their C
+# width, and `addr_of` into one lowers.) A scalar is not a buffer at all, so there
+# is nothing to carve.
 no-runtime
 
 fn bad -> i64

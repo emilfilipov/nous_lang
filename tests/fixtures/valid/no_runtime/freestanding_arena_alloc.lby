@@ -7,9 +7,12 @@
 # bump cursor within it. No allocator is involved at any point, which is exactly
 # why the L0441 gate does not (and must not) reject this file.
 #
-# The arena bumps in 8-byte CELLS, not bytes, and the buffer is `array<i64>`:
-# every Lullaby scalar is a normalized 8-byte cell natively, which is the same
-# reason `addr_of` is 8-byte-only. See §5's delivery record.
+# The arena bumps in 8-byte CELLS, not bytes, and the buffer is `array<i64>`,
+# because `arena_alloc` yields a `ptr<T>` for an 8-byte pointee: the buffer's
+# element width and the returned pointer's stride must agree. This is NOT because
+# narrow arrays are unpacked — they are packed at their C width and `addr_of` into
+# one lowers; only narrow *scalars* are still 8-byte cells. See §5's delivery
+# record.
 #
 # RUNS ON ALL FOUR TIERS, all agreeing on 109. There is nothing here only native
 # can do: an arena cell is an ordinary `array<i64>` element, so `arena_alloc(r, n)`
