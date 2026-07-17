@@ -46,13 +46,22 @@ use super::*;
 ///   fuzzer honest about `refuse_legacy_box_pointer`: without them it would silently
 ///   have degraded into a frontend-only test, still green, while the native gate went
 ///   unexercised.
+/// * **Shapes (7)–(11): the NESTED-pointee route, closed at the frontend.** Shapes
+///   (1)–(6) only ever put a box in the *outer* type, so every gate got a `ptr_T` to
+///   be correct about. `addr_of` over a box place yields `ptr<ptr_i64>` — outer
+///   spelling *modern*, box buried in the pointee — so **no gate is handed a `ptr_T`
+///   at all** and all of them are bypassed rather than defeated. This fuzzer missed a
+///   live arbitrary-read/write hole for exactly that reason: it generated `ptr_cast`
+///   only on a *direct* box. These shapes are frontend shapes and are labelled as
+///   such: they guard [`mentions_box_model`]'s depth rule, not the native gate, which
+///   shapes (5)/(6) remain the only cover for.
 ///
 /// **The oracle is "native must SKIP", not "native must match".** Every shape here is
-/// one the interpreters either refuse outright (`L0406` for `ptr_offset` over a box)
-/// or define differently (`ptr_to_int` of a box is a heap-SLOT INDEX, not an
-/// address), so there is no value to agree on — the only correct behaviour is no
-/// runnable image, whether refused by the frontend or skipped with `L0339`. See
-/// [`fuzz_alloc_cast_launder_native_always_skips`].
+/// one the interpreters either refuse outright (`L0406` for `ptr_offset` over a box,
+/// `L0409` for a fabricated box) or define differently (`ptr_to_int` of a box is a
+/// heap-SLOT INDEX, not an address), so there is no value to agree on — the only
+/// correct behaviour is no runnable image, whether refused by the frontend or skipped
+/// with `L0339`. See [`fuzz_alloc_cast_launder_native_always_skips`].
 fn gen_alloc_cast_launder_program(seed: u64) -> String {
     let mut rng = Rng(seed ^ 0x1A5D_3C90_7E42_B6F8u64);
     let v = rng.range(1, 60);
@@ -66,7 +75,36 @@ fn gen_alloc_cast_launder_program(seed: u64) -> String {
         _ => ("ptr<usize>", "usize"),
     };
 
-    match rng.below(6) {
+    // A box sitting in an addressable PLACE, so `addr_of` over it yields
+    // `ptr<ptr_i64>`. A local, a struct field, an array element and a parameter are
+    // distinct place kinds in `check_addr_of`, and every one of them reached native
+    // codegen with the box model erased. `prelude` opens an `unsafe` block that the
+    // shape body continues at 8-space indent; `place` names the box within it.
+    let (prelude, place) = match rng.below(4) {
+        0 => (
+            format!("fn main -> i64\n    let a ptr_i64 = alloc({v})\n    unsafe\n"),
+            "a",
+        ),
+        1 => (
+            format!(
+                "struct Holder\n    p ptr_i64\n\nfn main -> i64\n    \
+                 let h Holder = Holder(alloc({v}))\n    unsafe\n"
+            ),
+            "h.p",
+        ),
+        2 => (
+            format!("fn main -> i64\n    let arr array<ptr_i64> = [alloc({v})]\n    unsafe\n"),
+            "arr[0]",
+        ),
+        _ => (
+            format!(
+                "fn main -> i64\n    take(alloc({v}))\n\nfn take a ptr_i64 -> i64\n    unsafe\n"
+            ),
+            "a",
+        ),
+    };
+
+    match rng.below(11) {
         // (1) Strided READ through the laundered pointer -> off the end of the cell.
         // FRONTEND-REJECTED since model preservation (`L0303`).
         0 => format!(
@@ -109,11 +147,52 @@ fn gen_alloc_cast_launder_program(seed: u64) -> String {
         // (6) MODEL-PRESERVING identity cast across a function: `rebox` keeps the
         // `ptr_i64` model, so its own `ptr_cast` site carries the `ptr_T` operand, the
         // helper skips, and the demotion fixpoint must skip `main` too.
-        _ => format!(
+        5 => format!(
             "fn rebox p ptr_i64 -> ptr_i64\n    unsafe\n        ptr_cast(p)\n\
              \n\
              fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
              let q = rebox(p)\n        ptr_read(q)\n"
+        ),
+        // (7) THE NESTED ROUTE: `ptr_cast` over `addr_of` of a box place. The operand
+        // is `ptr<ptr_i64>` — outer spelling modern, so NO gate sees a `ptr_T` — and
+        // the cast retargets the pointee to `i64`, erasing the box model. Measured on
+        // the pre-fix tree: native read out a real heap ADDRESS while all three
+        // interpreters answered 0 (the slot index). Silent cross-tier divergence.
+        6 => format!(
+            "{prelude}        let pa {target} = ptr_cast(addr_of({place}))\n        \
+             to_i64(ptr_read(pa))\n"
+        ),
+        // (8) The same route ESCALATED to an arbitrary WRITE: measured on the pre-fix
+        // tree as a native SEGFAULT (0xC0000005) dereferencing 999999, where all three
+        // interpreters raised `L0409`. This is the shape that made the hole a P0.
+        7 => format!(
+            "{prelude}        let pa {target} = ptr_cast(addr_of({place}))\n        \
+             ptr_write(pa, to_{elem}(999999))\n        ptr_read({place})\n"
+        ),
+        // (9) The CONVERSE direction, which needs no `alloc` anywhere: a nested-box
+        // ANNOTATION fabricates a box out of ordinary array storage, which native then
+        // dereferences. The operand is a clean `ptr<i64>`; the lie is in the target.
+        8 => format!(
+            "fn main -> i64\n    let buf array<i64> = [{v}, 0]\n    unsafe\n        \
+             let pb ptr<ptr_i64> = ptr_cast(addr_of(buf[0]))\n        \
+             let fake ptr_i64 = ptr_read(pb)\n        ptr_read(fake)\n"
+        ),
+        // (10) TWO levels of nesting (`ptr<ptr<ptr_i64>>`), so a depth-1 fix would not
+        // catch it either. The rule has to be depth-insensitive.
+        9 => format!(
+            "fn main -> i64\n    let a ptr_i64 = alloc({v})\n    unsafe\n        \
+             let p1 ptr<ptr_i64> = addr_of(a)\n        \
+             let p2 ptr<ptr<ptr_i64>> = addr_of(p1)\n        \
+             let p3 {target} = ptr_cast(p2)\n        to_i64(ptr_read(p3))\n"
+        ),
+        // (11) The same nested ANNOTATION lie through `arena_alloc` — a third door
+        // sharing this class, forging a box out of an arena cell with no `alloc` in
+        // the program. Measured on the pre-fix tree as a native SEGFAULT vs `L0409`.
+        _ => format!(
+            "fn main -> i64\n    let buf array<i64> = [{v}, 0, 0, 0]\n    \
+             region pool in buf\n    unsafe\n        \
+             let pb ptr<ptr_i64> = arena_alloc(pool, 1)\n        \
+             let fake ptr_i64 = ptr_read(pb)\n        ptr_read(fake)\n"
         ),
     }
 }
@@ -126,7 +205,7 @@ fn fuzz_alloc_cast_launder_native_always_skips() {
     // address), so the only correct native behaviour is a clean `L0339` skip with no
     // exe. Producing an exe at all is the failure.
     //
-    // Teeth, per layer — both still real:
+    // Teeth, per layer — all three still real:
     //   * Remove the `ptr_cast` arm of `refuse_legacy_box_pointer` and the
     //     MODEL-PRESERVING shapes (5)/(6) compile, producing an exe for a box the
     //     interpreters define as a slot index.
@@ -134,8 +213,15 @@ fn fuzz_alloc_cast_launder_native_always_skips() {
     //     shapes (1)-(4) compile — the strided read exits 0 where the interpreters
     //     raise `L0406`, `ptr_to_int` returns a real address where the interpreters
     //     give 0, and the strided write lands on the next block's `[size]` header.
+    //   * Narrow `mentions_box_model` back to the outer name and the NESTED shapes
+    //     (7)-(11) compile — measured: shape (8) SEGFAULTS natively (0xC0000005) where
+    //     the interpreters raise `L0409`, and shape (7) reads out a heap address where
+    //     they answer 0.
     // Shapes (1)-(4) alone can no longer prove the native gate: the frontend now
-    // refuses them first, which is why (5)/(6) exist.
+    // refuses them first, which is why (5)/(6) exist. Symmetrically, (5)/(6) never
+    // exercised the nesting rule — a box in a POINTEE hands no gate a `ptr_T` — which
+    // is why (7)-(11) exist and why this fuzzer stayed green through a live
+    // arbitrary-read/write hole.
     //
     // Gated on the link toolchain: on a host that cannot produce an exe anyway the
     // assertion would be vacuous.
