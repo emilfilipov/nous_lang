@@ -23,22 +23,40 @@
 //! address) and `R_X86_64_32` (a section-relative offset); and, since those
 //! section symbols are the first `STB_LOCAL` symbols this writer has ever
 //! emitted, the symbol table is now ordered locals-before-globals with
-//! `.symtab`'s `sh_info` pointing at the first global, as ELF requires. Without
-//! `--debug` the model carries no debug section, symbol, or relocation, and the
-//! emitted bytes are byte-for-byte unchanged.
+//! `.symtab`'s `sh_info` pointing at the first non-local symbol, as ELF
+//! requires. Without `--debug` the model carries no debug section, symbol, or
+//! relocation, and the emitted bytes are byte-for-byte unchanged.
 //!
 //! # Verification honesty
 //!
-//! This is a Windows host: the emitted x86-64 object is verified *structurally*
-//! (magic, class/endianness, header fields, section and symbol tables,
-//! relocation records — see the unit tests) but is not linked or executed here.
-//! The AArch64 object, by contrast, IS link-and-run verified via QEMU-emulated
-//! arm64 Docker in the CLI test suite when Docker is available (skipped
-//! gracefully otherwise). See `documents/native_backend_contract.md`.
+//! This is a Windows host, so the tests in *this module* are purely structural:
+//! they parse the emitted bytes back and check the magic, class/endianness,
+//! header fields, section and symbol tables, and relocation records. They never
+//! link or execute anything.
+//!
+//! That is not the whole picture, though. Both architectures are additionally
+//! **link-and-run verified** by the CLI test suite when the tooling is present
+//! (and skipped gracefully when it is not): `native_elf_x86_64_links_and_runs_under_docker`
+//! links this writer's x86-64 output with `ld.lld -m elf_x86_64` and runs it in
+//! a `linux/amd64` container, and the AArch64 counterpart runs under
+//! QEMU-emulated arm64 Docker — each asserting the process exit code matches the
+//! interpreter. See `documents/native_backend_contract.md`.
+//!
+//! One cross-check was done by hand rather than by the suite, and it is recorded
+//! here because its *negative* half is easy to get wrong. The `.symtab`
+//! `sh_info` values were confirmed against GNU binutils 2.42 under WSL: it
+//! agreed with this writer on both a plain and a `--debug` object, and `ld`
+//! linked both cleanly. The check is discriminating — injecting an off-by-one
+//! `sh_info` makes `ld` report "cannot find entry symbol `_start`", because the
+//! bad index reclassifies `_start` as local. But `readelf` did **not** flag that
+//! same corrupted object: it renders each symbol's binding from `st_info` and
+//! never validates `sh_info` against it, so "readelf is happy" is *not* evidence
+//! about this field. `ld` is. Being manual, that check guards nothing on its
+//! own; the committed guard is `symtab_sh_info_*` in the test module below.
 
 use crate::object_model::{
     DwarfSection, ObjectMachine, ObjectModel, ObjectRelocationKind, ObjectSectionKind,
-    ObjectSymbolKind,
+    ObjectSymbol, ObjectSymbolKind,
 };
 
 /// The `.shstrtab` name of a model section.
@@ -129,6 +147,26 @@ const R_AARCH64_CALL26: u32 = 283;
 /// `P + 4`, so a displacement to `S` is `S - (P + 4)` = `S + (-4) - P`.
 const REL32_ADDEND: i64 = -4;
 
+/// The ELF binding of a model symbol. Section symbols are the only locals the
+/// model ever carries; every other symbol is a global the linker resolves.
+///
+/// This is the **single source of truth** for the binding. The symbol *order*,
+/// `.symtab`'s `sh_info`, and each `st_info` byte all derive from this one
+/// function, so the ELF invariant they jointly encode — every `STB_LOCAL`
+/// symbol precedes every non-local, and `sh_info` names the first non-local —
+/// cannot drift apart between them. Deriving the three independently is the
+/// hazard: a symbol classified local by one and global by another silently
+/// yields an `sh_info` that linkers reject or mis-resolve.
+///
+/// Note the return values are ordered `STB_LOCAL` (0) < `STB_GLOBAL` (1), which
+/// is exactly the sort key the symbol table needs.
+fn elf_binding(symbol: &ObjectSymbol) -> u8 {
+    match symbol.kind {
+        ObjectSymbolKind::Section => STB_LOCAL,
+        ObjectSymbolKind::Function | ObjectSymbolKind::Data => STB_GLOBAL,
+    }
+}
+
 /// One planned ELF section: its `.shstrtab` name, header metadata, and the file
 /// range its contents occupy (empty for `.bss`).
 struct PlannedSection {
@@ -185,14 +223,11 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
     // defined-before-undefined order, and with no section symbols the order — and
     // the bytes — are unchanged.
     let mut symbol_order: Vec<usize> = (0..model.symbols.len()).collect();
-    symbol_order.sort_by_key(|&index| match model.symbols[index].kind {
-        ObjectSymbolKind::Section => 0,
-        ObjectSymbolKind::Function | ObjectSymbolKind::Data => 1,
-    });
+    symbol_order.sort_by_key(|&index| elf_binding(&model.symbols[index]));
     let local_count = model
         .symbols
         .iter()
-        .filter(|symbol| symbol.kind == ObjectSymbolKind::Section)
+        .filter(|symbol| elf_binding(symbol) == STB_LOCAL)
         .count();
 
     // Model symbol index -> `.symtab` index (1-based; the null symbol shifts it).
@@ -217,17 +252,22 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
             strtab.push(0);
             off
         };
-        let (st_bind, st_type, st_shndx) = match symbol.section {
+        // The binding comes from `elf_binding` alone — the same function that
+        // ordered this table and sized `sh_info` — so those three cannot
+        // disagree about which symbols are local. The type and `st_shndx` are an
+        // independent question: an undefined external has no defining section
+        // (SHN_UNDEF) and no type.
+        let st_bind = elf_binding(symbol);
+        let (st_type, st_shndx) = match symbol.section {
             Some(model_section) => {
-                let (bind, ty) = match symbol.kind {
-                    ObjectSymbolKind::Function => (STB_GLOBAL, STT_FUNC),
-                    ObjectSymbolKind::Data => (STB_GLOBAL, STT_OBJECT),
-                    ObjectSymbolKind::Section => (STB_LOCAL, STT_SECTION),
+                let ty = match symbol.kind {
+                    ObjectSymbolKind::Function => STT_FUNC,
+                    ObjectSymbolKind::Data => STT_OBJECT,
+                    ObjectSymbolKind::Section => STT_SECTION,
                 };
-                (bind, ty, elf_index_of_model(model_section) as u16)
+                (ty, elf_index_of_model(model_section) as u16)
             }
-            // Undefined external: no defining section (SHN_UNDEF), no type.
-            None => (STB_GLOBAL, 0u8, 0u16),
+            None => (0u8, 0u16),
         };
         let st_info = (st_bind << 4) | st_type;
         push_u32(&mut symtab, name_off);
@@ -340,9 +380,13 @@ pub fn write_elf64(model: &ObjectModel) -> Vec<u8> {
         });
     }
 
-    // `.symtab`: sh_link = strtab index, sh_info = index of the first global,
-    // which is the null symbol (1) plus however many section-symbol locals the
-    // DWARF path added.
+    // `.symtab`: sh_link = strtab index. `sh_info` must be the index of the
+    // first NON-LOCAL symbol — the gABI states it as "one greater than the
+    // symbol table index of the last local symbol". The table is laid out as
+    // [null, locals..., globals...] and the reserved null symbol is itself
+    // STB_LOCAL, so that index is `1 + local_count`. Get this wrong and linkers
+    // reject the object or mis-resolve symbols; `symtab_sh_info_*` in the test
+    // module below pins both the exact value and the partition it names.
     planned.push(PlannedSection {
         name: ".symtab",
         sh_type: SHT_SYMTAB,
@@ -820,5 +864,336 @@ mod tests {
         assert_eq!(rd_u32(&bytes, r0 + 8), R_AARCH64_CALL26, "type = CALL26");
         assert_eq!(rd_u32(&bytes, r0 + 12), 2, "symbol index (main)");
         assert_eq!(rd_i64(&bytes, r0 + 16), 0, "CALL26 addend is 0");
+    }
+
+    // -- `.symtab` sh_info -------------------------------------------------
+    //
+    // `sh_info` on a `SHT_SYMTAB` section must be, per the gABI, "one greater
+    // than the symbol table index of the last local symbol" — equivalently, the
+    // index of the first non-local symbol. A wrong value makes linkers reject
+    // the object or mis-resolve symbols, and it is precisely the kind of field
+    // that is correct once by hand and then silently broken when symbol
+    // emission order changes. These tests pin it from both directions: the
+    // exact expected number, and the partition that number is *defined* by.
+
+    /// Every `Elf64_Sym` in `.symtab`, as `(name, binding, type, st_shndx)`.
+    fn symtab_entries(bytes: &[u8]) -> Vec<(String, u8, u8, u16)> {
+        let (_, _, _, sym_off, sym_size, ..) = find_section(bytes, ".symtab").expect(".symtab");
+        let (str_hdr, ..) = find_section(bytes, ".strtab").expect(".strtab");
+        let str_off = rd_u64(bytes, str_hdr + 24) as usize;
+        let count = (sym_size / SYM_SIZE) as usize;
+        (0..count)
+            .map(|i| {
+                let rec = sym_off as usize + i * SYM_SIZE as usize;
+                let name = cstr(&bytes[str_off..], rd_u32(bytes, rec) as usize);
+                let info = bytes[rec + 4];
+                (name, info >> 4, info & 0xf, rd_u16(bytes, rec + 6))
+            })
+            .collect()
+    }
+
+    /// Assert `.symtab`'s `sh_info` genuinely names the local/non-local
+    /// partition of the symbol table, and return it.
+    ///
+    /// This checks the property the ELF spec actually states, rather than a
+    /// number read back off the current implementation: every symbol below
+    /// `sh_info` is `STB_LOCAL` and every symbol at or above it is not. A
+    /// hardcoded expected value alone is the weaker test — it would survive a
+    /// reordering of symbol emission that moved a global below `sh_info`. This
+    /// would not. Each caller asserts the exact value *as well*, so the pair
+    /// pins both the number and its meaning.
+    fn assert_sh_info_partitions_symtab(bytes: &[u8]) -> u32 {
+        let (_, _, _, _, _, _, sh_info, _) = find_section(bytes, ".symtab").expect(".symtab");
+        let symbols = symtab_entries(bytes);
+        assert!(
+            (sh_info as usize) <= symbols.len(),
+            "sh_info {sh_info} runs past the end of a {}-symbol table",
+            symbols.len()
+        );
+        assert!(sh_info >= 1, "the reserved null symbol is STB_LOCAL");
+        for (index, (name, bind, _, _)) in symbols.iter().enumerate() {
+            if index < sh_info as usize {
+                assert_eq!(
+                    *bind, STB_LOCAL,
+                    "symbol {index} ({name:?}) is below sh_info={sh_info}, so it must be STB_LOCAL"
+                );
+            } else {
+                assert_ne!(
+                    *bind, STB_LOCAL,
+                    "symbol {index} ({name:?}) is at/above sh_info={sh_info}, so it must not be \
+                     STB_LOCAL"
+                );
+            }
+        }
+        sh_info
+    }
+
+    /// A model section symbol for model section `index`.
+    fn section_symbol(name: &str, index: usize) -> ObjectSymbol {
+        ObjectSymbol {
+            name: name.to_string(),
+            section: Some(index),
+            value: 0,
+            kind: ObjectSymbolKind::Section,
+        }
+    }
+
+    /// A `.text`-defined global function symbol at `value`.
+    fn function_symbol(name: &str, value: u64) -> ObjectSymbol {
+        ObjectSymbol {
+            name: name.to_string(),
+            section: Some(0),
+            value,
+            kind: ObjectSymbolKind::Function,
+        }
+    }
+
+    /// A `.text` plus the two DWARF sections the section symbols name.
+    fn text_and_debug_sections() -> Vec<ObjectSection> {
+        vec![
+            ObjectSection {
+                kind: ObjectSectionKind::Text,
+                data: vec![0xc3],
+                size: 1,
+                relocations: Vec::new(),
+            },
+            ObjectSection {
+                kind: ObjectSectionKind::Debug(DwarfSection::Abbrev),
+                data: vec![0u8; 8],
+                size: 8,
+                relocations: Vec::new(),
+            },
+            ObjectSection {
+                kind: ObjectSectionKind::Debug(DwarfSection::Line),
+                data: vec![0u8; 8],
+                size: 8,
+                relocations: Vec::new(),
+            },
+        ]
+    }
+
+    #[test]
+    fn symtab_sh_info_with_only_local_symbols() {
+        // Nothing but section symbols: every symbol in the table is local, so
+        // the first non-local index is one past the last of them.
+        let model = ObjectModel {
+            sections: text_and_debug_sections(),
+            symbols: vec![
+                section_symbol(".debug_abbrev", 1),
+                section_symbol(".debug_line", 2),
+            ],
+            entry_symbol: None,
+            machine: ObjectMachine::X86_64,
+        };
+        let bytes = write_elf64(&model);
+        let sh_info = assert_sh_info_partitions_symtab(&bytes);
+        assert_eq!(sh_info, 3, "null + 2 section locals, and no globals at all");
+        let symbols = symtab_entries(&bytes);
+        assert_eq!(symbols.len(), 3, "null + 2 section symbols");
+        assert!(
+            symbols.iter().all(|(_, bind, _, _)| *bind == STB_LOCAL),
+            "every symbol is local: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn symtab_sh_info_with_locals_then_globals() {
+        // The normal `--debug` shape. The section symbols are appended *after*
+        // the globals in model order — exactly as `attach_dwarf_line_info` adds
+        // them — so this only passes if the writer really reorders locals to the
+        // front and counts them, rather than trusting the model's order.
+        let model = ObjectModel {
+            sections: text_and_debug_sections(),
+            symbols: vec![
+                function_symbol("_start", 0),
+                function_symbol("main", 0),
+                section_symbol(".debug_abbrev", 1),
+                section_symbol(".debug_line", 2),
+            ],
+            entry_symbol: Some("_start".to_string()),
+            machine: ObjectMachine::X86_64,
+        };
+        let bytes = write_elf64(&model);
+        let sh_info = assert_sh_info_partitions_symtab(&bytes);
+        assert_eq!(sh_info, 3, "null + 2 section locals precede the 2 globals");
+
+        let symbols = symtab_entries(&bytes);
+        assert_eq!(symbols.len(), 5, "null + 2 sections + 2 functions");
+        // The locals are the STT_SECTION symbols, hoisted ahead of the globals.
+        assert_eq!(symbols[1].2, STT_SECTION, "symbol 1 is a section symbol");
+        assert_eq!(symbols[2].2, STT_SECTION, "symbol 2 is a section symbol");
+        // ...and the globals keep the model's relative order behind them.
+        assert_eq!(symbols[3].0, "_start");
+        assert_eq!(symbols[4].0, "main");
+    }
+
+    #[test]
+    fn symtab_sh_info_with_no_locals_beyond_the_null_symbol() {
+        // No `--debug`, so no section symbols exist: the null symbol is the only
+        // local and the very first model symbol is already global.
+        let bytes = write_elf64(&sample_model());
+        let sh_info = assert_sh_info_partitions_symtab(&bytes);
+        assert_eq!(sh_info, 1, "only the reserved null symbol is local");
+        let symbols = symtab_entries(&bytes);
+        assert_eq!(symbols.len(), 4, "null + 3 model symbols");
+        assert_eq!(symbols[0].1, STB_LOCAL, "the null symbol is local");
+        assert!(
+            symbols[1..]
+                .iter()
+                .all(|(_, bind, _, _)| *bind == STB_GLOBAL),
+            "every model symbol is global: {symbols:?}"
+        );
+    }
+
+    #[test]
+    fn symtab_sh_info_with_an_undefined_external_global() {
+        // An `extern fn` is a global with no defining section (SHN_UNDEF). It
+        // takes a different arm of the symbol writer than a defined global, so
+        // pin that it still lands on the non-local side of `sh_info`.
+        let model = ObjectModel {
+            sections: text_and_debug_sections(),
+            symbols: vec![
+                function_symbol("main", 0),
+                ObjectSymbol {
+                    name: "puts".to_string(),
+                    section: None,
+                    value: 0,
+                    kind: ObjectSymbolKind::Function,
+                },
+                section_symbol(".debug_line", 2),
+            ],
+            entry_symbol: None,
+            machine: ObjectMachine::X86_64,
+        };
+        let bytes = write_elf64(&model);
+        let sh_info = assert_sh_info_partitions_symtab(&bytes);
+        assert_eq!(sh_info, 2, "null + 1 section local; the extern is global");
+        let symbols = symtab_entries(&bytes);
+        let puts = symbols
+            .iter()
+            .position(|(n, ..)| n == "puts")
+            .expect("puts");
+        assert!(puts >= sh_info as usize, "the undefined external is global");
+        assert_eq!(symbols[puts].3, 0, "SHN_UNDEF");
+    }
+
+    /// End-to-end `sh_info` coverage: real `.lby` programs compiled all the way
+    /// through the native backend into ELF bytes.
+    ///
+    /// The tests above build `ObjectModel`s by hand, which pins the writer but
+    /// not the *models the compiler actually produces*. These compile real
+    /// source, so they also catch a symbol-emission change upstream in
+    /// `native_object*.rs` that would invalidate `sh_info` without touching this
+    /// file — the exact regression the coverage gap was about.
+    mod programs {
+        use super::*;
+        use crate::native_contract::x86_64_linux_target;
+        use crate::{
+            BytecodeModule, DebugOptions, emit_native_program_for_target, lower, lower_to_bytecode,
+        };
+        use lullaby_lexer::lex;
+        use lullaby_parser::parse;
+        use lullaby_semantics::validate_executable;
+
+        /// Compile source through the full frontend into a `BytecodeModule`.
+        fn module_for(source: &str) -> BytecodeModule {
+            let tokens = lex(source).expect("lex");
+            let program = parse(&tokens).expect("parse");
+            let checked = validate_executable(&program).expect("semantic");
+            let ir = lower(&checked).expect("lower");
+            lower_to_bytecode(&ir)
+        }
+
+        /// Emit a Linux ELF object for `source`, with or without debug info.
+        fn emit_linux_elf(source: &str, debug: Option<&DebugOptions>) -> Vec<u8> {
+            let program = emit_native_program_for_target(
+                &module_for(source),
+                &x86_64_linux_target(),
+                debug,
+                false,
+            )
+            .expect("emit native program");
+            assert!(
+                program.skipped.is_empty(),
+                "no function should be skipped: {:?}",
+                program.skipped
+            );
+            program.bytes
+        }
+
+        /// Several functions plus a C-callable `export fn` — mixed bindings through
+        /// the real lowering path.
+        const MIXED_BINDING_PROGRAM: &str = concat!(
+            "fn add x, y i64 -> i64\n",
+            "    return x + y\n",
+            "\n",
+            "fn double x i64 -> i64\n",
+            "    return add(x, x)\n",
+            "\n",
+            "export fn add_seven x i64 -> i64\n",
+            "    return add(x, 7)\n",
+            "\n",
+            "fn main -> i64\n",
+            "    return double(add_seven(7))\n",
+        );
+
+        #[test]
+        fn multiple_functions_with_an_export_are_all_global() {
+            let bytes = emit_linux_elf(MIXED_BINDING_PROGRAM, None);
+            let sh_info = assert_sh_info_partitions_symtab(&bytes);
+            // No `--debug`, so nothing created a section symbol: every compiled
+            // function — plain, exported, and the entry stub alike — is global.
+            assert_eq!(sh_info, 1, "only the null symbol is local without --debug");
+
+            let symbols = symtab_entries(&bytes);
+            for name in ["add", "double", "add_seven", "main"] {
+                let index = symbols
+                    .iter()
+                    .position(|(n, ..)| n == name)
+                    .unwrap_or_else(|| panic!("{name} in .symtab: {symbols:?}"));
+                assert!(
+                    index >= sh_info as usize,
+                    "{name} is global so it must sit at/above sh_info={sh_info}"
+                );
+            }
+        }
+
+        #[test]
+        fn debug_section_symbols_are_the_locals_of_a_real_program() {
+            // With `--debug` the DWARF path attaches STT_SECTION symbols. They are
+            // the only locals, they must precede every function symbol, and
+            // `sh_info` must count them.
+            let debug = DebugOptions {
+                source_file: "example/mixed.lby".to_string(),
+            };
+            let bytes = emit_linux_elf(MIXED_BINDING_PROGRAM, Some(&debug));
+            let sh_info = assert_sh_info_partitions_symtab(&bytes);
+
+            let symbols = symtab_entries(&bytes);
+            let section_symbols = symbols
+                .iter()
+                .filter(|(_, _, ty, _)| *ty == STT_SECTION)
+                .count();
+            assert!(
+                section_symbols > 0,
+                "--debug must attach section symbols: {symbols:?}"
+            );
+            assert_eq!(
+                sh_info as usize,
+                1 + section_symbols,
+                "sh_info = null + every STT_SECTION local"
+            );
+            // The function symbols all sit on the global side.
+            for name in ["add", "double", "add_seven", "main"] {
+                let index = symbols
+                    .iter()
+                    .position(|(n, ..)| n == name)
+                    .unwrap_or_else(|| panic!("{name} in .symtab: {symbols:?}"));
+                assert!(
+                    index >= sh_info as usize,
+                    "{name} is global so it must sit at/above sh_info={sh_info}"
+                );
+            }
+        }
     }
 }

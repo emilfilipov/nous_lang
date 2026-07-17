@@ -92,8 +92,15 @@ pub enum ObjectMachine {
     Aarch64,
 }
 
-/// How a relocation site is resolved. The two x86-64 kinds are 32-bit PC-relative
-/// fixups; the AArch64 kind patches a 26-bit branch-immediate instruction word.
+/// How a relocation site is resolved.
+///
+/// Two of the x86-64 kinds ([`Branch`](Self::Branch) /
+/// [`PcRel32`](Self::PcRel32)) are 32-bit PC-relative fixups; the AArch64 kind
+/// patches a 26-bit branch-immediate instruction word; and the two DWARF-only
+/// kinds are absolute rather than PC-relative — [`Absolute64`](Self::Absolute64)
+/// patches an **8-byte** field, and [`SectionOffset32`](Self::SectionOffset32) a
+/// 4-byte section-relative offset. The field width and the addend are therefore
+/// a property of the *kind*, not a constant of the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRelocationKind {
     /// A `call`/`jmp rel32` targeting a function symbol (ELF `R_X86_64_PLT32`,
@@ -126,16 +133,26 @@ pub enum ObjectRelocationKind {
     SectionOffset32,
 }
 
-/// A relocation within one section: patch the 4-byte little-endian field at
-/// `offset` (section-relative) to reference `symbol`.
+/// A relocation within one section: patch the little-endian field at `offset`
+/// (section-relative) to reference `symbol`. The field's **width and resolution
+/// rule are set by [`kind`](Self::kind)**, not fixed by this struct.
 ///
-/// Both container encodings resolve the field to `S - (P + 4)` (the displacement
-/// from the end of the 4-byte field to the target symbol `S`). ELF encodes the
-/// `-4` as an explicit `r_addend`; Mach-O encodes it implicitly through its
-/// PC-relative relocation semantics (the field content stays zero).
+/// For the two REL32 kinds ([`ObjectRelocationKind::Branch`] and
+/// [`ObjectRelocationKind::PcRel32`]) both containers resolve a 4-byte field to
+/// `S - (P + 4)` — the displacement from the end of the field to the target
+/// symbol `S`. ELF encodes the `-4` as an explicit `r_addend`; Mach-O encodes it
+/// implicitly through its PC-relative relocation semantics (the field content
+/// stays zero).
+///
+/// The remaining kinds do **not** follow that rule:
+/// [`ObjectRelocationKind::Aarch64Call26`] patches a 26-bit branch immediate
+/// with addend 0, and the DWARF-only [`ObjectRelocationKind::Absolute64`] (8
+/// bytes) and [`ObjectRelocationKind::SectionOffset32`] (4 bytes) are absolute
+/// `S + A` references with addend 0. See each kind for its exact encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectRelocation {
-    /// Byte offset of the 4-byte field within its owning section.
+    /// Byte offset of the patched field within its owning section. The field's
+    /// width follows from [`kind`](Self::kind).
     pub offset: u64,
     /// Index into [`ObjectModel::symbols`] of the referenced symbol.
     pub symbol: usize,
@@ -177,9 +194,15 @@ pub enum ObjectSymbolKind {
     Section,
 }
 
-/// A symbol in the neutral model. Every emitted symbol is global (external) — a
-/// relocatable object exposes its function and data labels for the linker to
-/// resolve, exactly like the COFF path.
+/// A symbol in the neutral model.
+///
+/// Every [`Function`](ObjectSymbolKind::Function) and
+/// [`Data`](ObjectSymbolKind::Data) symbol is global (external) — a relocatable
+/// object exposes its function and data labels for the linker to resolve,
+/// exactly like the COFF path. [`Section`](ObjectSymbolKind::Section) symbols
+/// are the sole exception: they are `STB_LOCAL`, which is why the ELF writer
+/// must order them ahead of the globals and point `.symtab`'s `sh_info` at the
+/// first non-local.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectSymbol {
     /// The symbol name (never mangled; the linker sees it verbatim).
@@ -193,15 +216,17 @@ pub struct ObjectSymbol {
     pub kind: ObjectSymbolKind,
 }
 
-/// A complete target-neutral relocatable object: its sections, its flat global
-/// symbol table, and the entry-point symbol name (if the object is a runnable
-/// program rather than a library).
+/// A complete target-neutral relocatable object: its sections, its flat symbol
+/// table, and the entry-point symbol name (if the object is a runnable program
+/// rather than a library).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectModel {
     /// Sections in emission order. Index 0 is always `.text`; `.rodata` and
     /// `.bss` follow when the program uses string constants or the heap.
     pub sections: Vec<ObjectSection>,
-    /// The flat global symbol table. Relocations reference entries by index.
+    /// The flat symbol table. Relocations reference entries by index. Entries
+    /// may be listed in any order: the ELF writer reorders them so that every
+    /// local precedes every global, as the format requires.
     pub symbols: Vec<ObjectSymbol>,
     /// The freestanding entry-point symbol (`_start` on ELF, `start` on Mach-O),
     /// or `None` for a library object with no `main`.
