@@ -1025,22 +1025,33 @@ impl<'a> IrRuntime<'a> {
         // call's arguments, matching the AST interpreter, which evaluates
         // `ExprKind::Conditional` lazily at the same moment.
         //
-        // `Control::Return` is honored as the closure's value rather than dropped.
-        // A single-expression body cannot spell `return`, so the conditional
-        // desugar never produces one; only the `?` desugar does. **`?` inside a
-        // closure body remains a known cross-tier divergence** and is deliberately
-        // not resolved here: semantics binds `?` to the *enclosing* function's
-        // return type (`L0427`), a model that cannot hold for a closure that may be
-        // invoked when that function is not on the stack. Yielding the value is the
-        // least-surprising local behavior; the real fix is a semantics decision
-        // (see "Still open — the postfix `?` in a closure body" in
-        // `documents/closures_capture_design.md`). `Break`/`Continue` cannot occur:
-        // no desugar emits a loop control out of an expression body.
+        // A prelude must NOT complete by transferring control. The conditional
+        // desugar — the only desugar that can legally reach a closure body — emits
+        // `let`/`if`/assignment and nothing else, so it always falls through to the
+        // body. `Break`/`Continue` need a loop no expression body can spell, and
+        // the one construct that does emit `return`, the `?` desugar, is refused in
+        // a closure body by semantics (`L0462`), because `?` propagates out of the
+        // *enclosing* function and a closure may outlive that frame entirely.
+        //
+        // So this is a fail-closed guard, not an expected path. It is deliberately
+        // an error rather than a value: an earlier revision yielded the returned
+        // value as the closure's result, which turned a loud refusal into a SILENT
+        // one — a closure declared `fn(i64) -> i64` handed back an `err(...)` that
+        // flowed on through `ok(f(7))` and out of a `main -> i64`. Reaching here
+        // means a desugar started emitting control flow into a closure body without
+        // a propagation model; that is a compiler bug and says so.
         let result = self
             .eval_block(&def.prelude, &mut env)
             .and_then(|control| match control {
-                Control::Return(value) => Ok(value),
-                _ => self.eval_expr(&def.body, &mut env),
+                Control::Value(_) => self.eval_expr(&def.body, &mut env),
+                Control::Return(_) | Control::Break | Control::Continue => Err(RuntimeError::new(
+                    "L0402",
+                    format!(
+                        "closure #{} body transferred control out of its prelude; \
+                         a closure body has no propagation target (compiler bug)",
+                        closure.id
+                    ),
+                )),
             });
         self.raw_ptrs.exit_frame(outer_frame);
         result

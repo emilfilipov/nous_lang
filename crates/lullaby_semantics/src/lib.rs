@@ -305,6 +305,13 @@ struct Checker<'a> {
     diagnostics: Vec<SemanticDiagnostic>,
     loop_depth: usize,
     unsafe_depth: usize,
+    /// How many closure bodies enclose the expression being checked. Non-zero
+    /// means "inside a `fn PARAMS -> EXPR` literal", which `?` needs to know:
+    /// `?` propagates out of the *enclosing function* (`check_try` reads
+    /// `function.return_type`), and that model cannot hold inside a closure, whose
+    /// body may be invoked when that function is not on the stack at all. See
+    /// `L0462`.
+    closure_depth: usize,
     region_names: HashSet<String>,
     /// Declared struct types: name -> ordered fields. For a generic struct the
     /// field types may mention the struct's type parameters (see
@@ -457,6 +464,7 @@ impl<'a> Checker<'a> {
             diagnostics: Vec::new(),
             loop_depth: 0,
             unsafe_depth: 0,
+            closure_depth: 0,
             region_names: HashSet::new(),
             structs: HashMap::new(),
             struct_type_params: HashMap::new(),
@@ -3307,7 +3315,13 @@ impl<'a> Checker<'a> {
                         .locals
                         .insert(param.name.clone(), param.ty.clone());
                 }
-                let body_type = self.check_expr(body, &body_scope, function)?;
+                // Mark the body as closure-enclosed so `?` can refuse itself
+                // (`L0462`): it would otherwise bind to the *enclosing* function's
+                // return type, which is not this body's propagation target.
+                self.closure_depth += 1;
+                let body_type = self.check_expr(body, &body_scope, function);
+                self.closure_depth -= 1;
+                let body_type = body_type?;
                 let param_types: Vec<TypeRef> =
                     params.iter().map(|param| param.ty.clone()).collect();
                 Some(function_type(&param_types, &body_type))
@@ -3532,6 +3546,28 @@ impl<'a> Checker<'a> {
         function: &Function,
     ) -> Option<TypeRef> {
         let operand_type = self.check_expr(inner, scope, function)?;
+        // `?` inside a closure body has no coherent propagation target, so it is
+        // refused outright rather than bound to the wrong one (`L0462`). Every
+        // check below reads `function.return_type` — the ENCLOSING function — but a
+        // closure is a value: it can be returned, stored, or handed to a
+        // higher-order function and invoked when that function is no longer on the
+        // stack, so "return from the enclosing function" is not something the body
+        // can mean. Refusing here keeps every tier in agreement by declining
+        // together; the alternative had the AST interpreter propagate the error out
+        // of the enclosing function while the IR/bytecode tiers produced a
+        // type-confused value — a `fn(i64) -> i64` handing back an `err`.
+        if self.closure_depth > 0 {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0462",
+                format!(
+                    "`?` cannot be used inside a closure body; it propagates out of the enclosing function `{}`, which a closure — a value that may be called after that function has returned — cannot do",
+                    function.name
+                ),
+                Some(function.name.clone()),
+                span,
+            ));
+            return None;
+        }
         let return_type = &function.return_type;
         if let Some((ok_ty, err_ty)) = operand_type.result_args() {
             // A `result<T, E>` operand requires a `result<U, E>` return type.

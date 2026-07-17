@@ -1620,9 +1620,14 @@ fn lowers_nested_constructor_in_call_argument_position() {
 #[test]
 fn try_operator_desugars_to_let_match_return_and_runs_at_parity() {
     // The IR never contains a `?`/`Try` node (there is no such IrExprKind):
-    // `?` is desugared during lowering into a `let __try_q`, a typed
-    // `let __try_v`, and a `match` whose failure arm `return`s. The success
+    // `?` is desugared during lowering into a `let {TEMP}try_q`, a typed
+    // `let {TEMP}try_v`, and a `match` whose failure arm `return`s. The success
     // temporary is what the original position references.
+    //
+    // The temp names are asserted through the `TEMP` marker rather than spelled
+    // literally, so renaming the marker cannot silently un-test this: the prefix
+    // is `#` precisely because a user must not be able to spell it (see
+    // `bytecode_vm::TEMP`).
     let source = concat!(
         "fn checked n i64 -> result<i64, string>\n",
         "    if n < 0\n",
@@ -1646,10 +1651,12 @@ fn try_operator_desugars_to_let_match_return_and_runs_at_parity() {
         .expect("use_it function");
 
     // The `?`-desugar scaffolding was hoisted ahead of the `let x` binding:
-    // `let __try_q_*`, then a typed `let __try_v_*`, then a `match` with a
+    // `let {TEMP}try_q_*`, then a typed `let {TEMP}try_v_*`, then a `match` with a
     // `return`ing failure arm.
+    let q_prefix = format!("{TEMP}try_q_");
+    let v_prefix = format!("{TEMP}try_v_");
     assert!(
-        matches!(&use_it.body[0], IrStmt::Let { name, .. } if name.starts_with("__try_q_")),
+        matches!(&use_it.body[0], IrStmt::Let { name, .. } if name.starts_with(&q_prefix)),
         "first hoisted statement binds the operand temp: {:?}",
         use_it.body[0]
     );
@@ -1664,10 +1671,7 @@ fn try_operator_desugars_to_let_match_return_and_runs_at_parity() {
             use_it.body[1]
         );
     };
-    assert!(
-        v_name.starts_with("__try_v_"),
-        "success temp name: {v_name}"
-    );
+    assert!(v_name.starts_with(&v_prefix), "success temp name: {v_name}");
     assert_eq!(
         *v_ty,
         TypeRef::new("i64"),

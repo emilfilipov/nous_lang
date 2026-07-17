@@ -22,15 +22,36 @@
 //! closure bound from a non-literal (a factory result) — makes the enclosing
 //! function **skip cleanly to the interpreters** (`L0339`), never miscompiled.
 //!
-//! A closure body is a **single expression** by construction all the way down
-//! (`expr_parser` parses it with `parse_conditional`; `ExprKind::Closure` and
-//! `BytecodeClosureDef` both store one `Expr`/`BytecodeExpr`), so there is no
-//! multi-statement closure body for this backend to lower — the shape does not
-//! exist in the language. The one intra-body control form the grammar admits, the
-//! inline conditional `A if C else B`, is desugared by the IR lowerer into hoisted
-//! statements that escape the closure body, which the IR interpreter and bytecode
-//! VM reject at runtime (`L0403`); this backend refuses it too (the hoisted
-//! parameter is not a native local), so native stays consistent with them.
+//! A closure body is a **single expression** in the surface grammar (`expr_parser`
+//! parses it with `parse_conditional`), so there is no block-bodied closure for
+//! this backend to lower — the shape does not exist in the language. Its *lowering*
+//! is not a single expression, though: the one intra-body control form the grammar
+//! admits, the inline conditional `A if C else B`, desugars to a hoisted temporary
+//! plus an `if`, carried in `BytecodeClosureDef::prelude` and run in the closure's
+//! own frame by the interpreters. **This backend does not lower a prelude**, so a
+//! ternary-bodied closure must skip: its body is a bare `#cond_N` reference, which
+//! `ctx.local` cannot resolve, and the enclosing function falls back to the
+//! interpreters (`L0339`). The `?` desugar cannot reach here at all — semantics
+//! refuses `?` in a closure body (`L0462`).
+//!
+//! That skip is load-bearing, and it is **only** sound because the desugar temps
+//! are unspellable. They are prefixed `#` (see `bytecode_vm::TEMP`), which the
+//! lexer cannot produce, so no user binding can ever satisfy the `ctx.local`
+//! lookup for one. When the temps were spelled `__cond_N` this guard was
+//! *accidental* and a user could defeat it by declaring the name:
+//!
+//! ```text
+//! let __cond_0 i64 = 555
+//! let f fn(i64) -> i64 = fn x i64 -> 1 if x > 0 else 2
+//! f(1) + __cond_0        # interpreters 556; native compiled the body,
+//!                        # ignored the prelude, and exited 1110
+//! ```
+//!
+//! The body's `__cond_0` resolved to the *user's* local, so this backend compiled a
+//! closure it had always refused — while ignoring the prelude that defines the
+//! value — and answered differently from all three interpreters. Compiling a body
+//! whose prelude is dropped is exactly the outcome correct-or-refuse forbids; the
+//! unspellable prefix makes that unreachable by construction rather than by luck.
 //!
 //! ## Object layout and call ABI
 //!

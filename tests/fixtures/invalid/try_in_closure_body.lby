@@ -1,0 +1,26 @@
+# `?` inside a closure body is refused (`L0462`).
+#
+# The enclosing function `run` IS a valid propagation target, which is the point:
+# `?` is defined as propagation out of the enclosing function, and that model cannot
+# hold inside a closure. A closure is a value — it may be returned, stored, or handed
+# to a higher-order function and invoked long after `run` has returned — so "return
+# from `run`" names no frame.
+#
+# This used to type-check and then diverge at runtime: the AST interpreter propagated
+# the error out of `run`, while the IR interpreter and bytecode VM produced a
+# type-confused value — `f`, declared `fn(i64) -> i64`, handed back `err(-1)`, which
+# flowed on through `ok(f(7))` and out of `main -> i64` with exit 0.
+
+fn half n i64 -> result<i64, i64>
+    if n % 2 == 0
+        return ok(n / 2)
+    err(0 - 1)
+
+fn run -> result<i64, i64>
+    let f fn(i64) -> i64 = fn x i64 -> half(x)? + 1
+    return ok(f(7))
+
+fn main -> i64
+    match run()
+        ok(v) -> v
+        err(e) -> e

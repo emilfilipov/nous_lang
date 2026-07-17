@@ -651,6 +651,35 @@ pub(crate) fn expr_mentions_var(expr: &IrExpr, name: &str) -> bool {
     }
 }
 
+/// Marker prefixing every name the lowerer synthesizes into the **local**
+/// namespace (the inline-conditional / `?` / `match` / slice / for-each desugars).
+///
+/// `#` is deliberately **not a legal identifier character**: the lexer accepts only
+/// `[A-Za-z_][A-Za-z0-9_]*`, so no Lullaby program can spell a name starting with
+/// it. That makes a collision between a desugar temp and a user binding impossible
+/// **by construction** rather than by convention.
+///
+/// These temps used to be spelled `__cond_N`, `__match_v_N`, and so on — which a
+/// user *can* spell, and which therefore silently clobbered their binding. It was a
+/// real cross-tier divergence, not a theoretical one:
+///
+/// ```text
+/// let __cond_0 i64 = 555
+/// let y i64 = 1 if __cond_0 > 0 else 2   # AST: 556   IR/bytecode/native: 4
+/// ```
+///
+/// The desugar's `let __cond_0 = <zero>` overwrote the user's 555, so the condition
+/// read 0 and took the wrong branch, while the AST interpreter (which never
+/// desugars) stayed correct. The same hole was confirmed for `__match_v_N`. It also
+/// let a user-declared `__cond_0` satisfy the native backend's capture lookup, so a
+/// closure body native had always refused suddenly compiled — **while ignoring its
+/// prelude** — and exited 1110 where every interpreter said 556.
+///
+/// Nothing pattern-matches on the old `__` prefix, and these names never reach an
+/// object file (the DWARF/CodeView emitters carry line tables, not local names), so
+/// the marker is free to be unspellable.
+pub(crate) const TEMP: &str = "#";
+
 pub(crate) struct Lowerer<'a> {
     program: &'a Program,
     signatures: &'a HashMap<String, Signature>,
@@ -1254,8 +1283,8 @@ impl<'a> Lowerer<'a> {
                 };
                 let coll_name = coll_binding
                     .clone()
-                    .unwrap_or_else(|| format!("__foreach_coll_{}_{}", span.line, span.column));
-                let idx_name = format!("__foreach_idx_{}_{}", span.line, span.column);
+                    .unwrap_or_else(|| format!("{TEMP}foreach_coll_{}_{}", span.line, span.column));
+                let idx_name = format!("{TEMP}foreach_idx_{}_{}", span.line, span.column);
                 let i64_ty = TypeRef::new("i64");
                 let coll_var = IrExpr {
                     kind: IrExprKind::Variable(coll_name.clone()),
@@ -1546,8 +1575,8 @@ impl<'a> Lowerer<'a> {
 
         let id = self.next_match_temp.get();
         self.next_match_temp.set(id + 1);
-        let s_name = format!("__match_s_{id}");
-        let v_name = format!("__match_v_{id}");
+        let s_name = format!("{TEMP}match_s_{id}");
+        let v_name = format!("{TEMP}match_v_{id}");
 
         let mut lowered_arms = Vec::with_capacity(arms.len());
         let mut result_ty: Option<TypeRef> = expected.cloned();
@@ -2059,7 +2088,7 @@ impl<'a> Lowerer<'a> {
                 let (target_arg, len_end): (IrExpr, Option<IrExpr>) = if end.is_none() {
                     let id = self.next_cond_temp.get();
                     self.next_cond_temp.set(id + 1);
-                    let temp = format!("__slice_{id}");
+                    let temp = format!("{TEMP}slice_{id}");
                     self.try_prelude.borrow_mut().push(IrStmt::Let {
                         name: temp.clone(),
                         ty: string_ty.clone(),
@@ -2206,9 +2235,9 @@ impl<'a> Lowerer<'a> {
         // Fresh, collision-free temp names for this `?` site.
         let id = self.next_try_temp.get();
         self.next_try_temp.set(id + 1);
-        let q_name = format!("__try_q_{id}");
-        let v_name = format!("__try_v_{id}");
-        let bind_name = format!("__try_x_{id}");
+        let q_name = format!("{TEMP}try_q_{id}");
+        let v_name = format!("{TEMP}try_v_{id}");
+        let bind_name = format!("{TEMP}try_x_{id}");
 
         // Resolve `(success variant, failure variant, payload type T)` from the
         // operand type. Semantics guarantees the operand is an `option`/`result`
@@ -2271,7 +2300,7 @@ impl<'a> Lowerer<'a> {
         // Failure arm: `err(__try_x_N) -> return err(__try_x_N)` (or the `none`
         // analogue), rebuilding the failure value at the function's return type.
         let failure_arm = if failure_variant == "err" {
-            let err_bind = format!("__try_e_{id}");
+            let err_bind = format!("{TEMP}try_e_{id}");
             let (_, err_ty) = operand_ty.result_args().ok_or_else(|| {
                 IrLoweringError::new(
                     format!("`?` operand `{}` is not a result", operand_ty.name),
@@ -2376,7 +2405,7 @@ impl<'a> Lowerer<'a> {
         let result_ty = expected.cloned().unwrap_or_else(|| then_ir.ty.clone());
         let id = self.next_cond_temp.get();
         self.next_cond_temp.set(id + 1);
-        let temp = format!("__cond_{id}");
+        let temp = format!("{TEMP}cond_{id}");
 
         let zero = self.zero_ir_expr(&result_ty, span)?;
         self.try_prelude.borrow_mut().push(IrStmt::Let {

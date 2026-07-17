@@ -1,0 +1,17 @@
+# The native closure skip must not be defeatable by a user-chosen name.
+#
+# `native_closure_conditional_skip.lby` pins that native declines a ternary-bodied
+# closure. This pins that the DECLINE ITSELF cannot be subverted. The mechanism is
+# narrow: native treats the body's free `#cond_N` as a capture, and refuses because
+# `ctx.local` cannot resolve it. Back when the temp was spelled `__cond_0`, a user
+# could simply DECLARE that name — the lookup then succeeded, native compiled a
+# closure it had always refused *while ignoring the prelude that defines the value*,
+# and the program exited 1110 where every interpreter said 556.
+#
+# `__cond_0` is now an ordinary identifier (the real temp is `#cond_0`, unspellable),
+# so the skip holds and the arithmetic is plain: f(1) = 1, plus 555.
+
+fn main -> i64
+    let __cond_0 i64 = 555
+    let f fn(i64) -> i64 = fn x i64 -> 1 if x > 0 else 2
+    f(1) + __cond_0

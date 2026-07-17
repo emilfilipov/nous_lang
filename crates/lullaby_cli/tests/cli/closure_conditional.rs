@@ -5,8 +5,8 @@
 //!
 //! A closure body is a single expression in the surface grammar (`expr_parser`
 //! parses it with `parse_conditional`), but a *ternary* body does not lower to a
-//! single IR expression: `desugar_conditional` hoists `let __cond_N` plus an `if`
-//! and rewrites the position to `__cond_N`. That scaffolding reads the closure's
+//! single IR expression: `desugar_conditional` hoists `let #cond_N` plus an `if`
+//! and rewrites the position to `#cond_N`. That scaffolding reads the closure's
 //! **parameters**.
 //!
 //! The closure lowerer used to lower its body with a plain `lower_expr`, leaving
@@ -28,15 +28,57 @@
 //!
 //! # Why native is pinned as a refusal, not an answer
 //!
-//! Native does not compile a ternary-bodied closure: the body is `__cond_N`, which
+//! Native does not compile a ternary-bodied closure: the body is `#cond_N`, which
 //! its capture analysis cannot bind to a native local, so the function skips
 //! cleanly to the interpreters (`L0339`). That is the correct-or-refuse contract —
 //! a tier answers like the others or declines with a diagnostic. What it must never
 //! do is compile the body while ignoring the prelude, which would answer
 //! *differently*. `native_closure_conditional_body_skips_cleanly` pins the refusal
 //! so that stays a deliberate boundary rather than something that quietly erodes.
+//!
+//! # The two ways this was got wrong, both pinned here
+//!
+//! **The temps had to become unspellable.** They were `__cond_N`/`__match_v_N` —
+//! names a user can spell. A program that declared one had its binding clobbered by
+//! the desugar's own `let` (`desugar_temps_do_not_shadow_user_bindings`), and,
+//! worse, a user-declared `__cond_0` *satisfied native's capture lookup*, so the
+//! skip above evaporated and native compiled the body while dropping the prelude —
+//! exiting 1110 where the interpreters said 556
+//! (`native_closure_conditional_skip_survives_a_user_declared_temp_name`). The
+//! prefix is now `#`, which the lexer cannot produce, so both are impossible by
+//! construction rather than by convention.
+//!
+//! **`?` had to be refused, not reinterpreted.** The prelude mechanism also carries
+//! the `?` desugar, whose `return` has no meaning in a closure frame. Yielding it as
+//! the closure's value turned a loud `L0403` into a *silent* type-confused answer.
+//! `?` in a closure body is now rejected by semantics on every tier (`L0462`,
+//! `try_inside_a_closure_body_is_refused_on_every_tier`).
 
 use super::{lullaby, stderr, stdout, workspace_root};
+
+/// Run a fixture on the three interpreter tiers and assert each prints `expected`.
+fn assert_interpreters_agree(fixture: &str, expected: &str) {
+    let path = workspace_root().join(format!("tests/fixtures/valid/{fixture}.lby"));
+    for backend in [None, Some("ir"), Some("bytecode")] {
+        let mut args = vec!["run".to_string()];
+        if let Some(backend) = backend {
+            args.push("--backend".to_string());
+            args.push(backend.to_string());
+        }
+        args.push(path.to_str().expect("fixture path").to_string());
+        let output = lullaby().args(&args).output().expect("run cli");
+        assert!(
+            output.status.success(),
+            "{fixture} on backend {backend:?}: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            stdout(&output).trim(),
+            expected,
+            "{fixture}: backend {backend:?} must agree with every other tier"
+        );
+    }
+}
 
 /// An inline conditional as a closure body — captured, nested, passed to a
 /// higher-order function, returned from one, and with both branches taken —
@@ -157,4 +199,132 @@ pub(crate) fn native_closure_conditional_body_skips_cleanly() {
             "backend {backend:?}: the skipped program still runs on the interpreters"
         );
     }
+}
+
+/// A user binding named like a desugar temp is an ordinary binding on every tier.
+///
+/// The lowerer's temps used to be spelled `__cond_N`/`__match_v_N` — names a user
+/// can spell — and the desugar's own `let` then clobbered the user's binding. Only
+/// the AST interpreter, which never desugars, stayed correct:
+///
+/// ```text
+/// let __cond_0 i64 = 555
+/// let y i64 = 1 if __cond_0 > 0 else 2   # AST: 556   IR/bytecode/native: 4
+/// ```
+///
+/// The temps are now prefixed `#`, which the lexer cannot produce, so the collision
+/// cannot be expressed. All four tiers run this, native included via a real `.exe`
+/// exit code. With the bug the answer is 18, not 148.
+#[test]
+pub(crate) fn desugar_temps_do_not_shadow_user_bindings() {
+    assert_interpreters_agree("run_desugar_temp_shadow", "148");
+
+    let fixture = workspace_root().join("tests/fixtures/valid/run_desugar_temp_shadow.lby");
+    let out = std::env::temp_dir().join("lullaby_desugar_temp_shadow.exe");
+    let _ = std::fs::remove_file(&out);
+    let emit = lullaby()
+        .args([
+            "native",
+            "-o",
+            out.to_str().expect("out"),
+            fixture.to_str().expect("fixture"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(
+        emit.status.success(),
+        "the shadow fixture must compile natively: {}",
+        stderr(&emit)
+    );
+    let exe = std::process::Command::new(&out).output().expect("run exe");
+    assert_eq!(
+        exe.status.code().expect("native exit code"),
+        148,
+        "native must agree with the interpreters on a user-declared `__cond_0`"
+    );
+}
+
+/// Native's ternary-closure skip cannot be defeated by a user-chosen name.
+///
+/// The skip is narrow: the body's free `#cond_N` is treated as a capture, and
+/// native refuses because `ctx.local` cannot resolve it. While the temp was spelled
+/// `__cond_0`, *declaring that name* satisfied the lookup — so native compiled a
+/// closure it had always refused, **ignoring the prelude that defines the value**,
+/// and exited 1110 where every interpreter said 556. That is precisely the
+/// compile-while-dropping-the-prelude outcome correct-or-refuse forbids.
+///
+/// This pins the skip as unsubvertible. It is a *different* failure from
+/// `native_closure_conditional_body_skips_cleanly`: that one dies if native stops
+/// refusing at all, this one dies only if a user identifier can reach the temp.
+#[test]
+pub(crate) fn native_closure_conditional_skip_survives_a_user_declared_temp_name() {
+    let fixture =
+        workspace_root().join("tests/fixtures/valid/native_closure_conditional_shadow_skip.lby");
+
+    let native = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run cli");
+    assert!(
+        !native.status.success(),
+        "a user-declared `__cond_0` must not let a ternary-bodied closure compile"
+    );
+    let rendered = format!("{}{}", stdout(&native), stderr(&native));
+    assert!(rendered.contains("L0339"), "expected L0339: {rendered}");
+    assert!(
+        rendered.contains("skipped main"),
+        "expected `main` in the skip listing: {rendered}"
+    );
+
+    assert_interpreters_agree("native_closure_conditional_shadow_skip", "556");
+}
+
+/// `?` inside a closure body is refused identically by every tier (`L0462`).
+///
+/// It used to type-check, binding to the *enclosing* function's return type, and
+/// then diverge: the AST interpreter propagated the error out of that function
+/// while the IR/bytecode tiers produced a type-confused value — a closure declared
+/// `fn(i64) -> i64` handing back `err(-1)`, which flowed through `ok(f(7))` and out
+/// of a `main -> i64` with **exit 0**. A silent wrong answer where another tier had
+/// been loud is the one move correct-or-refuse forbids outright, so all four tiers
+/// now decline together, at compile time.
+#[test]
+pub(crate) fn try_inside_a_closure_body_is_refused_on_every_tier() {
+    let fixture = workspace_root().join("tests/fixtures/invalid/try_in_closure_body.lby");
+    let path = fixture.to_str().expect("fixture path");
+
+    for backend in [None, Some("ir"), Some("bytecode")] {
+        let mut args = vec!["run".to_string()];
+        if let Some(backend) = backend {
+            args.push("--backend".to_string());
+            args.push(backend.to_string());
+        }
+        args.push(path.to_string());
+        let output = lullaby().args(&args).output().expect("run cli");
+        assert!(
+            !output.status.success(),
+            "backend {backend:?}: `?` in a closure body must not run"
+        );
+        let rendered = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            rendered.contains("L0462"),
+            "backend {backend:?}: expected L0462: {rendered}"
+        );
+    }
+
+    // Native refuses at the same frontend gate, before any codegen decision.
+    let native = lullaby().args(["native", path]).output().expect("run cli");
+    assert!(
+        !native.status.success(),
+        "native must refuse `?` in a closure"
+    );
+    let rendered = format!("{}{}", stdout(&native), stderr(&native));
+    assert!(
+        rendered.contains("L0462"),
+        "native: expected L0462: {rendered}"
+    );
 }
