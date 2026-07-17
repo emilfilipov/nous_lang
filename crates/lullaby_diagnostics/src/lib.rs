@@ -421,8 +421,8 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         code: "L0350",
         phase: DiagnosticPhase::Semantic,
         explanation: "A resource is used after it was freed (use-after-free or double-free).",
-        root_cause: "A binding was read, written, or freed again after a straight-line `dealloc`/`rc_release`.",
-        suggested_fix: "Remove the later use, or reallocate/rebind before using the resource again.",
+        root_cause: "A binding — or a direct copy of one (`let q = p`), which denotes the same resource — was read, written, or freed again after a straight-line `dealloc`/`rc_release`.",
+        suggested_fix: "Remove the later use, or reallocate/rebind before using the resource again. Remember that copying a pointer copies the address, not the resource, so freeing either binding kills both.",
     },
     DiagnosticEntry {
         code: "L0351",

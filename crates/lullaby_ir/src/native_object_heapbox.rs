@@ -48,14 +48,21 @@
 //! * **A no-op.** Then `ptr_read` after `dealloc` returns the value natively while
 //!   the interpreters raise `L0406` — the same divergence class.
 //!
-//! The `L0350` "used after it was freed" check does NOT make `rc_free` safe: it is
-//! **name-based and does not survive aliasing**. Both of these compile and reach
-//! the backend, failing only at interpreter run time with `L0406`:
+//! The `L0350` "used after it was freed" check still does NOT make `rc_free` safe.
+//! It now tracks **direct copies** — `let p = alloc(5)  let q = p  dealloc(p)
+//! ptr_read(q)` and the matching double free are rejected statically
+//! (`semantics_lifetime_alias.rs`) — but it is copy tracking, not alias analysis.
+//! These still compile and reach the backend, failing only at interpreter run time
+//! with `L0406`:
 //!
 //! ```text
-//! let p = alloc(5)   let q = p   dealloc(p)   ptr_read(q)   # use-after-free
-//! let p = alloc(5)   let q = p   dealloc(p)   dealloc(q)    # double free
+//! fn id p ptr_i64 -> ptr_i64 = p                            # alias via a call
+//! let p = alloc(5)   let q = id(p)   dealloc(p)   ptr_read(q)
+//! let p = alloc(5)   s.field = p     dealloc(p)   ptr_read(s.field)   # via an aggregate
 //! ```
+//!
+//! So the divergence class is narrowed, not eliminated: one untracked alias is all
+//! `rc_free` needs to turn a detected `L0406` into silent corruption.
 //!
 //! A faithful native `dealloc` needs a per-block validity tombstone plus a check on
 //! every raw read — and that check is not implementable on the shared raw-pointer

@@ -351,9 +351,11 @@ fn native_alloc_is_not_reclaimed_by_an_arena_rewind() {
 /// diverges from the interpreters, which invalidate the cell and DETECT a later use
 /// or a double free (`L0406`): `rc_free` would make a use-after-free read free-list
 /// memory silently and a double free alias two live allocations; a no-op would make
-/// a use-after-free succeed. The `L0350` static check does not close the gap — it is
-/// name-based and does not survive aliasing (`let q = p  dealloc(p)  ptr_read(q)`
-/// compiles and reaches the backend).
+/// a use-after-free succeed. The `L0350` static check does not close the gap: it now
+/// rejects a DIRECT copy (`let q = p  dealloc(p)  ptr_read(q)`, suite21), but it is
+/// copy tracking rather than alias analysis, so an alias through a call or an
+/// aggregate still compiles and reaches the backend — and one untracked alias is all
+/// `rc_free` needs to turn a detected `L0406` into silent corruption.
 #[test]
 fn native_dealloc_skips_gracefully() {
     assert_native_skips_because(
@@ -404,59 +406,62 @@ fn native_ptr_offset_over_an_alloc_box_skips_gracefully() {
     );
 }
 
-/// `ptr_cast` LAUNDERS an `alloc` box past the spelling-keyed gate:
-/// `check_ptr_cast` derives its result type from the caller's ANNOTATION (defaulting
-/// to `ptr<i64>`), never from the operand, so `let q ptr<i64> = ptr_cast(p)` rewrites
-/// `ptr_i64` into the very spelling the gate keys on — after which `ptr_offset(q, 1)`
-/// strides 8 bytes past the one-cell payload into the NEXT block's `[size]` header,
-/// the word `__lullaby_alloc`'s free-list scan reads to decide reuse. A write there
-/// corrupts allocator metadata.
+/// `ptr_cast` over an `alloc` box must not be lowered natively — defense in depth
+/// behind the frontend's model-preservation rule.
 ///
-/// Measured before the fix, against interpreters that raise `L0406` / answer `0`:
-/// the strided read compiled and exited **0**; `ptr_to_int` gave a real address
-/// (**1073758240**) where the interpreters give the slot index **0**; and the strided
-/// write compiled and executed. All three must now skip.
+/// **History, and why this shape changed.** `check_ptr_cast` used to derive its
+/// result type from the caller's ANNOTATION (defaulting to `ptr<i64>`), never from
+/// the operand, so `let q ptr<i64> = ptr_cast(p)` rewrote `ptr_i64` into the very
+/// spelling this gate keys on — after which `ptr_offset(q, 1)` strode 8 bytes past
+/// the one-cell payload into the NEXT block's `[size]` header, the word
+/// `__lullaby_alloc`'s free-list scan reads to decide reuse. A write there corrupted
+/// allocator metadata. Measured then, against interpreters that raise `L0406` /
+/// answer `0`: the strided read compiled and exited **0**; `ptr_to_int` gave a real
+/// address (**1073758240**) where the interpreters give the slot index **0**; the
+/// strided write compiled and executed.
+///
+/// `check_ptr_cast` now takes the result's pointer model from the OPERAND, so those
+/// annotations are rejected outright with `L0303` and the laundered program can no
+/// longer be written — `suite21.rs` pins that, in both directions. What this test
+/// keeps pinned is the gate itself, through the IDENTITY cast the frontend still
+/// allows: `let q = ptr_cast(p)` preserves the `ptr_i64` model, so the operand that
+/// reaches the backend is genuinely still a box, and the gate must refuse it.
 #[test]
-fn native_ptr_cast_cannot_launder_an_alloc_box() {
-    for (tag, tail) in [
-        ("read", "ptr_read(ptr_offset(q, 1))"),
-        ("identity", "ptr_to_int(q)"),
-        (
-            "write",
-            "ptr_write(ptr_offset(q, 1), 999999)\n        ptr_read(p)",
-        ),
-    ] {
+fn native_ptr_cast_over_an_alloc_box_is_not_lowered() {
+    for (tag, tail) in [("read", "ptr_read(q)"), ("identity", "ptr_to_int(q)")] {
         assert_native_skips_because(
             &format!(
                 "fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc(7)\n        \
-                 let q ptr<i64> = ptr_cast(p)\n        {tail}\n"
+                 let q = ptr_cast(p)\n        {tail}\n"
             ),
-            &format!("lullaby_alloc_cast_launder_{tag}"),
+            &format!("lullaby_alloc_cast_box_{tag}"),
             "`ptr_cast` over the `ptr_i64` produced by `alloc`",
         );
     }
 }
 
-/// The CROSS-FUNCTION laundering route: a helper takes the box and returns it cast to
-/// `ptr<i64>`, so `main` never mentions `ptr_i64`. The gate closes this for free — the
+/// The CROSS-FUNCTION route. A helper that laundered the model outright
+/// (`fn launder p ptr_i64 -> ptr<i64>` returning `ptr_cast(p)`) no longer type-checks:
+/// its body now yields `ptr_i64`, not the declared `ptr<i64>` (`L0301`), and handing a
+/// box to a `ptr<i64>` parameter is `L0313`. So this pins what is still expressible —
+/// a model-preserving `-> ptr_i64` helper — and the property that matters: the
 /// helper's own `ptr_cast` site carries the `ptr_T` operand, so it refuses there, the
-/// helper skips, and the demotion fixpoint skips `main`. (Before the fix this compiled
-/// and exited 0 where the interpreters raise `L0406`.)
+/// helper skips, and the demotion fixpoint skips `main`.
 #[test]
-fn native_ptr_cast_cannot_launder_an_alloc_box_across_a_function() {
+fn native_ptr_cast_over_an_alloc_box_is_not_lowered_across_a_function() {
     assert_native_skips_because(
         concat!(
-            "fn launder p ptr_i64 -> ptr<i64>\n",
+            "fn rebox p ptr_i64 -> ptr_i64\n",
             "    unsafe\n",
             "        ptr_cast(p)\n",
             "\n",
             "fn main -> i64\n",
             "    unsafe\n",
             "        let p ptr_i64 = alloc(7)\n",
-            "        let q ptr<i64> = launder(p)\n",
-            "        ptr_read(ptr_offset(q, 1))\n",
+            "        let q = rebox(p)\n",
+            "        ptr_read(q)\n",
         ),
-        "lullaby_alloc_cast_launder_fn",
+        "lullaby_alloc_cast_rebox_fn",
         "`ptr_cast` over the `ptr_i64` produced by `alloc`",
     );
 }

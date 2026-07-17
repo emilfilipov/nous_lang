@@ -1435,6 +1435,11 @@ mod suite19;
 #[path = "cli/suite20.rs"]
 mod suite20;
 
+// -- Three frontend semantics fixes: model-preserving `ptr_cast`, void `export fn`,
+//    and `L0350` over direct copy aliases
+#[path = "cli/suite21.rs"]
+mod suite21;
+
 // -- Packed narrow array elements: walking a narrow-element buffer (`array<i32>`,
 //    `array<u8>`, ...) through raw pointers (road_to_1_0_stable C3)
 #[path = "cli/suite22.rs"]

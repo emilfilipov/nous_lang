@@ -25,21 +25,33 @@ use super::*;
 /// `ptr<T>` via `ptr_cast`**, then do something with it that is only valid for a real
 /// typed pointer.
 ///
-/// This is the adversarial generator for `refuse_legacy_box_pointer`. That gate keys
-/// on the *spelling* `ptr_i64`, and `ptr_cast` is free to CHANGE the spelling:
-/// `check_ptr_cast` (`semantics_raw_ptr.rs`) derives its result type from the
-/// caller's expected ANNOTATION, defaulting to `ptr<i64>`, and never from the
-/// operand. So `let q ptr<i64> = ptr_cast(p)` rewrites a box into exactly the
-/// spelling the gate looks for, and `ptr_offset(q, 1)` then strides 8 bytes past the
-/// one-cell payload into the NEXT block's `[size]` header — the word
-/// `__lullaby_alloc`'s free-list first-fit scan reads to decide reuse — so a write
-/// through it corrupts allocator metadata governing later allocation sizes.
+/// This is the adversarial generator for the box/pointer divide. It now covers TWO
+/// layers, because the defence moved:
+///
+/// * **Shapes (1)–(4): the historical laundering route, now closed at the FRONTEND.**
+///   `refuse_legacy_box_pointer` keys on the *spelling* `ptr_i64`, and `ptr_cast`
+///   used to be free to CHANGE the spelling: `check_ptr_cast` derived its result type
+///   from the caller's expected ANNOTATION, defaulting to `ptr<i64>`, never from the
+///   operand. So `let q ptr<i64> = ptr_cast(p)` rewrote a box into exactly the
+///   spelling the gate looks for, and `ptr_offset(q, 1)` then strode 8 bytes past the
+///   one-cell payload into the NEXT block's `[size]` header — the word
+///   `__lullaby_alloc`'s free-list first-fit scan reads to decide reuse — so a write
+///   through it corrupted allocator metadata governing later allocation sizes.
+///   `check_ptr_cast` now takes the result's MODEL from the operand, so these are
+///   rejected with `L0303` (or `L0301` at the laundering helper's signature) and never
+///   reach the backend at all.
+/// * **Shapes (5)–(6): the model-preserving identity cast, which still reaches the
+///   backend.** `let q = ptr_cast(p)` keeps the `ptr_i64` model, so the operand
+///   arriving at the native gate is genuinely still a box. These are what keep this
+///   fuzzer honest about `refuse_legacy_box_pointer`: without them it would silently
+///   have degraded into a frontend-only test, still green, while the native gate went
+///   unexercised.
 ///
 /// **The oracle is "native must SKIP", not "native must match".** Every shape here is
 /// one the interpreters either refuse outright (`L0406` for `ptr_offset` over a box)
 /// or define differently (`ptr_to_int` of a box is a heap-SLOT INDEX, not an
-/// address), so there is no value to agree on — the only correct native behaviour is
-/// a clean `L0339` skip with no exe. See
+/// address), so there is no value to agree on — the only correct behaviour is no
+/// runnable image, whether refused by the frontend or skipped with `L0339`. See
 /// [`fuzz_alloc_cast_launder_native_always_skips`].
 fn gen_alloc_cast_launder_program(seed: u64) -> String {
     let mut rng = Rng(seed ^ 0x1A5D_3C90_7E42_B6F8u64);
@@ -54,34 +66,54 @@ fn gen_alloc_cast_launder_program(seed: u64) -> String {
         _ => ("ptr<usize>", "usize"),
     };
 
-    match rng.below(4) {
+    match rng.below(6) {
         // (1) Strided READ through the laundered pointer -> off the end of the cell.
+        // FRONTEND-REJECTED since model preservation (`L0303`).
         0 => format!(
             "fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
              let q {target} = ptr_cast(p)\n        \
              let r {target} = ptr_offset(q, {n})\n        to_i64(ptr_read(r))\n"
         ),
         // (2) Pointer IDENTITY through the laundered pointer -> a real address where
-        // the interpreters give a slot index.
+        // the interpreters give a slot index. FRONTEND-REJECTED (`L0303`).
         1 => format!(
             "fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
              let q {target} = ptr_cast(p)\n        ptr_to_int(q)\n"
         ),
         // (3) Strided WRITE -> corrupts the next block's allocator `[size]` header.
+        // FRONTEND-REJECTED (`L0303`).
         2 => format!(
             "fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
              let q {target} = ptr_cast(p)\n        \
              ptr_write(ptr_offset(q, {n}), to_{elem}(99))\n        ptr_read(p)\n"
         ),
         // (4) CROSS-FUNCTION laundering: the helper hides the cast, so `main` never
-        // mentions `ptr_i64`. Closed via the demotion fixpoint (the helper's own
-        // `ptr_cast` site carries the `ptr_T` operand, so the helper skips first).
-        _ => format!(
+        // mentions `ptr_i64`. Now FRONTEND-REJECTED at the helper's own signature
+        // (`L0301`: its `ptr_cast(p)` body yields `ptr_i64`, not the declared target).
+        3 => format!(
             "fn launder p ptr_i64 -> {target}\n    unsafe\n        ptr_cast(p)\n\
              \n\
              fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
              let q {target} = launder(p)\n        \
              to_i64(ptr_read(ptr_offset(q, {n})))\n"
+        ),
+        // (5) MODEL-PRESERVING identity cast. The frontend ALLOWS this (the box casts
+        // to itself), so it is the shape that still reaches — and must be refused by —
+        // the native `refuse_legacy_box_pointer` gate. Without shapes (5)/(6) this
+        // fuzzer would have quietly become a frontend test only, since (1)-(4) never
+        // get near the backend any more.
+        4 => format!(
+            "fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
+             let q = ptr_cast(p)\n        ptr_read(q)\n"
+        ),
+        // (6) MODEL-PRESERVING identity cast across a function: `rebox` keeps the
+        // `ptr_i64` model, so its own `ptr_cast` site carries the `ptr_T` operand, the
+        // helper skips, and the demotion fixpoint must skip `main` too.
+        _ => format!(
+            "fn rebox p ptr_i64 -> ptr_i64\n    unsafe\n        ptr_cast(p)\n\
+             \n\
+             fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc({v})\n        \
+             let q = rebox(p)\n        ptr_read(q)\n"
         ),
     }
 }
@@ -94,10 +126,16 @@ fn fuzz_alloc_cast_launder_native_always_skips() {
     // address), so the only correct native behaviour is a clean `L0339` skip with no
     // exe. Producing an exe at all is the failure.
     //
-    // Teeth: with the `ptr_cast` arm of `refuse_legacy_box_pointer` removed, these
-    // programs COMPILE — the strided read exits 0 where the interpreters raise
-    // `L0406`, `ptr_to_int` returns a real address where the interpreters give 0, and
-    // the strided write lands on the next block's allocator `[size]` header.
+    // Teeth, per layer — both still real:
+    //   * Remove the `ptr_cast` arm of `refuse_legacy_box_pointer` and the
+    //     MODEL-PRESERVING shapes (5)/(6) compile, producing an exe for a box the
+    //     interpreters define as a slot index.
+    //   * Restore the old annotation-derived `check_ptr_cast` and the LAUNDERING
+    //     shapes (1)-(4) compile — the strided read exits 0 where the interpreters
+    //     raise `L0406`, `ptr_to_int` returns a real address where the interpreters
+    //     give 0, and the strided write lands on the next block's `[size]` header.
+    // Shapes (1)-(4) alone can no longer prove the native gate: the frontend now
+    // refuses them first, which is why (5)/(6) exist.
     //
     // Gated on the link toolchain: on a host that cannot produce an exe anyway the
     // assertion would be vacuous.

@@ -231,27 +231,38 @@ fn is_legacy_box_pointer(name: &str) -> bool {
 ///   decide reuse — so a write through it corrupts allocator metadata. Not garbage:
 ///   *active* garbage.
 ///
-/// # Why `ptr_cast` is gated too (the laundering route)
+/// # Why `ptr_cast` is gated too
 ///
-/// `check_ptr_cast` (`semantics_raw_ptr.rs`) derives its result type from the
+/// **Historically, `ptr_cast` laundered the spelling this gate keys on.**
+/// `check_ptr_cast` (`semantics_raw_ptr.rs`) used to derive its result type from the
 /// **caller's expected annotation**, defaulting to `ptr<i64>`, and *never* from the
-/// operand. So `let q ptr<i64> = ptr_cast(p)` rewrites a `ptr_i64` box into a
+/// operand. So `let q ptr<i64> = ptr_cast(p)` rewrote a `ptr_i64` box into a
 /// `ptr<i64>` — laundering away the very spelling this gate keys on, after which
-/// `ptr_offset(q, 1)` sails through. Gating `ptr_cast`'s operand closes it.
+/// `ptr_offset(q, 1)` sailed through.
 ///
-/// That gate is **complete, not whack-a-mole**, because `ptr_cast` is the only
-/// builtin whose result type ignores its operand:
+/// `check_ptr_cast` now takes the result's pointer **model** from the operand, so
+/// that laundering is rejected at the frontend (`L0303`) and this gate is no longer
+/// the only thing standing between it and corruption. The gate stays as **defense in
+/// depth**, and it is still genuinely reachable — a *model-preserving* identity cast
+/// (`let q = ptr_cast(p)`, which the frontend allows and which keeps the `ptr_i64`
+/// model) delivers a real box to this call, and it must be refused. That reachable
+/// shape is what `native_object_heapbox_tests.rs` and the `gen_alloc_cast_launder_program`
+/// fuzzer now exercise; without it, both would have degraded into frontend-only tests
+/// that stay green while this gate rots.
+///
+/// The gate is **complete, not whack-a-mole**, because `ptr_cast` was the only
+/// builtin whose result type ignored its operand:
 ///
 /// * `check_ptr_offset` returns `Some(ptr_ty)` — it *preserves* the operand's type.
 /// * `check_addr_of` derives `ptr<T>` from the addressed **place**.
 /// * `int_to_ptr` takes an `i64`; the only way to get a box's address into one is
 ///   `ptr_to_int`, refused above.
 ///
-/// It closes the **cross-function** route for free: a laundering helper
-/// (`fn launder p ptr_i64 -> ptr<i64>` whose body is `ptr_cast(p)`) has the `ptr_T`
+/// It closes the **cross-function** route for free: a model-preserving helper
+/// (`fn rebox p ptr_i64 -> ptr_i64` whose body is `ptr_cast(p)`) has the `ptr_T`
 /// operand *at its own `ptr_cast` site*, so it refuses there, skips, and the
-/// demotion fixpoint then skips every caller. Verified: that shape used to compile
-/// and exit 0 where the interpreters raise `L0406`.
+/// demotion fixpoint then skips every caller. (The model-*changing* helper this once
+/// closed — `fn launder p ptr_i64 -> ptr<i64>` — no longer type-checks at all.)
 ///
 /// A `ptr<T>` operand from `addr_of`/`int_to_ptr` is unaffected: it keeps its full
 /// existing lowering, including the buffer-walking `addr_of(buf[0])` + `ptr_offset`

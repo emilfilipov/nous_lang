@@ -1444,12 +1444,20 @@ and test-locked, extending the delivered `ptr_read`/`ptr_write`/`ptr_to_int`/
     rejected with `L0431`.
   - `ptr_cast(p: ptr<T>) -> ptr<U>` — reinterpret the pointee type with no value
     conversion and no address change. The target `U` comes from the caller's expected
-    annotation when it is a raw pointer (mirroring `int_to_ptr`), defaulting to
-    `ptr<i64>` when there is none. **Spelling choice:** the design sketch in §2.2
+    annotation when it is a **modern** raw pointer (mirroring `int_to_ptr`), defaulting
+    to `ptr<i64>` when there is none. **Spelling choice:** the design sketch in §2.2
     shows a turbofish `ptr_cast<byte>(p)`; the delivered raw-pointer builtins take no
     turbofish, so — as the minimal consistent form — the target element type is
     supplied by the `let bp ptr<byte> = ptr_cast(base)` context, exactly as
     `int_to_ptr` already resolves its pointee.
+    **The pointer model comes from the operand, not the annotation.** `ptr_cast`
+    retargets a pointee *within* a model; it never crosses the `ptr_T`-box/`ptr<T>`-address
+    divide that `L0303`/`L0313` enforce everywhere else. A `ptr_T` operand yields exactly
+    `ptr_T` (identity — a box is one opaque cell), and a legacy `ptr_U` annotation cannot
+    capture a `ptr<T>` address. This is what makes `native_object_rawptr.rs`'s
+    `is_legacy_box_pointer` *spelling* test sound as a whole-program property: a
+    `ptr_T`-typed expression really is always `alloc`-derived. The native
+    `refuse_legacy_box_pointer` gate stays as defense in depth.
 - **`unsafe` gating (both tiers).** All three are raw-pointer operations: using one
   outside an `unsafe` block is the existing unsafe-required diagnostic `L0330`,
   identical to `ptr_read`/`int_to_ptr`. They are available in the safe tier *and* the

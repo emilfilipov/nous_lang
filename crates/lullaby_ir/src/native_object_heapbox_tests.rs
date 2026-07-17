@@ -311,53 +311,58 @@ fn an_alloc_using_function_is_excluded_from_arena_routing() {
 
 // -- The `ptr_cast` laundering route -----------------------------------------
 
-/// `ptr_cast` LAUNDERS an `alloc` box past a spelling-keyed gate: `check_ptr_cast`
-/// derives its result type from the caller's ANNOTATION (defaulting to `ptr<i64>`),
-/// never from the operand, so `let q ptr<i64> = ptr_cast(p)` rewrites `ptr_i64` into
-/// the very spelling `refuse_legacy_box_pointer` keys on.
+/// `ptr_cast` over an `alloc` box must not be lowered — the backend's defense in
+/// depth behind the frontend's model-preservation rule.
 ///
-/// Left open, `ptr_offset(q, 1)` then strides 8 bytes past the one-cell payload into
-/// the NEXT block's `[size]` header — the word `__lullaby_alloc`'s free-list scan
-/// reads — so a write through it corrupts allocator metadata. All three shapes must
-/// skip. (Measured before the fix: the `ptr_offset` read compiled and exited 0 where
-/// the interpreters raise `L0406`; `ptr_to_int` gave a real address where the
-/// interpreters give the slot index `0`; the write compiled and executed.)
+/// **History, and why these shapes changed.** `check_ptr_cast` used to derive its
+/// result type from the caller's ANNOTATION (defaulting to `ptr<i64>`) and never
+/// from the operand, so `let q ptr<i64> = ptr_cast(p)` rewrote `ptr_i64` into the
+/// very spelling `refuse_legacy_box_pointer` keys on — laundering the box past the
+/// gate. Left open, `ptr_offset(q, 1)` then strode 8 bytes past the one-cell payload
+/// into the NEXT block's `[size]` header (the word `__lullaby_alloc`'s free-list scan
+/// reads), so a write through it corrupted allocator metadata. Measured then: the
+/// `ptr_offset` read compiled and exited 0 where the interpreters raise `L0406`;
+/// `ptr_to_int` gave a real address where the interpreters give the slot index `0`;
+/// the write compiled and executed.
+///
+/// `check_ptr_cast` now takes the result's pointer MODEL from the operand, so that
+/// annotation is `L0303` and the laundered source cannot be written at all (pinned in
+/// `lullaby_cli`'s `suite21.rs`). The gate below is therefore no longer the only
+/// thing standing between that source and corruption — but it is still live and still
+/// reachable, via the IDENTITY cast the frontend does allow: `let q = ptr_cast(p)`
+/// keeps the `ptr_i64` model, so the operand reaching the backend is still a box.
+/// This asserts the gate fires on exactly that.
 #[test]
-fn ptr_cast_cannot_launder_an_alloc_box() {
-    for (tag, tail) in [
-        ("read through a strided cast", "ptr_read(ptr_offset(q, 1))"),
-        ("identity through a cast", "ptr_to_int(q)"),
-        (
-            "write through a strided cast",
-            "ptr_write(ptr_offset(q, 1), 999999)\n        ptr_read(p)",
-        ),
-    ] {
+fn ptr_cast_over_an_alloc_box_is_not_lowered() {
+    for tail in ["ptr_read(q)", "ptr_to_int(q)"] {
         let source = format!(
             "fn main -> i64\n    unsafe\n        let p ptr_i64 = alloc(7)\n        \
-             let q ptr<i64> = ptr_cast(p)\n        {tail}\n"
+             let q = ptr_cast(p)\n        {tail}\n"
         );
         assert_main_skips_because(&source, "`ptr_cast` over the `ptr_i64` produced by `alloc`");
-        let _ = tag;
     }
 }
 
-/// The CROSS-FUNCTION laundering route: a helper takes a box and returns it cast to
-/// `ptr<i64>`, so the caller never mentions `ptr_i64` at all. The gate closes this
-/// for free — the helper's own `ptr_cast` site has the `ptr_T` operand, so it refuses
-/// there, the helper skips, and the demotion fixpoint skips every caller. (Before the
-/// fix this compiled and exited 0 where the interpreters raise `L0406`.)
+/// The CROSS-FUNCTION route. A helper that laundered the model outright
+/// (`fn launder p ptr_i64 -> ptr<i64>` returning `ptr_cast(p)`) is now rejected by
+/// the frontend — its body's `ptr_cast` yields `ptr_i64`, which is not the declared
+/// `ptr<i64>` (`L0301`), and passing a box to a `ptr<i64>` parameter is `L0313`. So
+/// this pins what remains expressible: a model-preserving helper
+/// (`-> ptr_i64`) whose own `ptr_cast` site carries the `ptr_T` operand. The gate
+/// refuses there, the helper skips, and the demotion fixpoint skips every caller —
+/// which is what closes the cross-function route in the backend for free.
 #[test]
-fn ptr_cast_cannot_launder_an_alloc_box_across_a_function() {
+fn ptr_cast_over_an_alloc_box_is_not_lowered_across_a_function() {
     let source = concat!(
-        "fn launder p ptr_i64 -> ptr<i64>\n",
+        "fn rebox p ptr_i64 -> ptr_i64\n",
         "    unsafe\n",
         "        ptr_cast(p)\n",
         "\n",
         "fn main -> i64\n",
         "    unsafe\n",
         "        let p ptr_i64 = alloc(7)\n",
-        "        let q ptr<i64> = launder(p)\n",
-        "        ptr_read(ptr_offset(q, 1))\n",
+        "        let q = rebox(p)\n",
+        "        ptr_read(q)\n",
     );
     match emit_native_program(&module_for(source)) {
         Err(error) => assert_eq!(error.code, "L0339", "a skip must carry L0339"),
