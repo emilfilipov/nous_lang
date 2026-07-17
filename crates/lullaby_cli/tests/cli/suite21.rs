@@ -28,11 +28,35 @@
 //!   builtin, and refusing the `addr_of`-derived shape were each designed and each
 //!   failed; only removing `ptr_to_int(box)` from the language closes it.
 //!
+//! # The fourth door: NESTING, where no gate is handed a `ptr_T` at all
+//!
+//! Each fix above made a gate correct about the model it *names*. None of them looked
+//! at the model nested *inside* what it names — and `addr_of` over a `ptr_i64` place
+//! yields `ptr<ptr_i64>`, whose OUTER spelling reads modern. So `ptr_cast` retargeted
+//! that pointee to `i64` and erased the box model with no `ptr_T` ever appearing as an
+//! operand: **every gate was bypassed rather than defeated**, which is exactly why
+//! three consecutive laundering fixes missed it. Measured live on `main` (65f76ea):
+//! `check` clean, native exiting on a real heap address where the interpreters printed
+//! `ptr(0)`, and a `ptr_write` escalation SEGFAULTING natively (`0xC0000005`) against
+//! `L0409` on all three interpreters.
+//!
+//! The rule is therefore depth-insensitive (`mentions_box_model`): a box model is
+//! opaque at ANY nesting depth and storage may be reinterpreted neither FROM nor INTO
+//! one. A fourth point-fix on the shape would have lost the same way.
+//!
+//! **This closes reinterpretation, NOT the types.** `ptr<ptr_i64>` remains legal and
+//! coherent — 7 on all four tiers, pinned by `run_addr_of_box.lby` — because
+//! `ptr_read` of a box-typed cell reproduces each tier's own faithful box rather than
+//! reinterpreting one. That fixture is what ruled out the alternative fix of refusing
+//! `addr_of` over a box place: it would have broken a measurably correct program.
+//!
 //! Each closure is pinned below with a negative control proving it did not over-reach
 //! (the freestanding MMIO idiom must still COMPILE), and `int_to_ptr`'s open route is
 //! pinned as an honesty test. **Nothing here should be read as claiming the native
 //! gate contains the model mismatch in general — it does not** (it is a prefix test on
-//! the outer type name); the gate test below pins the gate's own behaviour only.
+//! the outer type name, and is deliberately NOT widened: the nesting question is
+//! answered at the frontend, because natively a nested box is often perfectly
+//! coherent). The gate test below pins the gate's own behaviour only.
 
 use crate::*;
 
@@ -183,6 +207,234 @@ fn ptr_cast_of_an_alloc_box_is_an_identity_that_stays_a_box() {
         ),
         "lullaby_ptr_cast_box_identity",
         42,
+    );
+}
+
+/// THE NESTED ROUTE — `ptr_cast(addr_of(box))`, a live arbitrary read/write that
+/// passed `check` on every tier and that the three prior laundering fixes all missed.
+///
+/// `addr_of(a)` over a `ptr_i64` place yields `ptr<ptr_i64>`: the OUTER spelling reads
+/// *modern*, so `is_legacy_box_spelling` — a prefix test on the outer name — never
+/// fires, and `ptr_cast` retargeted the pointee to `i64`, erasing the box model. **No
+/// gate was ever handed a `ptr_T` to be correct about**, so every gate was BYPASSED
+/// rather than defeated. That is why a fourth point-fix would have lost the same way,
+/// and why the rule is now depth-insensitive (`mentions_box_model` in
+/// `semantics_raw_ptr.rs`).
+///
+/// Measured on `main` (65f76ea) before the fix, verbatim:
+///
+/// * `check` clean on every tier; native compiled and exited **1073758240** — a real
+///   heap address — while ast/ir/bytecode all printed `ptr(0)`, the slot index.
+/// * Escalated with `ptr_write(pa, 999999)`, native compiled and **SEGFAULTED**
+///   (`0xC0000005`) where all three interpreters raised `L0409`.
+///
+/// The refusal lands at the existing `L0303` wall: the cast is now an identity on
+/// anything mentioning a box, so `ptr<ptr_i64>` collides with the `ptr<i64>`
+/// annotation.
+#[test]
+fn ptr_cast_cannot_launder_a_box_through_its_own_address() {
+    assert_all_interpreters_reject(
+        concat!(
+            "fn main -> i64\n",
+            "    let a ptr_i64 = alloc(7)\n",
+            "    let n i64 = 0\n",
+            "    unsafe\n",
+            "        let pa ptr<i64> = ptr_cast(addr_of(a))\n",
+            "        n = ptr_read(pa)\n",
+            "    n\n",
+        ),
+        "lullaby_ptr_cast_addr_of_box",
+        "L0303",
+    );
+}
+
+/// The same route two levels down (`ptr<ptr<ptr_i64>>`), pinning that the rule is
+/// **depth-insensitive**. A depth-1 fix would close the shape above and leave this
+/// one open — which is the whole failure mode this class-closure exists to avoid.
+#[test]
+fn ptr_cast_cannot_launder_a_box_buried_two_levels_deep() {
+    assert_all_interpreters_reject(
+        concat!(
+            "fn main -> i64\n",
+            "    let a ptr_i64 = alloc(7)\n",
+            "    let n i64 = 0\n",
+            "    unsafe\n",
+            "        let p1 ptr<ptr_i64> = addr_of(a)\n",
+            "        let p2 ptr<ptr<ptr_i64>> = addr_of(p1)\n",
+            "        let p3 ptr<i64> = ptr_cast(p2)\n",
+            "        n = ptr_read(p3)\n",
+            "    n\n",
+        ),
+        "lullaby_ptr_cast_box_two_levels",
+        "L0303",
+    );
+}
+
+/// The CONVERSE direction, which needs no `alloc` anywhere in the program: a nested
+/// annotation FABRICATES a box out of ordinary array storage, which native then
+/// dereferences. The operand is a clean `ptr<i64>` — the lie lives entirely in the
+/// target type, one level down — so an outer-name test cannot see it either.
+///
+/// Measured ACCEPTED on `main` before the fix.
+#[test]
+fn ptr_cast_cannot_fabricate_a_box_from_ordinary_storage() {
+    assert_all_interpreters_reject(
+        concat!(
+            "fn main -> i64\n",
+            "    let buf array<i64> = [7, 0]\n",
+            "    let n i64 = 0\n",
+            "    unsafe\n",
+            "        let pb ptr<ptr_i64> = ptr_cast(addr_of(buf[0]))\n",
+            "        let fake ptr_i64 = ptr_read(pb)\n",
+            "        n = ptr_read(fake)\n",
+            "    n\n",
+        ),
+        "lullaby_ptr_cast_fabricate_box",
+        "L0303",
+    );
+}
+
+/// `arena_alloc`'s nested door. The outer-name filter added when `arena_alloc` was
+/// closed stopped `let fake ptr_i64 = arena_alloc(pool, 1)` but not the same lie one
+/// level down — forging a box out of an arena cell with no `alloc` in the program.
+/// Pins that `is_annotatable_address_type` rejects a box model at any depth.
+#[test]
+fn arena_alloc_cannot_bury_a_box_in_its_pointee() {
+    assert_all_interpreters_reject(
+        concat!(
+            "fn main -> i64\n",
+            "    let buf array<i64> = [7, 0, 0, 0]\n",
+            "    region pool in buf\n",
+            "    let n i64 = 0\n",
+            "    unsafe\n",
+            "        let pb ptr<ptr_i64> = arena_alloc(pool, 1)\n",
+            "        let fake ptr_i64 = ptr_read(pb)\n",
+            "        n = ptr_read(fake)\n",
+            "    n\n",
+        ),
+        "lullaby_arena_alloc_nested_box",
+        "L0303",
+    );
+}
+
+/// OVER-REFUSAL CONTROL — the counterweight to every test above, and the program that
+/// decided how this hole had to be fixed.
+///
+/// Two candidate fixes were on the table: refuse `addr_of` over a `ptr_T` place
+/// outright, or refuse only the model-crossing REINTERPRETATION. This program
+/// distinguishes them — it is measurably correct (**7 on all four tiers**, native
+/// included), so the first candidate would have broken a coherent program to close an
+/// incoherent one. It was rejected on that evidence, not on taste.
+///
+/// `ptr<ptr_i64>` is coherent because `ptr_read` of a box-typed cell REPRODUCES each
+/// tier's own faithful box rather than REINTERPRETING one. So the rule refuses
+/// reinterpretation across the model boundary while leaving the types usable.
+///
+/// Also pinned as the four-tier fixture `tests/fixtures/valid/run_addr_of_box.lby`
+/// (see `runs_addr_of_box_fixture_on_all_backends`). If a later tightening makes
+/// this fail, that change over-refused.
+#[test]
+fn a_boxs_address_stays_readable_on_every_tier() {
+    assert_all_interpreters_yield(
+        concat!(
+            "fn main -> i64\n",
+            "    let a ptr_i64 = alloc(7)\n",
+            "    let n i64 = 0\n",
+            "    unsafe\n",
+            "        let pa ptr<ptr_i64> = addr_of(a)\n",
+            "        let back ptr_i64 = ptr_read(pa)\n",
+            "        n = ptr_read(back)\n",
+            "    n\n",
+        ),
+        "lullaby_addr_of_box_coherent",
+        7,
+    );
+}
+
+/// OVER-REFUSAL CONTROL — nesting a *modern* pointer (`ptr<ptr<i64>>`) is ordinary
+/// double indirection with no box anywhere, and must stay untouched. Pins that
+/// `mentions_box_model` keys on the box MODEL and not on nesting itself.
+#[test]
+fn nested_modern_pointers_still_retarget_freely() {
+    assert_all_interpreters_yield(
+        concat!(
+            "fn main -> i64\n",
+            "    let buf array<i64> = [5, 6]\n",
+            "    let n i64 = 0\n",
+            "    unsafe\n",
+            "        let p ptr<i64> = addr_of(buf[0])\n",
+            "        let pp ptr<ptr<i64>> = addr_of(p)\n",
+            "        let q ptr<i64> = ptr_read(pp)\n",
+            "        n = ptr_read(q)\n",
+            "    n\n",
+        ),
+        "lullaby_nested_modern_ptr",
+        5,
+    );
+}
+
+/// The over-refusal control as a committed FOUR-tier fixture. The interpreter half is
+/// `a_boxs_address_stays_readable_on_every_tier`; the half that matters here is
+/// **native**, because the hole was a native/interpreter DIVERGENCE and a control that
+/// only ran the interpreters could not see native over-refusing or diverging.
+///
+/// `compiled main` is asserted, not merely a clean exit: an `L0339` skip would make
+/// the run a silent re-test of the interpreters, and the fixture would go on claiming
+/// four-tier agreement while proving three. The fixture carries no `dealloc` for that
+/// exact reason — `dealloc` is not lowered natively, so it would force the skip.
+#[test]
+fn runs_addr_of_box_fixture_on_all_backends() {
+    let fixture = workspace_root().join("tests/fixtures/valid/run_addr_of_box.lby");
+    for backend in ["ast", "ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                fixture.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        assert!(output.status.success(), "{backend}: {output:?}");
+        assert_eq!(stdout(&output).trim(), "7", "{backend} result");
+    }
+
+    let dir = ScratchDir::new("addr_of_box");
+    let out = dir.join("run_addr_of_box.exe");
+    let emit = lullaby()
+        .args([
+            "native",
+            "--verbose",
+            "-o",
+            out.to_str().expect("out path"),
+            fixture.to_str().expect("fixture path"),
+        ])
+        .output()
+        .expect("run native");
+    let listing = format!("{}{}", stdout(&emit), stderr(&emit));
+    assert!(
+        emit.status.success(),
+        "a box's address is coherent natively and must COMPILE; refusing it here would \
+         be the over-refusal this fixture exists to catch:\n{listing}"
+    );
+    assert!(
+        listing.contains("compiled main"),
+        "`main` must be natively LOWERED, not `L0339`-skipped — a skip would silently \
+         reduce this to a three-tier test:\n{listing}"
+    );
+
+    if rust_lld_path().is_none() || !kernel32_available() {
+        eprintln!(
+            "rust-lld/kernel32 unavailable; skipping run of run_addr_of_box.exe \
+             (native compile + `compiled main` assertions DID run)"
+        );
+        return;
+    }
+    let exe = std::process::Command::new(&out).output().expect("run exe");
+    assert_eq!(
+        exe.status.code(),
+        Some(7),
+        "native must agree with all three interpreters on 7: {exe:?}"
     );
 }
 

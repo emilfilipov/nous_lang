@@ -1,0 +1,41 @@
+# `ptr<ptr_i64>` — a box's ADDRESS — is coherent on all four tiers, and this
+# fixture is the over-refusal control that keeps it that way.
+#
+# `addr_of(a)` over a `ptr_i64` place yields `ptr<ptr_i64>`: the outer type is a
+# modern address (the stack slot holding the box), the pointee is a legacy box.
+# Reading it back reproduces each tier's OWN faithful box — a heap-slot index on
+# the interpreters, a machine address natively — because `ptr_read` of a
+# box-typed cell REPRODUCES a box rather than REINTERPRETING one. Nothing here
+# crosses the model boundary, so every tier agrees on 7.
+#
+# This is the exact program that decides how the `ptr_cast(addr_of(box))` hole
+# had to be fixed. Two candidate fixes were on the table:
+#
+#   * refuse `addr_of` over a `ptr_T` place outright, or
+#   * refuse only the model-crossing REINTERPRETATION.
+#
+# The first would reject THIS file, which is measurably correct on all four
+# tiers — so it was rejected as over-refusal. The rule shipped instead is
+# `mentions_box_model` in `semantics_raw_ptr.rs`: a box model is opaque at any
+# nesting depth and may be reinterpreted neither FROM nor INTO, while the types
+# themselves stay usable. This fixture pins the "stay usable" half; suite21's
+# nested-launder tests pin the "refused" half.
+#
+# If a later change makes this file fail, the fix over-refused: it broke a
+# coherent program to close an incoherent one. Rewrite the rule, not this file.
+#
+# NO `dealloc` HERE, deliberately: `dealloc` is not lowered natively (a native
+# free cannot reproduce the interpreters' L0406 use-after-free detection), so a
+# function using it is L0339-skipped and runs on the interpreters only. Since the
+# whole point of this fixture is that NATIVE agrees with the interpreters, adding
+# `dealloc` would silently reduce it to a three-tier test that no longer proves
+# the thing it exists to prove. The single box is reclaimed at process exit.
+
+fn main -> i64
+    let a ptr_i64 = alloc(7)
+    let value i64 = 0
+    unsafe
+        let pa ptr<ptr_i64> = addr_of(a)
+        let back ptr_i64 = ptr_read(pa)
+        value = ptr_read(back)
+    value

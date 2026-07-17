@@ -1450,14 +1450,38 @@ and test-locked, extending the delivered `ptr_read`/`ptr_write`/`ptr_to_int`/
     turbofish, so — as the minimal consistent form — the target element type is
     supplied by the `let bp ptr<byte> = ptr_cast(base)` context, exactly as
     `int_to_ptr` already resolves its pointee.
-    **The pointer model comes from the operand, not the annotation.** `ptr_cast`
-    retargets a pointee *within* a model; it never crosses the `ptr_T`-box/`ptr<T>`-address
-    divide that `L0303`/`L0313` enforce everywhere else. A `ptr_T` operand yields exactly
-    `ptr_T` (identity — a box is one opaque cell), and a legacy `ptr_U` annotation cannot
-    capture a `ptr<T>` address. This is what makes `native_object_rawptr.rs`'s
-    `is_legacy_box_pointer` *spelling* test sound as a whole-program property: a
-    `ptr_T`-typed expression really is always `alloc`-derived. The native
-    `refuse_legacy_box_pointer` gate stays as defense in depth.
+    **The pointer model comes from the operand, not the annotation, at every nesting
+    depth.** `ptr_cast` retargets a pointee *within* a model; it never crosses the
+    `ptr_T`-box/`ptr<T>`-address divide that `L0303`/`L0313` enforce everywhere else. An
+    operand mentioning a box **anywhere** (`ptr_i64`, `ptr<ptr_i64>`,
+    `ptr<ptr<ptr_i64>>`, …) yields itself (identity — a box is one opaque cell, so there
+    is nothing to retarget at any depth), and an annotation mentioning a box cannot
+    capture a box-free `ptr<T>` address. The native `refuse_legacy_box_pointer` gate
+    stays as defense in depth.
+
+    **The depth clause is not decoration — an outer-name-only reading was a live
+    arbitrary read/write.** `addr_of` over a `ptr_i64` place yields `ptr<ptr_i64>`, whose
+    OUTER spelling reads modern, so `let pa ptr<i64> = ptr_cast(addr_of(a))` erased the
+    box model without any `ptr_T` ever being an operand — **every gate was bypassed
+    rather than defeated**, which is why three consecutive laundering fixes missed it.
+    Measured on `main` at 65f76ea: `check` clean on every tier, native exiting on a real
+    heap address against `ptr(0)` on the interpreters, and a `ptr_write` escalation
+    SEGFAULTING natively (`0xC0000005`) against `L0409` on all three interpreters.
+
+    **This does NOT make the backend's spelling test sound whole-program** — an earlier
+    revision of this paragraph claimed exactly that, and the claim was false when
+    written. `int_to_ptr` remains a deliberate, irreducible exception (an `i64` carries
+    no provenance), so a `ptr_T`-typed expression is **not** always `alloc`-derived. What
+    holds is narrower and is the only thing that should be cited: **no `ptr_cast` or
+    `arena_alloc` result can cross the box/address model boundary at any nesting depth**,
+    because neither derives a model from an annotation.
+
+    **What is deliberately still allowed:** `ptr<ptr_i64>` is a legal, coherent type —
+    `ptr_read` of it reproduces each tier's own faithful box rather than reinterpreting
+    one. `tests/fixtures/valid/run_addr_of_box.lby` pins it at **7 on all four tiers**,
+    and it is what ruled out the alternative fix of refusing `addr_of` over a box place:
+    that would have broken a measurably correct program. Only *reinterpretation* across
+    the model boundary is refused, never the types themselves.
 - **`unsafe` gating (both tiers).** All three are raw-pointer operations: using one
   outside an `unsafe` block is the existing unsafe-required diagnostic `L0330`,
   identical to `ptr_read`/`int_to_ptr`. They are available in the safe tier *and* the
