@@ -859,7 +859,7 @@ pub(crate) struct Local {
 /// by its Lullaby name; an ineligible one is recorded in `skipped` with a reason.
 /// If no function is eligible, this returns `Err(WasmError)` with code `L0338`.
 ///
-/// Runs the inherent-method pre-pass ([`expand_method_instances`]) exactly ONCE, up
+/// Runs the inherent-method pre-pass (`expand_method_instances`) exactly ONCE, up
 /// front: it rewrites each resolvable `recv.method(args)` UFCS call into a direct call
 /// to a synthesized, monomorphized method-instance function appended to the module,
 /// mirroring the native backend. The expansion is deliberately kept out of the

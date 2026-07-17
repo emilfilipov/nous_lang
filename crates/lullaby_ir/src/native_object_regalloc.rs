@@ -112,7 +112,7 @@ impl PReg {
     /// `add <self>, <src>` / `sub <self>, <src>` (both promoted registers), for
     /// `acc = acc + i` where the right operand is itself a promoted-register local
     /// — skips the `mov rax, <src>` round-trip through the scratch register.
-    /// `add/sub r/m64, r64` is REX.W 01/29 /r; ModRM = 11 <src> <self>.
+    /// `add/sub r/m64, r64` is REX.W 01/29 /r; ModRM = `11 <src> <self>`.
     pub(crate) fn add_reg(self, code: &mut Vec<u8>, src: PReg) {
         code.extend_from_slice(&[0x48, 0x01, modrm_reg_reg(src, self)]);
     }

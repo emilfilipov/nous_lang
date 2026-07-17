@@ -14,7 +14,7 @@
 //!   `textDocument/publishDiagnostics`. When the document uses `import` or is
 //!   part of a `lullaby.json` project, the shared module loader runs so
 //!   diagnostics reflect the merged program (imported symbols resolve, and the
-//!   loader's cross-module diagnostics surface) — see [`project`].
+//!   loader's cross-module diagnostics surface) — see the `project` module.
 //! - Formatting: `textDocument/formatting` returns a single full-document
 //!   `TextEdit` produced by the canonical formatter, or no edits when the
 //!   document does not parse.

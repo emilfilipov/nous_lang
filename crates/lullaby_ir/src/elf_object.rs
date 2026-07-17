@@ -1,13 +1,13 @@
 //! ELF64 (System V AMD64) relocatable-object writer.
 //!
-//! Serializes an [`ObjectModel`](crate::object_model::ObjectModel) into a
+//! Serializes an [`ObjectModel`] into a
 //! `ET_REL` ELF64 object: an `Elf64_Ehdr`, a section header table
 //! (`.text`/`.rodata`/`.bss`, the DWARF `.debug_*` sections when `--debug` was
 //! requested, one `.rela.<section>` per relocated section, then
 //! `.symtab`/`.strtab`/`.shstrtab`), a symbol table, and `Elf64_Rela`
 //! relocations. The `e_machine` field and
 //! the relocation types are selected from the model's
-//! [`ObjectMachine`](crate::object_model::ObjectMachine): x86-64 objects use
+//! [`ObjectMachine`]: x86-64 objects use
 //! `R_X86_64_PLT32` for `call` sites and `R_X86_64_PC32` for RIP-relative data
 //! references; AArch64 objects use `R_AARCH64_CALL26` for `bl` call sites. The
 //! shared machine code is emitted by the native backend; this module only builds

@@ -9,11 +9,11 @@ use crate::{
 pub(crate) struct ExprParser<'a> {
     tokens: &'a [Token],
     cursor: usize,
-    /// Next closure `id` to assign, seeded from the owning [`Parser`] so ids are
+    /// Next closure `id` to assign, seeded from the owning [`crate::Parser`] so ids are
     /// unique and monotonic across every expression in the program.
     pub(crate) closure_counter: usize,
     /// `>` closers still owed from a split `>>` token, mirroring the field on the
-    /// declaration [`Parser`] so nested generics in closure parameter types
+    /// declaration [`crate::Parser`] so nested generics in closure parameter types
     /// (`fn xs list<array<i64>> -> ...`) close correctly.
     pending_generic_close: usize,
 }

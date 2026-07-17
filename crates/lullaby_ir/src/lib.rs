@@ -310,10 +310,10 @@ pub enum IrExprKind {
     Char(char),
     Array(Vec<IrExpr>),
     Variable(String),
-    /// A slot-resolved local read produced by [`resolve_slots`] at interpretation
+    /// A slot-resolved local read produced by `resolve_module_slots` at interpretation
     /// time: `Local(packed)` where `packed = ((depth << 16) | slot) + 1` names the
     /// binding by its `(scopes-from-innermost depth, index-within-scope slot)`
-    /// instead of by name, so [`Env::get_slot`] indexes it directly with no
+    /// instead of by name, so `Env::get_slot` indexes it directly with no
     /// string scan. It only ever appears in the interpreter's resolved copy of a
     /// function body — never in lowered/optimized/serialized IR, and never in the
     /// WASM or native paths — because resolution runs after all of those and only

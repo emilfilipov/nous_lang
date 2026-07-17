@@ -1,6 +1,6 @@
 //! WASM inherent-method dispatch: expand receiver-dispatched method calls into
 //! ordinary direct calls to monomorphized method-instance functions — the WASM
-//! analogue of [`crate::native_object_method::expand_method_instances`], operating
+//! analogue of [`crate::native_object::expand_method_instances`], operating
 //! on the WASM backend's `IrModule`/`IrFunction`/`IrStmt`/`IrExpr` instead of the
 //! native backend's `BytecodeModule`.
 //!
@@ -9,7 +9,7 @@
 //! A source method call `recv.method(args)` is desugared **at parse time** (UFCS)
 //! into an ordinary [`IrExprKind::Call`] `{ name: "method", args: [recv, args...] }`
 //! — there is no distinct method-call IR node, and the receiver is simply `args[0]`.
-//! The method bodies live in [`IrModule::impls`] (each an [`IrImplMethod`] keyed by
+//! The method bodies live in [`IrModule::impls`] (each an [`crate::IrImplMethod`] keyed by
 //! `(type_name, method_name)`), **not** in [`IrModule::functions`], and the set of
 //! names that are receiver-dispatched (trait methods plus inherent `impl Type<T>`
 //! methods) is [`IrModule::trait_methods`]. The interpreters dispatch such a call by
@@ -468,7 +468,7 @@ impl<'a> MethodExpander<'a> {
 /// `>`, `,`, spaces) are sanitized to `_` so the symbol is a plain WASM-internal name,
 /// while distinct instantiations stay distinct (the trailing marker from `>` keeps
 /// `Box<i64>` apart from a literal `Box_i64`). Kept identical to the native backend's
-/// [`crate::native_object_method`] scheme so the two backends mangle a given instance
+/// `native_object_method.rs` scheme so the two backends mangle a given instance
 /// to the same symbol.
 fn mangle_method(receiver_type: &str, method: &str) -> String {
     let sanitized: String = receiver_type

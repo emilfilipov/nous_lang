@@ -772,7 +772,7 @@ fn type_is_directly_heap(ty: &TypeRef) -> bool {
 }
 
 /// Whether a type carries a heap value the arena must account for: a directly-heap
-/// type (string/list/map/array<string>) OR a `struct`/`enum` that transitively
+/// type (string/list/map/`array<string>`) OR a `struct`/`enum` that transitively
 /// contains a heap field/payload (its name is in `heap_aggregates`). A struct with
 /// a `string` field, or an `option<string>`/user enum with a heap payload, is a
 /// heap-carrying value even though its own type name is neither `string` nor a

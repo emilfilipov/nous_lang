@@ -246,7 +246,7 @@ impl Env {
     }
 
     /// Borrow a slot-resolved binding directly, with no name scan. `packed` is a
-    /// `(depth, slot)` pair produced by [`resolve_slots`]: `depth` counts scopes up
+    /// `(depth, slot)` pair produced by [`crate::resolve_module_slots`]: `depth` counts scopes up
     /// from the innermost and `slot` indexes within that scope. The lookup is
     /// **validated** — it confirms the binding at that position still carries
     /// `name` before returning it, and returns `None` (so the caller falls back to

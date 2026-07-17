@@ -56,7 +56,7 @@ pub struct NativeProgram {
     /// bytes itself, so the CLI can write a runnable executable without invoking
     /// the external linker (`rust-lld`). `None` for non-freestanding programs,
     /// library objects, and the ELF/Mach-O/AArch64 targets, which keep the
-    /// object-file + linker path. See [`pe_image::write_pe_executable`].
+    /// object-file + linker path. See `pe_image::write_pe_executable`.
     pub pe_image: Option<Vec<u8>>,
 }
 
