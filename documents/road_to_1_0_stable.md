@@ -80,8 +80,25 @@ User-defined generic types (`struct Stack<T>`, `enum Opt<T>`) do not parse today
   **inline, no-heap, by-value native storage** for fixed-extent arrays is the
   queued follow-up increment (a representation change, not a new miscompile
   surface). See `semantics_array_extent.rs`, `lullaby_type_system.md`, `suite23`.
-- **Next (remaining A2):** native inline storage for fixed-extent arrays; then WASM.
-  Full const-fn evaluation stays post-1.0.
+- **Native inline fixed-array struct fields: SHIPPED (increment 2).** A struct field
+  typed `array<T, N>` now gets a distinct **inline, by-value** native representation
+  (closing the pre-existing "array in a struct skips natively" gap; a fixed `N` is
+  what makes a static inline layout possible). Mechanism (b): the extent pass still
+  erases globally, but captures each extent-bearing struct field into a
+  `FieldExtents` side-table (`SemanticInfo::field_extents` → `IrStructDef::
+  field_extents`, serde-defaulted so `.lbc`/COFF snapshots stay byte-identical) that
+  **only** native's `resolve_struct_fields` reads — a field is the one case needing
+  it (no initializer to infer a length from). The existing aggregate ABI (word-copy,
+  hidden-result-pointer return) then carries it. Correct-or-refuse: scalar-only
+  element fields lower inline; dynamic `array<T>` / `array<string, N>` /
+  `for x in f.field` / whole-field binding skip cleanly (`L0339`). Reviewed PASS
+  adversarially (by-value copy isolation, param mutation, large hidden-pointer
+  return, narrow off-by-one, nesting — all native == interpreters; the
+  `array<string, N>` skip verified not to pointer-share). Interpreters/WASM
+  byte-for-byte unchanged. See `native_backend_contract.md`, `suite24`.
+- **Next (remaining A2):** WASM inline fixed-array fields (inherit the `FieldExtents`
+  mechanism); then native whole-field iteration/binding (`for x in f.field`, `let c =
+  f.field`) — the explicit follow-up boundary. Full const-fn evaluation stays post-1.0.
 
 ### A3. FFI completeness — **DECIDED: callbacks in 1.0**
 Base FFI ships; deferred today (L0424): callbacks (fn pointers), struct-by-value,

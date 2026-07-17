@@ -265,6 +265,20 @@ pub(crate) fn lower_native_expr(
                 emit_mov_rax_imm(code, *len as i64);
                 return Ok(());
             }
+            // `len(<path>)` over an inline fixed array reached through a struct
+            // field (or nested field/index) folds to the array's compile-time extent,
+            // exactly like `len` over a whole-array local — the survival-channel
+            // extent makes `f.pixels`'s length statically known. A fat-array or
+            // non-array path yields `None` here and falls through to the runtime
+            // paths below.
+            if name == "len"
+                && args.len() == 1
+                && !matches!(&args[0].kind, BytecodeExprKind::Variable(_))
+                && let Some(len) = resolve_path_array_len(ctx, &args[0])
+            {
+                emit_mov_rax_imm(code, len as i64);
+                return Ok(());
+            }
             // `len(a)` over a fat-pointer array parameter reads the descriptor's
             // runtime length word — descriptor word 1, which in the ASCENDING
             // layout is 8 bytes above word 0, i.e. at `[rbp - (ptr_slot - 8)]`.

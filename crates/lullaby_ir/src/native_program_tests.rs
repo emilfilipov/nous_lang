@@ -1959,6 +1959,7 @@ fn native_type_words_flatten_nested_aggregates() {
                 ("a".to_string(), TypeRef::new("i64")),
                 ("b".to_string(), TypeRef::new("i64")),
             ],
+            field_extents: vec![],
         },
         IrStructDef {
             name: "Line".to_string(),
@@ -1967,6 +1968,7 @@ fn native_type_words_flatten_nested_aggregates() {
                 ("start".to_string(), TypeRef::new("Pair")),
                 ("end".to_string(), TypeRef::new("Pair")),
             ],
+            field_extents: vec![],
         },
     ];
     let line = resolve_native_type(&TypeRef::new("Line"), &structs, &[]).expect("resolve Line");

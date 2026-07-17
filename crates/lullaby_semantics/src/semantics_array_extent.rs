@@ -42,24 +42,77 @@ use lullaby_parser::{
 
 use super::SemanticDiagnostic;
 
+/// The const-sized-array survival record for the native backend: per struct name,
+/// the list of `(field, un-erased `array<T, N>` type)` pairs for every struct field
+/// declared with an extent. This is the ONLY place a struct field's extent survives
+/// erasure (a field has no initializer for the native backend to infer a length
+/// from). Captured after resolution but before erasure, so each recorded type
+/// carries its literal extent(s) at every nesting depth.
+pub(crate) type FieldExtents = HashMap<String, Vec<(String, TypeRef)>>;
+
 /// Resolve, validate, check, erase, and expand every const-sized array in the
 /// program. `int_consts` maps each integer-valued named constant to its folded
 /// value, used to resolve a named extent `array<T, SIZE>`. Mutates `program`
 /// in place so that after this pass no extent and no fill literal remains, and
-/// returns any extent diagnostics.
+/// returns any extent diagnostics together with the [`FieldExtents`] survival
+/// record (the un-erased struct-field array types the native backend lays out
+/// inline).
 pub(crate) fn resolve_check_and_erase(
     program: &mut Program,
     int_consts: &HashMap<String, i64>,
-) -> Vec<SemanticDiagnostic> {
+) -> (Vec<SemanticDiagnostic>, FieldExtents) {
     let mut diagnostics = Vec::new();
     // 1. Resolve named extents to literals and validate them, in place.
     walk_program_types(program, Mode::Resolve(int_consts), &mut diagnostics);
     // 2. Check construction lengths against the now-resolved literal extents,
     //    and expand fill literals to element lists.
     check_and_expand_program(program, &mut diagnostics);
-    // 3. Erase every remaining extent so downstream stages see plain `array<T>`.
+    // 3. Capture the un-erased struct-field array types BEFORE erasure — the only
+    //    channel through which a fixed-extent struct field reaches the native
+    //    backend (see `IrStructDef::field_extents`).
+    let field_extents = capture_field_extents(program);
+    // 4. Erase every remaining extent so downstream stages see plain `array<T>`.
     walk_program_types(program, Mode::Erase, &mut diagnostics);
-    diagnostics
+    (diagnostics, field_extents)
+}
+
+/// Record, per struct, the un-erased (extent-carrying) type of every field that
+/// bears an extent at any nesting depth. Called between resolution and erasure, so
+/// a recorded type still spells its literal extents (`array<u32, 1024>`,
+/// `array<array<i32, 4>, 4>`). A struct with no extent-bearing field contributes no
+/// entry, so the map is empty for a program that uses no fixed-extent struct fields.
+fn capture_field_extents(program: &Program) -> FieldExtents {
+    let mut extents = FieldExtents::new();
+    for decl in &program.structs {
+        let recorded: Vec<(String, TypeRef)> = decl
+            .fields
+            .iter()
+            .filter(|field| type_has_extent(&field.ty))
+            .map(|field| (field.name.clone(), field.ty.clone()))
+            .collect();
+        if !recorded.is_empty() {
+            extents.insert(decl.name.clone(), recorded);
+        }
+    }
+    extents
+}
+
+/// Whether a type spelling carries an `array<T, N>` extent at any nesting depth —
+/// as a top-level fixed array, or nested inside another generic's type arguments or
+/// a function type. Used to select which struct fields the survival record captures.
+fn type_has_extent(ty: &TypeRef) -> bool {
+    if let Some((params, ret)) = ty.function_signature() {
+        return params.iter().any(type_has_extent) || type_has_extent(&ret);
+    }
+    match split_head_args(&ty.name) {
+        Some((head, args)) => {
+            if head == "array" && args.len() == 2 {
+                return true;
+            }
+            args.iter().any(type_has_extent)
+        }
+        None => false,
+    }
 }
 
 /// Whether the type walk is resolving/validating extents (with the constant

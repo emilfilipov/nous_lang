@@ -466,6 +466,75 @@ fn gen_array_f64_program(seed: u64) -> String {
     )
 }
 
+/// Generates one program that exercises **inline, by-value fixed-extent arrays as
+/// struct fields** (road_to_1_0_stable A2, increment 2): a `struct` with a scalar
+/// field, a fixed `array<i64, N>` FIELD, and a trailing scalar field is constructed
+/// (via an element list or a `[v; k]` fill), copied by value (`let g = f`), has a
+/// random in-bounds copy element mutated, is passed BY VALUE into a helper that
+/// mutates its own parameter's fields, and is finally read element-by-element with a
+/// folded `len`.
+///
+/// This is the differential net for the extent-survival channel and the inline
+/// aggregate layout. Every access is in bounds (indices drawn from `0..N`), so the
+/// program is divergence-free; the by-value copy and by-value parameter make the
+/// caller's original independent of every mutation, so any aliasing/partial-copy/
+/// wrong-stride miscompile surfaces as a native/interpreter exit-code divergence.
+/// The interpreters are the ground truth (all three must already agree); the shape
+/// is chosen to always LOWER natively (scalar `i64` element, in-bounds indices,
+/// direct field ops only — no `for x in field` or whole-field-array binding), so
+/// `fuzz_native_exit` produces a real exe for every program rather than skipping.
+fn gen_struct_array_field_program(seed: u64) -> String {
+    let mut rng = Rng(seed | 1);
+    let len = rng.range(2, 6) as usize;
+    // Field sum helper: `<recv>.xs[0] + <recv>.xs[1] + ...` over all `len` elements.
+    let xs_sum = |recv: &str| -> String {
+        (0..len)
+            .map(|i| format!("{recv}.xs[{i}]"))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+
+    let a0 = rng.range(-30, 30);
+    let b0 = rng.range(-30, 30);
+    // Construction: an explicit element list, or a `[v; len]` fill (both lower).
+    let construct = if rng.chance(2) {
+        let elems: Vec<String> = (0..len).map(|_| rng.range(-30, 30).to_string()).collect();
+        format!("[{}]", elems.join(", "))
+    } else {
+        let v = rng.range(-30, 30);
+        format!("[{v}; {len}]")
+    };
+
+    // The copy's mutation (a random in-bounds element and the scalar `a`).
+    let gj = rng.below(len as u64) as usize;
+    let gv = rng.range(-30, 30);
+    // The helper's parameter mutations (its own copy — must not touch the caller).
+    let mj = rng.below(len as u64) as usize;
+    let mv = rng.range(-30, 30);
+    let da = rng.range(-30, 30);
+    let bias = rng.range(-100, 100);
+
+    format!(
+        "struct S\n\
+         \x20   a i64\n\
+         \x20   xs array<i64, {len}>\n\
+         \x20   b i64\n\n\
+         fn touch s S -> i64\n\
+         \x20   s.xs[{mj}] = {mv}\n\
+         \x20   s.a = s.a + {da}\n\
+         \x20   {sum_s} + s.a + s.b\n\n\
+         fn main -> i64\n\
+         \x20   let f = S(a: {a0}, xs: {construct}, b: {b0})\n\
+         \x20   let g = f\n\
+         \x20   g.xs[{gj}] = {gv}\n\
+         \x20   let t i64 = touch(f)\n\
+         \x20   t + {sum_f} + f.a + f.b + {sum_g} + g.a + g.b + len(f.xs) + {bias}\n",
+        sum_s = xs_sum("s"),
+        sum_f = xs_sum("f"),
+        sum_g = xs_sum("g"),
+    )
+}
+
 /// Generates one program that exercises **RC drop insertion on loop EARLY-EXIT
 /// edges** (memory-model stage 2): a loop allocates a fresh, uniquely-owned `string`
 /// each iteration, borrows it via `len`, and may `break`/`continue` before reaching
@@ -1157,6 +1226,91 @@ fn fuzz_array_native_matches_interpreter_when_linkable() {
              interpreter={expected}, native exit={exit}"
         );
     }
+}
+
+#[test]
+fn fuzz_struct_array_field_interpreters_agree() {
+    // Cross-check the three engines on struct-with-fixed-array-field programs
+    // (construct, by-value copy + mutation, by-value parameter mutation, field
+    // reads, `len`). Always runs (no toolchain needed); a divergence prints the
+    // reproducing program.
+    const PROGRAMS: u64 = 2000;
+    let base_seed = 0x51F3_9C2A_7D48_6E11u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_struct_array_field_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "struct-array-field backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "struct-array-field generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_struct_array_field_native_matches_interpreter_when_linkable() {
+    // Compile each struct-with-fixed-array-field program to a real `.exe` and check
+    // its exit code against the interpreter result — the high-value oracle for the
+    // inline aggregate layout and the extent-survival channel. Gated on the native
+    // toolchain; skips cleanly when absent. Every generated program is chosen to
+    // LOWER inline (a scalar-element fixed-array field, in-bounds indices, direct
+    // field ops), so `fuzz_native_exit` produces a real exe and the shape can never
+    // silently demote here — a regression that un-compiled it would fail loudly.
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native struct-array-field fuzz");
+        return;
+    }
+    ensure_msvc_env();
+
+    const PROGRAMS: u64 = 120;
+    let base_seed = 0xAF21_6BD0_35C7_9E4Du64;
+    let dir = ScratchDir::new("struct_array_field");
+
+    // Counts what ACTUALLY executed, so the batch cannot silently do nothing and
+    // still pass green (asserted after the loop).
+    let mut ran = 0u64;
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_struct_array_field_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on native-struct-array-field-fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => panic!(
+                "struct-array-field generator produced {other:?} on seed {seed:#x}:\n{source}"
+            ),
+        };
+
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_saf_{i}")) else {
+            break;
+        };
+        ran += 1;
+        assert_eq!(
+            exit, expected as i32,
+            "NATIVE MISCOMPILE (struct array field) on #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
+    }
+    // ASSERT, don't just report. Every program this generator emits is direct-PE
+    // eligible (a `main`, no C runtime), so its exe is written in-house with no
+    // external linker — `fuzz_native_exit` cannot take its no-toolchain escape here,
+    // and all `PROGRAMS` must have run. An empty batch is a failure, not a pass.
+    assert!(
+        ran > 0,
+        "the native struct-array-field fuzz executed NO programs on a Windows host — a \
+         green result here would prove nothing about the inline aggregate layout"
+    );
+    eprintln!("struct-array-field native fuzz: ran {ran}/{PROGRAMS} real exes");
 }
 
 #[test]

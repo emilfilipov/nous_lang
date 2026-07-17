@@ -320,6 +320,42 @@ pub(crate) fn resolve_native_type(
         _ if heap_string_array_element(ty).is_some() => Ok(NativeType::List {
             elem: Box::new(NativeType::String),
         }),
+        // A **const-sized array** `array<T, N>` whose extent survived erasure (only
+        // ever a struct field's un-erased type — see `IrStructDef::field_extents`
+        // and `resolve_struct_fields`). It lays out INLINE and by value as a fixed
+        // [`NativeType::Array`] of `N` `T`-elements, exactly the representation a
+        // known extent unlocks. The element is resolved recursively, so a nested
+        // `array<array<i32, 4>, 4>` and a scalar-struct element both lower; the
+        // element must be an entirely stack-inline (scalar-only) layout — a `string`
+        // or other heap-word element (`array<string, N>`) is refused here so its
+        // struct skips cleanly rather than aliasing a shared heap pointer through a
+        // by-value struct copy.
+        name if name.starts_with("array<") && ty.array_extent().is_some() => {
+            let extent =
+                ty.array_extent().filter(|n| *n > 0).ok_or_else(|| {
+                    format!("const-sized array `{name}` has a non-positive extent")
+                })? as usize;
+            let element = ty
+                .array_element()
+                .ok_or_else(|| format!("const-sized array `{name}` has no element type"))?;
+            // A narrow integer element packs to its C width (matching the interpreters'
+            // stride and every other fixed-array position); every other element keeps
+            // its 8-byte-word layout and is resolved recursively.
+            let elem = match narrow_array_element(&element.name) {
+                Some(packed) => packed,
+                None => resolve_native_type(&element, structs, enums)?,
+            };
+            if !is_scalar_only_layout(&elem) {
+                return Err(format!(
+                    "const-sized array `{name}` element is not an entirely stack-inline \
+                     (scalar-only) layout; a heap-word element is deferred"
+                ));
+            }
+            Ok(NativeType::Array {
+                elem: Box::new(elem),
+                len: extent,
+            })
+        }
         name if name.starts_with("array<") => Err(format!(
             "array length for `{name}` is unknown from its type"
         )),
@@ -368,9 +404,16 @@ pub(crate) fn resolve_native_type(
         // inside `resolve_enum_type` by substituting the spelling's type arguments.
         name if is_enum_type_name(name, enums) => resolve_enum_type(ty, structs, enums),
         name => {
-            // A non-generic struct declared under its exact name.
+            // A non-generic struct declared under its exact name. Its recorded
+            // fixed-array field extents (if any) let those fields lay out inline.
             if let Some(def) = structs.iter().find(|s| s.name == name) {
-                return resolve_struct_fields(name, &def.fields, structs, enums);
+                return resolve_struct_fields(
+                    name,
+                    &def.fields,
+                    &def.field_extents,
+                    structs,
+                    enums,
+                );
             }
             // A user-generic struct instantiation `Name<args>` (`Box<i64>`,
             // `Pair<i64, bool>`): MONOMORPHIZE it. Look up the generic declaration by
@@ -391,7 +434,12 @@ pub(crate) fn resolve_native_type(
                     .iter()
                     .map(|(fname, fty)| (fname.clone(), substitute_type(fty, &subst)))
                     .collect();
-                let native = resolve_struct_fields(&head, &concrete_fields, structs, enums)?;
+                // A generic instantiation's fixed-array field extents are not
+                // captured (the survival record keys on the declared struct, before
+                // substitution), so pass no extents: such an array field skips
+                // cleanly rather than laying out inline. Extent-bearing generic array
+                // fields are a deferred boundary.
+                let native = resolve_struct_fields(&head, &concrete_fields, &[], structs, enums)?;
                 // Native-supported-layout scope gate (default-deny), mirroring the
                 // non-generic heap-field aggregate boundary. A monomorphized generic
                 // struct compiles natively when its whole layout is scalar-only OR its
@@ -537,16 +585,32 @@ fn is_one_level_string_or_scalar(ty: &NativeType) -> bool {
 /// rejected (the function then skips gracefully), while a `string` field is
 /// supported (immutable, shared on the flat word-copy). Shared by the non-generic
 /// struct path and the monomorphized generic-struct path.
+///
+/// `field_extents` is the struct's const-sized-array survival record (see
+/// [`IrStructDef::field_extents`]): for a field named there, its un-erased
+/// `array<T, N>` type is resolved INSTEAD of the erased `field_defs` spelling,
+/// laying that field out as an inline by-value [`NativeType::Array`]. A field absent
+/// from the record keeps its `field_defs` type — so a plain dynamic `array<T>` field
+/// still fails to resolve and its struct skips cleanly. The generic-struct path
+/// passes an empty record (extent-bearing generic array fields are deferred).
 fn resolve_struct_fields(
     name: &str,
     field_defs: &[(String, TypeRef)],
+    field_extents: &[(String, TypeRef)],
     structs: &[IrStructDef],
     enums: &[IrEnumDef],
 ) -> Result<NativeType, String> {
     let mut fields = Vec::with_capacity(field_defs.len());
     for (field_name, field_ty) in field_defs {
-        let native = resolve_native_type(field_ty, structs, enums).map_err(|_| {
-            format!("struct `{name}` field `{field_name}` is not an all-i64 native type")
+        // Prefer the un-erased, extent-carrying type when this field was declared
+        // with a fixed extent; otherwise resolve the erased spelling as before.
+        let effective_ty = field_extents
+            .iter()
+            .find(|(recorded, _)| recorded == field_name)
+            .map(|(_, ty)| ty)
+            .unwrap_or(field_ty);
+        let native = resolve_native_type(effective_ty, structs, enums).map_err(|reason| {
+            format!("struct `{name}` field `{field_name}` is not a native type: {reason}")
         })?;
         // An `f32` field is out of scope: the aggregate copy/pass paths move
         // whole 8-byte words through a GPR, which would not keep a 4-byte

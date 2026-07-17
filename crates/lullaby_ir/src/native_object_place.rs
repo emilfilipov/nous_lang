@@ -187,6 +187,52 @@ pub(crate) fn resolve_read_place_typed(
     resolve_place_steps_typed(ctx, root, &steps)
 }
 
+/// The compile-time element count of a fixed-array-typed lvalue PATH — a
+/// struct-field array (`f.pixels`), or a nested one (`m.frame.pixels`,
+/// `grid[i]` when the element is itself a fixed array) — or `None` when the path is
+/// not rooted at a local or does not resolve to a [`NativeType::Array`]. It walks
+/// the same `Field`/`Index` steps as [`resolve_read_place_typed`] but computes only
+/// the resolved type (tolerating an aggregate final), so `len(<path>)` over an
+/// inline fixed array folds to a compile-time constant exactly like `len` over a
+/// whole-array local. A fat-pointer root or any non-array final yields `None`, so
+/// those `len` shapes fall through to their own runtime-length paths.
+pub(crate) fn resolve_path_array_len(ctx: &NativeCtx, expr: &BytecodeExpr) -> Option<usize> {
+    let mut steps: Vec<PathStep> = Vec::new();
+    let mut cursor = expr;
+    let root = loop {
+        match &cursor.kind {
+            BytecodeExprKind::Variable(name) => break name.as_str(),
+            BytecodeExprKind::Field { target, field } => {
+                steps.push(PathStep::Field(field.as_str()));
+                cursor = target;
+            }
+            BytecodeExprKind::Index { target, index } => {
+                steps.push(PathStep::Index(index));
+                cursor = target;
+            }
+            _ => return None,
+        }
+    };
+    steps.reverse();
+    let mut ty = ctx.local(root).ok()?.ty.clone();
+    for step in &steps {
+        match (step, &ty) {
+            (PathStep::Field(field), NativeType::Struct { fields, .. }) => {
+                let (_, fty) = fields.iter().find(|(fname, _)| fname == field)?;
+                ty = fty.clone();
+            }
+            (PathStep::Index(_), NativeType::Array { elem, .. }) => {
+                ty = (**elem).clone();
+            }
+            _ => return None,
+        }
+    }
+    match ty {
+        NativeType::Array { len, .. } => Some(len),
+        _ => None,
+    }
+}
+
 /// Resolve an assignment target `(name, path)` to a scalar place.
 pub(crate) fn resolve_scalar_place(
     ctx: &NativeCtx,
