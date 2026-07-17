@@ -278,6 +278,12 @@ impl<'a> Lexer<'a> {
     fn lex_line(&mut self, line: &str, line_number: usize, base_column: usize) {
         let chars: Vec<char> = line.chars().collect();
         let mut index = 0;
+        // Depth of open `[` on this line. A `;` is a forbidden statement
+        // terminator at the top level (`L0103`), but inside brackets it is the
+        // separator of the repeat/fill array literal `[value; count]`, so there
+        // it is lexed as an ordinary symbol. Brackets never span lines, so a
+        // per-line counter is sufficient.
+        let mut bracket_depth: u32 = 0;
 
         while index < chars.len() {
             let ch = chars[index];
@@ -318,6 +324,17 @@ impl<'a> Lexer<'a> {
             }
 
             if ch == ';' {
+                if bracket_depth > 0 {
+                    // Fill-literal separator, e.g. `[0; 512]`. Emit it as a plain
+                    // symbol; the parser accepts it only in the array-literal
+                    // position and rejects a stray `;` there.
+                    self.tokens.push(Token::new(
+                        TokenKind::Symbol(";".to_string()),
+                        Span::new(line_number, column),
+                    ));
+                    index += 1;
+                    continue;
+                }
                 self.diagnostics.push(Diagnostic::new(
                     "L0103",
                     "semicolons do not terminate Lullaby statements",
@@ -410,6 +427,11 @@ impl<'a> Lexer<'a> {
                 }
             }
 
+            if symbol == "[" {
+                bracket_depth += 1;
+            } else if symbol == "]" {
+                bracket_depth = bracket_depth.saturating_sub(1);
+            }
             self.tokens.push(Token::new(
                 TokenKind::Symbol(symbol),
                 Span::new(line_number, column),
@@ -596,6 +618,27 @@ mod tests {
         assert_eq!(diagnostics.len(), 2);
         assert_eq!(diagnostics[0].code, "L0102");
         assert_eq!(diagnostics[1].code, "L0103");
+    }
+
+    #[test]
+    fn semicolon_inside_brackets_lexes_as_a_symbol() {
+        // The fill-literal separator `[value; count]` is a `;` symbol token, not
+        // an `L0103` error — but only inside brackets.
+        let tokens = lex("fn main -> i64\n    let a array<i64, 4> = [0; 4]\n    a[0]\n")
+            .expect("fill literal lexes cleanly");
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Symbol(";".to_string())),
+            "expected a `;` symbol token inside the fill literal"
+        );
+    }
+
+    #[test]
+    fn semicolon_at_statement_level_still_rejected() {
+        // Outside brackets, `;` remains a forbidden statement terminator.
+        let diagnostics = lex("fn main -> i64\n    let a = 1;\n    a\n").expect_err("stray `;`");
+        assert!(diagnostics.iter().any(|d| d.code == "L0103"));
     }
 
     #[test]

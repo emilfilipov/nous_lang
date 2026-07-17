@@ -427,8 +427,32 @@ impl TypeRef {
         self.name == "void"
     }
 
+    /// The element type `T` of an `array<T>` or a const-sized `array<T, N>`
+    /// spelling. The optional extent `N` is ignored here: a fixed-extent array
+    /// shares the element type — and the erased runtime representation — of the
+    /// length-agnostic `array<T>`, so every array consumer reads its element type
+    /// through this one accessor regardless of whether an extent is present.
     pub fn array_element(&self) -> Option<TypeRef> {
-        self.generic_arg("array")
+        self.generic_args("array")
+            .filter(|args| !args.is_empty() && args.len() <= 2)
+            .map(|mut args| args.swap_remove(0))
+    }
+
+    /// The compile-time extent `N` of a const-sized `array<T, N>` spelling, if
+    /// one is present and spelled as a literal integer. `array<T>` (no extent),
+    /// or an extent that has not yet been resolved to a literal, yields `None`.
+    /// The semantic extent pass resolves named-constant extents to literals and
+    /// erases every extent before the checker runs, so this only ever observes a
+    /// literal extent during that pass.
+    pub fn array_extent(&self) -> Option<i64> {
+        self.generic_args("array")
+            .filter(|args| args.len() == 2)
+            .and_then(|args| args[1].name.parse::<i64>().ok())
+    }
+
+    /// True when this is an `array<...>` spelling (with or without an extent).
+    pub fn is_array(&self) -> bool {
+        self.array_element().is_some()
     }
 
     /// The element type `T` of a growable `list<T>` spelling, if any.
@@ -828,6 +852,16 @@ pub enum ExprKind {
     /// A `byte` literal never appears in source; `byte`/`byte_val` builtins
     /// produce and consume byte values at runtime.
     Array(Vec<Expr>),
+    /// A repeat/fill array literal `[value; count]` (the terse constructor for a
+    /// const-sized `array<T, N>`). `count` is a constant expression that folds to
+    /// a positive integer. The semantic frontend expands this to an ordinary
+    /// [`ExprKind::Array`] of `count` copies of `value` before the type checker
+    /// or any backend runs, so no downstream stage needs to know it exists; the
+    /// node survives only far enough for `lullaby fmt` to round-trip it.
+    ArrayFill {
+        value: Box<Expr>,
+        count: Box<Expr>,
+    },
     Variable(String),
     Index {
         target: Box<Expr>,

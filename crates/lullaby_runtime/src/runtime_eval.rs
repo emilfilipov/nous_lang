@@ -76,6 +76,34 @@ impl<'a> Runtime<'a> {
             .collect()
     }
 
+    /// Evaluate a fill literal `[value; count]`: `value` materialized once per
+    /// element (`count` copies). Kept out of line (`#[inline(never)]`) so its
+    /// locals never inflate the stack frame of the deeply-recursive `eval_expr`.
+    /// The semantic array-extent pass expands fill literals before execution, so
+    /// this is a correctness backstop rather than a hot path.
+    #[inline(never)]
+    fn eval_array_fill(
+        &mut self,
+        value: &Expr,
+        count: &Expr,
+        env: &mut Env,
+    ) -> Result<Value, RuntimeError> {
+        let count = match self.eval_expr(count, env)? {
+            Value::I64(n) if n >= 0 => n as usize,
+            _ => {
+                return Err(RuntimeError::new(
+                    "L0464",
+                    "array fill count must be a non-negative integer",
+                ));
+            }
+        };
+        let mut items = Vec::with_capacity(count);
+        for _ in 0..count {
+            items.push(self.eval_expr(value, env)?);
+        }
+        Ok(Value::Array(items.into()))
+    }
+
     pub(crate) fn eval_expr(&mut self, expr: &Expr, env: &mut Env) -> Result<Value, RuntimeError> {
         let result = match &expr.kind {
             ExprKind::Field { target, field } => {
@@ -114,6 +142,11 @@ impl<'a> Runtime<'a> {
                 .map(|value| self.eval_expr(value, env))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|v| Value::Array(v.into())),
+            // A fill literal `[value; count]` is expanded to an ordinary array
+            // literal by the semantic array-extent pass before execution, so this
+            // arm is not reached in practice. Delegate to an out-of-line helper so
+            // its locals never enlarge the deeply-recursive `eval_expr` frame.
+            ExprKind::ArrayFill { value, count } => self.eval_array_fill(value, count, env),
             ExprKind::Variable(name) => match env.get(name) {
                 Ok(value) => Ok(value),
                 Err(error) => {

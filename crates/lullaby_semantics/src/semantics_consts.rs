@@ -87,14 +87,28 @@ impl ConstValue {
 /// diagnostics produced while evaluating.
 pub(crate) fn resolve_and_fold_consts(
     program: &mut Program,
-) -> (HashMap<String, TypeRef>, Vec<SemanticDiagnostic>) {
+) -> (
+    HashMap<String, TypeRef>,
+    HashMap<String, i64>,
+    Vec<SemanticDiagnostic>,
+) {
     let mut evaluator = Evaluator::new(program);
     let (values, types, diagnostics) = evaluator.evaluate_all();
+    // The integer-valued constants, exposed so the array-extent pass can resolve
+    // a named extent `array<T, SIZE>` to its literal value. Folding never rewrites
+    // text inside a type spelling, so the extent pass resolves these names itself.
+    let int_values: HashMap<String, i64> = values
+        .iter()
+        .filter_map(|(name, value)| match value {
+            ConstValue::Int(n) => Some((name.clone(), *n)),
+            _ => None,
+        })
+        .collect();
     if !values.is_empty() {
         let folder = Folder { values: &values };
         folder.fold_program(program);
     }
-    (types, diagnostics)
+    (types, int_values, diagnostics)
 }
 
 struct Evaluator<'a> {
@@ -613,6 +627,10 @@ impl Folder<'_> {
                 for item in items {
                     self.fold_expr(item, local);
                 }
+            }
+            ExprKind::ArrayFill { value, count } => {
+                self.fold_expr(value, local);
+                self.fold_expr(count, local);
             }
             ExprKind::Index { target, index } => {
                 self.fold_expr(target, local);

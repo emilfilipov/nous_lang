@@ -162,6 +162,10 @@ fn collect_closures_in_expr<'a>(
                 collect_closures_in_expr(item, table);
             }
         }
+        ExprKind::ArrayFill { value, count } => {
+            collect_closures_in_expr(value, table);
+            collect_closures_in_expr(count, table);
+        }
         ExprKind::Index { target, index } => {
             collect_closures_in_expr(target, table);
             collect_closures_in_expr(index, table);
@@ -1204,6 +1208,9 @@ fn expr_mentions_var(expr: &Expr, name: &str) -> bool {
         | ExprKind::Char(_) => false,
         ExprKind::Variable(v) => v == name,
         ExprKind::Array(items) => items.iter().any(|item| expr_mentions_var(item, name)),
+        ExprKind::ArrayFill { value, count } => {
+            expr_mentions_var(value, name) || expr_mentions_var(count, name)
+        }
         ExprKind::Index { target, index } => {
             expr_mentions_var(target, name) || expr_mentions_var(index, name)
         }

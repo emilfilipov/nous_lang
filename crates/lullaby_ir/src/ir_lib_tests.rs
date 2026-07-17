@@ -1069,6 +1069,41 @@ fn ir_and_bytecode_match_ast_for_core_execution() {
 }
 
 #[test]
+fn const_sized_arrays_match_across_backend_variants() {
+    // Const-sized arrays `array<T, N>` erase to the existing `array<T>`
+    // representation, so a single program exercising a typed fixed-extent local
+    // (literal and named-constant `N`), a fill literal `[v; k]`, a fixed-extent
+    // struct field, a fixed-extent parameter, decay to `array<T>`, nesting, and
+    // `index`/`len`/`for … in` must be identical across every backend variant.
+    let source = concat!(
+        "const N i64 = 3\n\n",
+        "struct Buf\n    cells array<i64, N>\n\n",
+        "fn total b array<i64> -> i64\n",
+        "    let s = 0\n",
+        "    for x in b\n",
+        "        s += x\n",
+        "    s\n\n",
+        "fn first row array<i64, 2> -> i64\n",
+        "    row[0]\n\n",
+        "fn main -> i64\n",
+        "    let a array<i64, N> = [10, 20, 30]\n",
+        "    let z array<i64, 4> = [5; 4]\n",
+        "    let buf = Buf(cells: [1, 2, 3])\n",
+        "    let grid array<array<i64, 2>, 2> = [[7, 8], [9, 1]]\n",
+        "    total(a) + total(z) + total(buf.cells) + len(a) + first(grid[1]) + grid[0][1]\n",
+    );
+    let (ast, ir, bytecode, optimized_ir, optimized_bytecode) = run_all_backend_variants(source);
+    assert_eq!(ast, Value::I64(106));
+    assert_eq!(ir, ast, "IR result differs from AST");
+    assert_eq!(bytecode, ast, "bytecode result differs from AST");
+    assert_eq!(optimized_ir, ast, "optimized IR result differs from AST");
+    assert_eq!(
+        optimized_bytecode, ast,
+        "optimized bytecode result differs from AST"
+    );
+}
+
+#[test]
 fn ir_and_bytecode_match_ast_for_error_handling() {
     let source = "fn checked n i64 -> string\n    try\n        if n < 0\n            throw \"neg\"\n        \"ok:\" + to_string(n)\n    catch message\n        \"err:\" + message\n\nfn main -> string\n    checked(5) + \" \" + checked(0 - 1)\n";
     let (ast, ir, bytecode) = run_all_backends(source);

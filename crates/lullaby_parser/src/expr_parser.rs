@@ -543,9 +543,37 @@ impl<'a> ExprParser<'a> {
                 }
             }
             TokenKind::Symbol(symbol) if symbol == "[" => {
-                let mut values = Vec::new();
+                if self.eat_symbol("]") {
+                    return Ok(Expr {
+                        kind: ExprKind::Array(Vec::new()),
+                        span: token.span,
+                    });
+                }
+                let first = self.parse_conditional()?;
+                // A `;` after the first element makes this a repeat/fill literal
+                // `[value; count]`: `value`, repeated `count` times. `count` is a
+                // constant expression checked by the semantic extent pass.
+                if self.eat_symbol(";") {
+                    let count = self.parse_conditional()?;
+                    if !self.eat_symbol("]") {
+                        return Err("expected `]` after fill count in `[value; count]`".to_string());
+                    }
+                    return Ok(Expr {
+                        kind: ExprKind::ArrayFill {
+                            value: Box::new(first),
+                            count: Box::new(count),
+                        },
+                        span: token.span,
+                    });
+                }
+                let mut values = vec![first];
                 if !self.eat_symbol("]") {
+                    if !self.eat_symbol(",") {
+                        return Err("expected `,`, `;`, or `]` in array literal".to_string());
+                    }
                     loop {
+                        // A trailing comma before `]` is not allowed, matching the
+                        // existing element-list grammar.
                         values.push(self.parse_conditional()?);
                         if self.eat_symbol("]") {
                             break;
@@ -708,6 +736,30 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    /// Parse the extent operand of a const-sized array type `array<T, N>` inside
+    /// a function-type spelling: a plain integer literal or a bare identifier
+    /// naming a constant, captured as canonical text for the semantic extent
+    /// pass.
+    fn parse_array_extent(&mut self) -> Result<String, String> {
+        match self.peek().map(|token| token.kind.clone()) {
+            Some(TokenKind::Number(text)) => {
+                self.cursor += 1;
+                match crate::number_literal::parse_plain_integer_literal(&text) {
+                    Some(value) => Ok(value.to_string()),
+                    None => Err(
+                        "an array extent `N` must be a plain integer literal or a named constant"
+                            .to_string(),
+                    ),
+                }
+            }
+            Some(TokenKind::Identifier(name)) => {
+                self.cursor += 1;
+                Ok(name)
+            }
+            _ => Err("expected an array extent `N` after `,` in `array<T, N>`".to_string()),
+        }
+    }
+
     /// Consume a `>` that closes a generic type-argument list, splitting a `>>`
     /// shift token into two closers exactly like the declaration parser.
     fn eat_generic_close_expr(&mut self) -> bool {
@@ -748,6 +800,11 @@ impl<'a> ExprParser<'a> {
                         while self.eat_symbol(",") {
                             args.push(self.parse_type()?);
                         }
+                    } else if name == "array" && self.eat_symbol(",") {
+                        // A const-sized array `array<T, N>` in a function-type
+                        // spelling. The extent `N` (a literal or named constant)
+                        // is captured verbatim for the semantic extent pass.
+                        args.push(TypeRef::new(self.parse_array_extent()?));
                     }
                     if !self.eat_generic_close_expr() {
                         return Err("expected `>` after generic type argument".to_string());

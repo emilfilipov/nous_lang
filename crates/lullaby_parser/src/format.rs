@@ -868,6 +868,9 @@ fn render_expr(expr: &Expr) -> String {
                 .join(", ");
             format!("[{items}]")
         }
+        ExprKind::ArrayFill { value, count } => {
+            format!("[{}; {}]", render_expr(value), render_expr(count))
+        }
         ExprKind::Variable(name) => name.clone(),
         ExprKind::Index { target, index } => {
             format!("{}[{}]", render_postfix_target(target), render_expr(index))
@@ -1288,6 +1291,22 @@ mod tests {
     #[test]
     fn string_slice_fixture_is_idempotent() {
         assert_fixture_idempotent("run_string_slice");
+    }
+
+    #[test]
+    fn formats_const_sized_array_type_and_fill_literal() {
+        // The const-sized array type `array<T, N>` and the fill literal
+        // `[value; count]` both round-trip verbatim, and are idempotent.
+        for src in [
+            "fn main -> i64\n    let a array<i64, 4> = [0; 4]\n    a[0]\n",
+            "fn main -> i64\n    let a array<i64, 3> = [1, 2, 3]\n    a[0]\n",
+            "fn blit buf array<u8, 512> -> i64\n    len(buf)\n",
+            "fn main -> i64\n    let g array<array<i64, 3>, 2> = [[1, 2, 3], [4, 5, 6]]\n    g[0][0]\n",
+        ] {
+            assert_eq!(fmt(src), src, "not a fixed point: {src:?}");
+            // Idempotent: formatting the formatted text is stable.
+            assert_eq!(fmt(&fmt(src)), fmt(src), "not idempotent: {src:?}");
+        }
     }
 
     #[test]

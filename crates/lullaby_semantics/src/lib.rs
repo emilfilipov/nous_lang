@@ -10,6 +10,7 @@ use lullaby_parser::{
 mod semantics_actor_ownership;
 mod semantics_aliases;
 mod semantics_arena;
+mod semantics_array_extent;
 mod semantics_consts;
 mod semantics_generics;
 mod semantics_lifetime_alias;
@@ -92,12 +93,21 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
     // constant into its literal value. After this the checker (and every
     // backend) only ever sees ordinary literals, so no downstream stage needs
     // any `const` awareness.
-    let (const_types, const_diagnostics) = semantics_consts::resolve_and_fold_consts(&mut resolved);
+    let (const_types, const_int_values, const_diagnostics) =
+        semantics_consts::resolve_and_fold_consts(&mut resolved);
+
+    // Resolve, validate, check, and erase every const-sized array `array<T, N>`.
+    // After this the extent is gone from every type spelling and every fill
+    // literal `[v; k]` is an ordinary array literal, so the checker and all
+    // backends see only the existing `array<T>` representation.
+    let extent_diagnostics =
+        semantics_array_extent::resolve_check_and_erase(&mut resolved, &const_int_values);
 
     let mut checker = Checker::new(&resolved);
     checker.consts = const_types;
     checker.diagnostics = alias_diagnostics;
     checker.diagnostics.extend(const_diagnostics);
+    checker.diagnostics.extend(extent_diagnostics);
     checker.validate();
     // A `supervise` clause that can never apply is judged only now: the pass has
     // seen every `spawn`, so it knows whether the program uses `escalate` at all.
@@ -2798,6 +2808,10 @@ impl<'a> Checker<'a> {
                     self.check_freed_uses(value, freed, function);
                 }
             }
+            ExprKind::ArrayFill { value, count } => {
+                self.check_freed_uses(value, freed, function);
+                self.check_freed_uses(count, freed, function);
+            }
             ExprKind::Index { target, index } => {
                 self.check_freed_uses(target, freed, function);
                 self.check_freed_uses(index, freed, function);
@@ -2908,6 +2922,15 @@ impl<'a> Checker<'a> {
             ExprKind::String(_) => Some(TypeRef::new("string")),
             ExprKind::Char(_) => Some(TypeRef::new("char")),
             ExprKind::Array(values) => self.check_array_literal(values, scope, function),
+            // Fill literals `[value; count]` are expanded to ordinary array
+            // literals by the array-extent pass before the checker runs, so this
+            // arm is not reached in practice; it stays correct if it ever is,
+            // treating the fill as an `array<element>` of its value.
+            ExprKind::ArrayFill { value, count } => {
+                self.check_expr(count, scope, function);
+                self.check_expr(value, scope, function)
+                    .map(|element| TypeRef::new(format!("array<{}>", element.name)))
+            }
             ExprKind::Variable(name) => match scope.locals.get(name) {
                 Some(ty) => Some(ty.clone()),
                 None => {

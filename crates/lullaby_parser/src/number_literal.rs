@@ -70,6 +70,21 @@ pub(crate) fn parse_radix_literal(value: &str) -> Option<i64> {
     i64::from_str_radix(&cleaned, radix).ok()
 }
 
+/// Parse a bare, unsuffixed integer literal (decimal or `0x`/`0b`/`0o`
+/// base-prefixed, with `_` separators) into an `i64`. Used for a const-sized
+/// array extent `array<T, N>` where `N` is a literal: the extent must be a plain
+/// integer, so a float, a typed suffix, or an out-of-range value returns `None`.
+pub(crate) fn parse_plain_integer_literal(value: &str) -> Option<i64> {
+    if let Some(radix) = parse_radix_literal(value) {
+        return Some(radix);
+    }
+    let cleaned = normalize_number_literal(value)?;
+    if cleaned.contains('.') {
+        return None;
+    }
+    cleaned.parse::<i64>().ok()
+}
+
 /// Recognized typed numeric-literal suffixes, longest first so `usize`/`isize`
 /// are matched before any shorter candidate. `i64`/`f64` are the defaults; the
 /// rest desugar to the corresponding `to_<T>` conversion builtin.

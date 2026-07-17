@@ -1474,6 +1474,14 @@ impl<'a> Parser<'a> {
                         while self.eat_symbol(",") {
                             args.push(self.expect_type("expected generic type argument")?);
                         }
+                    } else if name == "array" && self.eat_symbol(",") {
+                        // A const-sized array `array<T, N>`: the extent `N` is a
+                        // constant expression (a literal or a named constant), not
+                        // a type. It is captured verbatim here and resolved and
+                        // validated by the semantic extent pass; the checker and
+                        // every backend see the erased `array<T>`.
+                        let extent = self.expect_array_extent()?;
+                        args.push(TypeRef::new(extent));
                     }
                     if !self.eat_generic_close() {
                         self.error(
@@ -1547,6 +1555,45 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.error("L0203", message, self.peek().span);
+                None
+            }
+        }
+    }
+
+    /// Parse the extent operand of a const-sized array type `array<T, N>`. `N`
+    /// is either a plain integer literal or a bare identifier naming a constant;
+    /// both are captured as canonical text (a literal is normalized to decimal)
+    /// for the semantic extent pass to resolve and validate. An arithmetic
+    /// expression, a float, or any other token is rejected here.
+    fn expect_array_extent(&mut self) -> Option<String> {
+        match &self.peek().kind {
+            TokenKind::Number(text) => {
+                let text = text.clone();
+                let span = self.peek().span;
+                self.advance();
+                match number_literal::parse_plain_integer_literal(&text) {
+                    Some(value) => Some(value.to_string()),
+                    None => {
+                        self.error(
+                            "L0203",
+                            "an array extent `N` must be a plain integer literal or a named constant",
+                            span,
+                        );
+                        None
+                    }
+                }
+            }
+            TokenKind::Identifier(name) => {
+                let name = name.clone();
+                self.advance();
+                Some(name)
+            }
+            _ => {
+                self.error(
+                    "L0203",
+                    "expected an array extent `N` (an integer literal or a named constant) after `,`",
+                    self.peek().span,
+                );
                 None
             }
         }

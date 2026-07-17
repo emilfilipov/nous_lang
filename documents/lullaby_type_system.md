@@ -140,7 +140,9 @@ match s
 
 **Collections:** fixed `array<T>` (`[1, 2, 3]` literals, or `array_fill(n, v)` for a
 sized buffer), growable `list<T>`, and `map<K, V>`. Indexing is `xs[i]` with a
-runtime bounds check.
+runtime bounds check. A fixed array may carry a compile-time extent —
+`array<T, N>`, constructed with `[a, b, c]` or the fill literal `[value; N]` — see
+[Const-sized arrays](#const-sized-arrays-arrayt-n).
 
 ```lullaby
 let nums array<i64> = [1, 2, 3, 4, 5]
@@ -533,9 +535,61 @@ constant once and folds each reference into its literal value before the type
 checker validates function bodies. Every backend (the AST/IR/bytecode
 interpreters, the native x86-64/AArch64 backends, and WASM) therefore only ever
 sees ordinary literals and needs no `const` awareness — a folded `const` in an
-otherwise all-`i64` function stays native-eligible. Const-sized arrays
-(`array<T, N>` where `N` is a constant) are a planned follow-up and are not part of
-this increment.
+otherwise all-`i64` function stays native-eligible.
+
+### Const-sized arrays `array<T, N>`
+
+A **const-sized array** `array<T, N>` is a fixed-extent array: the same
+length-carrying `array<T>` value, annotated with a compile-time extent `N`. It
+gives typed fixed-extent buffers a name in a signature or a struct — `fn blit(buf
+array<u8, 512>)`, `struct Frame { pixels array<u32, 1024> }` — which kernel and
+systems code needs.
+
+```lullaby
+const WIDTH i64 = 512
+
+fn blit buf array<u8, WIDTH> -> i64
+    len(buf)
+
+fn main -> i64
+    let row array<i64, 4> = [10, 20, 30, 40]   # literal extent
+    let zero array<u8, WIDTH> = [0u8; WIDTH]    # fill literal, named extent
+    row[0] + len(zero)
+```
+
+- **Extent `N`.** `N` is a *constant expression* that folds to a positive
+  integer: an integer literal (`array<u8, 512>`) or a named integer constant
+  (`array<u8, WIDTH>`, reusing the same fold as `const`). A non-constant extent is
+  `L0463`; a zero or negative extent is `L0464`. `N` is allowed in every type
+  position — `let`, parameters, fields, return types, and nested
+  (`option<array<u8, 16>>`, `array<array<i64, 3>, 2>`).
+- **Fill literal `[value; count]`.** The terse constructor for a fixed-extent
+  array: `value`, repeated `count` times (`count` is a constant expression, like
+  an extent). `[0; 512]` is a 512-element zeroed buffer without spelling 512
+  values. The `value` is materialized once per element; it composes with the
+  ordinary `[a, b, c]` list literal (the `;` separator is lexed only inside
+  brackets — a `;` elsewhere is still the forbidden statement terminator `L0103`).
+- **Construction-count check.** A statically-counted literal (`[a, b, c]` or
+  `[value; k]`) initializing an `array<T, N>` slot must have exactly `N` elements
+  (`L0465`), checked at `let` annotations, `return`/trailing expressions,
+  struct-literal fields, and free-function call arguments, at every nesting level.
+- **Decay.** The extent exists *only* as this construction-count assertion.
+  `array<T, N>` otherwise **decays to `array<T>`** for every typing purpose — it
+  shares the element type and the runtime representation — so a fixed-extent array
+  interoperates freely with the length-agnostic surface (`len`, `a[i]`, `for x in
+  a`, passing to an `array<T>` helper), and an already-`array<T>` value (whose
+  length is dynamic) is accepted where `array<T, N>` is expected.
+
+Like `const`, const-sized arrays are **frontend-only**. The array-extent pass
+resolves and validates every extent, checks construction counts, then **erases**
+the extent (`array<T, N>` becomes `array<T>`) and expands every fill literal to an
+ordinary array literal, all before the type checker runs. Every backend therefore
+sees only the existing `array<T>` representation: `array<T, N>` compiles and runs
+exactly wherever the same-length `array<T>` already does, on every tier
+(AST/IR/bytecode interpreters, native, WASM), with no new miscompile surface. A
+dedicated *inline, by-value, no-heap* native storage layout for fixed-extent
+arrays is a separate later increment; today the extent is a checked annotation
+over the heap `array<T>`.
 
 ## Types for Systems / OS Development
 

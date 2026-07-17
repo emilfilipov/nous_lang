@@ -343,6 +343,10 @@ impl NoRuntimeChecker<'_> {
                     self.check_expr(item, function);
                 }
             }
+            ExprKind::ArrayFill { value, count } => {
+                self.check_expr(value, function);
+                self.check_expr(count, function);
+            }
             ExprKind::Index { target, index } => {
                 self.check_expr(target, function);
                 self.check_expr(index, function);

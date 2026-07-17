@@ -698,6 +698,10 @@ fn collect_expr_references(expr: &Expr, out: &mut Vec<(String, Span)>) {
                 collect_expr_references(value, out);
             }
         }
+        ExprKind::ArrayFill { value, count } => {
+            collect_expr_references(value, out);
+            collect_expr_references(count, out);
+        }
         ExprKind::Index { target, index } => {
             collect_expr_references(target, out);
             collect_expr_references(index, out);

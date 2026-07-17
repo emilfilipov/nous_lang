@@ -1791,6 +1791,25 @@ impl<'a> Lowerer<'a> {
                     TypeRef::new(format!("array<{}>", element_type.name)),
                 )
             }
+            // A fill literal `[value; count]` is expanded to an ordinary array
+            // literal by the semantic array-extent pass before IR lowering, so
+            // this arm is not reached in practice. It stays correct if it ever
+            // is, lowering to an array of `count` copies of the lowered value.
+            ExprKind::ArrayFill { value, count } => {
+                let count = match &count.kind {
+                    ExprKind::Integer(value) if *value > 0 => *value as usize,
+                    _ => {
+                        return Err(IrLoweringError::new(
+                            "array fill count must be a positive integer literal",
+                            Some(expr.span),
+                        ));
+                    }
+                };
+                let element = self.lower_expr(value, scope)?;
+                let ty = TypeRef::new(format!("array<{}>", element.ty.name));
+                let values = std::iter::repeat_n(element, count).collect();
+                (IrExprKind::Array(values), ty)
+            }
             ExprKind::Variable(name) => {
                 if let Some(ty) = scope.get(name).cloned() {
                     (IrExprKind::Variable(name.clone()), ty)

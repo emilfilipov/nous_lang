@@ -1,0 +1,11 @@
+# Const-sized arrays erase to the length-agnostic `array<T>` representation, so a
+# fixed-extent local (named-constant and literal extents) plus a fill literal
+# `[v; k]` compiles and runs identically on every backend, including native. This
+# fixture stays inside the native i64-scalar/array subset (local arrays, `[i]`,
+# `len`) so it can be compiled to a real executable for four-tier parity.
+const N i64 = 4
+
+fn main -> i64
+    let a array<i64, N> = [10, 20, 30, 40]
+    let z array<i64, 3> = [7; 3]
+    a[0] + a[3] + z[1] + len(a) + len(z)

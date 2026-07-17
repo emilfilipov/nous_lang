@@ -374,6 +374,10 @@ impl<'a> Checker<'a> {
                     self.check_uses_and_sends(value, moved, types, fn_name);
                 }
             }
+            ExprKind::ArrayFill { value, count } => {
+                self.check_uses_and_sends(value, moved, types, fn_name);
+                self.check_uses_and_sends(count, moved, types, fn_name);
+            }
             ExprKind::Index { target, index } => {
                 self.check_uses_and_sends(target, moved, types, fn_name);
                 self.check_uses_and_sends(index, moved, types, fn_name);

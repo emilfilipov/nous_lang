@@ -1485,6 +1485,11 @@ mod suite21;
 #[path = "cli/suite22.rs"]
 mod suite22;
 
+// -- Const-sized arrays `array<T, N>` (road_to_1_0_stable A2): four-tier parity
+//    that a fixed-extent array erases to the existing `array<T>` representation
+#[path = "cli/suite23.rs"]
+mod suite23;
+
 // -- An inline conditional as a closure body: cross-tier agreement, call-time
 //    laziness, and the native subset's clean refusal
 #[path = "cli/closure_conditional.rs"]
