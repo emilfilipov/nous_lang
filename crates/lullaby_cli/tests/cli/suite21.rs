@@ -62,7 +62,7 @@ use crate::*;
 
 /// Run `source` and return `(exit code, stdout+stderr)`.
 fn run_backend(source: &str, backend: &str, tag: &str) -> (i32, String) {
-    let dir = std::env::temp_dir();
+    let dir = ScratchDir::new("run_backend");
     let src = dir.join(format!("{tag}_{backend}.lby"));
     std::fs::write(&src, source).expect("write source");
     let out = lullaby()
@@ -497,7 +497,7 @@ fn int_to_ptr_may_still_assert_the_box_spelling_over_an_address() {
 /// a box place yields) never reaches it.
 #[test]
 fn a_falsely_boxed_address_is_refused_by_the_native_gate() {
-    let dir = std::env::temp_dir();
+    let dir = ScratchDir::new("int_to_ptr_gate_skip");
     let src = dir.join("lullaby_int_to_ptr_gate_skip.lby");
     let obj = dir.join("lullaby_int_to_ptr_gate_skip.obj");
     std::fs::write(
@@ -511,7 +511,6 @@ fn a_falsely_boxed_address_is_refused_by_the_native_gate() {
         ),
     )
     .expect("write source");
-    let _ = std::fs::remove_file(&obj);
     let emit = lullaby()
         .args([
             "native",
@@ -657,7 +656,7 @@ fn arena_alloc_still_hands_out_a_walkable_arena_pointer() {
 /// tier while staying green.
 #[test]
 fn the_freestanding_mmio_idiom_still_compiles_natively() {
-    let dir = std::env::temp_dir();
+    let dir = ScratchDir::new("mmio_after_int_to_ptr_fix");
     let src = dir.join("lullaby_mmio_after_int_to_ptr_fix.lby");
     let obj = dir.join("lullaby_mmio_after_int_to_ptr_fix.obj");
     let source = concat!(
@@ -678,7 +677,6 @@ fn the_freestanding_mmio_idiom_still_compiles_natively() {
         "    vga_get(0)\n",
     );
     std::fs::write(&src, source).expect("write source");
-    let _ = std::fs::remove_file(&obj);
 
     let emit = lullaby()
         .args([
@@ -708,7 +706,7 @@ fn the_freestanding_mmio_idiom_still_compiles_natively() {
 /// Run `lullaby check` on `source` and return `(exit code, stdout+stderr)`. The
 /// `L0350` lifetime check is a frontend check, so `check` is the whole surface.
 fn check_source(source: &str, tag: &str) -> (i32, String) {
-    let dir = std::env::temp_dir();
+    let dir = ScratchDir::new("check_source");
     let src = dir.join(format!("{tag}.lby"));
     std::fs::write(&src, source).expect("write source");
     let out = lullaby()
@@ -874,7 +872,7 @@ fn llvm_nm_path() -> Option<std::path::PathBuf> {
 /// bytes); the `llvm-nm` decode below is the stronger, gated check.
 #[test]
 fn void_export_fn_compiles_and_emits_a_c_callable_symbol() {
-    let dir = std::env::temp_dir();
+    let dir = ScratchDir::new("void_export");
     let src = dir.join("lullaby_void_export.lby");
     let obj = dir.join("lullaby_void_export.obj");
     // No `main`: an export-only program is a C-callable LIBRARY object, which is
@@ -887,7 +885,6 @@ fn void_export_fn_compiles_and_emits_a_c_callable_symbol() {
         "    a * 2\n",
     );
     std::fs::write(&src, source).expect("write source");
-    let _ = std::fs::remove_file(&obj);
 
     let check = lullaby()
         .args(["check", src.to_str().expect("src path")])
@@ -972,12 +969,11 @@ fn void_export_fn_uses_the_c_abi_and_publishes_no_return_value() {
         eprintln!("llvm-objdump not found; the void-export ABI disassembly did NOT run");
         return;
     }
-    let dir = std::env::temp_dir();
+    let dir = ScratchDir::new("void_export_abi");
     let src = dir.join("lullaby_void_export_abi.lby");
     let obj = dir.join("lullaby_void_export_abi.obj");
     std::fs::write(&src, "export fn tick x i64 -> void\n    let y = x + 1\n")
         .expect("write source");
-    let _ = std::fs::remove_file(&obj);
 
     let emit = lullaby()
         .args([

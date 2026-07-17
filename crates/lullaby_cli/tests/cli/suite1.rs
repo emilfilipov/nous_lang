@@ -1884,8 +1884,8 @@ pub(crate) fn runs_non_blocking_socket_fixture_on_all_backends() {
 pub(crate) fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");
-    let artifact = root.join("target/run_arithmetic.lbc");
-    let _ = std::fs::remove_file(&artifact);
+    let scratch = ScratchDir::new("compile_artifact");
+    let artifact = scratch.join("run_arithmetic.lbc");
 
     let compile = lullaby()
         .args([
@@ -1923,8 +1923,8 @@ pub(crate) fn compiles_fixture_to_bytecode_artifact_and_runs_it() {
 pub(crate) fn builds_fixture_to_bytecode_artifact_and_runs_it() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");
-    let artifact = root.join("target/build_arithmetic.lbc");
-    let _ = std::fs::remove_file(&artifact);
+    let scratch = ScratchDir::new("build_artifact");
+    let artifact = scratch.join("build_arithmetic.lbc");
 
     let build = lullaby()
         .args([
@@ -1966,8 +1966,8 @@ pub(crate) fn builds_fixture_to_bytecode_artifact_and_runs_it() {
 pub(crate) fn inspects_bytecode_artifact() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_store.lby");
-    let artifact = root.join("target/inspect_memory.lbc");
-    let _ = std::fs::remove_file(&artifact);
+    let scratch = ScratchDir::new("inspect_artifact");
+    let artifact = scratch.join("inspect_memory.lbc");
 
     let compile = lullaby()
         .args([
@@ -2061,8 +2061,8 @@ pub(crate) fn inspects_bytecode_artifact() {
 
 #[test]
 pub(crate) fn rejects_invalid_bytecode_artifact() {
-    let root = workspace_root();
-    let artifact = root.join("target/invalid_artifact.lbc");
+    let scratch = ScratchDir::new("invalid_artifact");
+    let artifact = scratch.join("invalid_artifact.lbc");
     std::fs::write(
         &artifact,
         "{\"format\":\"not-lullaby\",\"version\":1,\"entry\":\"main\",\"module\":{\"functions\":[]}}",
@@ -2168,8 +2168,8 @@ pub(crate) fn rejects_import_cycle_with_l0393() {
 
 #[test]
 pub(crate) fn reports_invalid_bytecode_artifact_with_verbose_guidance() {
-    let root = workspace_root();
-    let artifact = root.join("target/invalid_artifact_verbose.lbc");
+    let scratch = ScratchDir::new("invalid_artifact_verbose");
+    let artifact = scratch.join("invalid_artifact_verbose.lbc");
     std::fs::write(
         &artifact,
         "{\"format\":\"not-lullaby\",\"version\":1,\"entry\":\"main\",\"module\":{\"functions\":[]}}",
@@ -2196,8 +2196,8 @@ pub(crate) fn reports_invalid_bytecode_artifact_with_verbose_guidance() {
 
 #[test]
 pub(crate) fn reports_invalid_bytecode_artifact_as_json() {
-    let root = workspace_root();
-    let artifact = root.join("target/invalid_artifact_json.lbc");
+    let scratch = ScratchDir::new("invalid_artifact_json");
+    let artifact = scratch.join("invalid_artifact_json.lbc");
     std::fs::write(
         &artifact,
         "{\"format\":\"not-lullaby\",\"version\":1,\"entry\":\"main\",\"module\":{\"functions\":[]}}",
@@ -2224,8 +2224,8 @@ pub(crate) fn reports_invalid_bytecode_artifact_as_json() {
 
 #[test]
 pub(crate) fn reports_missing_bytecode_instructions_as_json() {
-    let root = workspace_root();
-    let artifact = root.join("target/missing_instructions_artifact_json.lbc");
+    let scratch = ScratchDir::new("missing_instructions_json");
+    let artifact = scratch.join("missing_instructions_artifact_json.lbc");
     std::fs::write(
         &artifact,
         "{\"format\":\"lullaby-bytecode\",\"version\":4,\"metadata\":{\"producer\":\"test\",\"target\":\"lullaby-vm\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"span\":{\"line\":1,\"column\":1}}]}}",
@@ -2253,8 +2253,8 @@ pub(crate) fn reports_missing_bytecode_instructions_as_json() {
 
 #[test]
 pub(crate) fn reports_invalid_bytecode_instruction_contract_as_json() {
-    let root = workspace_root();
-    let artifact = root.join("target/invalid_instruction_artifact_json.lbc");
+    let scratch = ScratchDir::new("invalid_instruction_json");
+    let artifact = scratch.join("invalid_instruction_artifact_json.lbc");
     std::fs::write(
         &artifact,
         "{\"format\":\"lullaby-bytecode\",\"version\":5,\"metadata\":{\"producer\":\"test\",\"target\":\"lullaby-vm\",\"payload\":\"instruction-bytecode\"},\"entry\":\"main\",\"function_table\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"}}],\"module\":{\"functions\":[{\"name\":\"main\",\"params\":[],\"return_type\":{\"name\":\"i64\"},\"instructions\":[{\"Break\":{\"line\":1,\"column\":1}}],\"span\":{\"line\":1,\"column\":1}}]}}",
@@ -2286,9 +2286,12 @@ pub(crate) fn reports_invalid_bytecode_instruction_contract_as_json() {
 pub(crate) fn reports_compile_write_failure_as_json() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_arithmetic.lby");
-    let missing_dir = root.join("target/lullaby_missing_compile_dir");
+    // The scratch root exists, but this subdir deliberately does NOT — the point
+    // is to prove `-o` into a missing directory fails with L0003. A unique scratch
+    // makes that "missing" state robust against any concurrent run.
+    let scratch = ScratchDir::new("compile_write_failure");
+    let missing_dir = scratch.join("lullaby_missing_compile_dir");
     let artifact = missing_dir.join("run_arithmetic.lbc");
-    let _ = std::fs::remove_dir_all(&missing_dir);
 
     let output = lullaby()
         .args([
@@ -2572,11 +2575,17 @@ pub(crate) fn runs_array_fixture() {
 pub(crate) fn runs_file_io_fixture() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/valid/run_file_io.lby");
-    let output_path = root.join("target/lullaby_fixture_io.txt");
-    let _ = std::fs::remove_file(&output_path);
+    // The fixture writes/reads the RELATIVE path `target/lullaby_fixture_io.txt`,
+    // so give the CLI a private working directory (with that `target/` subdir) as
+    // its cwd rather than the shared workspace root — otherwise concurrent runs
+    // clobber one another's output file. The fixture itself is unchanged.
+    let scratch = ScratchDir::new("file_io_fixture");
+    let work = scratch.join("cwd");
+    std::fs::create_dir_all(work.join("target")).expect("create target dir");
+    let output_path = work.join("target/lullaby_fixture_io.txt");
 
     let output = lullaby()
-        .current_dir(&root)
+        .current_dir(&work)
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
         .expect("run cli");
@@ -2587,7 +2596,6 @@ pub(crate) fn runs_file_io_fixture() {
         std::fs::read_to_string(&output_path).expect("written fixture file"),
         "alpha beta"
     );
-    let _ = std::fs::remove_file(output_path);
 }
 
 #[test]
@@ -2768,8 +2776,8 @@ pub(crate) fn check_allows_library_style_source_without_main() {
 pub(crate) fn compile_requires_zero_argument_main_entrypoint() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/invalid/missing_main.lby");
-    let artifact = root.join("target/missing_main.lbc");
-    let _ = std::fs::remove_file(&artifact);
+    let scratch = ScratchDir::new("missing_main");
+    let artifact = scratch.join("missing_main.lbc");
 
     let output = lullaby()
         .args([
@@ -2996,10 +3004,15 @@ pub(crate) fn rejects_store_after_dealloc_at_runtime() {
 pub(crate) fn rejects_missing_file_with_structured_resource_error() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/invalid/read_missing_file.lby");
-    let _ = std::fs::remove_file(root.join("target/lullaby_missing_file.txt"));
+    // The fixture reads the relative path `target/lullaby_missing_file.txt`; run in
+    // a private, empty working dir so no concurrent test can make this "missing
+    // file" read spuriously succeed. The file is never created here.
+    let scratch = ScratchDir::new("missing_file_read");
+    let work = scratch.join("cwd");
+    std::fs::create_dir_all(&work).expect("create work dir");
 
     let output = lullaby()
-        .current_dir(root)
+        .current_dir(&work)
         .args(["run", fixture.to_str().expect("fixture path")])
         .output()
         .expect("run cli");
@@ -3013,10 +3026,14 @@ pub(crate) fn rejects_missing_file_with_structured_resource_error() {
 pub(crate) fn reports_missing_file_resource_error_as_json() {
     let root = workspace_root();
     let fixture = root.join("tests/fixtures/invalid/read_missing_file.lby");
-    let _ = std::fs::remove_file(root.join("target/lullaby_missing_file.txt"));
+    // See `rejects_missing_file_with_structured_resource_error`: a private cwd keeps
+    // the "missing file" read from racing a concurrent test's `target/` output.
+    let scratch = ScratchDir::new("missing_file_read_json");
+    let work = scratch.join("cwd");
+    std::fs::create_dir_all(&work).expect("create work dir");
 
     let output = lullaby()
-        .current_dir(root)
+        .current_dir(&work)
         .args([
             "run",
             "--format",
