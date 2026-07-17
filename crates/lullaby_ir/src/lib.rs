@@ -111,10 +111,29 @@ pub struct IrModule {
 /// names (types are erased at runtime, exactly like a function's), and `body` is
 /// the lowered single expression evaluated on invocation with the captured
 /// snapshot and parameters bound.
+///
+/// `prelude` holds the statements the *body's own* lowering hoisted — an inline
+/// conditional (`A if C else B`) or a postfix `?` desugars into a temporary plus
+/// an `if`/`match`, and that scaffolding reads the closure's **parameters**, so it
+/// belongs to the closure's frame and nowhere else. It is evaluated on every
+/// invocation, in the closure's own environment, immediately before `body`.
+///
+/// Keeping it here is load-bearing. It used to drain into the *enclosing*
+/// function's statement list, where the closure's parameters do not exist: the
+/// AST interpreter (which evaluates `ExprKind::Conditional` directly and never
+/// hoists) returned the right answer while the IR interpreter and bytecode VM
+/// died at runtime with `L0403 unknown variable \`x\`` — naming the user's own
+/// closure parameter, in the *enclosing* function's frame. A closure body is a
+/// single expression in the surface grammar, but its lowering is not, and this
+/// field is where that gap is carried.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IrClosureDef {
     pub id: usize,
     pub params: Vec<String>,
+    /// Body-local hoisted scaffolding, run in the closure's frame before `body`.
+    /// Serde-defaulted so existing artifacts stay loadable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prelude: Vec<IrStmt>,
     pub body: IrExpr,
 }
 
@@ -1292,13 +1311,19 @@ pub struct BytecodeModule {
 }
 
 /// A lowered closure body in the bytecode module: the closure's parse-order id,
-/// its parameter names, and its instruction-body expression. Mirrors
-/// [`IrClosureDef`], round-tripped when the bytecode module is built from / lowered
-/// back to the IR.
+/// its parameter names, the body-local hoisted `prelude`, and its
+/// instruction-body expression. Mirrors [`IrClosureDef`], round-tripped when the
+/// bytecode module is built from / lowered back to the IR.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BytecodeClosureDef {
     pub id: usize,
     pub params: Vec<String>,
+    /// Mirror of [`IrClosureDef::prelude`] — the scaffolding an inline
+    /// conditional / `?` in the body hoisted, which reads the closure's
+    /// parameters and so must run in the closure's frame, not the enclosing one.
+    /// Serde-defaulted so existing `.lbc` artifacts stay loadable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prelude: Vec<BytecodeInstruction>,
     pub body: BytecodeExpr,
 }
 
@@ -2007,6 +2032,7 @@ pub fn lower_to_bytecode(module: &IrModule) -> BytecodeModule {
             .map(|def| BytecodeClosureDef {
                 id: def.id,
                 params: def.params.clone(),
+                prelude: def.prelude.iter().map(lower_bytecode_instruction).collect(),
                 body: lower_bytecode_expr(&def.body),
             })
             .collect(),
@@ -2052,6 +2078,7 @@ pub fn run_bytecode_main_with_args(
             .map(|def| IrClosureDef {
                 id: def.id,
                 params: def.params.clone(),
+                prelude: def.prelude.iter().map(bytecode_instruction_to_ir).collect(),
                 body: bytecode_expr_to_ir(&def.body),
             })
             .collect(),

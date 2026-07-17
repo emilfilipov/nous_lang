@@ -1,0 +1,41 @@
+# A user binding named like a compiler desugar temp must be untouchable.
+#
+# The lowerer synthesizes temps for the inline-conditional, `?`, `match`, slice and
+# for-each desugars. They used to be spelled `__cond_N`, `__match_v_N`, ... — names
+# a user CAN spell. When a program declared one, the desugar's own `let` clobbered
+# the user's binding, and only the AST interpreter (which never desugars) stayed
+# correct:
+#
+#   let __cond_0 i64 = 555
+#   let y i64 = 1 if __cond_0 > 0 else 2   # AST: 556   IR/bytecode/native: 4
+#
+# The temps are now prefixed `#`, which the lexer cannot produce, so the collision
+# is impossible by construction. These names are therefore ordinary identifiers with
+# no special meaning, and every tier must agree.
+#
+# Both the conditional and the match temp are exercised, because both holes were
+# confirmed real. The names below are exactly the ones the lowerer used to pick
+# (id 0 is the first of each kind), so this fixture aims at the collision rather
+# than near it.
+#
+# The result stays under 256 so the native `.exe` exit code is unambiguous under
+# either exit-code convention (Windows preserves the full value; POSIX truncates
+# mod 256). With the shadowing bug the answer is 18, not 148 — the temps' zero
+# initializers overwrite both user bindings and flip the conditional to its else
+# branch — so this fixture fails loudly rather than coincidentally matching.
+
+fn main -> i64
+    let __cond_0 i64 = 100
+    let __match_v_0 i64 = 40
+
+    # If the conditional temp still shadowed `__cond_0`, the condition would read
+    # the temp's zero initializer and take the else branch.
+    let a i64 = 1 if __cond_0 > 0 else 2
+
+    # Likewise for the match temp.
+    let b i64 = match some(7)
+        some(v) -> v
+        none -> 0
+
+    # 1 + 7 + 100 + 40
+    a + b + __cond_0 + __match_v_0

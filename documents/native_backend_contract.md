@@ -1290,17 +1290,29 @@ So "closure bodies with locals and control flow" is not a deferred backend featu
 the language has no such form.
 
 The one intra-body control form the grammar does admit — the inline conditional
-`A if C else B` — **does not work in a closure body on any backend today**. The IR
-lowerer desugars a conditional into a hoisted `let __cond_N` plus an `if` statement
-pushed into the *enclosing statement's* prelude, but a closure body is an expression
-with nowhere to hoist to, so the statements escape the closure into the enclosing
-function where the closure's parameters are not in scope. The IR interpreter and
-bytecode VM therefore fail at runtime with `L0403 unknown variable`, while the AST
-interpreter (which has no such desugar) computes the right answer. The native
-backend refuses it too — the hoisted parameter is not a native local — so native
-stays **consistent with the interpreters and never miscompiles it**. This is a
-pre-existing IR-lowering bug, tracked separately; unlocking control flow inside a
-closure body is a prerequisite for any future stage that wants it.
+`A if C else B` — **works on all three interpreter tiers and is refused natively**.
+The IR lowerer desugars a conditional into a hoisted `let #cond_N` plus an `if`, and
+because that scaffolding reads the closure's *parameters* it is carried in
+`BytecodeClosureDef::prelude` and run in the closure's own frame, per call. (It used
+to drain into the enclosing function instead, where the parameters do not exist — the
+IR interpreter and bytecode VM died with `L0403 unknown variable \`x\`` while the AST
+interpreter, which has no such desugar, computed the right answer. That cross-tier
+divergence is fixed.)
+
+**This backend does not lower a prelude**, so a ternary-bodied closure skips: the body
+is a bare `#cond_N` reference, `ctx.local` cannot resolve it, and the enclosing
+function falls back to the interpreters (`L0339`). Native therefore stays **consistent
+with the interpreters and never miscompiles it** — compiling the body while dropping
+the prelude would answer *differently*, which correct-or-refuse forbids.
+
+That skip is sound **only because the temps are unspellable**. They are prefixed `#`
+(`bytecode_vm::TEMP`), a character the lexer cannot produce, so no user binding can
+satisfy the lookup. While they were spelled `__cond_N` the guard was accidental and a
+user could defeat it by declaring the name: `let __cond_0 i64 = 555` made the body's
+`__cond_0` resolve to the *user's* local, so this backend compiled a closure it had
+always refused, ignored the prelude, and exited **1110** where every interpreter said
+**556**. The unspellable prefix makes that unreachable by construction. The `?`
+desugar cannot reach a closure body at all — semantics refuses it (`L0462`).
 
 ### Supported slice
 

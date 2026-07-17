@@ -3133,6 +3133,46 @@ fn try_operator_on_option_type_checks() {
     validate_source(source).expect("`?` on option in an option-returning fn");
 }
 
+/// `?` inside a closure body is refused (`L0462`) even when the ENCLOSING function
+/// is a perfectly good propagation target — the point is that the enclosing
+/// function is not the closure's target at all.
+///
+/// This shape used to type-check (`?` silently bound to `run`'s `result` return),
+/// and then diverged at runtime: the AST interpreter propagated the error out of
+/// `run`, while the IR interpreter and bytecode VM handed back a type-confused
+/// value — a closure declared `fn(i64) -> i64` returning an `err(...)`.
+#[test]
+fn try_operator_inside_a_closure_body_is_l0462() {
+    let source = concat!(
+        "fn half n i64 -> result<i64, i64>\n",
+        "    ok(n / 2)\n\n",
+        "fn run -> result<i64, i64>\n",
+        "    let f fn(i64) -> i64 = fn x i64 -> half(x)? + 1\n",
+        "    ok(f(7))\n",
+    );
+    let diagnostics = validate_source(source).expect_err("`?` in a closure body is refused");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0462"),
+        "expected L0462: {diagnostics:?}"
+    );
+}
+
+/// The `L0462` guard is scoped to the closure body and does not leak: a `?` in the
+/// enclosing function is still checked against that function as before, so the
+/// closure_depth counter must unwind correctly after the literal is checked.
+#[test]
+fn try_operator_after_a_closure_literal_still_checks_the_enclosing_fn() {
+    let source = concat!(
+        "fn half n i64 -> result<i64, i64>\n",
+        "    ok(n / 2)\n\n",
+        "fn run -> result<i64, i64>\n",
+        "    let f fn(i64) -> i64 = fn x i64 -> x + 1\n",
+        "    let v i64 = half(8)?\n",
+        "    ok(f(v))\n",
+    );
+    validate_source(source).expect("`?` outside the closure body is unaffected");
+}
+
 #[test]
 fn try_operator_in_incompatible_return_type_is_l0427() {
     // `?` on a `result` inside a plain `i64`-returning function has no

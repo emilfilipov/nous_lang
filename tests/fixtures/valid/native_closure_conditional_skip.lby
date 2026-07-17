@@ -1,0 +1,18 @@
+# The native closure subset's boundary, isolated to ONE cause: the ternary body.
+#
+# Everything else here is squarely inside the native scalar subset — a direct `fn`
+# literal, no captures, an `i64` parameter, an `i64` return, and used only as the
+# callee of a direct call. The single reason `main` cannot compile natively is that
+# the body is an inline conditional, which lowers to a hoisted temporary plus an
+# `if` that lives in the closure's prelude; the prelude is not part of the native
+# closure-body expression, so `__cond_N` resolves to no native local and the
+# function skips cleanly to the interpreters (`L0339`).
+#
+# This pins that the skip stays a CLEAN REFUSAL. Native must never compile this
+# body while ignoring the prelude — that would silently answer differently from the
+# three interpreter tiers, which is the one outcome the correct-or-refuse rule
+# forbids. Both branches are exercised, so a wrong answer would be visible.
+
+fn main -> i64
+    let f fn(i64) -> i64 = fn x i64 -> 1 if x > 0 else 0
+    f(5) * 10 + f(0 - 5)

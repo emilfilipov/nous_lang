@@ -1445,6 +1445,11 @@ mod suite21;
 #[path = "cli/suite22.rs"]
 mod suite22;
 
+// -- An inline conditional as a closure body: cross-tier agreement, call-time
+//    laziness, and the native subset's clean refusal
+#[path = "cli/closure_conditional.rs"]
+mod closure_conditional;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

@@ -1,0 +1,30 @@
+# Laziness of an inline conditional used as a closure body: exactly the taken arm
+# runs, exactly once, at CALL time.
+#
+# Both arms call a function, and the then-arm prints. The closure is called twice —
+# once taking the else-arm, once taking the then-arm — so the stdout transcript
+# pins the evaluation schedule precisely:
+#
+#   - `TAKEN` must NOT appear for `f(0 - 1)`  -> the untaken arm must not evaluate.
+#   - `TAKEN` must appear exactly ONCE overall -> not both arms, and not once per
+#     closure creation.
+#
+# A body-prelude hoisted into the enclosing function (the bug this pins) cannot
+# even reach this point: it reads the closure's parameter `x` from a frame that has
+# none. A prelude evaluated eagerly at closure creation would print `TAKEN` before
+# `start`, and an unlazy select would print it twice.
+
+fn loud -> i64
+    println("TAKEN")
+    1
+
+fn quiet -> i64
+    2
+
+fn main -> i64
+    println("start")
+    let f fn(i64) -> i64 = fn x i64 -> loud() if x > 0 else quiet()
+    let a i64 = f(0 - 1)
+    let b i64 = f(2)
+    println("end")
+    a + b

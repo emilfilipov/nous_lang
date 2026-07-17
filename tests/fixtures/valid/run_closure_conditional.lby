@@ -1,0 +1,48 @@
+# An inline conditional (`THEN if COND else ELSE`) as a closure body, in every
+# shape the grammar admits. A closure body is a single *surface* expression, but a
+# ternary body does not lower to a single IR expression: it hoists a temporary plus
+# an `if`. That scaffolding reads the closure's PARAMETERS, so it belongs to the
+# closure's frame. When it instead drained into the enclosing function, the IR
+# interpreter and bytecode VM died with `L0403 unknown variable `x`` — naming the
+# closure's own parameter, in `main`'s frame — while the AST interpreter answered
+# correctly. Regression pin for that cross-tier divergence.
+#
+# Every closure below is called with BOTH branches taken, and each is called more
+# than once with different arguments, so a body-prelude evaluated once at closure
+# creation (rather than per call) changes the result instead of passing silently.
+
+fn apply f fn(i64) -> i64 v i64 -> i64
+    f(v)
+
+fn make_sign -> fn(i64) -> i64
+    let s fn(i64) -> i64 = fn x i64 -> 1 if x > 0 else 0 - 1
+    s
+
+fn main -> i64
+    # Basic ternary body: both branches, re-decided per call.
+    let sign fn(i64) -> i64 = fn x i64 -> 1 if x > 0 else 0 - 1
+    let a i64 = sign(5)
+    let b i64 = sign(0 - 5)
+
+    # A captured local read from inside the ternary.
+    let n i64 = 7
+    let capped fn(i64) -> i64 = fn x i64 -> n if x > n else x
+    let c i64 = capped(9)
+    let d i64 = capped(3)
+
+    # Nested ternaries: all three outcomes.
+    let grade fn(i64) -> i64 = fn s i64 -> 1 if s >= 90 else (2 if s >= 80 else 3)
+    let e i64 = grade(95)
+    let g i64 = grade(85)
+    let h i64 = grade(10)
+
+    # A ternary closure passed to a higher-order function.
+    let i2 i64 = apply(fn x i64 -> 10 if x > 0 else 20, 1)
+    let j i64 = apply(fn x i64 -> 10 if x > 0 else 20, 0 - 1)
+
+    # A ternary closure returned from a function, then called.
+    let s2 fn(i64) -> i64 = make_sign()
+    let k i64 = s2(0 - 2)
+
+    # 1 + -1 + 7 + 3 + 1 + 2 + 3 + 10 + 20 + -1
+    a + b + c + d + e + g + h + i2 + j + k

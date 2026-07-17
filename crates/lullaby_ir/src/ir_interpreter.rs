@@ -1018,7 +1018,41 @@ impl<'a> IrRuntime<'a> {
         // A closure body is its own frame — see the AST interpreter's
         // `invoke_closure` and runtime `raw_pointer.rs`.
         let outer_frame = self.raw_ptrs.enter_frame();
-        let result = self.eval_expr(&def.body, &mut env);
+        // Run the body's own hoisted scaffolding (the inline-conditional desugar)
+        // here, in the closure's frame, where its parameters and captures are
+        // bound — that is the whole point of `IrClosureDef::prelude`. It is re-run
+        // on every invocation, so the conditional re-decides per call against this
+        // call's arguments, matching the AST interpreter, which evaluates
+        // `ExprKind::Conditional` lazily at the same moment.
+        //
+        // A prelude must NOT complete by transferring control. The conditional
+        // desugar — the only desugar that can legally reach a closure body — emits
+        // `let`/`if`/assignment and nothing else, so it always falls through to the
+        // body. `Break`/`Continue` need a loop no expression body can spell, and
+        // the one construct that does emit `return`, the `?` desugar, is refused in
+        // a closure body by semantics (`L0462`), because `?` propagates out of the
+        // *enclosing* function and a closure may outlive that frame entirely.
+        //
+        // So this is a fail-closed guard, not an expected path. It is deliberately
+        // an error rather than a value: an earlier revision yielded the returned
+        // value as the closure's result, which turned a loud refusal into a SILENT
+        // one — a closure declared `fn(i64) -> i64` handed back an `err(...)` that
+        // flowed on through `ok(f(7))` and out of a `main -> i64`. Reaching here
+        // means a desugar started emitting control flow into a closure body without
+        // a propagation model; that is a compiler bug and says so.
+        let result = self
+            .eval_block(&def.prelude, &mut env)
+            .and_then(|control| match control {
+                Control::Value(_) => self.eval_expr(&def.body, &mut env),
+                Control::Return(_) | Control::Break | Control::Continue => Err(RuntimeError::new(
+                    "L0402",
+                    format!(
+                        "closure #{} body transferred control out of its prelude; \
+                         a closure body has no propagation target (compiler bug)",
+                        closure.id
+                    ),
+                )),
+            });
         self.raw_ptrs.exit_frame(outer_frame);
         result
     }
