@@ -89,6 +89,17 @@ pub(crate) fn native_signature_type_is_aggregate(
         // Unreachable (`resolve_native_type` never yields `Void`, and a void RETURN
         // is classified by the caller); a `Void` here could only be a void PARAMETER.
         NativeType::Void => Err("`void` is not a valid parameter type".to_string()),
+        // Unreachable: `Narrow` is an ARRAY-ELEMENT-only layout produced solely by
+        // `array_element_native_type`; `resolve_native_type` (called just above)
+        // maps a narrow scalar type to its normalized `I64` cell, so no signature
+        // type can resolve to one. Refused rather than classified, so that if a
+        // future change ever routed a narrow layout into a signature position the
+        // function would skip cleanly (`L0339`) instead of silently passing a
+        // sub-word value in a register slot the ABI sizes as a full word.
+        NativeType::Narrow { .. } => Err(
+            "a packed narrow value is an array-element layout and is not a valid signature type"
+                .to_string(),
+        ),
         NativeType::I64
         | NativeType::F64
         | NativeType::F32

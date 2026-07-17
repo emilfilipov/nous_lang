@@ -75,7 +75,58 @@ pub(crate) enum NativeType {
         name: String,
         fields: Vec<(String, NativeType)>,
     },
+    /// A **packed narrow integer** — 1, 2, or 4 bytes of storage holding an
+    /// `i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`byte` value at its C-natural width.
+    ///
+    /// This is the ONLY place the native backend departs from the normalized
+    /// 8-byte cell, and it appears in exactly one position: the ELEMENT type of a
+    /// fixed [`NativeType::Array`]. A narrow *scalar* (a local, parameter, field,
+    /// list element, or enum payload) is still a full sign-extended `I64` cell —
+    /// see [`resolve_native_type`], which keeps mapping `i32` and friends to
+    /// [`NativeType::I64`]. Only [`array_element_native_type`] produces a `Narrow`.
+    ///
+    /// # Why it exists
+    ///
+    /// The interpreters DEFINE a narrow-element buffer walk: for an `array<i32>`,
+    /// `addr_of(a[0])` + `ptr_offset(p, 1)` names element 1 and the size law
+    /// answers `size_of(i32) == 4` (`RawPointerMemory`'s region stride is
+    /// `size_of(element)`; see `raw_pointer.rs` and the `raw_ptr_addressing.lby`
+    /// fixture, which exits 18 on all three interpreters). With 8-byte element
+    /// cells the native answer would be 8 — a *different answer to a defined
+    /// program*, which is exactly what the backend must never do. Packing the
+    /// element to its C width makes the native stride and the interpreters' stride
+    /// the same number, and makes the buffer C-compatible for the kernel tier.
+    ///
+    /// # Why a distinct variant rather than a width field on `Array`
+    ///
+    /// Every `match` on `NativeType` in this backend is exhaustive (there is not a
+    /// single `_ =>` arm), and every fast path that assumes an 8-byte lane gates on
+    /// `NativeType::I64` / `NativeType::F64` specifically — the four SIMD bases in
+    /// `native_object_simd.rs`, the strict `resolve_place_steps` i64 resolver, the
+    /// reduction detectors. Giving a narrow element its own variant makes all of
+    /// them **fail closed by construction**: they stop matching, the shape is not
+    /// recognized, and the function falls back to the scalar path or skips cleanly.
+    /// A `bytes` field on `Array` would leave `elem` reading `I64` and let
+    /// `paddq`-based vectorization run over 4-byte lanes — silent corruption. The
+    /// exhaustiveness also means the compiler enumerates every site that must make
+    /// a decision about narrow elements, rather than leaving it to a grep.
+    Narrow { bytes: usize, signed: bool },
     /// A fixed-length array of a supported element type.
+    ///
+    /// Elements are laid out **contiguously at their element type's own width**:
+    /// element `k` begins at byte `k * elem.byte_size()` from the array's element 0,
+    /// ascending. For an 8-byte element that is the historical word layout,
+    /// unchanged. For a [`NativeType::Narrow`] element the array is PACKED, exactly
+    /// like the C array it mirrors.
+    ///
+    /// The array as a whole still occupies a whole number of 8-byte words and is
+    /// word-aligned (see [`NativeType::words`]): packing is a property of the
+    /// element stride *within* the array's own byte span, not of the surrounding
+    /// frame or struct layout. That keeps every word-granular copy path (aggregate
+    /// copy-in, the by-hidden-pointer return ABI, `alloc_scratch`) correct and
+    /// untouched — a copy moves `words()` whole words, which covers the packed
+    /// bytes plus at most 7 bytes of tail padding that no element access ever
+    /// reads.
     Array { elem: Box<NativeType>, len: usize },
     /// A **fat-pointer** `array<T>` parameter: a `(data_ptr, length)` descriptor
     /// occupying two frame words — word 0 is a pointer to the caller's element 0
@@ -149,6 +200,20 @@ impl NativeType {
         )
     }
 
+    /// The size of this value **in bytes** when it sits as an array element.
+    ///
+    /// This is the element stride: `size_of(T)` for a [`NativeType::Narrow`], and
+    /// `8 * words()` for everything else (an 8-byte cell, or an aggregate element
+    /// occupying whole words). It is always a power of two for the element types
+    /// that can actually appear in a fixed array's element position, which
+    /// `emit_dynamic_addr_into_rcx` relies on to keep the index scaling a `shl`.
+    pub(crate) fn byte_size(&self) -> usize {
+        match self {
+            NativeType::Narrow { bytes, .. } => *bytes,
+            other => other.words() * 8,
+        }
+    }
+
     /// The number of 8-byte words this value occupies on the stack.
     pub(crate) fn words(&self) -> usize {
         match self {
@@ -166,8 +231,22 @@ impl NativeType {
             | NativeType::List { .. }
             | NativeType::Map { .. }
             | NativeType::HeapStruct { .. } => 1,
+            // A packed narrow element is a sub-word quantity, so it has no
+            // standalone word count. It only ever appears as an array element, and
+            // the `Array` arm below sizes the packed span directly rather than
+            // multiplying a per-element word count — so this arm is never consulted
+            // for a live stack reservation. Answering 1 (rather than panicking)
+            // keeps it a conservative sizing identity: a narrow value never needs
+            // MORE than one word.
+            NativeType::Narrow { .. } => 1,
             NativeType::Struct { fields, .. } => fields.iter().map(|(_, t)| t.words()).sum(),
-            NativeType::Array { elem, len } => elem.words() * len,
+            // The packed span rounded UP to whole words. The array is word-aligned
+            // and owns its tail padding, so every word-granular copy path stays
+            // correct: `array<u8>` of length 3 is 3 bytes of live elements inside a
+            // 1-word (8-byte) reservation, and copying that 1 word moves the 3 live
+            // bytes plus 5 bytes of padding no element access reads. An 8-byte
+            // element reduces to the historical `words * len`, bit-for-bit.
+            NativeType::Array { elem, len } => (elem.byte_size() * len).div_ceil(8),
             // A fat-pointer array descriptor: one data-pointer word plus one
             // length word.
             NativeType::FatArray { .. } => 2,
@@ -378,6 +457,11 @@ fn subst_map(type_params: &[String], args: &[TypeRef]) -> HashMap<String, TypeRe
 pub(crate) fn is_scalar_only_layout(ty: &NativeType) -> bool {
     match ty {
         NativeType::I64 | NativeType::F64 | NativeType::F32 => true,
+        // A packed narrow array element IS a scalar — an integer at its C width,
+        // carrying no heap word — so a narrow-element array is a scalar-only layout
+        // and stays inside the generic-monomorphization scope, exactly like the
+        // `array<i64>` it now sits beside.
+        NativeType::Narrow { .. } => true,
         // `Void` is a RETURN-only layout and can never be a field/element/payload,
         // so this arm is unreachable through the generic-monomorphization gate that
         // calls it. `false` is the default-deny answer regardless: "no value" is not
@@ -672,6 +756,44 @@ fn resolve_enum_type(
     Ok(native)
 }
 
+/// The **packed** layout of a narrow integer array element, or `None` for every
+/// other element type (which keeps its existing 8-byte-word layout).
+///
+/// This set is not arbitrary — it is exactly the intersection of two conditions,
+/// and both are load-bearing:
+///
+/// 1. **The interpreters already stride by it.** `Value::layout_size`
+///    (`lullaby_runtime/src/lib.rs`) gives `Value::Int { ty }` a stride of
+///    `width_bits / 8` and `Value::Byte` a stride of 1, and `RawPointerMemory`
+///    builds an `addr_of` region with that stride. So for these element types the
+///    interpreters DEFINE a walk whose size law answers 1/2/4 — and native must
+///    answer the same number or not compile the program at all.
+/// 2. **The raw-pointer surface can dereference it.** [`pointee_access`] admits
+///    exactly the integer widths, so a `ptr_read`/`ptr_write` through the resulting
+///    pointer is width-exact.
+///
+/// Types where the interpreters stride narrowly but [`pointee_access`] refuses the
+/// pointee — `bool` (1), `char` (4), `f32` (4) — are deliberately NOT packed. They
+/// need no packing to stay correct, because `addr_of` of one is refused before a
+/// stride is ever observable (`is_addressable_word_type` rejects them and
+/// `pointee_access` returns `None`), so no program can witness the difference.
+/// Packing them anyway would churn the float SIMD path and the `bool`/`char` cell
+/// invariants for no reachable behavior. The 8-byte types (`i64`/`u64`/`isize`/
+/// `usize`/`ptr<T>`) are already width-exact as cells and are untouched — their
+/// codegen stays bit-for-bit identical.
+pub(crate) fn narrow_array_element(name: &str) -> Option<NativeType> {
+    let (bytes, signed) = match name {
+        "i8" => (1, true),
+        "i16" => (2, true),
+        "i32" => (4, true),
+        "u8" | "byte" => (1, false),
+        "u16" => (2, false),
+        "u32" => (4, false),
+        _ => return None,
+    };
+    Some(NativeType::Narrow { bytes, signed })
+}
+
 /// Infer the `NativeType` of an initializer expression, using its static type
 /// plus (for array literals) the literal element count. This is how array
 /// lengths enter the layout, since `array<T>` carries no length.
@@ -685,9 +807,18 @@ pub(crate) fn native_type_of_init(
         let first = elements
             .first()
             .ok_or("empty array literals are not in the native stack subset")?;
-        let elem = native_type_of_init(first, structs, enums, signatures)?;
+        // An array ELEMENT of a narrow integer type packs to its C width; every
+        // other element keeps its 8-byte-word layout. This is the only position in
+        // the backend that produces a `Narrow` (see `narrow_array_element`).
+        let elem = match narrow_array_element(&first.ty.name) {
+            Some(packed) => packed,
+            None => native_type_of_init(first, structs, enums, signatures)?,
+        };
         for other in &elements[1..] {
-            let other_ty = native_type_of_init(other, structs, enums, signatures)?;
+            let other_ty = match narrow_array_element(&other.ty.name) {
+                Some(packed) => packed,
+                None => native_type_of_init(other, structs, enums, signatures)?,
+            };
             if other_ty != elem {
                 return Err("array literal elements have differing native layouts".to_string());
             }
@@ -776,13 +907,21 @@ pub(crate) fn resolve_signature_native_type(
     }
     if let Some(rest) = ty.name.strip_prefix("array<") {
         let elem_name = rest.strip_suffix('>').unwrap_or(rest);
-        let elem = resolve_signature_native_type(
-            &TypeRef::new(elem_name),
-            structs,
-            enums,
-            array_lengths,
-            key,
-        )?;
+        // Keep the signature's element layout in lockstep with the array-literal
+        // path above: a narrow integer element packs to its C width, so a caller's
+        // packed array and the callee's copy-in/fat-pointer view agree on the
+        // stride. Resolving this through the general resolver instead would give
+        // the callee an 8-byte-cell view of a packed buffer.
+        let elem = match narrow_array_element(elem_name) {
+            Some(packed) => packed,
+            None => resolve_signature_native_type(
+                &TypeRef::new(elem_name),
+                structs,
+                enums,
+                array_lengths,
+                key,
+            )?,
+        };
         let len = *array_lengths.get(key).ok_or_else(|| {
             format!("array length for signature slot `{key}` could not be inferred")
         })?;

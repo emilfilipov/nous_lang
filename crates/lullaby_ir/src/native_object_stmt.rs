@@ -116,6 +116,17 @@ pub(crate) fn lower_native_function(
             // that if a frontend change ever admitted a void parameter the function
             // would skip cleanly (`L0339`) instead of consuming a register slot that
             // the caller never filled and shifting every later argument.
+            // Unreachable: `Narrow` is an array-element-only layout and the
+            // parameter resolver never yields one (a narrow scalar parameter is its
+            // normalized `I64` cell). Refused rather than spilled, so a sub-word
+            // parameter could never be stored with the wrong width.
+            NativeType::Narrow { .. } => {
+                return Err(format!(
+                    "parameter `{}` resolves to a packed narrow layout, which is an \
+                     array-element-only representation and is not in the native subset",
+                    param.name
+                ));
+            }
             NativeType::Void => {
                 return Err(format!(
                     "parameter `{}` is `void`; a void parameter is not in the native subset",
@@ -540,6 +551,17 @@ pub(crate) fn lower_native_stmt(
                         "local `{name}` is `void`; a void binding is not in the native subset"
                     ));
                 }
+                // Unreachable: `Narrow` is an array-element-only layout, and a
+                // local's layout comes from `native_type_of_init`/`resolve_native_type`,
+                // which map a narrow scalar to its normalized `I64` cell. Refused
+                // rather than stored, so a narrow `let` could never write a sub-word
+                // value into a slot the rest of the backend reads as a full cell.
+                NativeType::Narrow { .. } => {
+                    return Err(format!(
+                        "local `{name}` resolves to a packed narrow layout, which is an \
+                         array-element-only representation and is not in the native subset"
+                    ));
+                }
                 // An `i64` scalar or a string/list/map/heap-struct (a pointer word)
                 // uses the register path: evaluate into `rax` and store the whole
                 // word. (A `HeapStruct` never appears as a top-level local; kept in
@@ -673,6 +695,21 @@ pub(crate) fn lower_native_stmt(
             // plain `Replace` is supported (a float compound `a[i] += ...` is
             // deferred, mirroring the string/list rejection above).
             let (typed_place, elem_ty) = resolve_scalar_place_typed(ctx, name, path)?;
+            // A PACKED narrow array element store (`a[i] = <i32>`). Only a plain
+            // `Replace` is lowered: a compound `a[i] += …` would need a
+            // read-modify-write at the element's width, and is deferred exactly
+            // like the float element compound store above (the function skips
+            // cleanly rather than storing at the wrong width).
+            if let Some(access) = narrow_access(&elem_ty) {
+                if !matches!(op, AssignOp::Replace) {
+                    return Err(
+                        "compound assignment on a packed narrow array element is not supported"
+                            .to_string(),
+                    );
+                }
+                lower_native_expr(ctx, value, code)?; // rax = value (a normalized cell)
+                return emit_store_place_narrow(ctx, &typed_place, access, code);
+            }
             if matches!(elem_ty, NativeType::F64 | NativeType::F32) {
                 if !matches!(op, AssignOp::Replace) {
                     return Err(
@@ -1076,11 +1113,13 @@ pub(crate) fn lower_aggregate_init(
             if elements.len() != *len {
                 return Err("array literal length does not match layout".to_string());
             }
-            let stride = elem.words() as i32;
+            // The element's BYTE stride: its packed C width for a narrow element,
+            // `8 * words` otherwise (unchanged for every pre-existing array).
+            let stride = elem.byte_size() as i32;
             for (index, element) in elements.iter().enumerate() {
-                // Element `index` ascends: 8*stride*index bytes above element 0.
-                let word = base_slot - index as i32 * stride * 8;
-                lower_value_into(ctx, word, elem, element, code)?;
+                // Element `index` ascends: stride*index bytes above element 0.
+                let at = base_slot - index as i32 * stride;
+                lower_value_into(ctx, at, elem, element, code)?;
             }
             Ok(())
         }
@@ -1214,6 +1253,23 @@ pub(crate) fn lower_value_into(
         NativeType::I64 => {
             lower_native_expr(ctx, value, code)?;
             store_local(code, word_slot);
+            Ok(())
+        }
+        // A PACKED narrow array element: evaluate the value into its normalized
+        // cell, then store only its low `bytes` bytes at the element's own address.
+        // `word_slot` is a byte displacement here (the caller scales by the element's
+        // byte stride), so this writes exactly the packed element and never touches
+        // its neighbours.
+        NativeType::Narrow { bytes, signed } => {
+            lower_native_expr(ctx, value, code)?; // rax = value
+            emit_lea_rcx_slot(code, word_slot); // rcx = &elem
+            emit_store_through_rcx(
+                code,
+                PointeeAccess {
+                    size: *bytes as i64,
+                    signed: *signed,
+                },
+            );
             Ok(())
         }
         // A float array/aggregate element: evaluate into xmm0 and store the whole

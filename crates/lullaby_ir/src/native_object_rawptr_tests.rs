@@ -541,9 +541,15 @@ fn addr_of_into_fat_array_parameter_skips_cleanly() {
     );
 }
 
-/// `addr_of` of a NARROW scalar skips: an `i32` local is stored as a normalized
+/// `addr_of` of a NARROW scalar skips: an `i32` LOCAL is stored as a normalized
 /// 8-byte cell, so a width-correct 4-byte store through its address would leave
 /// the cell's upper half stale and corrupt every later read of it.
+///
+/// This is the counterpart to [`addr_of_narrow_array_element_is_lowered`], and the
+/// pair is the whole point of the width-agreement law: both spell the pointee
+/// `i32`, so no type-NAME gate could separate them. The scalar's storage is 8 bytes
+/// (refused); the packed array element's is 4 (lowered). The law asks the resolved
+/// layout, which is what is actually true about the storage.
 #[test]
 fn addr_of_narrow_scalar_skips_cleanly() {
     assert_main_skips_because(
@@ -554,7 +560,35 @@ fn addr_of_narrow_scalar_skips_cleanly() {
             "        let p ptr<i32> = addr_of(x)\n",
             "        to_i64(ptr_read(p))\n",
         ),
-        "8-byte scalar",
+        "storage is 8 bytes wide but the pointee `i32` is 4",
+    );
+}
+
+/// The converse, and the feature this file's width law exists to permit: `addr_of`
+/// of a narrow ARRAY ELEMENT **is** lowered, because an `array<i32>`'s elements are
+/// PACKED to 4 bytes, so the addressed storage is exactly as wide as the pointee
+/// `ptr<i32>` claims.
+///
+/// Pinning this next to the scalar skip above is what keeps the two apart: if a
+/// future change ever unpacked narrow array elements back to 8-byte cells, this
+/// test fails (the element would stop being addressable) rather than the backend
+/// silently handing out a pointer whose `ptr_offset` stride disagrees with the
+/// storage — which is the exact miscompile the packed layout was introduced to
+/// remove.
+#[test]
+fn addr_of_narrow_array_element_is_lowered() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn main -> i64\n",
+        "    let a array<i32> = [to_i32(3), to_i32(4)]\n",
+        "    unsafe\n",
+        "        let p ptr<i32> = addr_of(a[0])\n",
+        "        to_i64(ptr_read(ptr_offset(p, 1)))\n",
+    )))
+    .expect("a packed narrow array element is addressable");
+    assert!(
+        program.compiled.contains(&"main".to_string()),
+        "main must compile: skipped={:?}",
+        program.skipped
     );
 }
 

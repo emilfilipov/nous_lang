@@ -57,13 +57,20 @@ pub(crate) fn resolve_place_steps_typed(
         let place = ScalarPlace::FatIndex {
             ptr_slot: base_slot,
             len_slot: base_slot - 8,
-            elem_words: elem_ty.words() as i64,
+            // The element's C width. A fat-pointer parameter views the CALLER's
+            // storage in place, so this stride must be the same one the caller's
+            // array was laid out with — packed for a narrow element.
+            elem_bytes: elem_ty.byte_size() as i64,
             index: (*index).clone(),
         };
         return Ok((place, elem_ty));
     }
     let mut ty = local.ty.clone();
-    let mut const_words: i64 = 0;
+    // The static offset from the local's word 0, in BYTES. Struct fields are still
+    // word-granular (each field starts on a word boundary, so a field hop always
+    // contributes a multiple of 8); only an array index can contribute a sub-word
+    // amount, and only when the array's element is packed.
+    let mut const_bytes: i64 = 0;
     let mut dynamic: Option<(i64, i64, BytecodeExpr)> = None;
 
     for step in steps {
@@ -76,14 +83,23 @@ pub(crate) fn resolve_place_steps_typed(
                         found = Some(fty.clone());
                         break;
                     }
-                    offset += fty.words() as i64;
+                    // Struct fields remain word-granular: a preceding field occupies
+                    // whole words, so its byte contribution is `words * 8`. (A
+                    // narrow-element array is word-ALIGNED and owns its tail padding
+                    // — packing is internal to the array's own span — so this stays
+                    // exact even when `fty` is such an array.)
+                    offset += fty.words() as i64 * 8;
                 }
                 let fty = found.ok_or_else(|| format!("unknown field `{field}`"))?;
-                const_words += offset;
+                const_bytes += offset;
                 ty = fty;
             }
             (PathStep::Index(index), NativeType::Array { elem, len }) => {
-                let stride = elem.words() as i64;
+                // BYTE stride: `byte_size()` is the element's own C width (1/2/4 for
+                // a packed narrow element, 8*words for everything else). For an
+                // 8-byte element this is the historical `words * 8` and the emitted
+                // code is unchanged.
+                let stride = elem.byte_size() as i64;
                 if let BytecodeExprKind::Integer(literal) = index.kind {
                     // A constant index is bounds-checked at compile time: an
                     // out-of-range literal is rejected so the function skips
@@ -93,7 +109,7 @@ pub(crate) fn resolve_place_steps_typed(
                             "array index `{literal}` is out of bounds for length {len}"
                         ));
                     }
-                    const_words += literal * stride;
+                    const_bytes += literal * stride;
                 } else if dynamic.is_none() {
                     dynamic = Some((stride, *len as i64, (*index).clone()));
                 } else {
@@ -119,21 +135,25 @@ pub(crate) fn resolve_place_steps_typed(
     // requires `I64`, so string fields never reach the integer store / SIMD paths.
     if !matches!(
         ty,
-        NativeType::I64 | NativeType::F64 | NativeType::F32 | NativeType::String
+        NativeType::I64
+            | NativeType::F64
+            | NativeType::F32
+            | NativeType::String
+            | NativeType::Narrow { .. }
     ) {
         return Err("native access must resolve to an i64, f64, or string scalar".to_string());
     }
 
-    // ASCENDING layout: word `k` of an aggregate is 8·k bytes HIGHER than word 0,
-    // i.e. at the SMALLER displacement `base_slot - 8*k`.
+    // ASCENDING layout: byte `k` of an aggregate is k bytes HIGHER than byte 0,
+    // i.e. at the SMALLER displacement `base_slot - k`.
     let place = match dynamic {
         None => ScalarPlace::Const {
-            slot: base_slot - const_words as i32 * 8,
+            slot: base_slot - const_bytes as i32,
         },
-        Some((elem_words, index_len, index)) => ScalarPlace::Dynamic {
+        Some((elem_bytes, index_len, index)) => ScalarPlace::Dynamic {
             base_slot,
-            const_words,
-            elem_words,
+            const_bytes,
+            elem_bytes,
             index_len,
             index,
         },
@@ -227,6 +247,85 @@ pub(crate) fn resolve_read_place(
     resolve_place_steps(ctx, root, &steps)
 }
 
+/// The width/signedness of a packed narrow array element, as the same
+/// [`PointeeAccess`] the raw-pointer surface uses.
+///
+/// A packed element and an `int_to_ptr` pointee are the *same problem* — read or
+/// write `n` C-natural bytes and extend back into the normalized 8-byte cell — so
+/// they share one set of emitters (`emit_load_through_rcx` /
+/// `emit_store_through_rcx`) rather than growing a second, subtly different copy.
+/// That shared path is what keeps `a[i]` and `ptr_read(addr_of(a[i]))` agreeing by
+/// construction.
+pub(crate) fn narrow_access(ty: &NativeType) -> Option<PointeeAccess> {
+    match ty {
+        NativeType::Narrow { bytes, signed } => Some(PointeeAccess {
+            size: *bytes as i64,
+            signed: *signed,
+        }),
+        _ => None,
+    }
+}
+
+/// Load the **packed narrow** element at a resolved place into `rax`,
+/// sign/zero-extended into its normalized 8-byte cell — so the value in `rax` is
+/// indistinguishable from the cell an 8-byte element would have produced, and
+/// every downstream integer path is unchanged.
+pub(crate) fn emit_load_place_narrow(
+    ctx: &mut NativeCtx,
+    place: &ScalarPlace,
+    access: PointeeAccess,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    match place {
+        // rcx = &elem
+        ScalarPlace::Const { slot } => emit_lea_rcx_slot(code, *slot),
+        ScalarPlace::Dynamic { .. } | ScalarPlace::FatIndex { .. } => {
+            emit_dynamic_addr_into_rcx(ctx, place, code)?;
+        }
+    }
+    emit_load_through_rcx(code, access);
+    Ok(())
+}
+
+/// Store the low `access.size` bytes of the cell in `rax` to a **packed narrow**
+/// element.
+///
+/// This is width-exact rather than lossy: the value in `rax` is already normalized
+/// to the element type's range (a narrow cell is kept sign/zero-extended by
+/// `emit_normalize_rax` and the `to_iN`/`to_uN` conversions), so the discarded high
+/// bytes are pure extension and the `emit_load_place_narrow` round-trip reproduces
+/// the cell exactly.
+pub(crate) fn emit_store_place_narrow(
+    ctx: &mut NativeCtx,
+    place: &ScalarPlace,
+    access: PointeeAccess,
+    code: &mut Vec<u8>,
+) -> Result<(), String> {
+    match place {
+        ScalarPlace::Const { slot } => {
+            // rcx = &elem. `rax` already holds the value, so the address must not
+            // be computed through it.
+            emit_lea_rcx_slot(code, *slot);
+        }
+        ScalarPlace::Dynamic { .. } => {
+            // The dynamic address computation CLOBBERS rax (it evaluates the index
+            // expression into it), so the value is spilled across it — the same
+            // shape the float element store uses with `push_xmm0`/`pop_xmm0`.
+            code.push(0x50); // push rax (the value)
+            emit_dynamic_addr_into_rcx(ctx, place, code)?; // rcx = &elem
+            code.push(0x58); // pop rax (the value)
+        }
+        // A fat-pointer array parameter is READ-ONLY — that is the whole reason the
+        // no-copy descriptor is value-semantically sound — so an element store must
+        // never resolve to one. Refused defensively, mirroring the float store path.
+        ScalarPlace::FatIndex { .. } => {
+            return Err("cannot assign to a fat-pointer array element".to_string());
+        }
+    }
+    emit_store_through_rcx(code, access);
+    Ok(())
+}
+
 /// Load the i64 scalar at a resolved place into `rax`.
 pub(crate) fn emit_load_place(
     ctx: &mut NativeCtx,
@@ -261,7 +360,7 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
     if let ScalarPlace::FatIndex {
         ptr_slot,
         len_slot,
-        elem_words,
+        elem_bytes,
         index,
         ..
     } = place
@@ -272,10 +371,8 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
         // UNSIGNED compare traps a negative or over-large index (`ud2`), matching
         // the interpreters' L0413.
         emit_bounds_check_rax_against_slot(code, *len_slot);
-        // rax = index * elem_words   (imul rax, rax, imm32)
-        emit_imul_rax_imm(code, *elem_words);
-        // rax = rax * 8  -> byte stride  (shl rax, 3)
-        code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]);
+        // rax = index * elem_bytes
+        emit_scale_rax_by_stride(code, *elem_bytes)?;
         // rcx = data_ptr (descriptor word 0)
         emit_mov_rcx_from_slot(code, *ptr_slot);
         // rcx = rcx + rax  (element i is at data_ptr + 8*elem_words*i; elements
@@ -285,8 +382,8 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
     }
     let ScalarPlace::Dynamic {
         base_slot,
-        const_words,
-        elem_words,
+        const_bytes,
+        elem_bytes,
         index_len,
         index,
     } = place
@@ -300,18 +397,57 @@ pub(crate) fn emit_dynamic_addr_into_rcx(
     // `index >= len`, so a negative or over-large index faults deterministically
     // (`ud2`) instead of reading adjacent stack memory.
     emit_bounds_check_rax(code, *index_len);
-    // rax = index * elem_words   (imul rax, rax, imm32)
-    emit_imul_rax_imm(code, *elem_words);
-    // rax = rax * 8  -> byte stride  (shl rax, 3)
-    code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]);
+    // rax = index * elem_bytes
+    emit_scale_rax_by_stride(code, *elem_bytes)?;
     // rcx = rbp
     code.extend_from_slice(&[0x48, 0x89, 0xE9]); // mov rcx, rbp
     // rcx = rcx + rax  (ADD the dynamic byte offset: element `index` is
-    // 8*elem_words*index bytes ABOVE the array's element 0).
+    // elem_bytes*index bytes ABOVE the array's element 0).
     code.extend_from_slice(&[0x48, 0x01, 0xC1]); // add rcx, rax
-    // rcx = rcx - (base_slot - 8*const_words)  (the static displacement of the
+    // rcx = rcx - (base_slot - const_bytes)  (the static displacement of the
     // indexed array's element 0 within the enclosing local).
-    let static_disp = *base_slot - (*const_words as i32) * 8;
+    let static_disp = *base_slot - (*const_bytes as i32);
     emit_sub_rcx_imm(code, static_disp);
     Ok(())
+}
+
+/// `rax = rax * stride`, where `stride` is an element's byte width.
+///
+/// Emits the **exact byte sequence the word-granular code emitted** for every
+/// stride that is a multiple of 8 — `imul rax, rax, stride/8` followed by
+/// `shl rax, 3` — so the existing `array<i64>`/`array<f64>`/struct-array codegen is
+/// unchanged bit-for-bit (and every COFF snapshot over it still matches). A packed
+/// narrow stride (1/2/4) is a power of two, so it scales with a single `shl` —
+/// or, for a byte array, no instruction at all.
+///
+/// Every stride reaching here is either a power of two below 8 (a packed narrow
+/// element) or a multiple of 8 (an 8-byte cell or a whole-word aggregate element),
+/// because `NativeType::byte_size` returns `bytes` only for `Narrow` (1/2/4) and
+/// `8 * words()` otherwise. A stride outside that set would mean a layout invariant
+/// broke, so it is refused and the function skips cleanly rather than emitting a
+/// silently wrong address.
+fn emit_scale_rax_by_stride(code: &mut Vec<u8>, stride: i64) -> Result<(), String> {
+    match stride {
+        // A packed narrow element: a single shift (or nothing for a byte array).
+        1 => Ok(()),
+        2 => {
+            code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x01]); // shl rax, 1
+            Ok(())
+        }
+        4 => {
+            code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x02]); // shl rax, 2
+            Ok(())
+        }
+        // A whole-word element: reproduce the historical `imul` + `shl rax, 3`
+        // pair exactly, so pre-existing codegen does not move.
+        n if n > 0 && n % 8 == 0 => {
+            emit_imul_rax_imm(code, n / 8); // imul rax, rax, elem_words
+            code.extend_from_slice(&[0x48, 0xC1, 0xE0, 0x03]); // shl rax, 3
+            Ok(())
+        }
+        other => Err(format!(
+            "array element stride {other} is neither a packed narrow width (1/2/4) nor a \
+             whole number of 8-byte words; the native backend refuses to scale an index by it"
+        )),
+    }
 }

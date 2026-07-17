@@ -693,6 +693,14 @@ pub(crate) fn lower_native_expr(
             // path, so the typed resolver rejecting it here never demotes a float
             // read (it is handled before this arm is reached).
             let (place, ty) = resolve_read_place_typed(ctx, expr)?;
+            // A PACKED narrow array element (`array<i32>`/`array<u8>`/…) is read at
+            // its C width and sign/zero-extended back into the normalized 8-byte
+            // cell, so the value left in `rax` is identical to the one an 8-byte
+            // element would have produced and every downstream integer path is
+            // unaffected.
+            if let Some(access) = narrow_access(&ty) {
+                return emit_load_place_narrow(ctx, &place, access, code);
+            }
             if !matches!(ty, NativeType::I64 | NativeType::String) {
                 return Err(
                     "native scalar field/index read must be an i64 or string word".to_string(),

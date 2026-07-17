@@ -445,16 +445,20 @@ pub(crate) fn detect_reduction(
     let place = resolve_read_place(ctx, element).ok()?;
     let ScalarPlace::Dynamic {
         base_slot,
-        const_words,
-        elem_words,
+        const_bytes,
+        elem_bytes,
         index_len,
         ..
     } = place
     else {
         return None;
     };
-    if elem_words != 1 {
-        return None; // only a contiguous i64 array is 16-byte packable
+    // An 8-byte element stride. A packed narrow element (stride 1/2/4) can never
+    // reach here — `resolve_read_place` is the STRICT i64 resolver and refuses a
+    // `NativeType::Narrow` element outright — but this keeps the 8-byte lane
+    // assumption explicit at the point the vectorizer depends on it.
+    if elem_bytes != 8 {
+        return None; // only a contiguous 8-byte-element array is 16-byte packable
     }
     // The accumulator must be a plain `i64` local, distinct from the array root.
     let acc_local = ctx.locals.get(acc)?;
@@ -463,7 +467,7 @@ pub(crate) fn detect_reduction(
     }
     Some(Reduction {
         acc_slot: acc_local.slot,
-        array_base_static: base_slot - const_words as i32 * 8,
+        array_base_static: base_slot - const_bytes as i32,
         array_len: index_len,
         op,
     })
@@ -543,15 +547,17 @@ pub(crate) fn detect_minmax_reduction(
     }
     let ScalarPlace::Dynamic {
         base_slot,
-        const_words,
-        elem_words,
+        const_bytes,
+        elem_bytes,
         index_len,
         ..
     } = resolve_read_place(ctx, element).ok()?
     else {
         return None;
     };
-    if elem_words != 1 {
+    // See above: an 8-byte lane is required, and a narrow element cannot reach
+    // this detector through the strict resolver.
+    if elem_bytes != 8 {
         return None;
     }
     let acc_local = ctx.locals.get(acc)?;
@@ -560,7 +566,7 @@ pub(crate) fn detect_minmax_reduction(
     }
     Some(MinMaxReduction {
         acc_slot: acc_local.slot,
-        array_base_static: base_slot - const_words as i32 * 8,
+        array_base_static: base_slot - const_bytes as i32,
         array_len: index_len,
         op,
     })
@@ -585,7 +591,7 @@ pub(crate) fn index_is_counter(expr: &BytecodeExpr, counter: &str) -> bool {
 }
 
 /// If `expr` is `array[counter]` over a contiguous `i64` array, return the array's
-/// static element-0 base (`base_slot + 8*const_words`) and its element count.
+/// static element-0 base (`base_slot - const_bytes`) and its element count.
 pub(crate) fn indexed_i64_base(
     ctx: &NativeCtx,
     expr: &BytecodeExpr,
@@ -599,18 +605,20 @@ pub(crate) fn indexed_i64_base(
     }
     let ScalarPlace::Dynamic {
         base_slot,
-        const_words,
-        elem_words,
+        const_bytes,
+        elem_bytes,
         index_len,
         ..
     } = resolve_read_place(ctx, expr).ok()?
     else {
         return None;
     };
-    if elem_words != 1 {
+    // See above: an 8-byte lane is required, and a narrow element cannot reach
+    // this detector through the strict resolver.
+    if elem_bytes != 8 {
         return None;
     }
-    Some((base_slot - const_words as i32 * 8, index_len))
+    Some((base_slot - const_bytes as i32, index_len))
 }
 
 /// Like [`indexed_i64_base`] but for a contiguous `array<f64>` element read.
@@ -631,18 +639,20 @@ pub(crate) fn indexed_f64_base(
     }
     let ScalarPlace::Dynamic {
         base_slot,
-        const_words,
-        elem_words,
+        const_bytes,
+        elem_bytes,
         index_len,
         ..
     } = place
     else {
         return None;
     };
-    if elem_words != 1 {
+    // See above: an 8-byte lane is required, and a narrow element cannot reach
+    // this detector through the strict resolver.
+    if elem_bytes != 8 {
         return None;
     }
-    Some((base_slot - const_words as i32 * 8, index_len))
+    Some((base_slot - const_bytes as i32, index_len))
 }
 
 /// Recognize `for counter from S to E: dest[counter] = lhs[counter] (+|-)
@@ -717,19 +727,21 @@ pub(crate) fn detect_elementwise_map(
     }
     let ScalarPlace::Dynamic {
         base_slot,
-        const_words,
-        elem_words,
+        const_bytes,
+        elem_bytes,
         index_len: dest_len,
         ..
     } = dest_place
     else {
         return None;
     };
-    if elem_words != 1 {
+    // See above: an 8-byte lane is required, and a narrow element cannot reach
+    // this detector through the strict resolver.
+    if elem_bytes != 8 {
         return None;
     }
     Some(ElementwiseMap {
-        dest_base: base_slot - const_words as i32 * 8,
+        dest_base: base_slot - const_bytes as i32,
         lhs_base,
         rhs_base,
         min_len: dest_len.min(lhs_len).min(rhs_len),

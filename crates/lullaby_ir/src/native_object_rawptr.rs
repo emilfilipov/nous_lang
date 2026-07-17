@@ -474,32 +474,20 @@ fn lower_addr_of(
                     place.ty.name, expr_ty.name
                 ));
             }
-            if !is_addressable_word_type(elem) {
-                return Err(format!(
-                    "`addr_of` of an `{}` place is not lowered natively: the native backend \
-                     takes the address of an 8-byte element (`i64`/`u64`/`isize`/`usize`/\
-                     `ptr<T>`) only — a narrower element is stored as a normalized 8-byte \
-                     cell, so a width-correct store through its address would corrupt the \
-                     cell's upper bits",
-                    place.ty.name
-                ));
-            }
+            // No width gate here: an array element may legitimately be an 8-byte
+            // cell OR a packed narrow element, and the two are indistinguishable by
+            // type NAME. The width-agreement law below decides it from the resolved
+            // layout, which is the thing that is actually true about the storage.
             true
         }
         None => {
-            // A directly-addressed place must itself be an 8-byte scalar. This is
-            // what rejects a narrow `i32`/`byte` cell and a float/string/struct
-            // place.
-            if !is_addressable_word_type(&place.ty.name) {
-                return Err(format!(
-                    "`addr_of` of a `{}` place is not lowered natively: the native backend \
-                     takes the address of an 8-byte scalar (`i64`/`u64`/`isize`/`usize`/\
-                     `ptr<T>`) only — a narrower scalar is stored as a normalized 8-byte \
-                     cell, so a width-correct store through its address would corrupt the \
-                     cell's upper bits",
-                    place.ty.name
-                ));
-            }
+            // A directly-addressed non-array place is resolved and then held to the
+            // width-agreement law below. A narrow SCALAR (`i32`/`byte`) local
+            // resolves to a normalized 8-byte `I64` cell while its pointee says
+            // 1/2/4, so the law refuses it — the same outcome the old name-based
+            // gate produced, now derived from the storage rather than asserted. A
+            // float/string/struct place fails the law's layout match.
+            //
             // Defensive agreement between the place's type and the checker-inferred
             // pointee: `addr_of(x)` must type as `ptr<typeof x>`. A mismatch means
             // an assumption here no longer holds, so skip rather than emit an
@@ -581,11 +569,59 @@ fn lower_addr_of(
     }
 
     let (place_slot, ty) = resolve_place_steps_typed(ctx, root, &steps)?;
-    if ty != NativeType::I64 {
-        return Err(
-            "`addr_of` must resolve to a single integer/pointer frame word on the native backend"
-                .to_string(),
-        );
+
+    // THE WIDTH-AGREEMENT LAW, and the whole soundness argument for narrow places:
+    //
+    //   the STORAGE the address names must be exactly as wide as the POINTEE type
+    //   says it is.
+    //
+    // A `ptr<T>` promises its holder that `ptr_read`/`ptr_write` moves `size_of(T)`
+    // bytes there and that `ptr_offset(p, 1)` steps `size_of(T)` bytes. Both are
+    // true exactly when the storage width equals `size_of(T)` — so this one check
+    // subsumes every ad-hoc gate that used to stand in for it, and decides the two
+    // same-named cases correctly *because it asks the resolved layout rather than
+    // the type name*:
+    //
+    // * `addr_of(x)` where `x` is an `i32` LOCAL resolves to `NativeType::I64` — a
+    //   narrow scalar is still a normalized 8-byte cell — while the pointee `i32`
+    //   says 4. 8 != 4, so it is REFUSED, exactly as before: a 4-byte store through
+    //   that address would leave the cell's upper half stale.
+    // * `addr_of(a[0])` where `a` is an `array<i32>` resolves to
+    //   `NativeType::Narrow { bytes: 4 }` — the element is PACKED — and the pointee
+    //   `i32` says 4. 4 == 4, so it is LOWERED, and the resulting pointer is
+    //   C-walkable and agrees with the interpreters' `size_of(element)` region
+    //   stride.
+    //
+    // The two spell the same type name (`i32`), so no name-based gate could tell
+    // them apart; the resolved layout can, and it is the thing that is actually
+    // true about the storage.
+    let storage_bytes = match &ty {
+        NativeType::I64 => 8,
+        NativeType::Narrow { bytes, .. } => *bytes as i64,
+        _ => {
+            return Err(
+                "`addr_of` must resolve to a single integer/pointer word or a packed narrow \
+                 array element on the native backend"
+                    .to_string(),
+            );
+        }
+    };
+    let access = pointee_access(&pointee).ok_or_else(|| {
+        format!(
+            "`addr_of` producing a `ptr<{pointee}>` is not lowered natively: the native \
+             raw-pointer surface supports integer and pointer pointees (`i8`…`u64`, \
+             `isize`/`usize`, `byte`, `ptr<U>`) only"
+        )
+    })?;
+    if access.size != storage_bytes {
+        return Err(format!(
+            "`addr_of` of a `{}` place typed as `{}` is not lowered natively: the addressed \
+             storage is {storage_bytes} bytes wide but the pointee `{pointee}` is \
+             {} — a read or write through the address, or a `ptr_offset` stride, would \
+             disagree with the storage. (A narrow SCALAR is stored as a normalized 8-byte \
+             cell; only a narrow ARRAY ELEMENT is packed to its C width.)",
+            place.ty.name, expr_ty.name, access.size
+        ));
     }
     match place_slot {
         ScalarPlace::Const { slot } => {
@@ -632,7 +668,7 @@ pub(crate) fn emit_lea_rax_local(code: &mut Vec<u8>, slot: i32) {
 }
 
 /// Load the pointee at `[rcx]` into `rax`, extended to the normalized 8-byte cell.
-fn emit_load_through_rcx(code: &mut Vec<u8>, access: PointeeAccess) {
+pub(crate) fn emit_load_through_rcx(code: &mut Vec<u8>, access: PointeeAccess) {
     match (access.size, access.signed) {
         (8, _) => code.extend_from_slice(&[0x48, 0x8B, 0x01]), // mov rax, [rcx]
         (4, true) => code.extend_from_slice(&[0x48, 0x63, 0x01]), // movsxd rax, dword [rcx]
@@ -647,7 +683,7 @@ fn emit_load_through_rcx(code: &mut Vec<u8>, access: PointeeAccess) {
 }
 
 /// Store the low `access.size` bytes of `rax` to `[rcx]`.
-fn emit_store_through_rcx(code: &mut Vec<u8>, access: PointeeAccess) {
+pub(crate) fn emit_store_through_rcx(code: &mut Vec<u8>, access: PointeeAccess) {
     match access.size {
         8 => code.extend_from_slice(&[0x48, 0x89, 0x01]), // mov [rcx], rax
         4 => code.extend_from_slice(&[0x89, 0x01]),       // mov [rcx], eax

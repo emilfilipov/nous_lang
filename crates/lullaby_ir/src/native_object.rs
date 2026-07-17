@@ -653,29 +653,35 @@ impl<'a> NativeCtx<'a> {
     }
 }
 
-/// A resolved scalar destination inside an aggregate. Aggregate words ASCEND in
-/// memory (see [`NativeLocal`]), so a scalar word lives at `[rbp - disp]` where
-/// `disp = base_slot - 8 * (const_words + dynamic_words)`; `dynamic_words` is
-/// `elem_words * index` computed at runtime when the path crossed a runtime array
+/// A resolved scalar destination inside an aggregate. Aggregate storage ASCENDS in
+/// memory (see [`NativeLocal`]), so a scalar lives at `[rbp - disp]` where
+/// `disp = base_slot - (const_bytes + dynamic_bytes)`; `dynamic_bytes` is
+/// `elem_bytes * index` computed at runtime when the path crossed a runtime array
 /// index, else zero.
+///
+/// Offsets are in **bytes**, not words, because a packed narrow array element
+/// (`NativeType::Narrow`) sits at a sub-word stride: element 1 of an `array<i32>`
+/// is 4 bytes from element 0, not 8. Struct fields and 8-byte elements still
+/// contribute whole multiples of 8, so every pre-existing path resolves to exactly
+/// the displacement it did when these were word counts.
 pub(crate) enum ScalarPlace {
-    /// A fully static scalar word at `[rbp - slot]`.
+    /// A fully static scalar at `[rbp - slot]`.
     Const { slot: i32 },
-    /// A dynamic scalar word. `base_slot` is the enclosing local's word 0;
-    /// `const_words` accumulates the static word offset from field hops and
-    /// constant indices; `elem_words` is the per-element word stride of the
-    /// dynamic array; `index_len` is the element count of the array the runtime
-    /// index selects into (its static length), used to emit a bounds check; and
-    /// the runtime index expression selects the element.
+    /// A dynamic scalar. `base_slot` is the enclosing local's byte 0;
+    /// `const_bytes` accumulates the static byte offset from field hops and
+    /// constant indices; `elem_bytes` is the per-element BYTE stride of the
+    /// dynamic array (its element's C width); `index_len` is the element count of
+    /// the array the runtime index selects into (its static length), used to emit a
+    /// bounds check; and the runtime index expression selects the element.
     Dynamic {
         base_slot: i32,
-        const_words: i64,
-        elem_words: i64,
+        const_bytes: i64,
+        elem_bytes: i64,
         index_len: i64,
         index: BytecodeExpr,
     },
-    /// A scalar word inside a **fat-pointer** array parameter: the element address
-    /// is `data_ptr + 8 * elem_words * index` (elements ASCEND from element 0,
+    /// A scalar inside a **fat-pointer** array parameter: the element address
+    /// is `data_ptr + elem_bytes * index` (elements ASCEND from element 0,
     /// exactly like a stack array), where `data_ptr` lives in the frame at
     /// `[rbp - ptr_slot]` (descriptor word 0) and the runtime element count lives
     /// at `[rbp - len_slot]` (descriptor word 1, at `ptr_slot - 8`). The index is bounds-checked
@@ -684,7 +690,7 @@ pub(crate) enum ScalarPlace {
     FatIndex {
         ptr_slot: i32,
         len_slot: i32,
-        elem_words: i64,
+        elem_bytes: i64,
         index: BytecodeExpr,
     },
 }
