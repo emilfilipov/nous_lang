@@ -157,12 +157,31 @@ pub struct IrImplMethod {
 /// parameters against the spelling's type arguments and substituting them into the
 /// field types before computing the native layout. Serde-defaulted to an empty list
 /// so existing `.lbc` artifacts and JSON snapshots without this field stay valid.
+///
+/// `field_extents` is the **const-sized-array survival channel** (see
+/// `documents/native_backend_contract.md`). The semantic extent pass erases every
+/// `array<T, N>` to a length-agnostic `array<T>` before the checker and all
+/// backends run, so `fields` above always carries the erased spelling and the
+/// interpreters/WASM behave exactly as they do today. But a fixed-extent array as a
+/// struct FIELD has no initializer for the native backend to infer a length from,
+/// so the extent would be lost. To close that gap without disturbing erasure, the
+/// extent pass ALSO records, per struct field that was declared with an extent, the
+/// **un-erased** (extent-carrying) field type here — `("pixels", array<u32, 1024>)`.
+/// Only the native backend reads it: `resolve_struct_fields` prefers the un-erased
+/// type for a recorded field, laying the array out INLINE and by value inside the
+/// struct (`NativeType::Array`), which is exactly the representation a fixed extent
+/// unlocks. A field with no recorded entry keeps its erased `array<T>` and still
+/// skips native cleanly (`L0339`), so the lower-vs-skip boundary is "has a recorded
+/// extent" — correct-or-refuse. Serde-defaulted (empty for a struct with no
+/// fixed-array fields) so existing artifacts stay valid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IrStructDef {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_params: Vec<String>,
     pub fields: Vec<(String, TypeRef)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_extents: Vec<(String, TypeRef)>,
 }
 
 /// An enum type in the IR: name plus ordered variants, each a name plus an
@@ -470,7 +489,27 @@ impl IrLoweringError {
 }
 
 pub fn lower(checked: &CheckedProgram) -> Result<IrModule, IrLoweringError> {
-    Lowerer::new(&checked.program, &checked.info.signatures).lower_program()
+    let mut module = Lowerer::new(&checked.program, &checked.info.signatures).lower_program()?;
+    apply_field_extents(&mut module.structs, &checked.info.field_extents);
+    Ok(module)
+}
+
+/// Stamp the semantic extent pass's per-struct record of un-erased fixed-array
+/// field types onto each [`IrStructDef::field_extents`], so the native backend can
+/// lay those fields out inline (see [`IrStructDef`]). The map is keyed by struct
+/// name; each value is the list of `(field, un-erased array<T, N> type)` pairs the
+/// pass recorded for that struct. A struct absent from the map (no fixed-array
+/// field) is left with the empty channel, so the interpreters/WASM and every
+/// existing struct are unaffected.
+fn apply_field_extents(
+    structs: &mut [IrStructDef],
+    field_extents: &std::collections::HashMap<String, Vec<(String, TypeRef)>>,
+) {
+    for def in structs {
+        if let Some(recorded) = field_extents.get(&def.name) {
+            def.field_extents = recorded.clone();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

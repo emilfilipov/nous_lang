@@ -755,6 +755,10 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|field| (field.name.clone(), field.ty.clone()))
                     .collect(),
+                // The const-sized-array survival channel is populated after lowering,
+                // in `lower`, from the semantic extent pass's record — the erased
+                // program the lowerer walks no longer carries any extent.
+                field_extents: Vec::new(),
             })
             .collect();
         let enums = self

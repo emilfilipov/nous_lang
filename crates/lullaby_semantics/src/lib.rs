@@ -74,6 +74,16 @@ pub struct CheckedProgram {
 pub struct SemanticInfo {
     pub signatures: HashMap<String, Signature>,
     pub expression_types: Vec<ExpressionType>,
+    /// The const-sized-array survival channel for the native backend: per struct
+    /// name, the list of `(field, un-erased `array<T, N>` type)` pairs for every
+    /// struct field that was declared with an extent. The semantic extent pass
+    /// erases every extent from the program before the checker and all backends
+    /// run (so the interpreters/WASM/type-checker are unaffected); this map is the
+    /// only place the extent of a struct FIELD — which has no initializer for the
+    /// native backend to infer a length from — survives. IR lowering stamps it onto
+    /// [`lullaby_ir::IrStructDef::field_extents`]. A struct with no fixed-array
+    /// field is absent from the map.
+    pub field_extents: HashMap<String, Vec<(String, TypeRef)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,7 +110,7 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
     // After this the extent is gone from every type spelling and every fill
     // literal `[v; k]` is an ordinary array literal, so the checker and all
     // backends see only the existing `array<T>` representation.
-    let extent_diagnostics =
+    let (extent_diagnostics, field_extents) =
         semantics_array_extent::resolve_check_and_erase(&mut resolved, &const_int_values);
 
     let mut checker = Checker::new(&resolved);
@@ -150,6 +160,7 @@ pub fn validate(program: &Program) -> Result<CheckedProgram, Vec<SemanticDiagnos
         info: SemanticInfo {
             signatures,
             expression_types,
+            field_extents,
         },
     })
 }
