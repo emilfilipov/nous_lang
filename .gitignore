@@ -8,6 +8,11 @@ out/
 *.pdb
 *.rlib
 
+# Compiler output. `lullaby native <file>` with no `-o` writes the binary beside
+# its source, so a bare invocation in the tree drops an artifact next to the
+# fixture it compiled. Six were committed that way before this rule existed.
+*.exe
+
 # Local caches and temporary files
 .cache/
 .tmp/
