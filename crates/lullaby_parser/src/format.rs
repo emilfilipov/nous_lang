@@ -1,4 +1,4 @@
-//! Canonical source formatter: render a parsed [`Program`](crate::Program)
+//! Canonical source formatter: render a parsed [`crate::Program`]
 //! back to canonical Lullaby source. The output is indentation-only (four
 //! spaces per level), has no trailing whitespace, ends in a single newline,
 //! and re-parses to an equal AST. Formatting is idempotent.

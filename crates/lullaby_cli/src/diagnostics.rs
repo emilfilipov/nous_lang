@@ -2,7 +2,7 @@
 //!
 //! Every compiler phase reports through `lullaby_diagnostics::DiagnosticReport`;
 //! this module adapts each phase's own error type into one, and renders a batch
-//! of them in whichever [`OutputMode`](crate::args::OutputMode) the invocation
+//! of them in whichever [`crate::args::OutputMode`] the invocation
 //! selected.
 
 use std::path::Path;

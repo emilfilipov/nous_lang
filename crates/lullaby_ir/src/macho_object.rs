@@ -1,6 +1,6 @@
 //! Mach-O x86-64 relocatable-object writer.
 //!
-//! Serializes an [`ObjectModel`](crate::object_model::ObjectModel) into an
+//! Serializes an [`ObjectModel`] into an
 //! `MH_OBJECT` Mach-O 64 object: a `mach_header_64`, a single `LC_SEGMENT_64`
 //! holding the `__text`/`__const`/`__bss` sections, an `LC_SYMTAB`, an
 //! `LC_DYSYMTAB`, and `relocation_info` entries that use `X86_64_RELOC_BRANCH`

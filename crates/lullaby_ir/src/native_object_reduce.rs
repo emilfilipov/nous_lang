@@ -197,8 +197,8 @@ pub(crate) fn detect_sum_reduction(
 /// block), then a scalar remainder loop for the final `< K` iterations.
 /// `cmp <counter>, <reg>` — a promoted-register counter compared directly
 /// against a scratch register given by its full number (`rcx`=1, `rdx`=2,
-/// `r11`=11, …). `cmp r/m64, r64` is REX.W(+R for r8..r15) 39 /r; ModRM =
-/// 11 (reg&7) <counter>.
+/// `r11`=11, …). `cmp r/m64, r64` is REX.W(+R for r8..r15) 39 /r;
+/// ModRM = `11 (reg&7) <counter>`.
 fn emit_cmp_counter_scratch(code: &mut Vec<u8>, counter: PReg, reg: u8) {
     let rex = 0x48 | if reg >= 8 { 0x04 } else { 0 };
     code.extend_from_slice(&[rex, 0x39, 0xC0 | ((reg & 7) << 3) | counter.code3()]);

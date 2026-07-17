@@ -146,6 +146,7 @@ The implementation is a Rust workspace. Unless changed by an explicit architectu
 - `cargo fmt --check`: formatting check.
 - `cargo test --all`: unit tests for all crates.
 - `cargo clippy --all-targets --all-features -- -D warnings`: lint all crates and integration tests.
+- `$env:RUSTDOCFLAGS="-D warnings"; cargo doc --no-deps --document-private-items`: rustdoc gate — fails on broken/private intra-doc links, redundant explicit link targets, and unclosed HTML tags (bare generic spellings like `array<string>`). Clippy does **not** cover these lints and plain `cargo doc` misses the ones on private items, so this is the only check that catches doc-link rot.
 - `cargo build --release -p lullaby_cli`: build the release `lullaby.exe` binary.
 - `cargo run -p lullaby_cli -- check tests/fixtures/valid/add.lby`: check a valid fixture through source validation, lexing, parsing, and semantic validation.
 - `cargo run -p lullaby_cli -- fmt tests/fixtures/valid/run_match.lby`: print the canonical, idempotent formatting of a `.lby` source file to stdout; `fmt --write <file.lby>` rewrites in place; `fmt --check <file.lby>` exits non-zero if the file is not already canonical (CI-friendly).

@@ -852,7 +852,8 @@ pub(crate) const RETURN_ARRAY_KEY: &str = "\0return";
 
 /// Sentinel [`ArrayLengths`] value marking an array **parameter** as a fat pointer
 /// — a read-only scalar array whose length is not known at compile time, passed as
-/// a `(data_ptr, runtime length)` descriptor (see [`fat_array_param_elem`]) rather
+/// a `(data_ptr, runtime length)` descriptor (see `fat_array_param_elem` in
+/// `native_object_eligibility.rs`) rather
 /// than copied in by value. `resolve_signature_native_type` maps this sentinel to
 /// [`NativeType::FatArray`] instead of a fixed [`NativeType::Array`].
 pub(crate) const FAT_ARRAY_LEN: usize = usize::MAX;
