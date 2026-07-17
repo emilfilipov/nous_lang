@@ -81,7 +81,7 @@ pub struct SemanticInfo {
     /// run (so the interpreters/WASM/type-checker are unaffected); this map is the
     /// only place the extent of a struct FIELD — which has no initializer for the
     /// native backend to infer a length from — survives. IR lowering stamps it onto
-    /// [`lullaby_ir::IrStructDef::field_extents`]. A struct with no fixed-array
+    /// `IrStructDef::field_extents` (in `lullaby_ir`). A struct with no fixed-array
     /// field is absent from the map.
     pub field_extents: HashMap<String, Vec<(String, TypeRef)>>,
 }

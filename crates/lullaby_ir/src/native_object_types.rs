@@ -331,9 +331,10 @@ pub(crate) fn resolve_native_type(
         // struct skips cleanly rather than aliasing a shared heap pointer through a
         // by-value struct copy.
         name if name.starts_with("array<") && ty.array_extent().is_some() => {
-            let extent = ty.array_extent().filter(|n| *n > 0).ok_or_else(|| {
-                format!("const-sized array `{name}` has a non-positive extent")
-            })? as usize;
+            let extent =
+                ty.array_extent().filter(|n| *n > 0).ok_or_else(|| {
+                    format!("const-sized array `{name}` has a non-positive extent")
+                })? as usize;
             let element = ty
                 .array_element()
                 .ok_or_else(|| format!("const-sized array `{name}` has no element type"))?;
@@ -438,8 +439,7 @@ pub(crate) fn resolve_native_type(
                 // substitution), so pass no extents: such an array field skips
                 // cleanly rather than laying out inline. Extent-bearing generic array
                 // fields are a deferred boundary.
-                let native =
-                    resolve_struct_fields(&head, &concrete_fields, &[], structs, enums)?;
+                let native = resolve_struct_fields(&head, &concrete_fields, &[], structs, enums)?;
                 // Native-supported-layout scope gate (default-deny), mirroring the
                 // non-generic heap-field aggregate boundary. A monomorphized generic
                 // struct compiles natively when its whole layout is scalar-only OR its

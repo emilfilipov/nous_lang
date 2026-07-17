@@ -1490,6 +1490,13 @@ mod suite22;
 #[path = "cli/suite23.rs"]
 mod suite23;
 
+// -- Inline, by-value fixed-extent arrays as struct fields on the native backend
+//    (road_to_1_0_stable A2, increment 2): four-tier parity for construct/copy/
+//    field-read/len/pass/return by value, the copy-isolation soundness core, the
+//    narrow + nested inline layouts, and the lower-vs-skip boundary.
+#[path = "cli/suite24.rs"]
+mod suite24;
+
 // -- An inline conditional as a closure body: cross-tier agreement, call-time
 //    laziness, and the native subset's clean refusal
 #[path = "cli/closure_conditional.rs"]
