@@ -46,6 +46,12 @@ pub(crate) fn lower_native_function(
     closure_layouts: &HashMap<usize, ClosureLayout>,
     hof_index: &HashMap<String, Vec<HofParam>>,
 ) -> Result<LoweredNativeFunction, String> {
+    // Give any binding that shadows an enclosing same-named binding its own slot by
+    // alpha-renaming it apart, before the flat-map frame planner keys locals by
+    // name. A function without cross-scope shadowing is returned unchanged, so its
+    // codegen is byte-identical. See `native_object_rename.rs`.
+    let renamed = alpha_rename_shadowing_bindings(function, closure_layouts)?;
+    let function = &renamed;
     let mut ctx = NativeCtx::plan(
         function,
         callable,

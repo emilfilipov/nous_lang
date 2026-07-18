@@ -850,6 +850,10 @@ pub(crate) use closure::*;
 mod closure_ctx;
 pub(crate) use closure_ctx::*;
 
+#[path = "native_object_rename.rs"]
+mod rename;
+pub(crate) use rename::*;
+
 #[path = "native_object_lowering.rs"]
 mod op_lowering;
 pub(crate) use op_lowering::*;

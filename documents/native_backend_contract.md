@@ -112,6 +112,17 @@ Native lowering must model stable slots for:
 
 Cleanup order is driven by `IrMemoryOperation.sequence`, matching the bytecode artifact memory metadata.
 
+### Local slots and same-name shadowing (scope-correct)
+
+`collect_native_locals` (`native_object_closure_ctx.rs`) assigns each `let`/`for`-counter/`match`-binding a stack slot, keyed by its bare source name in one flat `HashMap`, and skips a name already present. That is only sound while names are unique. It is **not** unique the moment an inner scope re-`let`s a name an enclosing scope still has live: the interpreters model every block as its own scope (the bytecode VM's `Env` gives each binding a fresh unique slot, resolved innermost/newest-first), so a loop-body / `if` / `match` / `for`-body `let v` that shadows an outer `let v` is a distinct binding — but the flat map collapsed both onto **one** slot, so the inner write clobbered the outer value. That was a cross-tier miscompile (a wrong-but-bounded value with the arena off); under the safe-tier arena it was a **use-after-free**, because the outer read landed on the inner slot the loop's per-iteration bump-pointer rewind had already reclaimed.
+
+The fix runs **before** any frame planning: `alpha_rename_shadowing_bindings` (`native_object_rename.rs`) walks the function's instructions with the same lexical-scope structure the bytecode VM compiler uses (a scope per `if`/`elif`/`else` body, `while`/`loop` body, `for` counter *and* its body, `match` arm, and `try` body/catch) and gives any binding that shadows a name from a **strictly-enclosing** scope a fresh, source-illegal name (`v#sN` — `#` cannot appear in a Lullaby identifier, so it never collides with a user name or the `__end`/`__step` for-loop temporaries), rewriting every in-scope read/write to match. The flat-map planner then slots each apart with no further change. Guarantees:
+
+- **Correctness parity.** Native now equals the three interpreters for loop/`if`/`match`/`for` shadowing, whether or not the arena fires; the outer value survives its inner shadow.
+- **Byte-identical when there is no shadow.** A binding that does not shadow keeps its name, so a function without cross-scope shadowing is rewritten to a structurally identical tree and its codegen is unchanged. Same-scope re-`let` (`let x = x + 1` rebinding a parameter, two `let v`s in one block) also keeps its slot: the older binding is dead for the rest of the scope, so sharing it is sound.
+- **Orthogonal to the arena.** The I4 loop-confinement analysis (`native_object_confine.rs`) still treats a top-level loop-body `let` as iteration-local and reclaims its heap per iteration; renaming only changes which *slot* a shadow gets, not whether its heap is confined, so the two compose (the outer value's heap, allocated before the loop mark, is never rewound).
+- **Correct-or-refuse for closures.** A closure literal that captures a name shadowed at its capture site cannot be renamed soundly (its separately-synthesized body still spells the capture by the original name), so the pass refuses and the function skips cleanly (`L0339`) rather than capture the wrong slot.
+
 ## Value Layout
 
 The current value layouts are:

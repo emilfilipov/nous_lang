@@ -1601,6 +1601,12 @@ mod suite23;
 #[path = "cli/suite24.rs"]
 mod suite24;
 
+// -- Native same-name shadowing across lexical scopes (loop/if/match/for bodies):
+//    four-tier parity that a shadowing `let` gets its own slot, the arena-active
+//    use-after-free variant, and the non-shadowing / same-scope-rebind controls.
+#[path = "cli/suite25.rs"]
+mod suite25;
+
 // -- An inline conditional as a closure body: cross-tier agreement, call-time
 //    laziness, and the native subset's clean refusal
 #[path = "cli/closure_conditional.rs"]
