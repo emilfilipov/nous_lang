@@ -28,6 +28,16 @@ building) · **CONFIRMED GAP** (verified missing in the current compiler).
   **freestanding** surface syntax — all decided (see the architecture docs).
 
 ## Already decided, NOT yet built (the engineering bulk — tracked, not open)
+> **direct-ELF SHIPPED** (`elf_image.rs`): a linker-free `ET_EXEC` executable emitter
+> for `--freestanding` Linux programs — the ELF analog of direct-PE. Fixed load base
+> `0x400000`, one page-aligned `PT_LOAD` per permission set (R+X / R / R+W, W^X
+> enforced by construction), every relocation resolved to a final REL32 at emit time
+> (no load-time fixup), clean `None` fallback to the object+`ld.lld` path for anything
+> outside the freestanding-linkable subset. **Execution-verified** under `linux/amd64`
+> Docker with no linker (37, 11), reviewed PASS. So the freestanding **output** side
+> now runs linker-free on both Windows (PE) and Linux (ELF); the remaining kernel
+> long-pole is the **CPU-control** side (inline `asm` operands, interrupt/naked).
+
 Actors, the freestanding/kernel tier, arena stages 3–5 (explicit `region` blocks,
 escape/promotion, static-buffer arenas), native-aggregate expansion + the native
 optimization backlog (O(n²) `for c in s`, array-by-ref), and Linux tier-1 /
