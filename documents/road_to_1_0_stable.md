@@ -339,6 +339,29 @@ These are all **loud refusals, never miscompiles** — but each was a deferral, 
 3. **Void `export fn`** — `is_exportable_scalar` admits only `i64`/`f64`/`f32`, so a C-callable `void NAME(...)` is `L0424`. Small frontend fix.
 4. **`alloc` is not in the native subset** — the one pointer form that works across frames on every tier demotes the whole program.
 
+## Owner decisions — 2026-07-18 (safe-tier arena memory model)
+
+Made while starting the arena track. A read-only map (`native_object_eligibility.rs`
++ `native_object_stmt.rs` + `native_object_heapbox.rs`) established the state first:
+**stages 1–2 are shipped native-only** (implicit function region rewinds on return;
+confined loops get per-iteration sub-regions; the interpreters never reclaim, so
+native == interpreters is the safety oracle for a value-neutral bump-heap). The
+92-vs-2116 sub-region-rewind miscompile class is **guarded** by `alloc_defeats_arena`
+(any `alloc` in a function → arena-ineligible; conservative, load-bearing — it also
+contains the `ptr<ptr_i64>`/`int_to_ptr` laundering routes). The arena currently fires
+**only for leaf functions** (calls no user code).
+
+| # | Item | Decision |
+|---|------|----------|
+| D1 | **Arena track is the next major direction** | Chosen over inline-`asm` operands and the narrower completions. Proceed via tightly-scoped, adversarially-reviewed increments; **serialize the arena *code* changes** (each lands into a fully-reviewed tree) even where files wouldn't collide — it's the subsystem with a demonstrated use-after-free class. |
+| D2 | **First increment: I4 — target-aware loop confinement** | Make `loop_body_confines_heap` admit a heap store when its target is *provably iteration-local*, widening reclamation. Sound-by-construction (only relaxes an existing default-deny; denies when unsure). In flight. |
+| D3 | **Cross-call arena (I2): inferred per-function retention summary** | Widen past the leaf limit via a bottom-up, locally-computed "does-not-retain-a-heap-pointer-past-return" bit, **default-deny on recursion/cycles/indirect calls**. No annotations, no whole-program pass — preserves the compile-speed moat. Direction set; build sequenced behind I4. |
+| D4 | **Escape→promotion (stage 4): Option A — mark-advance compaction** | Promote an escaping value by relocating it to the region mark and advancing the mark past it, so the single-cursor rewind preserves it. Edits only the two rewind choke points (`emit_arena_reset`, `emit_arena_loop_rewind`) + the two eligibility predicates. **Phased**: flat return-edge (closure scalar-capture blocks — a pure `memmove` — and scalar aggregates) → `string` → deep aggregates + loop-edge accumulation. Chosen over a two-cursor arena (heavier runtime surface) and an RC-fallback (see D5). Copy-soundness boundary: scalars/`string`/flat blocks/heap-carrying aggregates promotable by **deep** copy; `alloc`-boxes/`ref`/`shared`/raw-pointer values never auto-promoted. |
+| D5 | **RC policy: strict — no compiler-synthesized silent RC** | The decided "`ref`/RC is never silently inserted" rule is **literal**. Native either **arena-promotes** (Option A) a provably-escaping value or **defers to the interpreter** (`L0339`, always correct) — it does **not** synthesize a hidden refcounted path with automatic drop glue to unblock escaping closures/above-cap aggregates. Escaping closures are therefore unblocked only where Option A promotion covers them (a flat block born in an arena region); a returned closure a promotion can't reach stays `L0339`-deferred rather than RC-managed. More conservative, keeps the model's promise exact. |
+
+**Open sub-decisions deferred to the stage-4 build brief** (not load-bearing yet):
+the promotion size cap value (words-based; a sane start ~8 flat / ~16 deep), deep-vs-runtime-length-gated string copy, and whether loop-edge promotion (phase 3) is in 1.0 scope or return-edge-only ships first.
+
 ## Delivery progress (updated 2026-07-16)
 
 - **Freestanding `no-runtime` tier — stage 1 SHIPPED** (main `f6186d3`). Module-level
