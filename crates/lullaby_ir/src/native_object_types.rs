@@ -901,7 +901,81 @@ pub(crate) fn native_type_of_init(
     {
         return Ok(sig.ret.clone());
     }
+    // An array local bound from a Field/Index PATH into an inline fixed-array struct
+    // field — `let c = f.field`, and the hidden `let __foreach_coll = f.field`
+    // collection binding the `for x in f.field` desugar emits. The erased `array<T>`
+    // type carries no length, so the length comes from the SOURCE field's inline
+    // extent: resolve the root variable's struct `NativeType` (whose fixed-array
+    // fields are already inline via the `field_extents` survival channel), then walk
+    // the field/index steps to the field's `NativeType::Array`. A heap-word element
+    // never reaches here (such a field fails to lay out inline, so the whole struct
+    // already skips), but the resolved layout is a plain by-value array regardless.
+    if expr.ty.name.starts_with("array<")
+        && matches!(
+            &expr.kind,
+            BytecodeExprKind::Field { .. } | BytecodeExprKind::Index { .. }
+        )
+        && let Some(array_ty) = inline_array_type_of_path(expr, structs, enums)
+    {
+        return Ok(array_ty);
+    }
     resolve_native_type(&expr.ty, structs, enums)
+}
+
+/// Resolve the inline `NativeType::Array` of a `Field`/`Index` read PATH rooted at a
+/// local variable of struct type, or `None` when the path is not a static field/const-
+/// index chain resolving to an inline fixed array. Consulted at frame-planning time
+/// (no `NativeCtx` yet), so it types the root from the root variable's own `TypeRef`
+/// via [`resolve_native_type`] — whose struct layout already lays fixed-array fields
+/// out inline through the `field_extents` channel — then walks the same field/const-
+/// index steps the lowering-time resolver ([`resolve_inline_aggregate_source`]) walks.
+/// A runtime (non-literal) index makes the source base address dynamic and is refused
+/// here (returns `None`), so such a bind skips cleanly rather than mis-sizing a local.
+fn inline_array_type_of_path(
+    expr: &BytecodeExpr,
+    structs: &[IrStructDef],
+    enums: &[IrEnumDef],
+) -> Option<NativeType> {
+    enum Step<'a> {
+        Field(&'a str),
+        Index,
+    }
+    let mut steps: Vec<Step> = Vec::new();
+    let mut cursor = expr;
+    let root_ty = loop {
+        match &cursor.kind {
+            BytecodeExprKind::Variable(_) => break cursor.ty.clone(),
+            BytecodeExprKind::Field { target, field } => {
+                steps.push(Step::Field(field.as_str()));
+                cursor = target;
+            }
+            BytecodeExprKind::Index { target, index } => {
+                // Only a compile-time constant index keeps the source base static; a
+                // runtime index defers (the lowering-time resolver refuses it too).
+                if !matches!(index.kind, BytecodeExprKind::Integer(_)) {
+                    return None;
+                }
+                steps.push(Step::Index);
+                cursor = target;
+            }
+            _ => return None,
+        }
+    };
+    steps.reverse();
+    let mut ty = resolve_native_type(&root_ty, structs, enums).ok()?;
+    for step in &steps {
+        match (step, &ty) {
+            (Step::Field(field), NativeType::Struct { fields, .. }) => {
+                let (_, fty) = fields.iter().find(|(name, _)| name == field)?;
+                ty = fty.clone();
+            }
+            (Step::Index, NativeType::Array { elem, .. }) => {
+                ty = (**elem).clone();
+            }
+            _ => return None,
+        }
+    }
+    matches!(ty, NativeType::Array { .. }).then_some(ty)
 }
 
 /// The concrete word length of an array-typed signature slot, keyed by parameter

@@ -29,16 +29,26 @@
 //! `f64`, a packed narrow integer (`u8`/`i32`/…), a nested fixed array, or a
 //! scalar-only struct element. Construction (literal or `[v; k]` fill), the by-value
 //! copy/param/return, `f.field[i]`, `len(f.field)`, and `addr_of(f.field[0])` +
-//! `ptr_offset` all operate on the inline representation.
+//! `ptr_offset` all operate on the inline representation. **Increment 4 adds the two
+//! whole-field shapes** that increment 2 deferred: `for x in f.field` (iterate the
+//! inline field array directly — the desugar's hidden `let __coll = f.field`
+//! collection binding now lowers, then the numeric loop reads each element) and
+//! `let c = f.field` (bind the whole inline field array to a fresh local by an
+//! element-wise by-value copy — mutating `c` never touches `f.field`). Both work for
+//! scalar-element fields, including packed narrow (`u8`/`i32`, sign/zero-extension
+//! preserved) and nested (`array<array<i32, N>, M>`) fields.
 //!
 //! SKIPS cleanly (`L0339`, demote to the interpreters — never a miscompile, never a
 //! fat pointer in a by-value aggregate): a plain dynamic `array<T>` field (no
 //! extent, no static length), a heap-word element (`array<string, N>` — copying the
 //! struct would SHARE the string pointers, which is value-safe for immutable
-//! strings but is deferred to keep the by-value copy uniformly element-wise), and
-//! `for x in f.field` / binding a whole field array to a local (both need a
-//! field-place aggregate copy that is a separable follow-up). Each skip is proven a
-//! sound DEMOTION by checking the interpreters still answer correctly.
+//! strings but is deferred to keep the by-value copy uniformly element-wise), a
+//! whole-field copy from a RUNTIME-indexed source (`let row = grid[i]` for a runtime
+//! `i` — the source base is dynamic), and `for x in f.field` where the ELEMENT is
+//! itself an aggregate (a struct or nested array), because the per-element
+//! `let x = coll[idx]` is then a dynamic-index AGGREGATE copy that stays deferred.
+//! Each skip is proven a sound DEMOTION by checking the interpreters still answer
+//! correctly.
 
 use crate::*;
 use std::process::Command;
@@ -410,7 +420,208 @@ fn fixed_array_of_scalar_structs_inline() {
     );
 }
 
+// -- Increment 4: whole-field ops (`for x in f.field`, `let c = f.field`) -----
+
+/// `for x in f.field` iterates the inline field array directly. The desugar binds
+/// the collection to a hidden `let __coll = f.pixels` (the whole-field by-value copy
+/// this increment adds), then the numeric loop reads each element. Summed against a
+/// scalar field so a dropped/duplicated element or a wrong stride diverges.
+#[test]
+fn for_x_in_inline_i64_field_reduces() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct Frame\n",
+            "    tag i64\n",
+            "    pixels array<i64, 4>\n\n",
+            "fn main -> i64\n",
+            "    let f = Frame(tag: 10, pixels: [3, 5, 7, 9])\n",
+            "    let total i64 = 0\n",
+            "    for x in f.pixels\n",
+            "        total = total + x\n",
+            "    total + f.tag\n",
+        ),
+        "for_x_in_i64_field",
+        // (3 + 5 + 7 + 9) + 10 = 34
+        34,
+    );
+}
+
+/// `for x in f.field` over a packed narrow (`u8`) field: each element is read at its
+/// one-byte stride and ZERO-extended into an i64 cell. The `200` element is the
+/// tooth — a signed byte read would yield `-56` and the sum would be wrong, so this
+/// pins the unsigned narrow stride + zero-extension end to end.
+#[test]
+fn for_x_in_inline_narrow_u8_field_zero_extends() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct Buf\n",
+            "    bytes array<u8, 4>\n",
+            "    n i64\n\n",
+            "fn main -> i64\n",
+            "    let b = Buf(bytes: [to_u8(200), to_u8(50), to_u8(7), to_u8(3)], n: 5)\n",
+            "    let s i64 = 0\n",
+            "    for x in b.bytes\n",
+            "        s = s + to_i64(x)\n",
+            "    s + b.n\n",
+        ),
+        "for_x_in_narrow_u8_field",
+        // (200 + 50 + 7 + 3) + 5 = 265  (200 zero-extends; a signed read would give -56)
+        265,
+    );
+}
+
+/// `for x in f.field` over a packed narrow SIGNED (`i32`) field: each element is read
+/// at its four-byte stride and SIGN-extended. The negative elements are the tooth — a
+/// zero-extended read would turn `-5` into `4294967291` and the sum would explode.
+#[test]
+fn for_x_in_inline_narrow_i32_field_sign_extends() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct Sig\n",
+            "    vals array<i32, 4>\n\n",
+            "fn main -> i64\n",
+            "    let s = Sig(vals: [to_i32(0 - 5), to_i32(0 - 10), to_i32(100), to_i32(0 - 1)])\n",
+            "    let acc i64 = 0\n",
+            "    for x in s.vals\n",
+            "        acc = acc + to_i64(x)\n",
+            "    acc + 100\n",
+        ),
+        "for_x_in_narrow_i32_field",
+        // (-5 - 10 + 100 - 1) + 100 = 184
+        184,
+    );
+}
+
+/// `let c = f.field` binds the whole inline field array to a fresh local, then reads
+/// it every way (`for x in c`, `c[i]`, `len(c)`). A truncated/no-op copy would leave
+/// `c` uninitialized and the reads would be garbage; only the exact element-wise copy
+/// yields the expected total.
+#[test]
+fn let_binds_whole_inline_field_then_reads() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct Frame\n",
+            "    pixels array<i64, 4>\n",
+            "    tag i64\n\n",
+            "fn main -> i64\n",
+            "    let f = Frame(pixels: [1, 2, 3, 4], tag: 100)\n",
+            "    let c = f.pixels\n",
+            "    let s i64 = 0\n",
+            "    for x in c\n",
+            "        s = s + x\n",
+            "    s + c[0] + c[3] + len(c) + f.tag\n",
+        ),
+        "let_binds_whole_inline_field",
+        // (1 + 2 + 3 + 4) + 1 + 4 + 4 + 100 = 119
+        119,
+    );
+}
+
+/// THE aliasing tooth for the whole-field copy: mutating the local copy `c` must NOT
+/// touch the source `f.field`. It reads two witnesses — the ORIGINAL's untouched
+/// elements (`f.pixels[0]`, `f.pixels[1]`) and the mutated copy's (`c[0]`, `c[1]`) —
+/// so an aliasing copy that shared storage would make the original observe `c`'s
+/// writes and the sum would jump from 293 to 477. Pinned hardest per the spec.
+#[test]
+fn mutating_whole_field_copy_leaves_source_unchanged() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct Frame\n",
+            "    pixels array<i64, 4>\n",
+            "    tag i64\n\n",
+            "fn main -> i64\n",
+            "    let f = Frame(pixels: [1, 2, 3, 4], tag: 100)\n",
+            "    let c = f.pixels\n",
+            "    c[0] = 99\n",
+            "    c[1] = 88\n",
+            "    f.pixels[0] + f.pixels[1] + c[0] + c[1] + c[2] + f.tag\n",
+        ),
+        "mutating_whole_field_copy",
+        // (1 + 2) + (99 + 88) + 3 + 100 = 293  (an aliasing copy would give 477)
+        293,
+    );
+}
+
+/// The whole-field copy of a packed NARROW field: `let c = b.bytes` duplicates the
+/// eight packed bytes, then mutating `c[0]` must leave `b.bytes[0]` at its source
+/// value. Combines the narrow packing/zero-extension tooth (the `200` element) with
+/// the copy-isolation tooth (an aliasing copy would corrupt `b.bytes[0]` to 200 and
+/// jump the total from 568 to 758).
+#[test]
+fn whole_field_copy_of_narrow_packed_field_is_isolated() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct Buf\n",
+            "    bytes array<u8, 8>\n\n",
+            "fn main -> i64\n",
+            "    let b = Buf(bytes: [to_u8(10), to_u8(20), to_u8(30), to_u8(40), \
+             to_u8(50), to_u8(60), to_u8(70), to_u8(80)])\n",
+            "    let c = b.bytes\n",
+            "    c[0] = to_u8(200)\n",
+            "    let s i64 = 0\n",
+            "    for x in c\n",
+            "        s = s + to_i64(x)\n",
+            "    s + to_i64(b.bytes[0]) + len(c)\n",
+        ),
+        "whole_field_copy_narrow",
+        // (200 + 20 + 30 + 40 + 50 + 60 + 70 + 80) + 10 + 8 = 568  (alias -> 758)
+        568,
+    );
+}
+
+/// A whole-field copy of a NESTED inline field array (`array<array<i32, 4>, 4>`): the
+/// element is itself an inline array, so the copy moves all sixteen packed i32 cells.
+/// Mutating `c[0][0]` must leave `m.grid[0][0]` unchanged — an aliasing copy would
+/// corrupt it and jump the total from 120 to 218.
+#[test]
+fn whole_field_copy_of_nested_array_field_is_isolated() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "struct M\n",
+            "    grid array<array<i32, 4>, 4>\n\n",
+            "fn main -> i64\n",
+            "    let m = M(grid: [[to_i32(1), to_i32(2), to_i32(3), to_i32(4)], \
+             [to_i32(5), to_i32(6), to_i32(7), to_i32(8)], \
+             [to_i32(9), to_i32(10), to_i32(11), to_i32(12)], \
+             [to_i32(13), to_i32(14), to_i32(15), to_i32(16)]])\n",
+            "    let c = m.grid\n",
+            "    c[0][0] = to_i32(99)\n",
+            "    to_i64(c[0][0]) + to_i64(m.grid[0][0]) + to_i64(c[3][3]) + len(c)\n",
+        ),
+        "whole_field_copy_nested",
+        // 99 + 1 + 16 + 4 = 120  (an aliasing copy would give 99 + 99 + 16 + 4 = 218)
+        120,
+    );
+}
+
 // -- The lower-vs-skip boundary (each skip proven a sound demotion) ----------
+
+/// `for x in f.field` where the ELEMENT is itself an aggregate (a struct) still skips
+/// cleanly: the per-element `let p = coll[idx]` is a dynamic-index AGGREGATE copy,
+/// which the whole-aggregate copy path refuses (a runtime base is deferred). The
+/// interpreters still answer correctly — a sound demotion, not a miscompile.
+#[test]
+fn for_x_in_field_of_struct_elements_skips_natively() {
+    assert_native_skips_soundly(
+        concat!(
+            "struct P\n",
+            "    x i64\n",
+            "    y i64\n\n",
+            "struct Grid\n",
+            "    pts array<P, 3>\n\n",
+            "fn main -> i64\n",
+            "    let g = Grid(pts: [P(x: 1, y: 2), P(x: 3, y: 4), P(x: 5, y: 6)])\n",
+            "    let total i64 = 0\n",
+            "    for p in g.pts\n",
+            "        total = total + p.x + p.y\n",
+            "    total\n",
+        ),
+        "for_x_in_struct_element_field_skips",
+        "initializer is not a native aggregate constructor",
+        // 1 + 2 + 3 + 4 + 5 + 6 = 21
+        21,
+    );
+}
 
 /// A plain dynamic `array<T>` field (no extent) has no static length, so it lays out
 /// no inline representation and the function DEMOTES cleanly to the interpreters. The

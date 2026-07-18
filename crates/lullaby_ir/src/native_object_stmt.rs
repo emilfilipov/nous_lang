@@ -1168,6 +1168,29 @@ pub(crate) fn lower_aggregate_init(
             }
             Ok(())
         }
+        (
+            BytecodeExprKind::Field { .. } | BytecodeExprKind::Index { .. },
+            NativeType::Array { .. },
+        ) => {
+            // Whole-field by-value copy of an inline fixed array into a fresh local:
+            // `let c = f.field` (and the hidden `let __foreach_coll = f.field` binding
+            // the `for x in f.field` desugar emits). Resolve the source's static word-0
+            // base slot, then move the array's words one at a time — an INDEPENDENT
+            // snapshot, exactly like the whole-local aggregate copy above. Because the
+            // copy is element-wise into `c`'s own slots, a later mutation of `c` never
+            // touches `f.field` (the soundness core). The resolver refuses a runtime-
+            // indexed source and a heap-word element (`array<string, N>`), so those
+            // skip cleanly (`L0339`) rather than aliasing.
+            let (src_slot, src_ty) = resolve_inline_aggregate_source(ctx, value)?;
+            if &src_ty != ty {
+                return Err("aggregate copy between differing layouts".to_string());
+            }
+            for word in 0..ty.words() as i32 {
+                load_local(code, src_slot - word * 8);
+                store_local(code, base_slot - word * 8);
+            }
+            Ok(())
+        }
         _ => Err("initializer is not a native aggregate constructor".to_string()),
     }
 }

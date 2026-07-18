@@ -467,12 +467,16 @@ fn gen_array_f64_program(seed: u64) -> String {
 }
 
 /// Generates one program that exercises **inline, by-value fixed-extent arrays as
-/// struct fields** (road_to_1_0_stable A2, increment 2): a `struct` with a scalar
-/// field, a fixed `array<i64, N>` FIELD, and a trailing scalar field is constructed
-/// (via an element list or a `[v; k]` fill), copied by value (`let g = f`), has a
-/// random in-bounds copy element mutated, is passed BY VALUE into a helper that
-/// mutates its own parameter's fields, and is finally read element-by-element with a
-/// folded `len`.
+/// struct fields** (road_to_1_0_stable A2, increments 2 and 4): a `struct` with a
+/// scalar field, a fixed `array<i64, N>` FIELD, and a trailing scalar field is
+/// constructed (via an element list or a `[v; k]` fill), copied by value
+/// (`let g = f`), has a random in-bounds copy element mutated, is passed BY VALUE
+/// into a helper that mutates its own parameter's fields, and is finally read
+/// element-by-element with a folded `len`. Increment 4's two whole-field shapes are
+/// woven in: a whole-FIELD by-value copy (`let c = f.xs; c[cj] = cv`) whose mutation
+/// must not touch `f.xs`, and a `for x in f.xs` reduction — both reading `f.xs` after
+/// the copy's mutation, so an aliasing whole-field copy corrupts `sum_f`/`fsum` and
+/// diverges.
 ///
 /// This is the differential net for the extent-survival channel and the inline
 /// aggregate layout. Every access is in bounds (indices drawn from `0..N`), so the
@@ -481,7 +485,7 @@ fn gen_array_f64_program(seed: u64) -> String {
 /// wrong-stride miscompile surfaces as a native/interpreter exit-code divergence.
 /// The interpreters are the ground truth (all three must already agree); the shape
 /// is chosen to always LOWER natively (scalar `i64` element, in-bounds indices,
-/// direct field ops only — no `for x in field` or whole-field-array binding), so
+/// direct field ops, the whole-field copy, and `for x in f.xs`), so
 /// `fuzz_native_exit` produces a real exe for every program rather than skipping.
 fn gen_struct_array_field_program(seed: u64) -> String {
     let mut rng = Rng(seed | 1);
@@ -490,6 +494,13 @@ fn gen_struct_array_field_program(seed: u64) -> String {
     let xs_sum = |recv: &str| -> String {
         (0..len)
             .map(|i| format!("{recv}.xs[{i}]"))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+    // Sum over a bare array LOCAL (the whole-field copy `c`), indexed directly.
+    let arr_sum = |name: &str| -> String {
+        (0..len)
+            .map(|i| format!("{name}[{i}]"))
             .collect::<Vec<_>>()
             .join(" + ")
     };
@@ -505,9 +516,14 @@ fn gen_struct_array_field_program(seed: u64) -> String {
         format!("[{v}; {len}]")
     };
 
-    // The copy's mutation (a random in-bounds element and the scalar `a`).
+    // The whole-struct copy's mutation (a random in-bounds element and the scalar `a`).
     let gj = rng.below(len as u64) as usize;
     let gv = rng.range(-30, 30);
+    // The whole-FIELD copy's mutation (`let c = f.xs; c[cj] = cv`): its own snapshot,
+    // so it must NOT touch `f.xs` — an aliasing copy would corrupt `sum_f`/`fsum`
+    // below (both read `f.xs` after this mutation) and diverge from the interpreters.
+    let cj = rng.below(len as u64) as usize;
+    let cv = rng.range(-30, 30);
     // The helper's parameter mutations (its own copy — must not touch the caller).
     let mj = rng.below(len as u64) as usize;
     let mv = rng.range(-30, 30);
@@ -527,11 +543,18 @@ fn gen_struct_array_field_program(seed: u64) -> String {
          \x20   let f = S(a: {a0}, xs: {construct}, b: {b0})\n\
          \x20   let g = f\n\
          \x20   g.xs[{gj}] = {gv}\n\
+         \x20   let c = f.xs\n\
+         \x20   c[{cj}] = {cv}\n\
+         \x20   let fsum i64 = 0\n\
+         \x20   for x in f.xs\n\
+         \x20       fsum = fsum + x\n\
          \x20   let t i64 = touch(f)\n\
-         \x20   t + {sum_f} + f.a + f.b + {sum_g} + g.a + g.b + len(f.xs) + {bias}\n",
+         \x20   t + {sum_f} + f.a + f.b + {sum_g} + g.a + g.b + len(f.xs) + {sum_c} \
+         + fsum + {bias}\n",
         sum_s = xs_sum("s"),
         sum_f = xs_sum("f"),
         sum_g = xs_sum("g"),
+        sum_c = arr_sum("c"),
     )
 }
 

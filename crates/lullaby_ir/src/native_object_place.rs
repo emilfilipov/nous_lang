@@ -233,6 +233,121 @@ pub(crate) fn resolve_path_array_len(ctx: &NativeCtx, expr: &BytecodeExpr) -> Op
     }
 }
 
+/// Resolve a `Field`/`Index` read PATH whose FINAL type is an inline by-value
+/// aggregate array (a const-sized struct field, or a nested one) to `(base_slot,
+/// array_type)`, where `base_slot` names the stack word 0 (lowest address) of that
+/// inline array. This is the source side of a whole-field aggregate copy —
+/// `let c = f.field`, and the hidden `let __foreach_coll = f.field` the
+/// `for x in f.field` desugar emits.
+///
+/// Only a fully STATIC path (field hops and compile-time-constant indices) is
+/// supported: every step contributes a whole-word displacement (a field hop is
+/// word-granular; a const index into an array whose element is itself an aggregate
+/// scales by `elem.byte_size() == 8 * words()`, also a whole word), so `base_slot`
+/// is word-aligned and the caller's word-granular copy is exact. A runtime index in
+/// the path makes the base address dynamic and is REFUSED (`Err`) so the enclosing
+/// function skips cleanly (`L0339`) rather than emitting a dynamic-base aggregate
+/// copy. A heap-word element (`array<string, N>`) is likewise refused — a by-value
+/// word copy would SHARE the string pointers — mirroring the layout-time deferral, so
+/// this can never alias a shared heap pointer through a fresh local.
+pub(crate) fn resolve_inline_aggregate_source(
+    ctx: &NativeCtx,
+    expr: &BytecodeExpr,
+) -> Result<(i32, NativeType), String> {
+    let mut steps: Vec<PathStep> = Vec::new();
+    let mut cursor = expr;
+    let root = loop {
+        match &cursor.kind {
+            BytecodeExprKind::Variable(name) => break name.as_str(),
+            BytecodeExprKind::Field { target, field } => {
+                steps.push(PathStep::Field(field.as_str()));
+                cursor = target;
+            }
+            BytecodeExprKind::Index { target, index } => {
+                steps.push(PathStep::Index(index));
+                cursor = target;
+            }
+            _ => {
+                return Err(
+                    "whole-aggregate copy source must be rooted at a local variable".to_string(),
+                );
+            }
+        }
+    };
+    steps.reverse();
+    let local = ctx.local(root)?;
+    // A fat-pointer array parameter is a runtime descriptor, not an inline aggregate;
+    // there is nothing to copy by value from it.
+    if matches!(local.ty, NativeType::FatArray { .. }) {
+        return Err("cannot bind a whole fat-pointer array by value".to_string());
+    }
+    let base_slot = local.slot;
+    let mut ty = local.ty.clone();
+    // Byte displacement of the resolved aggregate's word 0 from `base_slot`. Every
+    // step below contributes a whole number of 8-byte words (asserted after the walk).
+    let mut const_bytes: i64 = 0;
+    for step in &steps {
+        match (step, &ty) {
+            (PathStep::Field(field), NativeType::Struct { fields, .. }) => {
+                let mut offset = 0i64;
+                let mut found = None;
+                for (fname, fty) in fields {
+                    if fname == *field {
+                        found = Some(fty.clone());
+                        break;
+                    }
+                    offset += fty.words() as i64 * 8;
+                }
+                let fty = found.ok_or_else(|| format!("unknown field `{field}`"))?;
+                const_bytes += offset;
+                ty = fty;
+            }
+            (PathStep::Index(index), NativeType::Array { elem, len }) => {
+                let BytecodeExprKind::Integer(literal) = index.kind else {
+                    return Err(
+                        "a runtime index in a whole-aggregate copy source is deferred".to_string(),
+                    );
+                };
+                if literal < 0 || literal >= *len as i64 {
+                    return Err(format!(
+                        "array index `{literal}` is out of bounds for length {len}"
+                    ));
+                }
+                // A const index into an array whose element is an aggregate scales by
+                // `elem.byte_size()`, which for a non-scalar element is `8 * words()`
+                // (whole words). If the element were a scalar this step would be the
+                // final one and `ty` would not be an `Array`, so the copy path below
+                // never fires — the whole-word invariant holds for every reachable case.
+                const_bytes += literal * elem.byte_size() as i64;
+                ty = (**elem).clone();
+            }
+            (PathStep::Field(_), _) => {
+                return Err("field access on a non-struct native value".to_string());
+            }
+            (PathStep::Index(_), _) => {
+                return Err("index access on a non-array native value".to_string());
+            }
+        }
+    }
+    // The path must resolve to an inline fixed array with a by-value (scalar-only)
+    // element. A heap-word element is refused so a fresh local never shares pointers.
+    let NativeType::Array { elem, .. } = &ty else {
+        return Err("whole-aggregate copy source is not an inline fixed array".to_string());
+    };
+    if !is_scalar_only_layout(elem) {
+        return Err(
+            "whole-aggregate copy of a heap-word element array would share pointers; deferred"
+                .to_string(),
+        );
+    }
+    debug_assert_eq!(
+        const_bytes % 8,
+        0,
+        "an inline aggregate source resolves to a word-aligned base"
+    );
+    Ok((base_slot - const_bytes as i32, ty))
+}
+
 /// Resolve an assignment target `(name, path)` to a scalar place.
 pub(crate) fn resolve_scalar_place(
     ctx: &NativeCtx,
