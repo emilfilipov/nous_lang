@@ -505,3 +505,57 @@ fn native_out_of_subset_alloc_boxes_skip_gracefully() {
         "`alloc` of a `string` value is not lowered natively",
     );
 }
+
+/// Arena stage-2 target-aware confinement (I4), the POSITIVE end-to-end: rebinding a
+/// loop-LOCAL `string` with a fresh allocation each iteration is newly admitted, so
+/// the loop gets a per-iteration sub-region. The rewind reclaims exactly the dead
+/// per-iteration scratch, so native must still agree with every interpreter — a
+/// mis-scoped rewind (freeing `s` before `len(s)` reads it) would diverge here.
+#[test]
+fn native_i4_rebound_loop_local_matches_interpreters() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn sum_lens n i64 -> i64\n",
+            "    let total i64 = 0\n",
+            "    for i from 0 to n\n",
+            "        let s string = to_string(i)\n",
+            "        s = s + \"!\"\n",
+            "        total = total + len(s)\n",
+            "    total\n\n",
+            "fn main -> i64\n",
+            "    sum_lens(10)\n",
+        ),
+        "lullaby_i4_rebind_local",
+        23,
+    );
+}
+
+/// Arena stage-2 I4 guard, the escaping counterpart of the rebind above, end-to-end.
+/// The store target `keep` is declared OUTSIDE the loop, so the heap value it holds
+/// after the loop is genuinely live; the target-aware rule must still DENY
+/// confinement (no per-iteration rewind), so the post-loop `clobber` allocation does
+/// not overwrite `keep`. Native must equal every interpreter (**96**). This is the
+/// string analogue of the `alloc` `92-vs-2116` pin: DROPPING the iteration-local
+/// guard (admitting the outer `keep` as if it were local) makes native reclaim the
+/// live `keep` and answer **48** while the interpreters answer **96** — the measured
+/// use-after-free the guard prevents.
+#[test]
+fn native_i4_store_into_outer_string_stays_denied() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn h a i64 -> i64\n",
+            "    let keep string = \"\"\n",
+            "    for j from 0 to 5\n",
+            "        keep = to_string(a + j) + \"!\"\n",
+            "    let z string = to_string(a) + \"clobberclobberclobber\"\n",
+            "    len(keep) + len(z)\n\n",
+            "fn main -> i64\n",
+            "    let total i64 = 0\n",
+            "    for i from 0 to 3\n",
+            "        total = total + h(i)\n",
+            "    total\n",
+        ),
+        "lullaby_i4_store_outer_string",
+        96,
+    );
+}

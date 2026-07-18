@@ -3568,6 +3568,239 @@ fn arena_sub_region_not_used_when_loop_value_stored_outside() {
 }
 
 #[test]
+fn arena_widening_fires_for_rebound_loop_local() {
+    // Stage 2 target-aware confinement (I4): REBINDING a loop-local `string` with a
+    // fresh allocation each iteration (`let s = …; s = s + "!"`) is now recognized as
+    // iteration-local — `s` is a top-level `let` of the loop body, so its value dies
+    // at the iteration edge. The loop earns a per-iteration sub-region and the
+    // function takes the arena path. Before I4 this exact program was DENIED (the
+    // heap `Assign s = …` was treated as an escape regardless of target), so it had
+    // no arena prologue and no rewind.
+    let rebind = emit_native_program(&module_for(concat!(
+        "fn sum_lens n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        let s string = to_string(i)\n",
+        "        s = s + \"!\"\n",
+        "        total = total + len(s)\n",
+        "    total\n\n",
+        "fn main -> i64\n",
+        "    sum_lens(10)\n",
+    )))
+    .expect("emit rebound-loop-local program");
+    assert!(
+        rebind.compiled.contains(&"sum_lens".to_string()),
+        "sum_lens must compile natively: {:?} / {:?}",
+        rebind.compiled,
+        rebind.skipped
+    );
+    assert!(
+        has_arena_prologue(&rebind),
+        "rebinding a loop-LOCAL string must now take the arena path (I4 widening)"
+    );
+    assert!(
+        count_arena_loop_rewinds(&rebind) >= 1,
+        "the confined rebind loop must emit a per-iteration bump-pointer rewind"
+    );
+
+    // Control / the pre-I4 boundary: the ONLY change is WHERE the target is declared.
+    // Moving the `let acc` OUTSIDE the loop makes `acc = acc + "!"` a loop-carried
+    // accumulator that genuinely escapes the iteration — it must STILL be denied (no
+    // arena prologue, no rewind), exactly as before. This is the target-awareness:
+    // same store shape, different declaration site, opposite verdict.
+    let carried = emit_native_program(&module_for(concat!(
+        "fn grow n i64 -> i64\n",
+        "    let acc string = \"\"\n",
+        "    for i from 0 to n\n",
+        "        acc = acc + \"!\"\n",
+        "    len(acc)\n\n",
+        "fn main -> i64\n",
+        "    grow(10)\n",
+    )))
+    .expect("emit loop-carried program");
+    assert!(
+        !has_arena_prologue(&carried),
+        "a loop-carried accumulator declared OUTSIDE the loop must remain non-arena"
+    );
+    assert_eq!(
+        count_arena_loop_rewinds(&carried),
+        0,
+        "a loop-carried accumulator must emit no per-iteration rewind"
+    );
+}
+
+#[test]
+fn arena_widening_fires_for_nested_loop_iteration_local() {
+    // Stage 2 I4: a NESTED-loop iteration-local scratch. The inner loop rebinds its
+    // own top-level `let t`, so the inner loop is confined and gets a sub-region; the
+    // outer loop is confined too (the inner store targets a name local to the inner
+    // loop, which dies within one outer iteration). Two rewinds are emitted (one per
+    // loop level). Before I4 the inner `t = t + "!"` heap store denied both loops.
+    let nested = emit_native_program(&module_for(concat!(
+        "fn work n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        for j from 0 to n\n",
+        "            let t string = to_string(i + j)\n",
+        "            t = t + \"!\"\n",
+        "            total = total + len(t)\n",
+        "    total\n\n",
+        "fn main -> i64\n",
+        "    work(5)\n",
+    )))
+    .expect("emit nested iteration-local program");
+    assert!(
+        has_arena_prologue(&nested),
+        "a nested loop whose inner scratch is iteration-local must take the arena path"
+    );
+    assert!(
+        count_arena_loop_rewinds(&nested) >= 2,
+        "both loop levels of the confined nest must emit a per-iteration rewind, got {}",
+        count_arena_loop_rewinds(&nested)
+    );
+}
+
+#[test]
+fn arena_widening_fires_for_rebound_struct_string_local() {
+    // Stage 2 I4: a struct-with-`string` built fresh per iteration into a loop-local
+    // and REBOUND (`let r Rec = …; r = Rec(fresh, …)`). `Rec` transitively carries a
+    // heap field, so `r = Rec(…)` is a heap store; `r` is a top-level `let` of the
+    // loop body, so the rebind is iteration-local and the loop is confined. Before I4
+    // the heap-carrying-aggregate store denied confinement regardless of target.
+    let rec = emit_native_program(&module_for(concat!(
+        "struct Rec\n",
+        "    name string\n",
+        "    id i64\n\n",
+        "fn work n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        let r Rec = Rec(to_string(i), i)\n",
+        "        r = Rec(r.name + \"!\", r.id + 1)\n",
+        "        total = total + len(r.name) + r.id\n",
+        "    total\n\n",
+        "fn main -> i64\n",
+        "    work(10)\n",
+    )))
+    .expect("emit rebound struct-string program");
+    assert!(
+        has_arena_prologue(&rec),
+        "rebinding a loop-local struct-with-string must take the arena path (I4 widening)"
+    );
+    assert!(
+        count_arena_loop_rewinds(&rec) >= 1,
+        "the confined struct-string rebind loop must emit a per-iteration rewind"
+    );
+}
+
+#[test]
+fn arena_widening_denied_for_closure_in_loop_body() {
+    // Stage 2 I4 guard (closure channel): a closure literal in the loop body DISABLES
+    // the widening — a closure can capture the iteration-local, and its capture block
+    // may outlive the iteration. Here `work` COMPILES natively (the closure captures a
+    // scalar `i`, which is in the native closure subset) and the loop rebinds a
+    // top-level-`let` string `s`, so WITHOUT the closure gate the loop would be
+    // confined and arena-routed. The gate forces the strict rule (any heap store
+    // escapes), so `work` stays on the RC path: no arena prologue, no rewind. This is
+    // the specific teeth for the widenability gate — removing it would arena-route a
+    // loop whose local a closure could capture.
+    let program = emit_native_program(&module_for(concat!(
+        "fn work n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        let s string = to_string(i)\n",
+        "        s = s + \"!\"\n",
+        "        let g fn() -> i64 = fn -> i * 2\n",
+        "        total = total + len(s) + g()\n",
+        "    total\n\n",
+        "fn main -> i64\n",
+        "    work(10)\n",
+    )))
+    .expect("emit closure-in-loop program (work compiles with a scalar-capture closure)");
+    assert!(
+        program.compiled.contains(&"work".to_string()),
+        "work must compile natively so the guard is exercised, not skipped: {:?} / {:?}",
+        program.compiled,
+        program.skipped
+    );
+    assert!(
+        !has_arena_prologue(&program),
+        "a loop body containing a closure literal must NOT be arena-routed (widen gate)"
+    );
+    assert_eq!(
+        count_arena_loop_rewinds(&program),
+        0,
+        "the widening must NOT fire for a loop whose body contains a closure literal"
+    );
+}
+
+#[test]
+fn arena_widening_denied_for_heap_field_store_into_outer_aggregate() {
+    // Stage 2 I4 guard (aggregate-element channel): a heap store through a `path`
+    // (`acc.name = fresh`) is NEVER widened — a field/element store can mutate an
+    // aggregate that outlives the iteration. Here `acc` is an OUTER struct, so the
+    // store escapes twice over (non-empty path AND non-local target). A mutable struct
+    // field store is itself outside the native i64-scalar subset, so `work` SKIPS
+    // entirely — which trivially keeps it off the arena path. If a future change made
+    // this shape compile, the widening must still refuse it: no rewind.
+    let emitted = emit_native_program(&module_for(concat!(
+        "struct Rec\n",
+        "    name string\n",
+        "    id i64\n\n",
+        "fn work n i64 -> i64\n",
+        "    let acc Rec = Rec(\"\", 0)\n",
+        "    for i from 0 to n\n",
+        "        acc.name = to_string(i)\n",
+        "    len(acc.name)\n\n",
+        "fn main -> i64\n",
+        "    work(10)\n",
+    )));
+    if let Ok(program) = emitted {
+        assert!(
+            !has_arena_prologue(&program),
+            "a heap field store into an outer aggregate must keep the function off the arena path"
+        );
+        assert_eq!(
+            count_arena_loop_rewinds(&program),
+            0,
+            "a heap field store into an outer aggregate must emit no per-iteration rewind"
+        );
+    }
+}
+
+#[test]
+fn arena_widening_denied_for_inner_local_stored_into_outer_carried() {
+    // Stage 2 I4 guard (nested-loop channel): an accumulator `acc` is a top-level
+    // `let` of the OUTER loop body but is rebound inside the INNER loop
+    // (`acc = acc + "x"`). For the inner loop `acc` is NOT iteration-local (its `let`
+    // is not a top-level statement of the inner body), so the inner loop is not
+    // confined → it is an unbounded heap loop → the whole function is denied the arena
+    // path. No arena prologue, no rewind.
+    let program = emit_native_program(&module_for(concat!(
+        "fn work n i64 -> i64\n",
+        "    let total i64 = 0\n",
+        "    for i from 0 to n\n",
+        "        let acc string = \"\"\n",
+        "        for j from 0 to n\n",
+        "            acc = acc + \"x\"\n",
+        "        total = total + len(acc)\n",
+        "    total\n\n",
+        "fn main -> i64\n",
+        "    work(6)\n",
+    )))
+    .expect("emit inner-into-outer-carried program");
+    assert!(
+        !has_arena_prologue(&program),
+        "an inner-loop store into an outer-loop-carried accumulator must keep the \
+         function off the arena path"
+    );
+    assert_eq!(
+        count_arena_loop_rewinds(&program),
+        0,
+        "an inner-loop store into an outer-carried accumulator must emit no rewind"
+    );
+}
+
+#[test]
 fn rc_drop_inserted_on_break_and_continue_early_exit_edges() {
     // RC stage 2: a uniquely-owned, borrow-only loop string is now dropped on the
     // `break`/`continue` early-exit edges too, not only the fallthrough back-edge.
