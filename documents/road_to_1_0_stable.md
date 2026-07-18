@@ -96,9 +96,21 @@ User-defined generic types (`struct Stack<T>`, `enum Opt<T>`) do not parse today
   return, narrow off-by-one, nesting — all native == interpreters; the
   `array<string, N>` skip verified not to pointer-share). Interpreters/WASM
   byte-for-byte unchanged. See `native_backend_contract.md`, `suite24`.
-- **Next (remaining A2):** WASM inline fixed-array fields (inherit the `FieldExtents`
-  mechanism); then native whole-field iteration/binding (`for x in f.field`, `let c =
-  f.field`) — the explicit follow-up boundary. Full const-fn evaluation stays post-1.0.
+- **Native whole-field ops: SHIPPED (increment 4).** `for x in f.field` and `let c =
+  f.field` over an inline fixed-extent struct field now lower natively — both reduce
+  to one by-value aggregate copy of a `Field`/`Index` place plus planning-time length
+  inference (`inline_array_type_of_path`), since `for-in` desugars to a hidden
+  `let __foreach_coll = f.field`. Works for `i64`/`f64`/narrow-packed/nested; still
+  skips (`L0339`, sound demotion) for `array<string, N>` fields, runtime-indexed
+  sources, and aggregate-element `for-in`. Reviewed PASS adversarially (aliasing
+  isolation, pre/post-field integrity, length inference, narrow sign-extension).
+  **A2 native array operations are now complete**: construct, copy, pass, return,
+  `[i]`, `len`, `addr_of`, iterate, whole-field bind — all inline and by-value.
+- **WASM:** fixed-extent array struct fields are already at observable parity via
+  WASM's pointer-per-field model (no inline mechanism needed — measured); a separate
+  WASM struct/array **value-copy** miscompile (`let g = f` aliased) was found and is
+  being fixed under a new wasmi execution-parity harness (owner-approved). Full
+  const-fn evaluation stays post-1.0.
 
 ### A3. FFI completeness — **DECIDED: callbacks in 1.0**
 Base FFI ships; deferred today (L0424): callbacks (fn pointers), struct-by-value,
