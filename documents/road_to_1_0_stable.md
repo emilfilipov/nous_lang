@@ -156,10 +156,21 @@ What a bounds-fail / unwrap-on-`none` / divide-by-zero does in the safe tier.
 
 ## B. Planned but unscheduled — no decision needed, needs building
 
-### B1. Closures native codegen — **PLANNED**
-Closures run on the interpreters only today; native-AOT-completeness (the
-"no silent native fallback" decision) requires native codegen for them. Sizeable
-native-backend work; schedule after the arena/native-aggregate line settles.
+### B1. Closures native codegen — **stages 1–3a SHIPPED**
+- **Stage 2 (scalar completeness): SHIPPED** — direct non-escaping closure calls,
+  int + float captures/params/returns, any param count.
+- **Stage 3a (non-escaping higher-order functions): SHIPPED** (`native for-x`… merge
+  after `7b3251d`). A closure passed as a **call-only** argument (`g(f, …)` where `g`
+  only ever *calls* its fn-param — never stores/returns/reassigns/captures/reads-as-
+  value/passes-onward) lowers to a real indirect call through the existing closure
+  ABI; the closure's caller-owned capture block stays valid for the call's extent.
+  Anything not provably non-escaping skips cleanly (`L0339`). Reviewed PASS against 13
+  escape-construction probes + the positional-XMM/spill ABI matrix; FFI callbacks
+  (shared indirect-call ABI) unaffected; AArch64/WASM still skip HOF cleanly. x86-64
+  native only.
+- **Deferred (stage 3b+):** returned/escaping/stored closures, heap/aggregate captures,
+  mutable-capture rebind, onward-passed (multi-level) HOF chains. Escaping closures
+  depend on the memory model (where captures live) — sequenced with the arena work.
 
 ### B2. Concrete stdlib contents — **PLANNED**
 The API-stability *posture* is decided (freeze a small core, version the rest) but

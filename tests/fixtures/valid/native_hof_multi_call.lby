@@ -1,0 +1,10 @@
+fn accumulate f fn(i64) -> i64 seed i64 -> i64
+    let a i64 = f(seed)
+    let b i64 = f(a)
+    let c i64 = f(b)
+    c
+
+fn main -> i64
+    let base i64 = 10
+    let addbase fn(i64) -> i64 = fn x i64 -> x + base
+    accumulate(addbase, 0)

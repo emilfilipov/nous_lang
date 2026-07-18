@@ -146,7 +146,27 @@ pub(crate) fn native_signature_eligibility(
             },
         )?;
 
+    // A `fn(...)`-typed parameter is native-eligible ONLY as a **non-escaping
+    // higher-order parameter**: an all-native-scalar fn signature used call-only in
+    // the body (see `hof_params`). Such a parameter is a single pointer word to a
+    // closure env block a caller passes in; it is invoked through the block and never
+    // escapes, so a caller's capture environment stays valid for the whole call. A fn
+    // parameter that is stored, returned, reassigned, passed onward, or has a
+    // non-scalar signature is refused here so the function skips cleanly (`L0339`)
+    // rather than risking a dangling capture.
+    let hof = hof_params(function);
     for param in &function.params {
+        if param.ty.is_function() {
+            if !hof.iter().any(|h| h.name == param.name) {
+                return Err(format!(
+                    "fn-typed parameter `{}` is not a call-only native-scalar higher-order \
+                     parameter; a stored/returned/onward-passed fn value is deferred",
+                    param.name
+                ));
+            }
+            // A higher-order fn parameter is a scalar pointer word, not an aggregate.
+            continue;
+        }
         native_signature_type_is_aggregate(&param.ty, structs, enums).map_err(|reason| {
             format!(
                 "parameter `{}` type `{}` is not in the native subset: {reason}",
@@ -649,6 +669,15 @@ pub(crate) fn compute_native_signature(
 ) -> Result<NativeSignature, String> {
     let mut params = Vec::with_capacity(function.params.len());
     for param in &function.params {
+        // A higher-order `fn(...)` parameter crosses the boundary as a single pointer
+        // word (a closure env-block pointer), so its signature layout is an `I64`
+        // cell — the same class a caller stages the closure pointer through. Its
+        // call-only eligibility was already checked by `native_signature_eligibility`;
+        // here we only give it its register-word layout.
+        if param.ty.is_function() {
+            params.push(NativeType::I64);
+            continue;
+        }
         params.push(resolve_signature_native_type(
             &param.ty,
             structs,

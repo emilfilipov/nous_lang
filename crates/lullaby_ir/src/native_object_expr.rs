@@ -80,13 +80,14 @@ pub(crate) fn lower_native_expr(
             lower_native_binary(ctx, left, *op, right, code)
         }
         BytecodeExprKind::Call { name, args } => {
-            // A call whose callee name is a closure-bound local is an INDIRECT
-            // closure call: the env pointer (the block base) goes into `rcx` as the
-            // hidden first argument, the visible arguments shift to effective
-            // positions 1.., and `call [env]` dispatches through the code pointer at
-            // word 0 (see `lower_closure_int_call`). Detected before any builtin/name
-            // resolution so it never collides with a top-level function name.
-            if ctx.closure_locals.contains_key(name) {
+            // A call whose callee name is an INDIRECT callable — a closure-bound
+            // local or a higher-order fn parameter — is an indirect closure call: the
+            // env pointer (the block base) goes into `rcx` as the hidden first
+            // argument, the visible arguments shift to effective positions 1.., and
+            // `call [env]` dispatches through the code pointer at word 0 (see
+            // `lower_closure_int_call`). Detected before any builtin/name resolution
+            // so a local binding shadowing a function name resolves as the local call.
+            if ctx.is_indirect_callable(name) {
                 return lower_closure_int_call(ctx, name, args, code);
             }
             // Fixed-width integer conversions are emitted inline, not as calls.

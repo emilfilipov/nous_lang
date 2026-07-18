@@ -92,10 +92,20 @@ fn float_lit(class: Class, value: i64, half: bool) -> String {
 
 /// Generate one closure program for `seed`.
 ///
-/// The closure is always a direct `let` literal called directly — the supported
-/// native shape — so every generated program is expected to COMPILE natively, not
-/// skip. That matters: a generator that mostly produced skipping programs would
-/// still pass while proving nothing about codegen.
+/// The closure is always a direct `let` literal. It is invoked either **directly**
+/// (`f(args)`) or, in the higher-order mode, by passing it as a NON-ESCAPING
+/// argument to a generated `apply_hof` helper that calls it (`apply_hof(f, args)` —
+/// closures stage 3a). Both are supported native shapes, so every generated program
+/// is expected to COMPILE natively, not skip. That matters: a generator that mostly
+/// produced skipping programs would still pass while proving nothing about codegen.
+///
+/// The higher-order mode adds a second, independent ABI boundary the direct mode
+/// cannot reach: the closure pointer is passed as an ordinary argument to
+/// `apply_hof` (shifting later arguments' positions), and `apply_hof` forwards its
+/// scalar parameters — interleaved integer/float classes, counts past the register
+/// file — into the indirect call. A positional-XMM error or a wrong stack-spill
+/// displacement in EITHER the ordinary call or the indirect closure call turns a
+/// generated program's exit code wrong.
 fn gen_closure_program(seed: u64) -> String {
     let mut rng = Rng(seed | 1);
     let shape = match rng.below(3) {
@@ -103,6 +113,11 @@ fn gen_closure_program(seed: u64) -> String {
         1 => Shape::FloatThreshold,
         _ => Shape::MixedChain,
     };
+    // Higher-order mode: route every call site through a generated `apply_hof`
+    // helper that receives the closure and calls it, instead of calling it directly.
+    // Chosen for a substantial fraction of programs so the HOF ABI is exercised
+    // heavily while the direct-call ABI stays covered too.
+    let hof = rng.chance(2);
     // Float width for this program: exercise f32 sometimes, f64 mostly (f64 is the
     // common shape and has the richer arithmetic surface).
     let fclass = if rng.chance(4) {
@@ -241,21 +256,50 @@ fn gen_closure_program(seed: u64) -> String {
         args.join(", ")
     };
 
+    // A single call site: `f(args)` directly, or `apply_hof(f, args)` in the
+    // higher-order mode. The closure `f` is passed as the leading argument to the
+    // helper (a sanctioned non-escaping sink), which forwards the rest.
+    let call_site = |args: &str| {
+        if hof {
+            format!("apply_hof(f, {args})")
+        } else {
+            format!("f({args})")
+        }
+    };
+
     let tail = if ret_ty == "i64" {
         let a = arg_vec(&mut rng);
-        format!("    let r i64 = f({a})\n    r % 251\n")
+        format!("    let r i64 = {}\n    r % 251\n", call_site(&a))
     } else {
         let (a1, a2, a3) = (arg_vec(&mut rng), arg_vec(&mut rng), arg_vec(&mut rng));
         format!(
             "    let total i64 = 0\n\
-             \x20   if f({a1})\n        total = total + 1\n\
-             \x20   if f({a2})\n        total = total + 2\n\
-             \x20   if f({a3})\n        total = total + 4\n\
-             \x20   total\n"
+             \x20   if {}\n        total = total + 1\n\
+             \x20   if {}\n        total = total + 2\n\
+             \x20   if {}\n        total = total + 4\n\
+             \x20   total\n",
+            call_site(&a1),
+            call_site(&a2),
+            call_site(&a3),
         )
     };
 
-    format!("fn main -> i64\n{preamble}{decl}{tail}")
+    // The higher-order helper `apply_hof(f, p0, p1, …) -> RET = f(p0, p1, …)`. Its
+    // fn parameter `f` is used call-only, so it is a native higher-order parameter;
+    // it forwards its scalar parameters (interleaved classes, counts past the
+    // register file) into the indirect closure call.
+    let helper = if hof {
+        format!(
+            "fn apply_hof f fn({}) -> {ret_ty} {} -> {ret_ty}\n    f({})\n",
+            sig_types.join(", "),
+            params.join(" "),
+            names.join(", "),
+        )
+    } else {
+        String::new()
+    };
+
+    format!("{helper}fn main -> i64\n{preamble}{decl}{tail}")
 }
 
 #[test]
@@ -300,9 +344,14 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
 
     let mut ran = 0u64;
     let mut compiled = 0u64;
+    let mut hof_ran = 0u64;
     for i in 0..PROGRAMS {
         let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
         let source = gen_closure_program(seed);
+        // A higher-order program routes its calls through the generated `apply_hof`
+        // helper; a direct program does not. Detecting it lets the batch prove the
+        // HOF ABI was actually exercised end-to-end, not merely generated.
+        let is_hof = source.contains("apply_hof");
 
         let (ast, ir, bc) = run_interpreters(&source);
         assert!(
@@ -320,16 +369,29 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
         };
         ran += 1;
         compiled += 1;
+        if is_hof {
+            hof_ran += 1;
+        }
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE on closure #{i} (seed {seed:#x}):\n{source}\n\
              interpreter={expected}, native exit={exit}"
         );
     }
-    // Report the count so a run can be audited: this oracle is only meaningful if it
+    // Report the counts so a run can be audited: this oracle is only meaningful if it
     // actually executed real binaries. Every generated program is a supported native
-    // closure shape, so on a Windows host this prints the full count — if it ever
-    // prints fewer, the generator has drifted into producing skipping programs and
-    // is no longer testing codegen.
-    eprintln!("closure native fuzz: ran {ran}/{PROGRAMS} real exes ({compiled} compiled natively)");
+    // closure shape (direct OR higher-order), so on a Windows host this prints the
+    // full count — if it ever prints fewer, the generator has drifted into producing
+    // skipping programs and is no longer testing codegen.
+    eprintln!(
+        "closure native fuzz: ran {ran}/{PROGRAMS} real exes ({compiled} compiled natively, \
+         {hof_ran} higher-order)"
+    );
+    // The higher-order path must have been exercised by a non-trivial batch, or the
+    // stage-3a ABI (closure-pointer argument + indirect call through a fn parameter)
+    // would be silently untested while the suite stayed green.
+    assert!(
+        hof_ran >= PROGRAMS / 8,
+        "expected a substantial higher-order batch, ran only {hof_ran}/{ran}"
+    );
 }

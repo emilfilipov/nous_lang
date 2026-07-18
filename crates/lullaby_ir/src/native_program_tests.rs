@@ -4936,17 +4936,138 @@ fn native_closure_string_capture_skips() {
     ));
 }
 
-/// A closure passed to a higher-order function (`apply(f, x)`) escapes the direct
-/// non-escaping-call slice and skips cleanly.
+/// A closure passed to a **non-escaping higher-order function** (`apply(f, x)`)
+/// now COMPILES (closures stage 3a): the callee's `f` parameter is used call-only,
+/// so the closure never escapes and its captures stay valid for the whole call.
+/// `apply`, `main`, and the synthesized body all lower; the closure pointer passes
+/// as an ordinary argument and `apply` calls through it. (This asserted a skip
+/// while higher-order use was deferred.)
 #[test]
-fn native_closure_higher_order_skips() {
-    assert_main_skips(concat!(
+fn native_closure_higher_order_compiles() {
+    let program = emit_native_program(&module_for(concat!(
         "fn apply f fn(i64) -> i64 v i64 -> i64\n",
         "    f(v)\n",
         "fn main -> i64\n",
         "    let n i64 = 1\n",
         "    let add_n fn(i64) -> i64 = fn x i64 -> x + n\n",
         "    apply(add_n, 5)\n",
+    )))
+    .expect("a non-escaping higher-order closure compiles");
+    for symbol in ["apply", "main", "__closure_0"] {
+        assert!(
+            program.compiled.contains(&symbol.to_string()),
+            "{symbol} must compile: {:?} (skipped {:?})",
+            program.compiled,
+            program.skipped
+        );
+    }
+}
+
+/// A **non-capturing** closure passed to a higher-order function compiles: the env
+/// block is a single code-pointer word (no captures), passed and called exactly
+/// like a capturing one.
+#[test]
+fn native_closure_hof_noncapture_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn apply f fn(i64) -> i64 v i64 -> i64\n",
+        "    f(v)\n",
+        "fn main -> i64\n",
+        "    let sq fn(i64) -> i64 = fn x i64 -> x * x\n",
+        "    apply(sq, 6)\n",
+    )))
+    .expect("a non-capturing higher-order closure compiles");
+    assert!(
+        program.compiled.contains(&"apply".to_string())
+            && program.compiled.contains(&"__closure_0".to_string()),
+        "apply and the body must compile: {:?} (skipped {:?})",
+        program.compiled,
+        program.skipped
+    );
+}
+
+/// A higher-order callee that invokes its fn parameter **multiple times** compiles:
+/// each `f(x)` is an independent indirect call through the same env pointer.
+#[test]
+fn native_closure_hof_multi_invocation_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn accumulate f fn(i64) -> i64 seed i64 -> i64\n",
+        "    let a i64 = f(seed)\n",
+        "    let b i64 = f(a)\n",
+        "    f(b)\n",
+        "fn main -> i64\n",
+        "    let base i64 = 10\n",
+        "    let addbase fn(i64) -> i64 = fn x i64 -> x + base\n",
+        "    accumulate(addbase, 0)\n",
+    )))
+    .expect("a multiply-invoked higher-order closure compiles");
+    assert!(
+        program.compiled.contains(&"accumulate".to_string()),
+        "accumulate must compile: {:?} (skipped {:?})",
+        program.compiled,
+        program.skipped
+    );
+}
+
+/// A **float** closure passed to a higher-order callee compiles when the callee
+/// returns an integer cell (a float-RETURNING user call is an orthogonal deferred
+/// feature). The float parameter/return of the closure route through the XMM file
+/// positionally, exactly as a direct float-closure call does.
+#[test]
+fn native_closure_hof_float_arg_compiles() {
+    let program = emit_native_program(&module_for(concat!(
+        "fn twice f fn(f64) -> f64 v f64 -> i64\n",
+        "    let a f64 = f(v)\n",
+        "    let b f64 = f(a)\n",
+        "    if b > 7.9\n",
+        "        return 1\n",
+        "    return 0\n",
+        "fn main -> i64\n",
+        "    let s f64 = 2.0\n",
+        "    let g fn(f64) -> f64 = fn x f64 -> x * s\n",
+        "    twice(g, 2.0)\n",
+    )))
+    .expect("a float higher-order closure compiles");
+    assert!(
+        program.compiled.contains(&"twice".to_string())
+            && program.compiled.contains(&"__closure_0".to_string()),
+        "twice and the body must compile: {:?} (skipped {:?})",
+        program.compiled,
+        program.skipped
+    );
+}
+
+/// **Refusal boundary — non-call-only callee.** A callee that reads its fn
+/// parameter as a value (binds it to a local) lets the closure escape, so the
+/// callee is not a higher-order parameter and BOTH it and any caller passing a
+/// closure to it skip cleanly (`L0339`), never miscompiled.
+#[test]
+fn native_closure_hof_leaky_callee_skips() {
+    assert_main_skips(concat!(
+        "fn leaky f fn(i64) -> i64 v i64 -> i64\n",
+        "    let saved fn(i64) -> i64 = f\n",
+        "    saved(v)\n",
+        "fn main -> i64\n",
+        "    let n i64 = 7\n",
+        "    let c fn(i64) -> i64 = fn x i64 -> x + n\n",
+        "    leaky(c, 5)\n",
+    ));
+}
+
+/// **Refusal boundary — onward pass (documented frontier).** A callee that passes
+/// its fn parameter onward as an argument to another function is refused this
+/// increment (a HOF parameter must be call-only in its own body), so it skips
+/// cleanly rather than lowering a multi-level higher-order chain.
+#[test]
+fn native_closure_hof_onward_pass_skips() {
+    assert_main_skips(concat!(
+        "fn inner f fn(i64) -> i64 v i64 -> i64\n",
+        "    f(v)\n",
+        "fn outer f fn(i64) -> i64 v i64 -> i64\n",
+        "    inner(f, v)\n",
+        "fn main -> i64\n",
+        "    let n i64 = 2\n",
+        "    let c fn(i64) -> i64 = fn x i64 -> x + n\n",
+        "    outer(c, 40)\n",
     ));
 }
 

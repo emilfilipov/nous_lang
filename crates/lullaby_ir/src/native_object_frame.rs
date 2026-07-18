@@ -209,6 +209,7 @@ pub(crate) fn max_outgoing_stack_words(
     body: &[BytecodeInstruction],
     signatures: &HashMap<String, NativeSignature>,
     closure_locals: &HashMap<String, usize>,
+    fn_param_callables: &HashMap<String, ClosureCallSig>,
 ) -> usize {
     fn call_stack_words(
         name: &str,
@@ -227,17 +228,21 @@ pub(crate) fn max_outgoing_stack_words(
         expr: &BytecodeExpr,
         signatures: &HashMap<String, NativeSignature>,
         closure_locals: &HashMap<String, usize>,
+        fn_param_callables: &HashMap<String, ClosureCallSig>,
     ) -> usize {
         let mut here = 0usize;
         if let BytecodeExprKind::Call { name, args } = &expr.kind {
             // A compiled (internal) callee uses the stack-spill convention with a
-            // possible hidden aggregate-return pointer. A closure call always has a
-            // hidden env pointer. An extern (C-ABI) call also spills its 5th+
-            // arguments into the same outgoing area, so it must be counted too; it
-            // has no native signature, so use its raw argument count. (Native
-            // builtins never exceed four arguments, so this over-reserves nothing in
-            // practice.)
-            here = if closure_locals.contains_key(name.as_str()) {
+            // possible hidden aggregate-return pointer. An INDIRECT call — through a
+            // closure local OR a higher-order fn parameter — always has a hidden env
+            // pointer, so it shifts the visible arguments down by one exactly like an
+            // aggregate return. An extern (C-ABI) call also spills its 5th+ arguments
+            // into the same outgoing area, so it must be counted too; it has no native
+            // signature, so use its raw argument count. (Native builtins never exceed
+            // four arguments, so this over-reserves nothing in practice.)
+            here = if closure_locals.contains_key(name.as_str())
+                || fn_param_callables.contains_key(name.as_str())
+            {
                 (args.len() + 1).saturating_sub(4)
             } else if signatures.contains_key(name.as_str()) {
                 call_stack_words(name, args.len(), signatures)
@@ -245,76 +250,110 @@ pub(crate) fn max_outgoing_stack_words(
                 args.len().saturating_sub(4)
             };
             for arg in args {
-                here = here.max(expr_words(arg, signatures, closure_locals));
+                here = here.max(expr_words(
+                    arg,
+                    signatures,
+                    closure_locals,
+                    fn_param_callables,
+                ));
             }
         } else {
             for child in expr_children(expr) {
-                here = here.max(expr_words(child, signatures, closure_locals));
+                here = here.max(expr_words(
+                    child,
+                    signatures,
+                    closure_locals,
+                    fn_param_callables,
+                ));
             }
         }
         here
     }
     let mut max = 0usize;
     for instruction in body {
-        let here =
-            match instruction {
-                BytecodeInstruction::Let { value, .. }
-                | BytecodeInstruction::Assign { value, .. }
-                | BytecodeInstruction::Return(Some(value))
-                | BytecodeInstruction::Expr(value) => expr_words(value, signatures, closure_locals),
-                BytecodeInstruction::If {
-                    branches,
+        let here = match instruction {
+            BytecodeInstruction::Let { value, .. }
+            | BytecodeInstruction::Assign { value, .. }
+            | BytecodeInstruction::Return(Some(value))
+            | BytecodeInstruction::Expr(value) => {
+                expr_words(value, signatures, closure_locals, fn_param_callables)
+            }
+            BytecodeInstruction::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                let mut h = max_outgoing_stack_words(
                     else_body,
-                    ..
-                } => {
-                    let mut h = max_outgoing_stack_words(else_body, signatures, closure_locals);
-                    for branch in branches {
-                        h = h
-                            .max(expr_words(&branch.condition, signatures, closure_locals))
-                            .max(max_outgoing_stack_words(
-                                &branch.body,
-                                signatures,
-                                closure_locals,
-                            ));
-                    }
-                    h
-                }
-                BytecodeInstruction::While {
-                    condition, body, ..
-                } => expr_words(condition, signatures, closure_locals)
-                    .max(max_outgoing_stack_words(body, signatures, closure_locals)),
-                BytecodeInstruction::For {
-                    start,
-                    end,
-                    step,
-                    body,
-                    ..
-                } => expr_words(start, signatures, closure_locals)
-                    .max(expr_words(end, signatures, closure_locals))
-                    .max(
-                        step.as_ref()
-                            .map(|s| expr_words(s, signatures, closure_locals))
-                            .unwrap_or(0),
-                    )
-                    .max(max_outgoing_stack_words(body, signatures, closure_locals)),
-                BytecodeInstruction::Loop { body, .. } => {
-                    max_outgoing_stack_words(body, signatures, closure_locals)
-                }
-                BytecodeInstruction::Match {
-                    scrutinee, arms, ..
-                } => {
-                    let mut h = expr_words(scrutinee, signatures, closure_locals);
-                    for arm in arms {
-                        h = h.max(max_outgoing_stack_words(
-                            &arm.body,
+                    signatures,
+                    closure_locals,
+                    fn_param_callables,
+                );
+                for branch in branches {
+                    h = h
+                        .max(expr_words(
+                            &branch.condition,
                             signatures,
                             closure_locals,
+                            fn_param_callables,
+                        ))
+                        .max(max_outgoing_stack_words(
+                            &branch.body,
+                            signatures,
+                            closure_locals,
+                            fn_param_callables,
                         ));
-                    }
-                    h
                 }
-                _ => 0,
-            };
+                h
+            }
+            BytecodeInstruction::While {
+                condition, body, ..
+            } => expr_words(condition, signatures, closure_locals, fn_param_callables).max(
+                max_outgoing_stack_words(body, signatures, closure_locals, fn_param_callables),
+            ),
+            BytecodeInstruction::For {
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => expr_words(start, signatures, closure_locals, fn_param_callables)
+                .max(expr_words(
+                    end,
+                    signatures,
+                    closure_locals,
+                    fn_param_callables,
+                ))
+                .max(
+                    step.as_ref()
+                        .map(|s| expr_words(s, signatures, closure_locals, fn_param_callables))
+                        .unwrap_or(0),
+                )
+                .max(max_outgoing_stack_words(
+                    body,
+                    signatures,
+                    closure_locals,
+                    fn_param_callables,
+                )),
+            BytecodeInstruction::Loop { body, .. } => {
+                max_outgoing_stack_words(body, signatures, closure_locals, fn_param_callables)
+            }
+            BytecodeInstruction::Match {
+                scrutinee, arms, ..
+            } => {
+                let mut h = expr_words(scrutinee, signatures, closure_locals, fn_param_callables);
+                for arm in arms {
+                    h = h.max(max_outgoing_stack_words(
+                        &arm.body,
+                        signatures,
+                        closure_locals,
+                        fn_param_callables,
+                    ));
+                }
+                h
+            }
+            _ => 0,
+        };
         max = max.max(here);
     }
     max

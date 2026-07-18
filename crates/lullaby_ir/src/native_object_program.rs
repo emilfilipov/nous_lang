@@ -192,6 +192,23 @@ pub fn emit_native_program_for_target(
     // not depend on the eligible set.
     let closure_layouts = compute_module_closure_layouts(module);
 
+    // Higher-order parameters: for each function, its call-only native-scalar
+    // `fn(...)`-typed parameters (the callee side of a non-escaping higher-order
+    // call). A caller's closure-escape check consults this to decide whether passing
+    // a closure to a given function+position is a sanctioned non-escaping sink, and
+    // the callee's `plan` reads its own entry to lower `param(args)` as an indirect
+    // call. It is a pure source-level property (independent of which functions end
+    // up native-eligible), so it is computed once here. Functions with no
+    // higher-order parameter get no entry, keeping their codegen byte-identical.
+    let hof_index: HashMap<String, Vec<HofParam>> = module
+        .functions
+        .iter()
+        .filter_map(|f| {
+            let params = hof_params(f);
+            (!params.is_empty()).then(|| (f.name.clone(), params))
+        })
+        .collect();
+
     // First pass: decide signature eligibility. Calls resolve against the set of
     // names we intend to compile.
     let mut skipped: Vec<NativeSkippedFunction> = Vec::new();
@@ -299,6 +316,7 @@ pub fn emit_native_program_for_target(
                 fast_math,
                 arena_names.contains(name.as_str()),
                 &closure_layouts,
+                &hof_index,
             ) {
                 Ok(l) => lowered.push(l),
                 Err(reason) => {

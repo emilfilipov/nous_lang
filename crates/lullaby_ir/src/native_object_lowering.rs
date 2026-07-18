@@ -53,9 +53,10 @@ pub(crate) fn lower_native_float_expr(
             Ok(width)
         }
         BytecodeExprKind::Call { name, args } => {
-            // A float-returning closure call leaves its value in `xmm0`. Checked
-            // before builtin/extern resolution, mirroring the integer path.
-            if ctx.closure_locals.contains_key(name) {
+            // A float-returning indirect call (a closure local or a higher-order fn
+            // parameter) leaves its value in `xmm0`. Checked before builtin/extern
+            // resolution, mirroring the integer path.
+            if ctx.is_indirect_callable(name) {
                 return lower_closure_float_call(ctx, name, args, code);
             }
             // `to_f32(x f64) -> f32`: evaluate the f64 argument, then round it to
@@ -350,8 +351,9 @@ pub(crate) fn float_width_of_expr(ctx: &NativeCtx, expr: &BytecodeExpr) -> Optio
                 _ => None,
             })
         }
-        // A float-returning closure call is a float of its declared return width.
-        BytecodeExprKind::Call { name, args } if ctx.closure_locals.contains_key(name) => {
+        // A float-returning indirect call (closure local or higher-order fn
+        // parameter) is a float of its declared return width.
+        BytecodeExprKind::Call { name, args } if ctx.is_indirect_callable(name) => {
             closure_call_float_width(ctx, name)
         }
         BytecodeExprKind::Call { name, args } => match name.as_str() {

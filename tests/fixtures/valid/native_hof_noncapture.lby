@@ -1,0 +1,6 @@
+fn apply f fn(i64) -> i64 v i64 -> i64
+    f(v)
+
+fn main -> i64
+    let sq fn(i64) -> i64 = fn x i64 -> x * x
+    apply(sq, 6)

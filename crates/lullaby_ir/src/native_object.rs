@@ -335,6 +335,15 @@ pub(crate) struct NativeCtx<'a> {
     /// heap block. Populated by `collect_native_locals` from a `let` whose value is
     /// a `Closure { id }` literal.
     closure_locals: HashMap<String, usize>,
+    /// Call-only `fn(...)`-typed **parameters** of this function (the callee side of a
+    /// non-escaping higher-order call): parameter name -> its native call signature
+    /// (parameter + return scalar classes). The parameter's frame slot holds a
+    /// closure `[code_ptr][captures…]` block pointer a caller passed in; a `Call`
+    /// whose callee name is here is an indirect closure-style call through it (env
+    /// pointer in `rcx`, code pointer at word 0). Populated by `plan` from
+    /// [`hof_params`]. Empty for a function with no higher-order parameters, which
+    /// keeps every existing function's codegen byte-identical.
+    fn_param_callables: HashMap<String, ClosureCallSig>,
     /// Native layouts of every natively-lowerable closure in the module, keyed by parse-order
     /// `id`. Used to size a closure literal's block, resolve the `__closure_{id}`
     /// code symbol, and lay out the captured scalars.
@@ -378,10 +387,22 @@ impl<'a> NativeCtx<'a> {
         array_lengths: &ArrayLengths,
         is_arena: bool,
         closure_layouts: &'a HashMap<usize, ClosureLayout>,
+        hof_index: &HashMap<String, Vec<HofParam>>,
     ) -> Result<Self, String> {
         let mut locals: HashMap<String, NativeLocal> = HashMap::new();
         let mut closure_locals: HashMap<String, usize> = HashMap::new();
         let mut next_slot: i32 = 0;
+
+        // Call-only fn-typed parameters of THIS function (the callee side of a
+        // non-escaping higher-order call): each holds a closure env-block pointer
+        // passed in by a caller, and is invoked through it. Their scalar-classes drive
+        // the indirect-call ABI. A fn parameter NOT in this set (not call-only, or a
+        // non-scalar signature) is refused below, so the function skips cleanly rather
+        // than treating a possibly-escaping fn value as a plain pointer word.
+        let fn_param_callables: HashMap<String, ClosureCallSig> = hof_params(function)
+            .into_iter()
+            .map(|h| (h.name, h.sig))
+            .collect();
 
         // Return classification: an aggregate return is written through a hidden
         // pointer passed in the first integer-argument register (Win64 `rcx`),
@@ -403,13 +424,29 @@ impl<'a> NativeCtx<'a> {
         // aggregate layout (the register holds a pointer to the caller's copy,
         // whose words the prologue copies into these slots — value semantics).
         for param in &function.params {
-            let native = resolve_signature_native_type(
-                &param.ty,
-                structs,
-                enums,
-                array_lengths,
-                &param.name,
-            )?;
+            // A `fn(...)`-typed parameter is a single pointer word to a closure's
+            // `[code_ptr][captures…]` block (a caller passed it in). It resolves to an
+            // `I64` cell — seated and read exactly like any pointer scalar — but ONLY
+            // when it is a supported call-only higher-order parameter; otherwise the
+            // function skips (a possibly-escaping fn value must not be lowered).
+            let native = if param.ty.is_function() {
+                if !fn_param_callables.contains_key(&param.name) {
+                    return Err(format!(
+                        "fn-typed parameter `{}` is not a call-only native-scalar higher-order \
+                         parameter; a stored/returned/onward-passed fn value is deferred",
+                        param.name
+                    ));
+                }
+                NativeType::I64
+            } else {
+                resolve_signature_native_type(
+                    &param.ty,
+                    structs,
+                    enums,
+                    array_lengths,
+                    &param.name,
+                )?
+            };
             let words = native.words() as i32;
             next_slot += words * 8;
             // ASCENDING layout: `slot` names word 0 at the aggregate's LOWEST
@@ -437,15 +474,18 @@ impl<'a> NativeCtx<'a> {
         )?;
 
         // Default-deny closure escape check: every closure-bound local must be used
-        // ONLY as its own `let`'s closure-literal initializer or as the callee of a
-        // direct call `f(args)`. A closure passed to a function, returned, stored,
-        // reassigned, or read as a bare value is a higher-order/escaping use outside
-        // the supported slice, so the function skips cleanly rather than miscompiling.
+        // ONLY as its own `let`'s closure-literal initializer, as the callee of a
+        // direct call `f(args)`, or as a bare argument passed to a **higher-order
+        // sink** — a call-only fn parameter of a known function (per `hof_index`).
+        // A closure returned, stored, reassigned, read as a bare value, or passed to
+        // a non-sink position escapes the supported slice, so the function skips
+        // cleanly rather than miscompiling.
         for name in closure_locals.keys() {
-            if !closure_local_ok(function, name) {
+            if !closure_local_ok(function, name, hof_index) {
                 return Err(format!(
                     "closure local `{name}` escapes or is used in an unsupported position \
-                     (native closures support only a direct non-escaping call)"
+                     (native closures support a direct non-escaping call or a non-escaping \
+                     higher-order argument)"
                 ));
             }
         }
@@ -490,7 +530,10 @@ impl<'a> NativeCtx<'a> {
         // read it, and the closure-call sequence uses the volatile registers
         // directly. (The closure `let` already has a `fn(...)` type, which makes the
         // function non-promotable, so this is belt-and-suspenders — but explicit.)
-        let (promoted, saved_regs) = if closure_locals.is_empty() {
+        // A function with a higher-order fn PARAMETER is excluded for the same
+        // reason: the env pointer it calls through must stay addressable in the
+        // parameter's frame slot, never promoted into a register.
+        let (promoted, saved_regs) = if closure_locals.is_empty() && fn_param_callables.is_empty() {
             plan_register_promotion(function, &locals)
         } else {
             (HashMap::new(), Vec::new())
@@ -560,9 +603,15 @@ impl<'a> NativeCtx<'a> {
         // (lowest addresses, where `rsp` points at a `call`): `[rsp .. rsp+32]` is
         // the shadow, `[rsp+32 .. rsp+32+8*out]` holds the 5th+ arguments.
         // `closure_locals` is populated by `collect_native_locals` above, so a call
-        // through a closure local is counted with its hidden env pointer.
-        let out_words =
-            max_outgoing_stack_words(&function.instructions, signatures, &closure_locals);
+        // through a closure local is counted with its hidden env pointer; a call
+        // through a higher-order fn parameter (`fn_param_callables`) has the same
+        // hidden env pointer and is counted the same way.
+        let out_words = max_outgoing_stack_words(
+            &function.instructions,
+            signatures,
+            &closure_locals,
+            &fn_param_callables,
+        );
         let shadow = if has_call { 32 } else { 0 };
         let raw = next_slot + shadow + out_words as i32 * 8;
         // Keep the frame a multiple of 16 so that after `push rbp` and a `call`
@@ -604,6 +653,7 @@ impl<'a> NativeCtx<'a> {
                 aggs
             },
             closure_locals,
+            fn_param_callables,
             closure_layouts,
             closure_env: None,
         })

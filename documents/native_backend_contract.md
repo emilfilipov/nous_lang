@@ -1383,8 +1383,12 @@ existing per-function lowering (`native_object.rs`/`native_object_expr.rs`).
 
 Stage 1 delivered integer-cell captures with at most three parameters. Stage 2
 completes the **scalar** subset: float captures, float parameters and returns, and
-any parameter count (positions past the register file spill to the stack). The
-heap/higher-order/escape work is deliberately NOT here — see "Deferred" below.
+any parameter count (positions past the register file spill to the stack). **Stage
+3a** adds **non-escaping higher-order functions** — a closure passed as an argument
+to another Lullaby function that *calls* it (`apply(f, x)`) — see the "Non-escaping
+higher-order functions (stage 3a)" subsection below. The remaining heap/escape work
+(a heap capture, a returned/escaping closure, an onward-passed or stored closure) is
+deliberately NOT here — see "Deferred" below.
 
 ### A closure body is a single expression (not a backend limitation)
 
@@ -1436,10 +1440,12 @@ A closure is compiled natively when ALL hold:
 - Its single-expression body is **heap-free** and calls **no user/`extern`
   function** (inline scalar builtins are fine), so the closure allocates nothing and
   retains no pointer — keeping the enclosing arena reasoning a true leaf.
-- The closure local is used **only** as its `let`'s literal initializer or as the
-  callee of a direct call `f(args)` (`closure_local_ok`). A bare value read, being
-  passed as an argument, a return, a reassignment, or any store makes it
-  escape/higher-order and defers.
+- The closure local is used **only** as its `let`'s literal initializer, as the
+  callee of a direct call `f(args)`, or as a bare argument passed to a **higher-order
+  sink** — argument position `i` of a call whose callee has a call-only fn parameter
+  there (`closure_local_ok` + `is_hof_sink`; see the stage-3a subsection). A bare
+  value read, a return, a reassignment, any store, or being passed to a NON-sink
+  position makes it escape and defers.
 
 ### Object layout and call ABI
 
@@ -1504,6 +1510,69 @@ A closure is compiled natively when ALL hold:
   and issue an indirect `call rax` (`FF D0`). The result is in `rax` (integer cell) or
   `xmm0` (float).
 
+### Non-escaping higher-order functions (stage 3a)
+
+A closure passed as an **argument** to another Lullaby function that *calls* it —
+`fn apply f fn(i64) -> i64 x i64 -> i64 … apply(myclosure, 5)` — now lowers, provided
+the closure does **not escape**. Because it does not escape, its capture environment
+stays valid for the whole dynamic extent of the call (the callee returns before the
+caller's frame/heap region is torn down), so no heap-lifetime or memory-model work is
+needed. This is what keeps the increment bounded and sound.
+
+**The escape rule (correct-or-refuse).** A closure argument to a call `g(…, f, …)`
+lowers to a real indirect call **iff all** hold — otherwise the enclosing function
+skips cleanly (`L0339`) and demotes to the interpreters, which run higher-order
+functions correctly:
+
+1. **`g` is a known function with a fn-typed parameter** at that position.
+2. **That parameter is used CALL-ONLY inside `g`** — its only occurrences are as the
+   callee of a direct call `param(args)`. It is never stored, returned, reassigned,
+   captured, read as a bare value, or **passed onward** as an argument. This is the
+   same default-deny check (`body_closure_use_ok` / `expr_closure_use_ok`) a closure
+   local satisfies, applied to the parameter name. `hof_params` computes the set of
+   such parameters per function; `is_hof_sink` answers "is position `i` of `g` one".
+3. **The closure `f` is itself a supported non-escaping closure** in the caller (a
+   direct-literal scalar closure local whose every other use is a direct call or its
+   own initializer).
+
+Call-only (2) is what makes the argument non-escaping: since `g` may only *call* the
+parameter and may not pass it onward, the closure never outlives the `g(f, …)` call.
+The rule is **conservative** — anything it cannot prove non-escaping is refused. It is
+also **single-level** by construction (this increment's documented frontier): a callee
+that passes its fn parameter onward to another function is an argument position, which
+(2) rejects, so multi-level higher-order chains defer. Onward-passing to another
+call-only parameter would in fact be sound, but proving it interprocedurally is left
+to a later increment.
+
+**Soundness is layered, not single-point.** The escape refusal is enforced
+independently at three places, so no one of them being wrong silently miscompiles: the
+caller's `closure_local_ok` (a closure may only reach a *sink* position), the callee's
+`native_signature_eligibility` (a fn parameter is native-eligible only when it is a
+call-only HOF parameter — else the callee skips, and a caller passing a closure to a
+skipped callee demotes through the fixpoint), and `hof_params`'s own call-only check.
+
+**Lowering — the callee side.** A call-only fn parameter resolves to a single **`I64`
+pointer word** (`compute_native_signature`/`plan` special-case `param.ty.is_function()`
+→ `I64`); a caller passes the closure's block pointer as an ordinary integer argument,
+and the callee seats it into the parameter's frame slot exactly like any pointer
+scalar. Inside the callee, a call `param(args)` through it reuses the **same indirect
+call ABI** as a closure-local call — env pointer in `rcx`, arguments shifted to
+effective positions 1.., `mov rax,[rcx]; call rax` — via one shared accessor
+(`NativeCtx::indirect_callable_sig`, which resolves either a closure local's layout or
+a fn parameter's call signature) and one dispatch predicate (`is_indirect_callable`).
+No second indirect-call mechanism is introduced. A function with a HOF parameter is
+excluded from register promotion for the same reason a closure-using one is: the env
+pointer must stay addressable in its frame slot.
+
+**Both capturing and non-capturing** closures work as HOF arguments (a non-capturing
+closure's env block is just the one code-pointer word), the closure may be called one
+or many times inside the callee, and int and float closures are both supported to the
+same scalar completeness as a direct call. One orthogonal limitation is worth naming:
+a callee that itself **returns a float** is a separate deferred feature (a
+float-returning user call is not yet native), so a float-HOF whose callee returns
+`f64` still skips for that reason — a float closure argument whose callee returns an
+integer cell (`native_hof_float_arg.lby`) compiles and runs.
+
 ### Reclamation soundness
 
 A scalar-only closure object is a plain heap block with the standard RC header, so
@@ -1533,13 +1602,16 @@ closure allocated per iteration.
 
 ### Deferred (skips cleanly to the interpreters, `L0339`)
 
-A `string`/`list`/`map`/aggregate capture; a closure passed to a higher-order
-function/builtin (`apply(f, x)`, `sort_by`, `list_map`); a returned/escaping
-closure; a mutable/rebound closure local; a closure bound from a non-literal (a
+A `string`/`list`/`map`/aggregate capture; a **returned/escaping** closure; a
+closure **stored** into an aggregate/global or passed to a builtin higher-order
+(`sort_by`, `list_map`); a higher-order callee that is **not call-only** (it reads
+its fn parameter as a value or **passes it onward** — the single-level frontier of
+stage 3a); a mutable/rebound closure local; a closure bound from a non-literal (a
 factory result); and a closure body that touches the heap or calls a user/`extern`
-function. Each is default-denied at classification or synthesis time, so the
-enclosing function is recorded skipped and runs on the interpreters — never
-miscompiled.
+function. Each is default-denied at classification, eligibility, or synthesis time,
+so the enclosing function is recorded skipped and runs on the interpreters — never
+miscompiled. (A **non-escaping** higher-order argument to a call-only callee —
+`apply(f, x)` — is no longer deferred; see the stage-3a subsection above.)
 
 Also refused, for consistency rather than capability: a body containing an inline
 conditional (see the note above — it is broken on the IR/bytecode engines today, so
@@ -1574,6 +1646,10 @@ that is itself wrong):
 | `native_closure_f32.lby` | `f32` capture + `f32` param/return | `6` |
 | `native_closure_combo.lby` | mixed env + interleaved classes + spill | `128` |
 | `native_closure_float_reclaim.lby` | per-iteration FLOAT-capturing closures (bounded) | `102` |
+| `run_closures.lby` | closure used BOTH as a HOF argument (`apply(add_n,5)`) and a direct call | `27` |
+| `native_hof_noncapture.lby` | non-capturing closure passed to a higher-order callee | `36` |
+| `native_hof_multi_call.lby` | capturing closure invoked THREE times inside the callee, fed back | `30` |
+| `native_hof_float_arg.lby` | FLOAT closure passed as a HOF argument (callee returns i64) | `1` |
 
 **These fixtures are proven non-vacuous by bug injection.** Injecting the
 sequential-XMM bug (the body reading `xmm{pos-1}` instead of `xmm{pos}`) makes
@@ -1586,25 +1662,33 @@ sees the right value and passes. Only interleaved/multi-float shapes break that
 coincidence, which is why the fixture set includes them.
 
 `native_closure_deferred_shapes_skip` pins each escape hatch — a `string` capture
-(`native_closure_string_capture.lby`), a higher-order `apply` closure
-(`run_closures.lby`), a returned closure (`run_closures_returned.lby`), and, re-pinned
-with FLOAT-capturing closures so scalar completeness cannot have quietly admitted
-them, `native_closure_float_hof.lby`, `native_closure_float_body_call.lby`,
-`native_closure_float_rebind.lby`, and `native_closure_factory_bound.lby`. Each fails
-native compilation with `L0339` (listing `skipped main`) yet still runs correctly on
-the interpreters.
+(`native_closure_string_capture.lby`), a returned closure (`run_closures_returned.lby`),
+the stage-3a refusal boundaries (a callee that reads its fn parameter as a value,
+`native_hof_leaky_skip.lby`, and one that passes it **onward**,
+`native_hof_onward_skip.lby`), and, re-pinned with FLOAT-capturing closures so scalar
+completeness cannot have quietly admitted them, `native_closure_float_hof.lby` (which
+also needs a float-returning user call, an orthogonally deferred feature),
+`native_closure_float_body_call.lby`, `native_closure_float_rebind.lby`, and
+`native_closure_factory_bound.lby`. Each fails native compilation with `L0339` (listing
+`skipped main`) yet still runs correctly on the interpreters — proving each is a clean
+demotion, not a miscompile.
 
 **Differential fuzzing** (`crates/lullaby_cli/tests/cli/fuzz_closure.rs`, a submodule
 of `fuzz.rs`) generates closure shapes across the subset — float captures, `f32`/`f64`,
 interleaved integer/float parameter classes, parameter counts past the register file,
-and a genuinely mixed capture block. `fuzz_closure_interpreters_agree` cross-checks 600
-programs on all three engines (establishing the oracle's ground truth), and
+and a genuinely mixed capture block — and, for a substantial fraction of programs,
+routes every call through a generated `apply_hof(f, …)` helper so the **stage-3a HOF
+ABI** (closure-pointer argument + indirect call through a fn parameter, both with the
+same positional-XMM and stack-spill hazards) is exercised too.
+`fuzz_closure_interpreters_agree` cross-checks 600 programs on all three engines
+(establishing the oracle's ground truth), and
 `fuzz_closure_native_matches_interpreter_when_linkable` compiles and RUNS 128 real
-`.exe`s against it, reporting the count so a silent skip cannot hide a regression (all
-128 compile natively; a drop in that number means the generator drifted into producing
-skipping programs and stopped testing codegen). The fuzzer is likewise proven to have
-teeth: the sequential-XMM injection fails it at program #9 and the spill-offset
-injection at program #1.
+`.exe`s against it, reporting the counts so a silent skip cannot hide a regression (all
+128 compile natively; the run also asserts a non-trivial higher-order batch — a recent
+run reported `128/128 real exes (128 compiled natively, 68 higher-order)` — so the HOF
+path cannot be silently untested). The fuzzer is likewise proven to have teeth: the
+sequential-XMM injection fails it at program #9 and the spill-offset injection at
+program #1.
 
 Unit tests in `native_program_tests` assert the compiled/skip boundary (`__closure_0`
 compiled, the indirect `call rax` present, the direct-PE image produced) and pin the

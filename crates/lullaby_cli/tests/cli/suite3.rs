@@ -2437,6 +2437,16 @@ pub(crate) fn native_closures_direct_pe_run_parity() {
         "native_closure_f32",
         "native_closure_combo",
         "native_closure_float_reclaim",
+        // Closures stage 3a: a closure passed as a NON-ESCAPING higher-order
+        // argument to a callee that calls it. `run_closures` uses the closure both
+        // as a HOF argument (`apply(add_n, 5)`) and as a direct call (`add_n(2)`);
+        // the others pin a non-capturing closure argument, a callee that invokes its
+        // fn parameter multiple times, and a FLOAT closure argument (the callee
+        // returns i64, since a float-RETURNING user call is orthogonally deferred).
+        "run_closures",
+        "native_hof_noncapture",
+        "native_hof_multi_call",
+        "native_hof_float_arg",
     ];
     for name in fixtures {
         let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));
@@ -2516,23 +2526,34 @@ pub(crate) fn native_closures_direct_pe_run_parity() {
 /// floats. What remains deferred:
 ///
 /// - a heap capture (`string`; `list`/`map`/aggregate resolve the same way),
-/// - a higher-order use — the closure passed as an argument (`apply(f, x)`),
 /// - a returned/escaping closure,
 /// - a closure whose body calls a user/`extern` function,
 /// - a mutable/rebound closure local,
-/// - a closure bound from a factory result rather than a direct literal.
+/// - a closure bound from a factory result rather than a direct literal,
+/// - a higher-order callee that is NOT call-only — it reads its fn parameter as a
+///   value (`native_hof_leaky_skip`) or passes it onward (`native_hof_onward_skip`,
+///   the documented single-level frontier of closures stage 3a).
+///
+/// A NON-escaping higher-order argument (`apply(f, x)`) is no longer here — it
+/// compiles and is pinned by `native_closures_direct_pe_run_parity`. `native_closure_float_hof`
+/// stays a skip because it needs a float-RETURNING user call, an orthogonally
+/// deferred feature, not because of the higher-order argument itself.
 #[test]
 pub(crate) fn native_closure_deferred_shapes_skip() {
     // (fixture, interpreter result)
     let skips = [
         ("native_closure_string_capture", 42_i64),
-        ("run_closures", 27),
         ("run_closures_returned", 134),
         // The same escape hatches, re-pinned with FLOAT-capturing closures.
         ("native_closure_float_hof", 61),
         ("native_closure_float_body_call", 62),
         ("native_closure_float_rebind", 63),
         ("native_closure_factory_bound", 64),
+        // Closures stage 3a refusal boundaries: a callee whose fn parameter escapes
+        // (read as a value, or passed onward) is not a higher-order parameter, so
+        // both it and the caller demote cleanly and still run on the interpreters.
+        ("native_hof_leaky_skip", 12),
+        ("native_hof_onward_skip", 42),
     ];
     for (name, expected) in skips {
         let fixture = workspace_root().join(format!("tests/fixtures/valid/{name}.lby"));

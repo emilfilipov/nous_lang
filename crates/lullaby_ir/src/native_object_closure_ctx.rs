@@ -70,6 +70,10 @@ impl<'a> NativeCtx<'a> {
             arena_buffers: HashMap::new(),
             heap_aggregates: std::collections::HashSet::new(),
             closure_locals: HashMap::new(),
+            // A synthesized closure body is a scalar leaf: it takes no fn-typed
+            // parameters (a nested closure passed to it would be rejected earlier), so
+            // it never calls through a higher-order parameter.
+            fn_param_callables: HashMap::new(),
             closure_layouts,
             closure_env: Some(closure_env),
         }

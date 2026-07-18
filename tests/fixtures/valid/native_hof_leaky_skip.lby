@@ -1,0 +1,8 @@
+fn leaky f fn(i64) -> i64 v i64 -> i64
+    let saved fn(i64) -> i64 = f
+    saved(v)
+
+fn main -> i64
+    let n i64 = 7
+    let c fn(i64) -> i64 = fn x i64 -> x + n
+    leaky(c, 5)
