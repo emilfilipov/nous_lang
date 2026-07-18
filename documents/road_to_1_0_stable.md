@@ -365,7 +365,18 @@ These are all **loud refusals, never miscompiles** — but each was a deferral, 
   confirmed in review. Restart storms are structurally impossible (the failing message is
   consumed, never replayed), so no backoff exists. Zero backend edits: the clause is a
   field on the existing `Spawn` node, so every tier deferral is inherited.
-  **Stages 5–6 remain**: `join_all`/`select` + back-pressure, then native/WASM actor codegen.
+  **Stage 5 `join_all`/`select`: SHIPPED** (AST tier). `join_all EXPR` returns all
+  results in input order (kind-preserving); `select EXPR` returns a compiler-provided
+  generic `Selected<T> { index i64, value T }` — the winning slot + its reply, tie-break
+  **lowest input index** (scan is input-order, not chronological), only the winner
+  consumed, losers stay awaitable. Deterministic (byte-identical repeated runs);
+  reviewed PASS. New `L0364`. Zero backend edits — combinators reject on IR/bytecode
+  (`L0355`), defer on native/WASM (`L0339`/`L0338`), `no-runtime` `L0441`, like the
+  rest of the actor model. **`select`/`join_all` are now reserved keywords.**
+  **Stage 5 back-pressure DEFERRED** (documented in `concurrency_model_design.md`):
+  block-until-space needs the `tell` hot path to pump the scheduler — a scheduler
+  change, not a clean combinator increment.
+  **Remaining**: stage-5 back-pressure, then stage-6 native/WASM actor codegen.
 - **A1 generics — COMPLETE across native + WASM.** Native monomorphization (scalar +
   one-level-heap-`string`) + **inherent-method dispatch** (generic AND non-generic,
   reviewed PASS, zero miscompiles). **WASM at A1 parity** (monomorphization shipped;
