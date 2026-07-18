@@ -1020,6 +1020,16 @@ impl<'a> Lowerer<'a> {
                 Stmt::Unsafe { body, .. } => {
                     lowered.extend(self.lower_block(body, scope)?);
                 }
+                // The explicit `region` block lowers **value-neutrally**: inline its
+                // body into the enclosing block, exactly like `unsafe`, so the IR has
+                // no dedicated region node and every downstream tier (IR interpreter,
+                // bytecode VM, native, WASM) simply runs the body. Native
+                // bulk-reclamation of the block's sub-region is a follow-up increment
+                // that will reintroduce a durable boundary; today no tier reclaims,
+                // so all tiers stay observably identical.
+                Stmt::RegionBlock { body, .. } => {
+                    lowered.extend(self.lower_block(body, scope)?);
+                }
                 other => {
                     let stmt = self.lower_statement(other, scope)?;
                     self.drain_try_prelude_into(&mut lowered);
@@ -1051,7 +1061,7 @@ impl<'a> Lowerer<'a> {
         let mut lowered = Vec::with_capacity(statements.len());
         for (index, statement) in statements.iter().enumerate() {
             match statement {
-                Stmt::Unsafe { body, .. } => {
+                Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
                     lowered.extend(self.lower_block(body, scope)?);
                 }
                 // A bare tail `match` returning a value stays a direct
@@ -1097,7 +1107,7 @@ impl<'a> Lowerer<'a> {
         let mut lowered = Vec::with_capacity(statements.len());
         for (index, statement) in statements.iter().enumerate() {
             match statement {
-                Stmt::Unsafe { body, .. } => {
+                Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
                     let inner_expected = if Some(index) == last_index {
                         expected
                     } else {
@@ -1478,16 +1488,19 @@ impl<'a> Lowerer<'a> {
             }
             // `unsafe` blocks are flattened in `lower_block`; reaching here means
             // a lone unsafe statement, which we lower transparently by inlining.
-            Stmt::Unsafe { body, span } => {
+            Stmt::Unsafe { body, span } | Stmt::RegionBlock { body, span } => {
                 let mut lowered = self.lower_block(body, scope)?;
                 match lowered.len() {
                     1 => Ok(lowered.remove(0)),
-                    // An empty or multi-statement unsafe body cannot collapse to
-                    // one IR statement; represent it as a always-false guard-free
-                    // block via an `if false` is overkill, so surface it as a
-                    // lowering error to be handled by the flattening path.
+                    // An empty or multi-statement transparent block (`unsafe` /
+                    // `region`) cannot collapse to one IR statement; it is inlined by
+                    // `lower_block`/`lower_function_body`/`lower_block_value` instead.
+                    // Reaching here with any other length means a caller lowered such
+                    // a block as a single statement, which those flattening paths
+                    // prevent, so surface it as a lowering error.
                     _ => Err(IrLoweringError::new(
-                        "unsafe block must be lowered by lower_block".to_string(),
+                        "transparent block (unsafe/region) must be lowered by lower_block"
+                            .to_string(),
                         Some(*span),
                     )),
                 }

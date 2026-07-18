@@ -1612,6 +1612,12 @@ mod suite25;
 #[path = "cli/closure_conditional.rs"]
 mod closure_conditional;
 
+// -- The explicit `region` block (arena increment I1): four-tier value-neutral
+//    parity for scratch work, nested blocks, a block inside a loop+function, and
+//    the escaping-store channel a future native reclamation must never reclaim.
+#[path = "cli/suite26.rs"]
+mod suite26;
+
 /// Whether `ucrt.lib` (the C runtime import library, providing `llabs`) is
 /// reachable via the `LIB` environment variable, like `kernel32_available`.
 pub(crate) fn ucrt_available() -> bool {

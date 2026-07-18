@@ -684,6 +684,46 @@ fn parses_region_declaration() {
 }
 
 #[test]
+fn parses_region_block() {
+    // A bare `region` followed by a newline+indent is the explicit region BLOCK
+    // (`Stmt::RegionBlock`), distinct from the two named `region NAME …` forms. The
+    // disambiguation is "is the token after `region` a name or a block".
+    let source = "fn main -> i64\n    let total i64 = 0\n    region\n        let s string = \"hi\"\n        total = total + len(s)\n    total\n";
+    let tokens = lex(source).expect("lex");
+    let program = parse(&tokens).expect("parse");
+    let Stmt::RegionBlock { body, .. } = &program.functions[0].body[1] else {
+        panic!(
+            "expected a region block, got {:?}",
+            program.functions[0].body[1]
+        );
+    };
+    assert_eq!(body.len(), 2, "region block body has both statements");
+    // The named metadata form is still a `Stmt::Region`, never confused with the block.
+    let named = "fn main -> i64\n    region pool: size=8\n    0\n";
+    let named = parse(&lex(named).expect("lex")).expect("parse");
+    assert!(matches!(named.functions[0].body[0], Stmt::Region(_)));
+}
+
+#[test]
+fn region_block_formats_idempotently() {
+    // The block round-trips to `region` + an indented body, and re-formatting is a
+    // fixed point (idempotent). Nested region blocks are preserved.
+    let source = "fn main -> i64\n    let total i64 = 0\n    region\n        let a string = \"a\"\n        total = total + len(a)\n        region\n            let b string = \"bb\"\n            total = total + len(b)\n    total\n";
+    let program = parse(&lex(source).expect("lex")).expect("parse");
+    let once = format_program(&program);
+    let twice = format_program(&parse(&lex(&once).expect("lex")).expect("parse"));
+    assert_eq!(once, twice, "formatter is idempotent on region blocks");
+    assert!(
+        once.contains("    region\n"),
+        "renders a bare region header: {once}"
+    );
+    assert!(
+        once.contains("        region\n"),
+        "renders the nested region at the deeper indent: {once}"
+    );
+}
+
+#[test]
 fn parses_unsafe_block_and_reference_types() {
     let source = "fn main -> i64\n    let h rc<i64> = rc_new(1)\n    let p ptr_i64 = alloc(2)\n    unsafe\n        let v i64 = ptr_read(p)\n    rc_get(h)\n";
     let tokens = lex(source).expect("lex");

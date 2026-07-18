@@ -18,6 +18,41 @@ fn runs_function_calls_and_arithmetic() {
 }
 
 #[test]
+fn region_block_runs_value_neutrally_as_a_nested_scope() {
+    // The explicit `region` block runs its body in a fresh nested scope; the
+    // interpreter never reclaims, so the value is exactly what a plain block yields.
+    // A nested region block and a scalar accumulator updated from inside both work.
+    let source = concat!(
+        "fn main -> i64\n",
+        "    let total i64 = 0\n",
+        "    region\n",
+        "        let a string = to_string(1) + \"a\"\n",
+        "        total = total + len(a)\n",
+        "        region\n",
+        "            let b string = to_string(22) + \"bb\"\n",
+        "            total = total + len(b)\n",
+        "    total\n",
+    );
+    assert_eq!(run_source(source).expect("run"), Value::I64(6));
+}
+
+#[test]
+fn region_block_escaping_store_keeps_value_no_reclamation() {
+    // A heap value assigned to an OUTER binding inside the block genuinely escapes
+    // the block. Value-neutral execution keeps it alive (no reclamation), so the
+    // post-block read sees the full string. This is the case a future native
+    // reclamation must NOT reclaim; here it pins that every tier keeps the value.
+    let source = concat!(
+        "fn main -> i64\n",
+        "    let keep string = \"\"\n",
+        "    region\n",
+        "        keep = to_string(42) + \"!\"\n",
+        "    len(keep)\n",
+    );
+    assert_eq!(run_source(source).expect("run"), Value::I64(3));
+}
+
+#[test]
 fn move_on_functional_update_builds_list_correctly() {
     // `l = push(l, i)` in a loop consumes `l` by move on the fast path; the
     // built list must be byte-for-byte what a clone would produce. Sum of

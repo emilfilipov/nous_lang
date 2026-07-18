@@ -276,6 +276,7 @@ pub(crate) fn stmt_body(stmt: &Stmt) -> &[Stmt] {
         | Stmt::For { body, .. }
         | Stmt::Loop { body, .. }
         | Stmt::Unsafe { body, .. }
+        | Stmt::RegionBlock { body, .. }
         | Stmt::Try { body, .. } => body,
         _ => &[],
     }

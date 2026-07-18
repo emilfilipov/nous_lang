@@ -391,6 +391,10 @@ fn rewrite_stmt_types(stmt: &Stmt, map: &HashMap<String, TypeRef>) -> Stmt {
             body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
             span: *span,
         },
+        Stmt::RegionBlock { body, span } => Stmt::RegionBlock {
+            body: body.iter().map(|s| rewrite_stmt_types(s, map)).collect(),
+            span: *span,
+        },
         Stmt::Try {
             body,
             catch_name,

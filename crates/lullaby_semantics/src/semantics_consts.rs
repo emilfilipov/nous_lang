@@ -585,7 +585,9 @@ impl Folder<'_> {
                 inner.insert(name.clone());
                 self.fold_stmts(body, &mut inner);
             }
-            Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+            Stmt::Loop { body, .. }
+            | Stmt::Unsafe { body, .. }
+            | Stmt::RegionBlock { body, .. } => {
                 let mut inner = local.clone();
                 self.fold_stmts(body, &mut inner);
             }

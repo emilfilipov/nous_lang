@@ -128,7 +128,7 @@ fn collect_closures_in_stmt<'a>(
             collect_closures_in_expr(iterable, table);
             collect_closures_in_block(body, table);
         }
-        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
             collect_closures_in_block(body, table);
         }
         Stmt::Try {
@@ -1184,6 +1184,7 @@ pub(crate) fn statement_span(statement: &Stmt) -> Span {
         | Stmt::ForEach { span, .. }
         | Stmt::Loop { span, .. }
         | Stmt::Unsafe { span, .. }
+        | Stmt::RegionBlock { span, .. }
         | Stmt::Asm { span, .. }
         | Stmt::Throw { span, .. }
         | Stmt::Try { span, .. } => *span,
@@ -1312,7 +1313,7 @@ fn stmt_mentions_var(stmt: &Stmt, name: &str) -> bool {
         Stmt::ForEach { iterable, body, .. } => {
             expr_mentions_var(iterable, name) || body.iter().any(|s| stmt_mentions_var(s, name))
         }
-        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
             body.iter().any(|s| stmt_mentions_var(s, name))
         }
         Stmt::Try {

@@ -391,7 +391,7 @@ fn walk_stmt_types(
             walk_expr_types(iterable, mode, diagnostics, span);
             walk_block_types(body, mode, diagnostics, span);
         }
-        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
             walk_block_types(body, mode, diagnostics, span)
         }
         Stmt::Try {
@@ -644,7 +644,7 @@ fn check_and_expand_stmt(
             check_and_expand_expr(iterable, None, owner, sigs, diagnostics);
             check_and_expand_body(body, return_type, owner, sigs, diagnostics);
         }
-        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+        Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
             check_and_expand_body(body, return_type, owner, sigs, diagnostics);
         }
         Stmt::Try {

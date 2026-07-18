@@ -757,6 +757,25 @@ pub enum Stmt {
         span: Span,
     },
     Region(RegionDecl),
+    /// The explicit **`region` block** (bare `region` keyword + an indentation-only
+    /// body, NO braces): a nested arena scope whose heap allocations are
+    /// bulk-reclaimed at dedent. The block's own bindings are **lexically scoped to
+    /// the block** (dead after dedent, exactly like a loop body), so referencing one
+    /// after the block is a compile error. Distinct from the two named
+    /// [`RegionDecl`] forms, which are disambiguated by the presence of a name after
+    /// `region`; this form has no name — `region` is immediately followed by a
+    /// newline and an indented block.
+    ///
+    /// Execution is **value-neutral** across every tier today: the body runs as an
+    /// ordinary scope. Native bulk-reclamation of the block's sub-region (rewinding
+    /// the bump pointer at dedent) is a follow-up increment; it must reclaim only
+    /// when the block provably confines its heap (nothing escapes to a binding that
+    /// outlives the block), so the reclaiming native code stays observably identical
+    /// to the never-reclaiming interpreters.
+    RegionBlock {
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Throw {
         value: Expr,
         span: Span,

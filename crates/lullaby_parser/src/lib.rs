@@ -1304,9 +1304,33 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse `region NAME: size=N[, align=N][, kind=static|dynamic][, mutable=true|false]`.
+    /// Parse a `region` construct. Three forms share the `region` keyword and are
+    /// disambiguated on the token that follows it:
+    ///
+    /// * a **newline** — the explicit **`region` block** (`region` + an
+    ///   indentation-only body): a nested arena scope, bulk-reclaimed at dedent
+    ///   (`Stmt::RegionBlock`). It has no name.
+    /// * a **name** followed by `in <buffer>` — the freestanding static-buffer arena
+    ///   `region NAME in BUFFER`.
+    /// * a **name** followed by `:` — the metadata form
+    ///   `region NAME: size=N[, align=N][, kind=…][, mutable=…]`.
+    ///
+    /// The disambiguation is purely "is the next token a name or the start of a
+    /// block", so the three never overlap.
     fn parse_region(&mut self) -> Option<Stmt> {
         let span = self.previous().span;
+
+        // The explicit block form: a bare `region` immediately followed by a newline
+        // and an indented body. No name is present, which is exactly what separates
+        // it from the two named `RegionDecl` forms below.
+        if self.at(TokenKindRef::Newline) {
+            self.expect_newline("expected newline after region");
+            self.expect(TokenKindRef::Indent, "expected indented region block body")?;
+            let body = self.parse_block(&[BlockEnd::Dedent]);
+            self.expect(TokenKindRef::Dedent, "expected region block body dedent")?;
+            return Some(Stmt::RegionBlock { body, span });
+        }
+
         let name = self.expect_identifier("expected region name")?;
 
         // The freestanding static-buffer arena form: `region NAME in BUFFER`

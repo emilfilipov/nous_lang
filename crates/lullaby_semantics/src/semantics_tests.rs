@@ -15,6 +15,41 @@ fn non_void_function_may_return_last_expression() {
 }
 
 #[test]
+fn region_block_body_type_checks_and_reaches_outer_bindings() {
+    // The explicit `region` block type-checks its body normally, and outer bindings
+    // are visible inside it (so a scalar accumulator can be updated from within).
+    let source = concat!(
+        "fn main -> i64\n",
+        "    let total i64 = 0\n",
+        "    region\n",
+        "        let s string = to_string(7) + \"!!\"\n",
+        "        total = total + len(s)\n",
+        "    total\n",
+    );
+    assert!(validate_source(source).is_ok());
+}
+
+#[test]
+fn region_block_binding_is_out_of_scope_after_dedent() {
+    // A binding declared inside the block is lexically scoped to the block — dead
+    // after dedent, exactly like a loop-body `let`. Referencing it afterward is the
+    // same unknown-variable diagnostic (`L0306`) a post-loop read raises, which is
+    // what makes block-local values sound with no escape analysis needed.
+    let source = concat!(
+        "fn main -> i64\n",
+        "    region\n",
+        "        let s string = \"hi\"\n",
+        "    len(s)\n",
+    );
+    let diagnostics =
+        validate_source(source).expect_err("out-of-scope region-local must be rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "L0306"),
+        "expected L0306 unknown-variable for a region-local read after dedent: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn accepts_i64_bitwise_operators() {
     // `& | ^ << >>` and unary `~` are all `i64 -> i64`.
     let source = concat!(

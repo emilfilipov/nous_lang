@@ -317,7 +317,9 @@ impl<'a> Checker<'a> {
                     self.check_uses_and_sends(iterable, moved, types, fn_name);
                     self.walk_ownership(body, moved, types, fn_name);
                 }
-                Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+                Stmt::Loop { body, .. }
+                | Stmt::Unsafe { body, .. }
+                | Stmt::RegionBlock { body, .. } => {
                     self.walk_ownership(body, moved, types, fn_name);
                 }
                 Stmt::Try {

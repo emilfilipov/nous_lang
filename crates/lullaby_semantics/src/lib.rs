@@ -2671,6 +2671,18 @@ impl<'a> Checker<'a> {
                 self.unsafe_depth -= 1;
                 block_type
             }
+            Stmt::RegionBlock { body, .. } => {
+                // The explicit `region` block is a nested arena scope. Its bindings
+                // are **lexically scoped to the block** exactly like a loop body: we
+                // check the body against a CLONED scope and discard it, so a name
+                // declared inside is dead after dedent and referencing it afterward
+                // is the same out-of-scope diagnostic a loop-body binding raises.
+                // Type-checking the body is otherwise ordinary. The block itself
+                // yields no value (a void statement), like `loop`.
+                let mut region_scope = scope.clone();
+                self.check_block(body, &mut region_scope, function);
+                None
+            }
             Stmt::Asm { bytes, span } => {
                 self.check_asm(bytes, *span, function);
                 // Inline assembly is trusted to leave the return value in `rax`
@@ -2855,7 +2867,9 @@ impl<'a> Checker<'a> {
                     self.check_freed_uses(iterable, freed, function);
                     self.walk_lifetimes(body, &mut freed.clone(), function);
                 }
-                Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => {
+                Stmt::Loop { body, .. }
+                | Stmt::Unsafe { body, .. }
+                | Stmt::RegionBlock { body, .. } => {
                     self.walk_lifetimes(body, &mut freed.clone(), function);
                 }
                 Stmt::Throw { value, .. } => {

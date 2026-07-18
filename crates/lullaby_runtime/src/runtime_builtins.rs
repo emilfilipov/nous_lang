@@ -1350,6 +1350,14 @@ impl<'a> Runtime<'a> {
             // `unsafe` is a transparent gate: its body runs in the enclosing
             // scope, matching IR lowering, which inlines the body.
             Stmt::Unsafe { body, .. } => self.eval_block(body, env),
+            // The explicit `region` block runs its body in a **fresh nested scope**
+            // (its bindings are block-local, dead at dedent — the runtime analogue
+            // of the lexical scoping semantics enforces). Execution is value-neutral:
+            // the interpreter never reclaims, so the heap simply keeps every value
+            // the block allocated. That is exactly what makes the never-reclaiming
+            // interpreters the safety oracle for the (follow-up) reclaiming native
+            // backend. `return`/`break`/`continue` propagate out unchanged.
+            Stmt::RegionBlock { body, .. } => self.eval_scoped_block(body, env),
             // Inline assembly emits raw machine code and can only run after native
             // codegen + linking; the AST interpreter cannot execute it, so reject
             // it with `L0425` (like `extern`'s `L0423`) rather than no-op.

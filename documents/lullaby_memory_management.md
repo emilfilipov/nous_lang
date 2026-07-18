@@ -147,6 +147,46 @@ region buffers:
 end_region
 ```
 
+### Explicit `region` block (arena-per-request / arena-per-frame)
+
+Beyond the two **named** `region NAME …` forms above (the `region NAME: size=…`
+metadata declaration and the freestanding `region NAME in BUFFER` static-buffer
+arena), Lullaby has a third, **unnamed** form: a bare `region` keyword followed by
+an indentation-only block (no braces). It introduces a **nested arena scope** whose
+heap allocations are bulk-reclaimed at dedent — the arena-per-request / per-frame
+tool for servers and games:
+
+```lullaby
+region
+    scratch = build_report data
+    print scratch
+# scratch's arena is reclaimed here, at dedent
+```
+
+The three forms are disambiguated purely on the token after `region`: a **newline**
+begins the block; a **name** begins one of the named forms (`in` → static-buffer
+arena, `:` → metadata). They never overlap.
+
+**Scoping and soundness.** A binding declared inside the block is **lexically scoped
+to the block** — dead after dedent, exactly like a loop-body `let`. Referencing one
+after the block is a compile error (`L0306`, the same unknown-variable diagnostic a
+post-loop read raises), so block-local values are sound by scoping alone, with no
+escape analysis required. The one way a block value can outlive the block is being
+stored into a binding **declared outside** it (a genuine escape); native
+reclamation, when it lands, detects that with the existing confinement analysis and
+**default-denies** — it reclaims only when the block provably confines its heap and
+never a value that escapes.
+
+**Current status (increment I1 — frontend + value-neutral execution).** The block
+parses, formats idempotently, and type-checks with block-local scoping; it lowers
+**value-neutrally** on every tier (its body is inlined into the enclosing IR block
+like `unsafe`, and no tier reclaims), so the native backend and the three
+interpreters produce identical results. Native bulk-reclamation of the block's
+sub-region (save `__lullaby_heap_next` at entry, rewind at dedent, reclaim iff
+confined) is a scoped follow-up; see `documents/execution_tiers_and_1_0_scope.md`
+(staging item 3) for the boundary and rationale. The value-neutral contract is
+pinned by `crates/lullaby_cli/tests/cli/suite26.rs`.
+
 ### Memory Addressing
 
 #### Direct Address Access

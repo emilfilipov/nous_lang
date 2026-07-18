@@ -231,7 +231,9 @@ impl NoRuntimeChecker<'_> {
                 self.check_expr(iterable, function);
                 self.check_block(body, function);
             }
-            Stmt::Loop { body, .. } | Stmt::Unsafe { body, .. } => self.check_block(body, function),
+            Stmt::Loop { body, .. }
+            | Stmt::Unsafe { body, .. }
+            | Stmt::RegionBlock { body, .. } => self.check_block(body, function),
             Stmt::Region(_) => {}
             Stmt::Throw { value, .. } => self.check_expr(value, function),
             Stmt::Try {

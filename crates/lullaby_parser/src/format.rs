@@ -520,6 +520,7 @@ fn stmt_line(stmt: &Stmt) -> Option<usize> {
         Stmt::Unsafe { span, .. } => Some(span.line),
         Stmt::Asm { span, .. } => Some(span.line),
         Stmt::Region(decl) => Some(decl.span.line),
+        Stmt::RegionBlock { span, .. } => Some(span.line),
         Stmt::Throw { span, .. } => Some(span.line),
         Stmt::Try { span, .. } => Some(span.line),
     }
@@ -676,6 +677,10 @@ fn render_stmt(emitter: &mut Emitter, stmt: &Stmt, depth: usize, following: usiz
             emitter.emit_line(depth, span.line, &format!("asm {rendered}"));
         }
         Stmt::Region(decl) => emitter.emit_line(depth, decl.span.line, &render_region(decl)),
+        Stmt::RegionBlock { body, span } => {
+            emitter.emit_line(depth, span.line, "region");
+            render_block(emitter, body, depth + 1, following);
+        }
         Stmt::Throw { value, span } => {
             emitter.emit_line(depth, span.line, &format!("throw {}", render_expr(value)));
         }
