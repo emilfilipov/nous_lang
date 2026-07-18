@@ -96,6 +96,14 @@ pub enum Keyword {
     /// `Future<R>` (`R` is the handler's `-> R` reply type); `await` resolves the
     /// future to the reply value.
     Ask,
+    /// `join_all` — a `Future<T>` combinator `join_all EXPR` that waits for every
+    /// future in a `list<Future<T>>` to resolve and yields a `list<T>` of the
+    /// results in input order (actor stage 5).
+    JoinAll,
+    /// `select` — a `Future<T>` combinator `select EXPR` that waits for the first
+    /// future in a `list<Future<T>>` to resolve and yields a `Selected<T>`
+    /// (`index i64`, `value T`); lowest input index wins a tie (actor stage 5).
+    Select,
     /// `no-runtime` — the module-level freestanding-tier directive. When it is the
     /// first non-comment line of a `.lby` file, the module is compiled in the
     /// freestanding (`no-runtime`) tier: the compiler rejects any construct that
@@ -597,6 +605,8 @@ fn keyword(text: &str) -> Option<Keyword> {
         "actor" => Keyword::Actor,
         "tell" => Keyword::Tell,
         "ask" => Keyword::Ask,
+        "join_all" => Keyword::JoinAll,
+        "select" => Keyword::Select,
         _ => return None,
     })
 }

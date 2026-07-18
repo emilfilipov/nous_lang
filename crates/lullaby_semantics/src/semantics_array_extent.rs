@@ -496,6 +496,7 @@ fn walk_expr_types(
                 walk_expr_types(end, mode, diagnostics, span);
             }
         }
+        ExprKind::Combinator { operand, .. } => walk_expr_types(operand, mode, diagnostics, span),
         ExprKind::Integer(_)
         | ExprKind::Float(_)
         | ExprKind::Bool(_)
@@ -777,6 +778,9 @@ fn check_and_expand_expr(
             if let Some(end) = end {
                 check_and_expand_expr(end, None, owner, sigs, diagnostics);
             }
+        }
+        ExprKind::Combinator { operand, .. } => {
+            check_and_expand_expr(operand, None, owner, sigs, diagnostics)
         }
         ExprKind::Integer(_)
         | ExprKind::Float(_)

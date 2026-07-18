@@ -2209,9 +2209,9 @@ impl<'a> Lowerer<'a> {
             // diagnostic (`L0355`) so the IR interpreter and the bytecode VM never
             // silently diverge from the AST semantics; the native/WASM backends
             // detect actors earlier and cleanly skip (`L0339`/`L0338`).
-            ExprKind::Spawn { .. } | ExprKind::Tell { .. } => {
+            ExprKind::Spawn { .. } | ExprKind::Tell { .. } | ExprKind::Combinator { .. } => {
                 return Err(IrLoweringError::new(
-                    "actors (`spawn`/`tell`) run only on the default (AST) interpreter; the IR and bytecode backends do not support them yet — run this program with `lullaby run` (the default backend)",
+                    "actors (`spawn`/`tell`/`ask`, and the `join_all`/`select` future combinators) run only on the default (AST) interpreter; the IR and bytecode backends do not support them yet — run this program with `lullaby run` (the default backend)",
                     Some(expr.span),
                 )
                 .with_code("L0355"));

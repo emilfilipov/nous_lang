@@ -64,7 +64,9 @@
 
 use std::collections::VecDeque;
 
-use lullaby_parser::{ActorDecl, ActorHandler, StructField, SupervisionPolicy, TypeRef};
+use lullaby_parser::{
+    ActorDecl, ActorHandler, CombinatorOp, StructField, SupervisionPolicy, TypeRef,
+};
 
 use super::*;
 
@@ -371,6 +373,135 @@ impl<'a> Runtime<'a> {
     pub(crate) fn drain_actors(&mut self) -> Result<(), RuntimeError> {
         while self.run_one_deliverable()? {}
         Ok(())
+    }
+
+    /// `join_all EXPR` / `select EXPR`: the entry point for both `Future<T>`
+    /// combinators. The operand has already been evaluated to a value that
+    /// semantics guarantees is a `list<Future<T>>` — a [`Value::Array`] of
+    /// [`Value::ActorFuture`] reply slots. The guards here are defensive (a
+    /// mis-typed operand that slipped past semantics is a clean `L0364`, never a
+    /// panic), mirroring the actor scheduler's other runtime guards.
+    pub(crate) fn eval_combinator(
+        &mut self,
+        op: CombinatorOp,
+        operand: &Expr,
+        env: &mut Env,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let operand = self.eval_expr(operand, env)?;
+        let Value::Array(items) = operand else {
+            return Err(RuntimeError::new(
+                "L0364",
+                format!(
+                    "`{}` expects a `list<Future<T>>` but its operand is not a collection: `{operand}`",
+                    op.as_str()
+                ),
+            )
+            .with_span(span));
+        };
+        let mut slots = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            let Value::ActorFuture(slot) = item else {
+                return Err(RuntimeError::new(
+                    "L0364",
+                    format!(
+                        "`{}` collection element is not a `Future<T>`: `{item}`",
+                        op.as_str()
+                    ),
+                )
+                .with_span(span));
+            };
+            slots.push(*slot);
+        }
+        match op {
+            CombinatorOp::JoinAll => self.join_all_futures(&slots, span),
+            CombinatorOp::Select => self.select_futures(&slots, span),
+        }
+    }
+
+    /// `join_all`: wait for **every** future to resolve and return a `list<T>` of
+    /// the results in input order. Deterministic: each slot is `await`ed in turn
+    /// (driving the same deterministic mailbox `await` drives), so the result
+    /// order is exactly the input order and repeated runs are byte-identical. A
+    /// deadlock or a supervision-stopped target surfaces through `await`'s own
+    /// `L0356`/`L0359`, unchanged.
+    fn join_all_futures(&mut self, slots: &[usize], span: Span) -> Result<Value, RuntimeError> {
+        let mut results = Vec::with_capacity(slots.len());
+        for &slot in slots {
+            results.push(self.await_actor_future(slot, span)?);
+        }
+        Ok(Value::Array(results.into_boxed_slice()))
+    }
+
+    /// `select`: wait for the **first** future to resolve and return a
+    /// `Selected<T>` { `index i64`, `value T` } naming the winning input position
+    /// and its reply. Determinism and the tie-break rule:
+    ///
+    /// - On each step the slots are scanned in **input order**; the first slot
+    ///   already [`ReplySlot::Filled`] wins, so when several are ready at once the
+    ///   **lowest input index** is chosen. This makes a tie fully deterministic.
+    /// - If no slot is filled yet, one deliverable message is run (the same pump
+    ///   `await` uses) and the scan repeats. The single-threaded run-to-completion
+    ///   schedule is fixed, so the winner — and thus the whole result — is
+    ///   identical on every run.
+    ///
+    /// Only the winner is consumed (its slot is taken and reset to `Pending`, as
+    /// `await` does); the losing futures are left untouched and remain awaitable.
+    ///
+    /// Termination mirrors `await`: an empty collection, or one whose futures can
+    /// never resolve, is a clean deterministic error rather than a hang. When the
+    /// pump stalls with pending futures still outstanding it is the same
+    /// request-cycle deadlock as `await` (`L0356`); when every future's target was
+    /// stopped by supervision it is `L0359`.
+    fn select_futures(&mut self, slots: &[usize], span: Span) -> Result<Value, RuntimeError> {
+        if slots.is_empty() {
+            return Err(RuntimeError::new(
+                "L0356",
+                "`select` over an empty collection can never complete: there is no future to wait for",
+            )
+            .with_span(span));
+        }
+        loop {
+            // Scan in input order so the lowest index wins a tie.
+            for (index, &slot) in slots.iter().enumerate() {
+                if let Some(ReplySlot::Filled(_)) = self.actor_reply_slots.get(slot) {
+                    let entry = &mut self.actor_reply_slots[slot];
+                    let ReplySlot::Filled(reply) = std::mem::replace(entry, ReplySlot::Pending)
+                    else {
+                        unreachable!("slot matched as filled")
+                    };
+                    return Ok(Value::Struct(Box::new(StructValue {
+                        name: "Selected".to_string(),
+                        fields: vec![
+                            ("index".to_string(), Value::I64(index as i64)),
+                            ("value".to_string(), reply),
+                        ],
+                    })));
+                }
+            }
+            // No slot resolved. If every future's target was stopped by
+            // supervision, none can ever resolve — report that, not a deadlock.
+            let all_unavailable = slots.iter().all(|&slot| {
+                matches!(
+                    self.actor_reply_slots.get(slot),
+                    Some(ReplySlot::Unavailable)
+                )
+            });
+            if all_unavailable {
+                return Err(RuntimeError::new(
+                    "L0359",
+                    "`select` can never complete: every future's target actor was stopped by supervision, so no reply will ever be produced",
+                )
+                .with_span(span));
+            }
+            if !self.run_one_deliverable()? {
+                return Err(RuntimeError::new(
+                    "L0356",
+                    "`select` can never complete: no queued message is deliverable while futures are still pending (a request cycle re-enters an actor that is already running) — this is a deterministic deadlock",
+                )
+                .with_span(span));
+            }
+        }
     }
 
     /// Run the first *deliverable* mailbox message — the earliest queued message

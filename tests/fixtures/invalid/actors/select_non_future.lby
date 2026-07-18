@@ -1,0 +1,6 @@
+# `select` requires a collection of `Future<T>`. Here the operand is an
+# `array<i64>`, whose elements are not futures, so there is no future to select.
+# Rejected with L0364.
+fn main -> i64
+    let picked Selected<i64> = select [10, 20]
+    picked.value

@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use lullaby_diagnostics::Span;
 use lullaby_parser::{
-    AssignOp, BinaryOp, EnumVariant, Expr, ExprKind, Function, INFERRED_RETURN, MatchArm,
-    MatchPattern, MethodSig, Place, Program, RegionDecl, Stmt, StructField, SupervisionPolicy,
-    TypeParam, TypeRef, UnaryOp, function_type, generic_type,
+    AssignOp, BinaryOp, CombinatorOp, EnumVariant, Expr, ExprKind, Function, INFERRED_RETURN,
+    MatchArm, MatchPattern, MethodSig, Place, Program, RegionDecl, Stmt, StructField,
+    SupervisionPolicy, TypeParam, TypeRef, UnaryOp, function_type, generic_type,
 };
 
 mod semantics_actor_ownership;
@@ -1042,6 +1042,61 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Type-check a `Future<T>` combinator (`join_all EXPR` / `select EXPR`). The
+    /// operand must be a collection of `ask` futures — either a growable
+    /// `list<Future<T>>` or a fixed `array<Future<T>>` (an array literal
+    /// `[ask a, ask b]` infers as the latter) — and the result type follows the
+    /// combinator:
+    ///
+    /// - `join_all` yields all results in input order, preserving the operand's
+    ///   collection kind: `array<T>` for an array operand, `list<T>` for a list.
+    /// - `select` yields a `Selected<T>` (the built-in `{ index i64, value T }`
+    ///   struct naming the first-resolved future), independent of operand kind.
+    ///
+    /// An operand that is not a collection of `Future<T>` (a bare future, a
+    /// collection of non-futures, or an unrelated value) is `L0364`. The awaited
+    /// `T` is carried straight through, so its sendability was already enforced
+    /// where the `Future<T>` was produced (the `ask` reply type at the handler
+    /// declaration); a combinator neither sends nor re-sends, so it adds no
+    /// `L0353` obligation.
+    fn check_combinator(
+        &mut self,
+        op: CombinatorOp,
+        operand: &Expr,
+        span: Span,
+        scope: &Scope,
+        function: &Function,
+    ) -> Option<TypeRef> {
+        let operand_type = self.check_expr(operand, scope, function)?;
+        // Accept either collection kind; remember which so `join_all` can preserve
+        // it in its result.
+        let (element, is_array) = match operand_type.array_element() {
+            Some(element) => (Some(element), true),
+            None => (operand_type.list_element(), false),
+        };
+        let inner = element.and_then(|element| future_inner(&element));
+        let Some(inner) = inner else {
+            self.diagnostics.push(SemanticDiagnostic::at(
+                "L0364",
+                format!(
+                    "`{}` expects a collection of `ask` futures (`list<Future<T>>` or `array<Future<T>>`) but got `{}`; build a list of the `ask` futures to wait on and pass that",
+                    op.as_str(),
+                    operand_type.name
+                ),
+                Some(function.name.clone()),
+                span,
+            ));
+            return None;
+        };
+        match op {
+            CombinatorOp::JoinAll if is_array => {
+                Some(TypeRef::new(format!("array<{}>", inner.name)))
+            }
+            CombinatorOp::JoinAll => Some(list_type(&inner)),
+            CombinatorOp::Select => Some(generic_type("Selected", std::slice::from_ref(&inner))),
+        }
+    }
+
     /// Enforce that a value crossing an actor boundary is **sendable**: it must
     /// not be (or transitively contain) a non-atomic `rc<T>`, a borrowed
     /// `ref<T>`, or a raw `ptr<T>` — none of which may be aliased into a second
@@ -1647,6 +1702,27 @@ impl<'a> Checker<'a> {
     }
 
     fn collect_structs(&mut self) {
+        // Register the compiler-provided generic struct `Selected<T>` — the result
+        // type of the `select` future combinator — before user structs, so its
+        // fields resolve for `.index`/`.value` access. It carries one type
+        // parameter `T` (the awaited reply type). A user struct that reuses the
+        // name collides through the duplicate-name check below (`L0370`), exactly
+        // as `option`/`result` are reserved for enums.
+        self.structs.insert(
+            "Selected".to_string(),
+            vec![
+                StructField {
+                    name: "index".to_string(),
+                    ty: TypeRef::new("i64"),
+                },
+                StructField {
+                    name: "value".to_string(),
+                    ty: TypeRef::new("T"),
+                },
+            ],
+        );
+        self.struct_type_params
+            .insert("Selected".to_string(), vec!["T".to_string()]);
         for declaration in &self.program.structs {
             if self.structs.contains_key(&declaration.name) {
                 self.diagnostics.push(SemanticDiagnostic::at(
@@ -2829,6 +2905,7 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Field { target, .. } => self.check_freed_uses(target, freed, function),
             ExprKind::Await { expr } => self.check_freed_uses(expr, freed, function),
+            ExprKind::Combinator { operand, .. } => self.check_freed_uses(operand, freed, function),
             ExprKind::Try(inner) => self.check_freed_uses(inner, freed, function),
             ExprKind::Unary { expr, .. } => self.check_freed_uses(expr, freed, function),
             ExprKind::Binary { left, right, .. } => {
@@ -3341,6 +3418,9 @@ impl<'a> Checker<'a> {
                         None
                     }
                 }
+            }
+            ExprKind::Combinator { op, operand } => {
+                self.check_combinator(*op, operand, expr.span, scope, function)
             }
             ExprKind::Try(inner) => self.check_try(inner, expr.span, scope, function),
             // A closure literal `fn PARAMS -> BODY` type-checks in a child scope

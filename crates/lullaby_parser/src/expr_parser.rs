@@ -2,8 +2,8 @@ use lullaby_lexer::{Keyword, Span, Token, TokenKind, lex};
 
 use crate::number_literal::parse_number_literal;
 use crate::{
-    BinaryOp, Expr, ExprKind, Param, SupervisionPolicy, TypeRef, UnaryOp, function_type,
-    generic_type,
+    BinaryOp, CombinatorOp, Expr, ExprKind, Param, SupervisionPolicy, TypeRef, UnaryOp,
+    function_type, generic_type,
 };
 
 pub(crate) struct ExprParser<'a> {
@@ -138,6 +138,26 @@ impl<'a> ExprParser<'a> {
                 Ok(Expr {
                     kind: ExprKind::Await {
                         expr: Box::new(expr),
+                    },
+                    span: token.span,
+                })
+            }
+            // `join_all EXPR` / `select EXPR` are prefix `Future<T>` combinators
+            // that bind exactly like `await`: the operand is parsed as a unary
+            // expression, so `join_all futs` and `select [a, b]` both attach to the
+            // whole collection operand. The operand evaluates to `list<Future<T>>`.
+            TokenKind::Keyword(keyword @ (Keyword::JoinAll | Keyword::Select)) => {
+                self.cursor += 1;
+                let op = if keyword == Keyword::Select {
+                    CombinatorOp::Select
+                } else {
+                    CombinatorOp::JoinAll
+                };
+                let operand = self.parse_unary()?;
+                Ok(Expr {
+                    kind: ExprKind::Combinator {
+                        op,
+                        operand: Box::new(operand),
                     },
                     span: token.span,
                 })

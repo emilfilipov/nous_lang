@@ -388,6 +388,13 @@ impl<'a> Checker<'a> {
             ExprKind::Await { expr } | ExprKind::Try(expr) | ExprKind::Unary { expr, .. } => {
                 self.check_uses_and_sends(expr, moved, types, fn_name);
             }
+            // A `join_all`/`select` combinator does not itself move its operand
+            // (the futures were moved, if at all, when they were built into the
+            // list); recurse so a use of an already-moved binding inside the
+            // operand is still flagged.
+            ExprKind::Combinator { operand, .. } => {
+                self.check_uses_and_sends(operand, moved, types, fn_name);
+            }
             ExprKind::Binary { left, right, .. } => {
                 self.check_uses_and_sends(left, moved, types, fn_name);
                 self.check_uses_and_sends(right, moved, types, fn_name);

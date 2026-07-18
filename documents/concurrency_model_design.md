@@ -1,8 +1,10 @@
 # Lullaby Concurrency Model Design — Actors + Intra-Actor Async
 
-**Status:** Design proposal, 2026-07-14. **Stages 1–4 delivered** on the AST
-interpreter (actor core + `spawn`/`tell`; `ask`/`await`/`Future`; message
-ownership; supervision — see the "Stage N delivery" sections below).
+**Status:** Design proposal, 2026-07-14. **Stages 1–4 delivered, plus the stage-5
+future combinators** on the AST interpreter (actor core + `spawn`/`tell`;
+`ask`/`await`/`Future`; message ownership; supervision; and `join_all`/`select`
+— see the "Stage N delivery" sections below; stage-5 back-pressure is still
+deferred).
 **Stage 4 supersedes the panic-based supervision sketch in §2.6/§2.7:** actor
 failure is result-based, because decision A5 aborts without unwinding and so
 leaves a supervisor nothing to catch. This document proposes the concrete, buildable shape
@@ -353,6 +355,93 @@ loop exists), a system/priority mailbox lane (§6.4 — supervision is synchrono
 the turn boundary here, so it cannot be starved by user messages), and explicit
 `stop` as a user-callable surface (§2.6's graceful-stop verb; only supervision
 stops actors today).
+
+## Stage 5 delivery (2026-07-18) — future combinators (`join_all` / `select`)
+
+Stage 5 of §5.2 opens with the **`Future<T>` combinators**: the two ways to wait
+on a *collection* of pending `ask` replies at once instead of `await`ing them one
+at a time. Both are implemented and test-locked on the **AST interpreter only**,
+matching every earlier stage's tier story. Back-pressure (a bounded mailbox /
+`try_tell`) remains the other half of stage 5 and is **not** delivered here — see
+"Deferred" below.
+
+### Delivered surface
+
+- **`join_all EXPR`** — `EXPR` is a collection of `ask` futures
+  (`list<Future<T>>` or `array<Future<T>>`; an array literal `[ask a, ask b]`
+  infers as the latter). It waits for **every** future to resolve and yields the
+  results **in input order**, preserving the operand's collection kind
+  (`array<T>` for an array operand, `list<T>` for a list). `join_all` is a
+  keyword prefix operator binding exactly like `await`.
+- **`select EXPR`** — same operand shape. It waits for the **first** future to
+  resolve and yields a **`Selected<T>`**, a compiler-provided generic struct with
+  fields `index i64` (the winning input position) and `value T` (its reply).
+  `select` is likewise a keyword prefix operator. Only the winning future is
+  consumed; the losers are left pending and remain awaitable.
+
+### Determinism and the `select` tie-break
+
+Both combinators drive the **same deterministic run-to-completion mailbox**
+`await` drives, so output is byte-identical across runs (pinned like the stage-4
+determinism test). `join_all` simply `await`s each slot in input order.
+
+`select` scans the futures' reply slots **in input order** on each step; the
+first slot already resolved wins. When more than one slot is resolved at the
+moment `select` inspects them, the **lowest input index wins** — a fully
+deterministic tie-break, independent of the chronological order in which the
+slots actually filled. If no slot is resolved yet, `select` runs one deliverable
+message (the same pump `await` uses) and re-scans. A future whose target is busy
+(e.g. the actor running the `select`, or one mid-`await`) is simply never
+deliverable during that `select`, so `select` naturally returns a *ready* future
+even when a lower-indexed one cannot yet be produced.
+
+### Sendability / ownership interaction
+
+A combinator neither sends nor re-sends: it consumes one-shot futures the local
+turn already holds. So it adds **no** new `L0353` (sendability) obligation — the
+awaited `T`'s sendability was already enforced where the `Future<T>` was produced
+(the `ask` reply type at the handler declaration; a non-sendable reply is
+rejected there, so a `Future<non-sendable>` can never be built to hand to a
+combinator in the first place). The one-shot guarantee is enforced at **run time**
+exactly as for a double-`await`: a future consumed by `join_all`/`select` has its
+slot emptied, so a later `await`/combinator over the same future hits the
+deterministic deadlock `L0356`. The affine use-after-send analysis (`L0357`) is
+unchanged — a `Future` is a move type, so moving one *into* a `tell`/`ask`/`spawn`
+still consumes it.
+
+### Tiers
+
+No new tier plumbing: the combinators are a new expression node that the IR
+lowerer rejects through the existing **`L0355`** gate (alongside `spawn`/`tell`),
+native/WASM cleanly skip a program that declares actors
+(**`L0339`**/**`L0338`**), and a `no-runtime` module rejects them with
+**`L0441`**. No native/WASM backend edit was needed or made.
+
+### New / reused diagnostics
+
+- **`L0364`** (semantic — new) — the `join_all`/`select` operand is not a
+  collection of `Future<T>`.
+- **`L0356`** (reused) — a `select`/`join_all` that can never complete (a request
+  cycle, or `select` over an empty collection) is the same deterministic deadlock
+  as `await`.
+- **`L0359`** (reused) — a `select` whose *every* future's target was stopped by
+  supervision.
+
+### Deferred (the rest of stage 5)
+
+**Back-pressure / bounded mailbox** (`try_tell` or a `spawn ... bound N` clause
+with block-until-space semantics and a deterministic full-mailbox deadlock
+diagnostic) is **not** delivered here. It genuinely needs the `tell` path to
+cooperate with the scheduler (pumping deliverable messages to free mailbox space,
+with a deterministic deadlock when none can), which touches the hot path shared
+by every actor turn — larger than a clean combinator increment. The intended
+design: a per-instance mailbox capacity, a `tell` to a full mailbox that pumps
+the target's deliverable messages until space frees (block-until-space, composing
+with the deterministic run-to-completion scheduler and leaving `tell`'s `void`
+result unchanged), and a deterministic back-pressure deadlock diagnostic (mirror
+of `L0356`) when the target is busy and nothing can free a slot. Native/WASM
+actor codegen (stage 6) and eager `shared<T>` reclamation (stage 8) remain
+deferred as before.
 
 The rest of this document is the original design proposal (the full model); the
 above is the slice that is live today. **Where §2.6/§2.7 describe panic-based

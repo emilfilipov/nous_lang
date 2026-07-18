@@ -1,0 +1,17 @@
+# Stage-5 `join_all`: fan several `ask`s out to a worker and wait for *all* the
+# replies at once, collecting them into a collection in input order. `join_all`
+# awaits each future in turn on the same deterministic run-to-completion
+# scheduler `await` drives, so the results are `[2*2, 3*3, 4*4] = [4, 9, 16]` on
+# every run. The result of `join_all` over an `array<Future<i64>>` is an
+# indexable `array<i64>`.
+actor Squarer
+    on square n i64 -> i64
+        n * n
+
+fn main -> i64
+    let w Actor<Squarer> = spawn Squarer()
+    let results array<i64> = join_all [ask w.square(2), ask w.square(3), ask w.square(4)]
+    println(to_string(results[0]))
+    println(to_string(results[1]))
+    println(to_string(results[2]))
+    0

@@ -1,0 +1,14 @@
+# A `no-runtime` module may not drive actors, including the `Future<T>`
+# combinators: `join_all`/`select` need the Lullaby runtime scheduler (mailbox
+# pumping + reply-slot allocation). The actor declaration, the `spawn`, the
+# `ask`s, and the `join_all` are each rejected with L0441.
+no-runtime
+
+actor Squarer
+    on square n i64 -> i64
+        n * n
+
+fn main -> i64
+    let w Actor<Squarer> = spawn Squarer()
+    let results array<i64> = join_all [ask w.square(2), ask w.square(3)]
+    results[0]

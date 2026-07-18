@@ -1,0 +1,41 @@
+# Stage-5 `select`: return the *first* future to resolve, as a `Selected<T>`
+# carrying the winning input `index` and its `value`. This pins that `select`
+# waits on **readiness, not input order**: index 0 asks the router *itself*,
+# which is busy for the whole `route` turn, so that reply can never be produced
+# while the turn runs; index 1 asks an idle `Backend`, which resolves. `select`
+# therefore returns index 1 — a naive "take element 0" would return the wrong
+# index *and* the wrong value.
+#
+# The router learns its own handle through a `remember` message (a `spawn`
+# returns the handle to the spawner, so the actor cannot name itself in `init`).
+# Deterministic output: `index 1` then `answer 105`.
+actor Backend
+    on handle n i64 -> i64
+        n + 100
+
+actor Router
+    state
+        me Actor<Router>
+        backend Actor<Backend>
+
+    init b Actor<Backend>
+        backend = b
+
+    on remember self_handle Actor<Router>
+        me = self_handle
+
+    on slow -> i64
+        999
+
+    on route -> i64
+        let picked Selected<i64> = select [ask me.slow(), ask backend.handle(5)]
+        println("index " + to_string(picked.index))
+        picked.value
+
+fn main -> i64
+    let b Actor<Backend> = spawn Backend()
+    let r Actor<Router> = spawn Router(b)
+    tell r.remember(r)
+    let answer i64 = await ask r.route()
+    println("answer " + to_string(answer))
+    0

@@ -100,6 +100,36 @@ impl SupervisionPolicy {
     }
 }
 
+/// A `Future<T>` combinator (actor stage 5): the two ways to wait on a
+/// *collection* of pending `ask` replies at once rather than `await`ing them one
+/// by one. Both operate on a `list<Future<T>>` and run only on the AST
+/// interpreter's deterministic run-to-completion scheduler, exactly like `await`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CombinatorOp {
+    /// `join_all EXPR` — wait for **every** future in the collection to resolve
+    /// and yield a `list<T>` of their results in input order. Deterministic: it
+    /// awaits each slot in order, so it inherits `await`'s deadlock (`L0356`) and
+    /// stopped-target (`L0359`) outcomes.
+    JoinAll,
+    /// `select EXPR` — wait for the **first** future in the collection to resolve
+    /// and yield a `Selected<T>` { `index i64`, `value T` }. Deterministic
+    /// tie-break: when more than one slot is already resolved, the **lowest input
+    /// index** wins. Only the winning future is consumed; the losers are left
+    /// pending and remain awaitable.
+    Select,
+}
+
+impl CombinatorOp {
+    /// The source keyword spelling of this combinator.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::JoinAll => "join_all",
+            Self::Select => "select",
+        }
+    }
+}
+
 /// An actor declaration: `actor NAME` followed by a `state` block of private
 /// fields, an optional `init <params>` constructor, and one or more
 /// `on <handler> <params> [-> T]` message handlers. An actor bundles isolated
@@ -961,6 +991,17 @@ pub enum ExprKind {
         /// existing single-file artifacts and AST snapshots stay valid.
         #[serde(default, skip_serializing_if = "is_false")]
         is_ask: bool,
+    },
+    /// A `Future<T>` combinator over a collection of pending `ask` replies:
+    /// `join_all EXPR` (wait for all, yield `list<T>`) or `select EXPR` (wait for
+    /// the first, yield `Selected<T>`). The single node carries both forms,
+    /// distinguished by `op`. Like `ask`/`await`, combinators run only on the AST
+    /// interpreter; the IR/bytecode backends reject an actor program (`L0355`) and
+    /// native/WASM cleanly skip it (`L0339`/`L0338`). `operand` evaluates to a
+    /// `list<Future<T>>`.
+    Combinator {
+        op: CombinatorOp,
+        operand: Box<Expr>,
     },
     /// An inline closure literal `fn PARAMS -> EXPR`: an anonymous function value
     /// that captures the enclosing scope's locals by value at evaluation time.

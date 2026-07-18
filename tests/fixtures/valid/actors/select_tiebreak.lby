@@ -1,0 +1,37 @@
+# Stage-5 `select` tie-break: when more than one future is resolved at the moment
+# `select` inspects them, the **lowest input index wins** — deterministically.
+#
+# Both futures become ready during the *single* turn that runs `coord.compute`:
+# its internal `await ask leaf.step()` drives the mailbox, which runs the queued
+# `leaf.step2` (index 1) *first*, then `leaf.step`, then `compute` finishes
+# (index 0). So by the time `select` re-scans, index 1 has actually been resolved
+# earlier in wall-clock order than index 0 — yet `select` returns **index 0**,
+# because the tie-break scans in input order. A "first chronologically ready" or
+# "highest index" rule would return index 1 (value 2) instead.
+#
+# Deterministic output: `index 0` then `value 41`.
+actor Leaf
+    on step -> i64
+        1
+
+    on step2 -> i64
+        2
+
+actor Coord
+    state
+        leaf Actor<Leaf>
+
+    init l Actor<Leaf>
+        leaf = l
+
+    on compute -> i64
+        let s i64 = await ask leaf.step()
+        s + 40
+
+fn main -> i64
+    let leaf Actor<Leaf> = spawn Leaf()
+    let coord Actor<Coord> = spawn Coord(leaf)
+    let picked Selected<i64> = select [ask coord.compute(), ask leaf.step2()]
+    println("index " + to_string(picked.index))
+    println("value " + to_string(picked.value))
+    0

@@ -256,6 +256,25 @@ async def async_task(data):
 - No complex coroutine syntax; flat indentation maintained
 - Lightweight implementation suitable for systems programming
 
+**Actor request-reply and future combinators.** The delivered concurrency model
+is the actor model (`actor`/`spawn`/`tell`/`ask`/`await`), documented in full in
+[concurrency_model_design.md](concurrency_model_design.md). On top of `await`
+(resolve one `Future<T>`), two prefix **future combinators** wait on a whole
+collection of `ask` futures at once:
+
+```lullaby
+# join_all: wait for every future, results in input order (kind-preserving).
+let results array<i64> = join_all [ask w.square(2), ask w.square(3)]
+
+# select: wait for the first to resolve; yields Selected<T> { index, value }.
+# Lowest input index wins a tie; only the winner is consumed.
+let picked Selected<i64> = select [ask a.compute(), ask b.compute()]
+```
+
+Both run on the deterministic run-to-completion actor scheduler (AST interpreter
+only, like every actor construct). See the actor-model document for the exact
+determinism, tie-break, sendability, and tier rules.
+
 ## Operators
 
 ### Arithmetic Operators

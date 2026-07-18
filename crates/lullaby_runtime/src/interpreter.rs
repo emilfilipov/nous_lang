@@ -228,6 +228,7 @@ fn collect_closures_in_expr<'a>(
                 collect_closures_in_expr(end, table);
             }
         }
+        ExprKind::Combinator { operand, .. } => collect_closures_in_expr(operand, table),
     }
 }
 
@@ -1259,6 +1260,7 @@ fn expr_mentions_var(expr: &Expr, name: &str) -> bool {
                     .as_deref()
                     .is_some_and(|end| expr_mentions_var(end, name))
         }
+        ExprKind::Combinator { operand, .. } => expr_mentions_var(operand, name),
     }
 }
 

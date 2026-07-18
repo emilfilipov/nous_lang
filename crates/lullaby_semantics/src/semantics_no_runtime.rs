@@ -291,6 +291,18 @@ impl NoRuntimeChecker<'_> {
                 );
                 self.check_expr(inner, function);
             }
+            ExprKind::Combinator { op, operand } => {
+                self.report(
+                    expr.span,
+                    Some(function),
+                    format!(
+                        "`{}` is unavailable in a `no-runtime` module \
+                         (the future combinators need the Lullaby runtime scheduler)",
+                        op.as_str()
+                    ),
+                );
+                self.check_expr(operand, function);
+            }
             ExprKind::Closure { .. } => {
                 self.report(
                     expr.span,
@@ -400,6 +412,7 @@ impl NoRuntimeChecker<'_> {
             ExprKind::Spawn { .. }
             | ExprKind::Tell { .. }
             | ExprKind::Await { .. }
+            | ExprKind::Combinator { .. }
             | ExprKind::Closure { .. } => {}
         }
     }

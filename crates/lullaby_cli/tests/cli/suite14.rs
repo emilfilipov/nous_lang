@@ -793,3 +793,204 @@ fn supervise_output_is_byte_identical_across_repeated_runs() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Stage 5 — the `Future<T>` combinators `join_all` and `select`.
+//
+// `join_all EXPR` waits for **every** future in a collection of `ask` replies to
+// resolve and yields the results in input order (kind-preserving:
+// `array<Future<T>>` -> `array<T>`, `list<Future<T>>` -> `list<T>`). `select
+// EXPR` waits for the **first** future to resolve and yields a `Selected<T>`
+// { `index i64`, `value T` }; when more than one future is resolved at the
+// moment `select` inspects them, the **lowest input index** wins the tie. Both
+// combinators run on the same deterministic run-to-completion scheduler as
+// `await`, so their output is byte-identical across runs, and both inherit the
+// actor tier story unchanged: IR/bytecode reject the program (`L0355`),
+// native/WASM skip it (`L0339`/`L0338`), and a `no-runtime` module rejects it
+// (`L0441`). Misuse (an operand that is not a collection of `Future<T>`) is a
+// static `L0364`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join_all_collects_every_reply_in_input_order() {
+    // Three asks fanned to one worker; `join_all` waits for all and returns
+    // `[2*2, 3*3, 4*4] = [4, 9, 16]` in input order. Determinism: the scheduler
+    // is FIFO run-to-completion, so this is byte-identical every run.
+    let output = run_ast("tests/fixtures/valid/actors/join_all_asks.lby");
+    assert!(
+        output.status.success(),
+        "join_all should run: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "4\n9\n16\n0\n");
+}
+
+#[test]
+fn select_returns_the_first_future_to_resolve_by_readiness() {
+    // index 0 asks the router itself (busy for the whole `route` turn, so its
+    // reply can never be produced there); index 1 asks an idle backend, which
+    // resolves. `select` returns index 1 — proving it waits on readiness, not
+    // input order — with the backend's reply (5 + 100 = 105).
+    let output = run_ast("tests/fixtures/valid/actors/select_first_ready.lby");
+    assert!(
+        output.status.success(),
+        "select should run: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "index 1\nanswer 105\n0\n");
+}
+
+#[test]
+fn select_tie_break_is_lowest_input_index() {
+    // Both futures are resolved by the single turn that runs `coord.compute` (its
+    // internal `await` drives the queued `leaf.step2`, index 1, to resolve
+    // *before* `compute` itself, index 0). `select` still returns index 0: the
+    // tie-break scans in input order, not chronological readiness. Value 41 is
+    // `compute`'s reply (1 + 40), not `step2`'s 2.
+    let output = run_ast("tests/fixtures/valid/actors/select_tiebreak.lby");
+    assert!(
+        output.status.success(),
+        "select tie-break should run: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "index 0\nvalue 41\n0\n");
+}
+
+#[test]
+fn combinator_output_is_byte_identical_across_repeated_runs() {
+    // The determinism guarantee stages 2-4 are held to extends to the
+    // combinators: every `join_all`/`select` schedule is a function of the fixed
+    // single-threaded run-to-completion order, so the same program produces
+    // byte-identical output (and the same exit code) on every run. Mirrors
+    // `supervise_output_is_byte_identical_across_repeated_runs`.
+    for fixture in [
+        "tests/fixtures/valid/actors/join_all_asks.lby",
+        "tests/fixtures/valid/actors/select_first_ready.lby",
+        "tests/fixtures/valid/actors/select_tiebreak.lby",
+    ] {
+        let first = run_ast(fixture);
+        for _ in 0..4 {
+            let again = run_ast(fixture);
+            assert_eq!(
+                stdout(&first),
+                stdout(&again),
+                "{fixture} stdout must be identical on every run"
+            );
+            assert_eq!(
+                first.status.code(),
+                again.status.code(),
+                "{fixture} exit code must be identical on every run"
+            );
+        }
+    }
+}
+
+#[test]
+fn join_all_over_non_futures_is_rejected() {
+    // `join_all` requires a collection of `Future<T>`; an `array<i64>` has no
+    // futures to wait on. -> L0364
+    assert_check_rejects(
+        "tests/fixtures/invalid/actors/join_all_non_future.lby",
+        "L0364",
+    );
+}
+
+#[test]
+fn select_over_non_futures_is_rejected() {
+    // `select` requires a collection of `Future<T>`; an `array<i64>` has no
+    // future to select. -> L0364
+    assert_check_rejects(
+        "tests/fixtures/invalid/actors/select_non_future.lby",
+        "L0364",
+    );
+}
+
+#[test]
+fn combinators_in_no_runtime_module_are_rejected() {
+    // A `no-runtime` (freestanding) module has no scheduler: the future
+    // combinators, like the actor they drive, are rejected with `L0441`.
+    assert_check_rejects(
+        "tests/fixtures/invalid/no_runtime/actor_join_all.lby",
+        "L0441",
+    );
+}
+
+#[test]
+fn combinator_ir_and_bytecode_reject_cleanly() {
+    // The combinators run only on the AST interpreter; the IR interpreter and
+    // bytecode VM reject an actor program through the stage-1 `L0355` gate.
+    let path = workspace_root().join("tests/fixtures/valid/actors/join_all_asks.lby");
+    for backend in ["ir", "bytecode"] {
+        let output = lullaby()
+            .args([
+                "run",
+                "--backend",
+                backend,
+                path.to_str().expect("fixture path"),
+            ])
+            .output()
+            .expect("run cli");
+        let stderr = stderr(&output);
+        assert!(
+            !output.status.success(),
+            "[{backend}] combinator program should be rejected. stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("L0355"),
+            "[{backend}] combinator program should report L0355. stderr: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn combinator_native_and_wasm_skip_cleanly() {
+    // A program using `join_all`/`select` declares actors, so native and WASM
+    // skip it cleanly (`L0339`/`L0338`) — never miscompiling a combinator.
+    let path = workspace_root().join("tests/fixtures/valid/actors/select_tiebreak.lby");
+    for (command, code) in [("native", "L0339"), ("wasm", "L0338")] {
+        let output = lullaby()
+            .args([command, path.to_str().expect("fixture path")])
+            .output()
+            .expect("run cli");
+        let stderr = stderr(&output);
+        assert!(
+            !output.status.success(),
+            "[{command}] combinator program should skip. stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains(code),
+            "[{command}] combinator program should report {code}. stderr: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn combinator_program_formats_idempotently() {
+    let scratch = ScratchDir::new("combinator_program_formats_idempotently");
+    // `lullaby fmt` renders `join_all`/`select` canonically, and re-formatting the
+    // output is a fixed point (the formatter round-trips the new combinators).
+    let path = workspace_root().join("tests/fixtures/valid/actors/select_tiebreak.lby");
+    let first = lullaby()
+        .args(["fmt", path.to_str().expect("fixture path")])
+        .output()
+        .expect("run fmt");
+    assert!(first.status.success(), "fmt failed: {}", stderr(&first));
+    let formatted = stdout(&first);
+    assert!(
+        formatted.contains("select [ask "),
+        "formatted output should render `select [ask`: {formatted}"
+    );
+
+    let temp = scratch.join("lullaby_combinator_fmt_idempotent.lby");
+    std::fs::write(&temp, &formatted).expect("write temp");
+    let second = lullaby()
+        .args(["fmt", temp.to_str().expect("temp path")])
+        .output()
+        .expect("run fmt again");
+    assert!(
+        second.status.success(),
+        "second fmt failed: {}",
+        stderr(&second)
+    );
+    assert_eq!(stdout(&second), formatted, "fmt must be idempotent");
+}

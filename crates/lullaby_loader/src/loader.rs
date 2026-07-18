@@ -777,6 +777,9 @@ fn collect_expr_references(expr: &Expr, out: &mut Vec<(String, Span)>) {
                 collect_expr_references(end, out);
             }
         }
+        // `join_all`/`select` name no top-level declaration; the operand collection
+        // may reference declarations, so recurse into it.
+        ExprKind::Combinator { operand, .. } => collect_expr_references(operand, out),
     }
 }
 

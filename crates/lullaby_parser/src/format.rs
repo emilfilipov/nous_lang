@@ -993,6 +993,12 @@ fn render_expr(expr: &Expr) -> String {
             let args = args.iter().map(render_expr).collect::<Vec<_>>().join(", ");
             format!("{verb} {}.{handler}({args})", render_postfix_target(target))
         }
+        // `join_all EXPR` / `select EXPR` — prefix future combinators. The operand
+        // is rendered like an `await` operand so a compound (binary/ternary/`in`)
+        // collection is parenthesized and the form round-trips to the same node.
+        ExprKind::Combinator { op, operand } => {
+            format!("{} {}", op.as_str(), render_unary_operand(operand))
+        }
     }
 }
 
@@ -1059,6 +1065,7 @@ fn render_postfix_target(target: &Expr) -> String {
             | ExprKind::Unary { .. }
             | ExprKind::Match { .. }
             | ExprKind::Await { .. }
+            | ExprKind::Combinator { .. }
             | ExprKind::Conditional { .. }
             | ExprKind::In { .. }
     ) {

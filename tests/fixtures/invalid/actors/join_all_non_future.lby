@@ -1,0 +1,6 @@
+# `join_all` requires a collection of `Future<T>` (the results of `ask`s). Here
+# the operand is an `array<i64>`, whose elements are not futures, so there is
+# nothing to wait on. Rejected with L0364.
+fn main -> i64
+    let xs array<i64> = join_all [1, 2, 3]
+    xs[0]

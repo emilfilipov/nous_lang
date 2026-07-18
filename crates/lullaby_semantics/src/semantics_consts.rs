@@ -667,6 +667,7 @@ impl Folder<'_> {
                 }
             }
             ExprKind::Await { expr } => self.fold_expr(expr, local),
+            ExprKind::Combinator { operand, .. } => self.fold_expr(operand, local),
             ExprKind::Try(inner) => self.fold_expr(inner, local),
             ExprKind::Closure { params, body, .. } => {
                 let mut inner = local.clone();

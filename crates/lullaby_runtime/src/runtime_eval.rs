@@ -470,6 +470,15 @@ impl<'a> Runtime<'a> {
                     self.tell_actor(target, handler, values)
                 }
             }
+            // `join_all EXPR` / `select EXPR`: evaluate the operand to a
+            // `list<Future<T>>` (a `Value::Array` of `Value::ActorFuture` slots),
+            // then drive the deterministic mailbox. `join_all` awaits every slot in
+            // order and yields a `list<T>`; `select` yields a `Selected<T>` for the
+            // first-resolved slot (lowest index breaks a tie). Delegated to the
+            // actor scheduler module.
+            ExprKind::Combinator { op, operand } => {
+                self.eval_combinator(*op, operand, env, expr.span)
+            }
         };
         result.map_err(|error| self.annotate_error(error, expr.span))
     }
