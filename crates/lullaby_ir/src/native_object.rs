@@ -806,6 +806,10 @@ pub(crate) use types::*;
 mod eligibility;
 pub(crate) use eligibility::*;
 
+#[path = "native_object_confine.rs"]
+mod confine;
+pub(crate) use confine::*;
+
 #[path = "native_object_method.rs"]
 mod method;
 pub(crate) use method::*;

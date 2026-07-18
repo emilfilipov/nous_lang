@@ -807,7 +807,10 @@ fn type_is_directly_heap(ty: &TypeRef) -> bool {
 /// heap-carrying value even though its own type name is neither `string` nor a
 /// `list`/`map` — storing it into a location that outlives an iteration lets the
 /// referenced record escape, so the escape analysis MUST treat it as heap.
-fn type_is_heap(ty: &TypeRef, heap_aggregates: &std::collections::HashSet<String>) -> bool {
+pub(crate) fn type_is_heap(
+    ty: &TypeRef,
+    heap_aggregates: &std::collections::HashSet<String>,
+) -> bool {
     type_is_directly_heap(ty) || heap_aggregates.contains(ty.name.as_str())
 }
 
@@ -1347,90 +1350,6 @@ fn instruction_loop_nesting(instruction: &BytecodeInstruction) -> usize {
         } => max_loop_nesting(body).max(max_loop_nesting(catch_body)),
         _ => 0,
     }
-}
-
-/// Whether a loop's body **confines** its heap allocations to the iteration —
-/// i.e. no heap value it produces can survive past the iteration. This is the
-/// stage-2 escape analysis, and it is DEFAULT-DENY: a loop is confined only when
-/// we can prove nothing escapes; anything unclear counts as an escape.
-///
-/// In an arena function (a leaf w.r.t. user code — no user/`extern` calls, so no
-/// builtin retains a pointer) the ONLY way a heap value produced in an iteration
-/// becomes reachable after the iteration is by being **stored into a named
-/// location that outlives the iteration**. Lullaby has value semantics, so the
-/// only stores are `Assign` (a rebind or a container mutation) and `Throw` (into
-/// the exception channel); a `Let` binds a fresh iteration-local that dies at the
-/// iteration's end. Therefore a loop body confines its heap iff no `Assign` and no
-/// `Throw` anywhere in it (recursing through nested control flow, including nested
-/// loops) carries a heap-typed value. A `Return` of a heap value cannot occur (an
-/// arena function returns a scalar) but is treated as an escape for safety.
-///
-/// This conservatively rejects some reclaimable shapes — e.g. rebinding a
-/// loop-local `string` with a fresh allocation, or a nested loop accumulating into
-/// an outer-loop-local — treating the whole enclosing loop as non-confined. That
-/// is sound (default-deny) and keeps the rule locally checkable without tracking
-/// which exact variable a store targets. The common per-iteration-scratch shape
-/// (`let s = <alloc>` used only by `len`, accumulating a SCALAR like
-/// `total += len(s)`) is confined and gets a sub-region.
-pub(crate) fn loop_body_confines_heap(
-    body: &[BytecodeInstruction],
-    heap_aggs: &std::collections::HashSet<String>,
-) -> bool {
-    !body.iter().any(|i| instruction_heap_escapes(i, heap_aggs))
-}
-
-fn instruction_heap_escapes(
-    instruction: &BytecodeInstruction,
-    heap_aggs: &std::collections::HashSet<String>,
-) -> bool {
-    match instruction {
-        // A store of a heap value into a named location (a rebind or a container
-        // mutation) can outlive the iteration — an escape. What matters is whether a
-        // HEAP VALUE is being stored, i.e. the assigned value's own type is a heap
-        // type — NOT whether the expression merely READS heap. `total = total +
-        // len(s)` stores an `i64` (scalar) even though it reads the heap string `s`,
-        // so it does not escape; `acc = acc + "x"` stores a `string`, so it does.
-        // A heap-CARRYING aggregate (a `struct` with a `string` field, an
-        // `option<string>`/user enum with a heap payload) counts as a heap store too
-        // — storing it lets the referenced record escape the iteration.
-        BytecodeInstruction::Assign { value, .. }
-        | BytecodeInstruction::Throw { value, .. }
-        | BytecodeInstruction::Return(Some(value)) => type_is_heap(&value.ty, heap_aggs),
-        // A `Let` binds a fresh iteration-local (dies each iteration); its value
-        // does not escape. Break/Continue/Return(None)/Asm carry no heap value.
-        BytecodeInstruction::Let { .. }
-        | BytecodeInstruction::Return(None)
-        | BytecodeInstruction::Break(_)
-        | BytecodeInstruction::Continue(_)
-        | BytecodeInstruction::Expr(_)
-        | BytecodeInstruction::Asm { .. } => false,
-        BytecodeInstruction::If {
-            branches,
-            else_body,
-            ..
-        } => {
-            branches
-                .iter()
-                .any(|b| body_heap_escapes(&b.body, heap_aggs))
-                || body_heap_escapes(else_body, heap_aggs)
-        }
-        BytecodeInstruction::While { body, .. }
-        | BytecodeInstruction::For { body, .. }
-        | BytecodeInstruction::Loop { body, .. } => body_heap_escapes(body, heap_aggs),
-        BytecodeInstruction::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| body_heap_escapes(&arm.body, heap_aggs)),
-        BytecodeInstruction::Try {
-            body, catch_body, ..
-        } => body_heap_escapes(body, heap_aggs) || body_heap_escapes(catch_body, heap_aggs),
-    }
-}
-
-fn body_heap_escapes(
-    body: &[BytecodeInstruction],
-    heap_aggs: &std::collections::HashSet<String>,
-) -> bool {
-    body.iter().any(|i| instruction_heap_escapes(i, heap_aggs))
 }
 
 /// Whether an instruction is a loop (`while`/`for`/`loop`) whose header or body

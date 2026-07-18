@@ -679,11 +679,53 @@ fn gen_arena_program(seed: u64) -> String {
             1 => "total = total + len(s) * 2".to_string(),
             _ => "total = total + len(s) - 1".to_string(),
         };
-        let h = format!(
-            "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
-             let s string = {scratch}\n        {acc}\n    total\n"
-        );
-        return format!("{h}{main}");
+        return match rng.below(3) {
+            // Borrow-only per-iteration scratch (`let s` read only by `len`): confined
+            // under both the pre-I4 and I4 rules.
+            0 => {
+                let h = format!(
+                    "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
+                     let s string = {scratch}\n        {acc}\n    total\n"
+                );
+                format!("{h}{main}")
+            }
+            // I4 target-aware widening: REBIND the loop-local `s` with a fresh
+            // allocation each iteration (`s = s + <suffix>`). `s` is a top-level `let`
+            // of the loop body, so the rebind is iteration-local and the loop stays
+            // confined — newly admitted by I4. Value-neutral: the accumulator reads
+            // the (now longer) `len(s)`, which every tier computes identically.
+            1 => {
+                let suffix = match rng.below(3) {
+                    0 => "?",
+                    1 => "__",
+                    _ => "!!",
+                };
+                let h = format!(
+                    "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
+                     let s string = {scratch}\n        s = s + \"{suffix}\"\n        {acc}\n    \
+                     total\n"
+                );
+                format!("{h}{main}")
+            }
+            // I4 nested-loop iteration-local scratch: the inner loop rebinds its own
+            // top-level `let t`, so BOTH loop levels are confined and each gets a
+            // per-iteration sub-region. Newly admitted by I4 (the inner heap rebind
+            // used to deny both loops).
+            _ => {
+                let inner = rng.range(2, 6);
+                let inner_scratch = match rng.below(3) {
+                    0 => "to_string(a + j + m)".to_string(),
+                    1 => "upper(to_string(a + j * 2 + m))".to_string(),
+                    _ => "repeat(\"c\", 1) + to_string(j + m)".to_string(),
+                };
+                let h = format!(
+                    "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
+                     for m from 0 to {inner}\n            let t string = {inner_scratch}\n            \
+                     t = t + \"!\"\n            total = total + len(t)\n    total\n"
+                );
+                format!("{h}{main}")
+            }
+        };
     }
 
     // Straight-line shape (stage 1): `s`, then `t` derived from `s`, then a scalar.
@@ -749,6 +791,20 @@ fn gen_arena_struct_string_program(seed: u64) -> String {
             1 => "total = total + len(r.name) * 2 - r.id".to_string(),
             _ => "total = total + len(r.name)".to_string(),
         };
+        // I4: half of the confined struct-string batch REBINDS the loop-local `r` with
+        // a fresh heap-carrying struct each iteration (`r = Rec(r.name + "!", …)`). `r`
+        // is a top-level `let` of the loop body, so the rebind is iteration-local and
+        // the loop stays confined — a heap-CARRYING-aggregate store newly admitted by
+        // I4. Value-neutral: the accumulator reads the rebuilt fields identically on
+        // every tier.
+        if rng.below(2) == 0 {
+            let h = format!(
+                "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
+                 let r Rec = Rec({name_expr}, a + j)\n        r = Rec(r.name + \"!\", r.id + 1)\n        \
+                 {acc}\n    total\n"
+            );
+            return format!("{rec}{h}{main}");
+        }
         let h = format!(
             "fn h a i64 -> i64\n    let total i64 = 0\n    for j from 0 to {k}\n        \
              let r Rec = Rec({name_expr}, a + j)\n        {acc}\n    total\n"
@@ -1444,6 +1500,7 @@ fn fuzz_arena_native_matches_interpreter_when_linkable() {
     let base_seed = 0x9D2B_C4E7_16A0_38F5u64;
     let dir = ScratchDir::new("arena");
 
+    let mut ran = 0usize;
     for i in 0..PROGRAMS {
         let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
         let source = gen_arena_program(seed);
@@ -1459,14 +1516,23 @@ fn fuzz_arena_native_matches_interpreter_when_linkable() {
         };
 
         let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_arena_{i}")) else {
-            return;
+            break;
         };
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (arena) on #{i} (seed {seed:#x}):\n{source}\n\
              interpreter={expected}, native exit={exit}"
         );
+        ran += 1;
     }
+    // The arena programs are all direct-PE eligible, so on a Windows host every one
+    // produces and runs an exe — a batch that executed nothing would mean the oracle
+    // proved nothing (a silent-pass regression). The I4 rebind/nested shapes are part
+    // of this batch, so this also guards that the newly-admitted shapes were run.
+    assert!(
+        ran > 0,
+        "the native arena oracle executed no program — it must run a non-empty batch"
+    );
 }
 
 #[test]
@@ -1512,6 +1578,7 @@ fn fuzz_arena_struct_string_native_matches_interpreter_when_linkable() {
     let base_seed = 0x2F81_66DA_9C40_7B15u64;
     let dir = ScratchDir::new("arena_struct_string");
 
+    let mut ran = 0usize;
     for i in 0..PROGRAMS {
         let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
         let source = gen_arena_struct_string_program(seed);
@@ -1529,14 +1596,21 @@ fn fuzz_arena_struct_string_native_matches_interpreter_when_linkable() {
         };
 
         let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_arena_ss_{i}")) else {
-            return;
+            break;
         };
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE (arena struct-string) on #{i} (seed {seed:#x}):\n{source}\n\
              interpreter={expected}, native exit={exit}"
         );
+        ran += 1;
     }
+    // A non-empty batch must have executed — the I4 heap-carrying-aggregate rebind
+    // shape is part of it, so an empty batch would silently prove nothing.
+    assert!(
+        ran > 0,
+        "the native arena struct-string oracle executed no program — it must run a non-empty batch"
+    );
 }
 
 #[test]

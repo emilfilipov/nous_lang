@@ -195,7 +195,19 @@ explicit/drop-to-metal when needed.
 - **Implicit loop sub-region:** reset per iteration, so a hot loop inside a long
   function reclaims its per-iteration intermediates each pass. This is exactly the
   case per-object RC struggled with (collection grow/copy intermediates,
-  per-iteration temps) — arenas reclaim it for free.
+  per-iteration temps) — arenas reclaim it for free. A loop earns a sub-region only
+  when its body **confines** its heap to the iteration (default-deny): no heap value
+  is stored into a location that outlives the iteration. The confinement rule is
+  **target-aware** (increment I4) — a whole-variable rebind of a **provably
+  iteration-local** binding (a name introduced by a top-level `let` of the loop body,
+  in a body free of closures / raw pointers / inline asm) does NOT escape and is
+  reclaimed, while a store into a binding declared outside the loop (a loop-carried
+  accumulator), a value read after the loop, a `return`/`throw`, a closure capture, a
+  raw-pointer alias, or an element/field store into an outliving aggregate all stay
+  denied. Soundness rests on two frontend facts: a top-level `let` re-initializes the
+  binding before any use each iteration (never loop-carried) and is lexically scoped
+  to the loop body (never read after the loop). See
+  `documents/native_backend_contract.md` for the exact predicate and its verification.
 - **Explicit `region` block:** a nested arena; allocations inside are freed at
   block exit.
 - **Escape → promotion policy:** when a value outlives its region, the compiler
