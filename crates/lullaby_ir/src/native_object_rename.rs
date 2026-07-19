@@ -261,6 +261,16 @@ impl<'a> Renamer<'a> {
                 body: self.rewrite_scoped(body)?,
                 span: *span,
             },
+            // A region block introduces its own lexical scope, exactly like a loop or
+            // `if` body: push a frame so a block-local binding that shadows an
+            // enclosing name is renamed to a fresh, source-illegal name and gets its
+            // own slot. Without this the flat-map planner would collapse the shadow
+            // onto the outer slot (a wrong value now, a use-after-free once the
+            // region's sub-region is reclaimed).
+            BytecodeInstruction::RegionBlock { body, span } => BytecodeInstruction::RegionBlock {
+                body: self.rewrite_scoped(body)?,
+                span: *span,
+            },
             BytecodeInstruction::For {
                 name,
                 start,

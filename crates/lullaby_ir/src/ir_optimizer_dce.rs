@@ -106,6 +106,12 @@ impl DeadCodeEliminator {
                 body: self.eliminate_block(body),
                 span: *span,
             },
+            // A region block is preserved as its own node (its scope boundary is
+            // load-bearing for slot assignment); DCE its body in place.
+            IrStmt::RegionBlock { body, span } => IrStmt::RegionBlock {
+                body: self.eliminate_block(body),
+                span: *span,
+            },
             // Inline assembly has an observable machine-code effect; it is never
             // dead. Preserve it verbatim.
             IrStmt::Asm { bytes, span } => IrStmt::Asm {

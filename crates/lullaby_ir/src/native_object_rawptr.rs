@@ -829,7 +829,9 @@ fn instr_takes_address(instr: &BytecodeInstruction) -> bool {
                 || step.as_ref().is_some_and(expr_takes_address)
                 || body_takes_address(body)
         }
-        BytecodeInstruction::Loop { body, .. } => body_takes_address(body),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            body_takes_address(body)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => expr_takes_address(scrutinee) || arms.iter().any(|a| body_takes_address(&a.body)),

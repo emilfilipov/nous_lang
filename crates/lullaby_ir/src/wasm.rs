@@ -1333,6 +1333,21 @@ fn lower_stmt(
             condition, body, ..
         } => lower_while(ctx, condition, body, out),
         IrStmt::Loop { body, .. } => lower_loop(ctx, body, out),
+        // The explicit `region` block is a run-once nested scope, lowered
+        // value-neutrally (WASM linear memory never reclaims). It emits NO WASM
+        // block/loop nesting, so `break`/`continue` inside it keep targeting the
+        // enclosing loop; but it DOES snapshot and restore the name->local maps
+        // around the body, so a block-local binding (including one that shadows an
+        // outer name) does not leak its slot past dedent — keeping WASM's shadowing
+        // behavior aligned with the interpreters and the native scope-renamer.
+        IrStmt::RegionBlock { body, .. } => {
+            let saved_locals = ctx.locals.clone();
+            let saved_local_ir_types = ctx.local_ir_types.clone();
+            lower_stmts(ctx, body, out, loops)?;
+            ctx.locals = saved_locals;
+            ctx.local_ir_types = saved_local_ir_types;
+            Ok(())
+        }
         IrStmt::For {
             name,
             start,

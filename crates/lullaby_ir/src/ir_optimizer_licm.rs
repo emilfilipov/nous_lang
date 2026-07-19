@@ -139,6 +139,9 @@ impl LoopInvariantMover {
                 hoisted.push(IrStmt::Loop { body, span: *span });
                 hoisted
             }
+            // A region block is treated as an opaque passthrough, exactly like
+            // `if`/`try`/`match`: LICM does not hoist across or into it (conservative,
+            // and it preserves the region's scope boundary intact for slot planning).
             IrStmt::Let { .. }
             | IrStmt::Assign { .. }
             | IrStmt::Return(_)
@@ -147,6 +150,7 @@ impl LoopInvariantMover {
             | IrStmt::Throw { .. }
             | IrStmt::Try { .. }
             | IrStmt::Match { .. }
+            | IrStmt::RegionBlock { .. }
             | IrStmt::Asm { .. }
             | IrStmt::Expr(_) => vec![statement.clone()],
         }
@@ -273,7 +277,9 @@ fn collect_declared_names(statements: &[IrStmt], names: &mut HashSet<String>) {
                 }
                 collect_declared_names(else_body, names);
             }
-            IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
+            IrStmt::While { body, .. }
+            | IrStmt::Loop { body, .. }
+            | IrStmt::RegionBlock { body, .. } => {
                 collect_declared_names(body, names);
             }
             IrStmt::Try {
@@ -327,7 +333,9 @@ fn collect_mutated_names(statements: &[IrStmt], names: &mut HashSet<String>) {
                 }
                 collect_mutated_names(else_body, names);
             }
-            IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
+            IrStmt::While { body, .. }
+            | IrStmt::Loop { body, .. }
+            | IrStmt::RegionBlock { body, .. } => {
                 collect_mutated_names(body, names);
             }
             IrStmt::Try {

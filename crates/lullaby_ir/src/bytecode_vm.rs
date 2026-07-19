@@ -403,6 +403,17 @@ impl VmCompiler {
                     self.emit(VmOp::PushVoid);
                 }
             }
+            // A region block is a run-once nested scope: compile the body under a
+            // fresh scope (so a block-local shadow gets its own VM slot, matching the
+            // AST interpreter), then fall through. Value-neutral — no reclamation.
+            // `break`/`continue` inside it are compiled against the enclosing loop, so
+            // it is NOT pushed onto `self.loops`.
+            IrStmt::RegionBlock { body, .. } => {
+                self.compile_scoped_block(body, false)?;
+                if tail {
+                    self.emit(VmOp::PushVoid);
+                }
+            }
             IrStmt::Break(_) => {
                 let site = self.emit(VmOp::Jump(0));
                 self.loops.last_mut().ok_or(())?.break_sites.push(site);
@@ -606,6 +617,7 @@ pub(crate) fn statement_span(statement: &IrStmt) -> Span {
         | IrStmt::While { span, .. }
         | IrStmt::For { span, .. }
         | IrStmt::Loop { span, .. }
+        | IrStmt::RegionBlock { span, .. }
         | IrStmt::Asm { span, .. }
         | IrStmt::Throw { span, .. }
         | IrStmt::Try { span, .. }
@@ -1020,16 +1032,13 @@ impl<'a> Lowerer<'a> {
                 Stmt::Unsafe { body, .. } => {
                     lowered.extend(self.lower_block(body, scope)?);
                 }
-                // The explicit `region` block lowers **value-neutrally**: inline its
-                // body into the enclosing block, exactly like `unsafe`, so the IR has
-                // no dedicated region node and every downstream tier (IR interpreter,
-                // bytecode VM, native, WASM) simply runs the body. Native
-                // bulk-reclamation of the block's sub-region is a follow-up increment
-                // that will reintroduce a durable boundary; today no tier reclaims,
-                // so all tiers stay observably identical.
-                Stmt::RegionBlock { body, .. } => {
-                    lowered.extend(self.lower_block(body, scope)?);
-                }
+                // The explicit `region` block is NOT flattened — it lowers to its own
+                // `IrStmt::RegionBlock` node (via `lower_statement`) so every tier
+                // runs the body in a fresh nested scope and a block-local shadow gets
+                // its own slot. Flattening it (like `unsafe`) collapses the scope
+                // before slot planning and makes a shadowing inner `let` alias the
+                // outer binding on the IR/bytecode/native tiers — a wrong value now
+                // and a use-after-free once native reclamation lands.
                 other => {
                     let stmt = self.lower_statement(other, scope)?;
                     self.drain_try_prelude_into(&mut lowered);
@@ -1061,7 +1070,7 @@ impl<'a> Lowerer<'a> {
         let mut lowered = Vec::with_capacity(statements.len());
         for (index, statement) in statements.iter().enumerate() {
             match statement {
-                Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
+                Stmt::Unsafe { body, .. } => {
                     lowered.extend(self.lower_block(body, scope)?);
                 }
                 // A bare tail `match` returning a value stays a direct
@@ -1107,7 +1116,7 @@ impl<'a> Lowerer<'a> {
         let mut lowered = Vec::with_capacity(statements.len());
         for (index, statement) in statements.iter().enumerate() {
             match statement {
-                Stmt::Unsafe { body, .. } | Stmt::RegionBlock { body, .. } => {
+                Stmt::Unsafe { body, .. } => {
                     let inner_expected = if Some(index) == last_index {
                         expected
                     } else {
@@ -1488,22 +1497,33 @@ impl<'a> Lowerer<'a> {
             }
             // `unsafe` blocks are flattened in `lower_block`; reaching here means
             // a lone unsafe statement, which we lower transparently by inlining.
-            Stmt::Unsafe { body, span } | Stmt::RegionBlock { body, span } => {
+            Stmt::Unsafe { body, span } => {
                 let mut lowered = self.lower_block(body, scope)?;
                 match lowered.len() {
                     1 => Ok(lowered.remove(0)),
-                    // An empty or multi-statement transparent block (`unsafe` /
-                    // `region`) cannot collapse to one IR statement; it is inlined by
-                    // `lower_block`/`lower_function_body`/`lower_block_value` instead.
-                    // Reaching here with any other length means a caller lowered such
-                    // a block as a single statement, which those flattening paths
-                    // prevent, so surface it as a lowering error.
+                    // An empty or multi-statement unsafe body cannot collapse to one
+                    // IR statement; it is inlined by `lower_block`/
+                    // `lower_function_body`/`lower_block_value` instead. Reaching here
+                    // with any other length means a caller lowered it as a single
+                    // statement, which those flattening paths prevent, so surface it
+                    // as a lowering error.
                     _ => Err(IrLoweringError::new(
-                        "transparent block (unsafe/region) must be lowered by lower_block"
-                            .to_string(),
+                        "unsafe block must be lowered by lower_block".to_string(),
                         Some(*span),
                     )),
                 }
+            }
+            // The explicit `region` block lowers to its own scoped IR node. Its body
+            // is lowered under a **cloned** type scope so a block-local binding does
+            // not leak its type into the enclosing scope (matching the semantic
+            // lexical scoping), and — crucially — the `IrStmt::RegionBlock` node is
+            // preserved through to `BytecodeInstruction::RegionBlock`, so the native
+            // scope-renamer descends into it and gives a shadowing inner `let` its own
+            // slot. Value-neutral: no tier reclaims yet.
+            Stmt::RegionBlock { body, span } => {
+                let mut region_scope = scope.clone();
+                let body = self.lower_block(body, &mut region_scope)?;
+                Ok(IrStmt::RegionBlock { body, span: *span })
             }
         }
     }

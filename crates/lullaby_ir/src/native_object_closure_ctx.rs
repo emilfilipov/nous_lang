@@ -217,7 +217,13 @@ pub(crate) fn collect_native_locals(
                     closure_locals,
                 )?;
             }
-            BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
+            BytecodeInstruction::While { body, .. }
+            | BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::RegionBlock { body, .. } => {
+                // A region block's body is lowered inline in the same frame, so its
+                // block-local bindings (including a renamed shadow `v#sN`) each need a
+                // frame slot. Recurse to register them — without this the native
+                // lowering would fail with "unknown native local".
                 collect_native_locals(
                     body,
                     structs,

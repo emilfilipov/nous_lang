@@ -142,7 +142,13 @@ impl LayoutBuilder {
                     }
                     self.walk_child_scope(else_body, depth + 1, None);
                 }
-                IrStmt::While { body, .. } | IrStmt::Loop { body, .. } => {
+                IrStmt::While { body, .. }
+                | IrStmt::Loop { body, .. }
+                | IrStmt::RegionBlock { body, .. } => {
+                    // A region block is its own child scope, so its block-local
+                    // bindings (including a shadow of an outer name) get their own
+                    // slots — the frame-layout counterpart of the interpreter and
+                    // native-renamer scope pushes.
                     self.walk_child_scope(body, depth + 1, None);
                 }
                 IrStmt::For { name, body, .. } => {

@@ -179,9 +179,11 @@ never a value that escapes.
 
 **Current status (increment I1 — frontend + value-neutral execution).** The block
 parses, formats idempotently, and type-checks with block-local scoping; it lowers
-**value-neutrally** on every tier (its body is inlined into the enclosing IR block
-like `unsafe`, and no tier reclaims), so the native backend and the three
-interpreters produce identical results. Native bulk-reclamation of the block's
+**value-neutrally** to its own scoped `RegionBlock` IR/bytecode node (deliberately
+NOT flattened like `unsafe`, so every tier runs its body in a fresh nested scope and
+a block-local shadow gets its own slot), and no tier reclaims — so the AST/IR/
+bytecode interpreters, native, and WASM all produce identical results. Native
+bulk-reclamation of the block's
 sub-region (save `__lullaby_heap_next` at entry, rewind at dedent, reclaim iff
 confined) is a scoped follow-up; see `documents/execution_tiers_and_1_0_scope.md`
 (staging item 3) for the boundary and rationale. The value-neutral contract is

@@ -277,6 +277,19 @@ pub enum IrStmt {
         body: Vec<IrStmt>,
         span: Span,
     },
+    /// The explicit **`region` block** (arena increment I1): a run-once nested
+    /// lexical scope whose heap allocations are (eventually) bulk-reclaimed at
+    /// dedent. It is preserved as its own node — NOT flattened like `unsafe` — so
+    /// that every tier runs its body in a fresh scope: the IR/bytecode interpreters
+    /// give a block-local shadow its own binding, and the native scope-renamer
+    /// (`native_object_rename.rs`) descends into it and assigns a shadow its own
+    /// slot. Value-neutral today (no tier reclaims); native sub-region reclamation
+    /// is a scoped follow-up. `break`/`continue`/`return` inside it target the
+    /// enclosing loop/function exactly as they would in a bare block.
+    RegionBlock {
+        body: Vec<IrStmt>,
+        span: Span,
+    },
     /// Inline assembly: raw x86-64 machine-code bytes emitted verbatim by the
     /// native backend. Native-only; the IR and bytecode interpreters reject it
     /// at runtime with `L0425`. Each byte is validated in `0..=255` by semantics.
@@ -849,6 +862,15 @@ fn resolve_stmt_slots(stmt: &mut IrStmt, scopes: &mut Vec<Vec<String>>) {
             resolve_block_slots(body, scopes);
             scopes.pop();
         }
+        IrStmt::RegionBlock { body, .. } => {
+            // A region block is a run-once nested scope: push a child scope so a
+            // block-local binding (including one that shadows an outer name) resolves
+            // to its own slot, then pop it at dedent. This is exactly what keeps the
+            // IR interpreter's shadowing behavior identical to the AST interpreter.
+            scopes.push(Vec::new());
+            resolve_block_slots(body, scopes);
+            scopes.pop();
+        }
         IrStmt::Try {
             body,
             catch_name,
@@ -1047,7 +1069,7 @@ fn collect_memory_operations_from_block(
                 }
                 collect_memory_operations_from_block(function, body, operations);
             }
-            IrStmt::Loop { body, .. } => {
+            IrStmt::Loop { body, .. } | IrStmt::RegionBlock { body, .. } => {
                 collect_memory_operations_from_block(function, body, operations);
             }
             IrStmt::Throw { value, .. } => {
@@ -1426,6 +1448,16 @@ pub enum BytecodeInstruction {
         body: Vec<BytecodeInstruction>,
         span: Span,
     },
+    /// The explicit **`region` block** (arena increment I1): a run-once nested
+    /// lexical scope. Preserved as its own node (not flattened like `unsafe`) so the
+    /// native scope-renamer descends into it and a block-local shadow gets its own
+    /// slot — the property that makes native agree with the interpreters and, when
+    /// native reclamation lands, is what prevents the outer binding from aliasing a
+    /// reclaimed sub-region. Value-neutral today; run its body then fall through.
+    RegionBlock {
+        body: Vec<BytecodeInstruction>,
+        span: Span,
+    },
     /// Inline assembly: raw x86-64 machine-code bytes emitted verbatim by the
     /// native backend. Native-only; the bytecode VM rejects it at runtime with
     /// `L0425`.
@@ -1663,7 +1695,8 @@ fn collect_bytecode_memory_operations_from_block(
                 }
                 collect_bytecode_memory_operations_from_block(function, body, operations);
             }
-            BytecodeInstruction::Loop { body, .. } => {
+            BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::RegionBlock { body, .. } => {
                 collect_bytecode_memory_operations_from_block(function, body, operations);
             }
             BytecodeInstruction::Throw { value, .. } => {
@@ -2007,6 +2040,11 @@ fn validate_bytecode_instructions(
             | BytecodeInstruction::Loop { body, .. } => {
                 validate_bytecode_instructions(function_name, body, loop_depth + 1)?;
             }
+            BytecodeInstruction::RegionBlock { body, .. } => {
+                // A region block is not a loop: `break`/`continue` inside it target
+                // the enclosing loop, so keep the same loop depth.
+                validate_bytecode_instructions(function_name, body, loop_depth)?;
+            }
             BytecodeInstruction::Try {
                 body, catch_body, ..
             } => {
@@ -2202,6 +2240,10 @@ fn lower_bytecode_instruction(statement: &IrStmt) -> BytecodeInstruction {
             body: lower_bytecode_block(body),
             span: *span,
         },
+        IrStmt::RegionBlock { body, span } => BytecodeInstruction::RegionBlock {
+            body: lower_bytecode_block(body),
+            span: *span,
+        },
         IrStmt::Asm { bytes, span } => BytecodeInstruction::Asm {
             bytes: bytes.clone(),
             span: *span,
@@ -2391,6 +2433,10 @@ fn bytecode_instruction_to_ir(instruction: &BytecodeInstruction) -> IrStmt {
             span: *span,
         },
         BytecodeInstruction::Loop { body, span } => IrStmt::Loop {
+            body: bytecode_block_to_ir(body),
+            span: *span,
+        },
+        BytecodeInstruction::RegionBlock { body, span } => IrStmt::RegionBlock {
             body: bytecode_block_to_ir(body),
             span: *span,
         },

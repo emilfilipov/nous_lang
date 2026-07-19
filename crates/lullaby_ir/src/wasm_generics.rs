@@ -346,7 +346,9 @@ fn collect_type_refs_in_stmt(stmt: &IrStmt, module: &IrModule, out: &mut Vec<Typ
             }
             collect_type_refs_in_body(body, module, out);
         }
-        IrStmt::Loop { body, .. } => collect_type_refs_in_body(body, module, out),
+        IrStmt::Loop { body, .. } | IrStmt::RegionBlock { body, .. } => {
+            collect_type_refs_in_body(body, module, out)
+        }
         IrStmt::Try {
             body, catch_body, ..
         } => {

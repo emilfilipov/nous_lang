@@ -336,6 +336,10 @@ impl<'a> MethodExpander<'a> {
                 body: self.transform_instructions(body, subst),
                 span: *span,
             },
+            BytecodeInstruction::RegionBlock { body, span } => BytecodeInstruction::RegionBlock {
+                body: self.transform_instructions(body, subst),
+                span: *span,
+            },
             BytecodeInstruction::Asm { bytes, span } => BytecodeInstruction::Asm {
                 bytes: bytes.clone(),
                 span: *span,
@@ -528,7 +532,9 @@ fn instruction_contains_closure(instruction: &BytecodeInstruction) -> bool {
                 || step.as_ref().is_some_and(expr_contains_closure)
                 || instructions_contain_closure(body)
         }
-        BytecodeInstruction::Loop { body, .. } => instructions_contain_closure(body),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            instructions_contain_closure(body)
+        }
         BytecodeInstruction::Try {
             body, catch_body, ..
         } => instructions_contain_closure(body) || instructions_contain_closure(catch_body),

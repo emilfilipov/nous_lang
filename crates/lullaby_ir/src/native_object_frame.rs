@@ -56,6 +56,7 @@ pub(crate) fn max_match_scratch_words(
             }
             BytecodeInstruction::While { body, .. }
             | BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::RegionBlock { body, .. }
             | BytecodeInstruction::For { body, .. } => {
                 max_match_scratch_words(body, structs, enums)?
             }
@@ -150,7 +151,9 @@ pub(crate) fn max_call_arg_scratch_words(
                 signatures,
                 array_lengths,
             )?),
-            BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::For { body, .. } => {
+            BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::RegionBlock { body, .. }
+            | BytecodeInstruction::For { body, .. } => {
                 max_call_arg_scratch_words(body, structs, enums, signatures, array_lengths)?
             }
             BytecodeInstruction::Match {
@@ -335,7 +338,8 @@ pub(crate) fn max_outgoing_stack_words(
                     closure_locals,
                     fn_param_callables,
                 )),
-            BytecodeInstruction::Loop { body, .. } => {
+            BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::RegionBlock { body, .. } => {
                 max_outgoing_stack_words(body, signatures, closure_locals, fn_param_callables)
             }
             BytecodeInstruction::Match {
@@ -420,6 +424,7 @@ fn collect_arena_regions_into(body: &[BytecodeInstruction], out: &mut Vec<ArenaR
             }
             BytecodeInstruction::While { body, .. }
             | BytecodeInstruction::Loop { body, .. }
+            | BytecodeInstruction::RegionBlock { body, .. }
             | BytecodeInstruction::For { body, .. } => collect_arena_regions_into(body, out),
             BytecodeInstruction::Match { arms, .. } => {
                 for arm in arms {

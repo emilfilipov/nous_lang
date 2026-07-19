@@ -209,6 +209,14 @@ impl CommonSubexpressionEliminator {
                 available.clear();
                 IrStmt::Loop { body, span: *span }
             }
+            // A region block is a run-once nested scope preserved as its own node.
+            // Eliminate within its body with a fresh table, then clear, mirroring a
+            // loop body (conservative — a block-local binding never leaks out).
+            IrStmt::RegionBlock { body, span } => {
+                let body = self.eliminate_block(body, &mut HashMap::new());
+                available.clear();
+                IrStmt::RegionBlock { body, span: *span }
+            }
             // Inline assembly is an opaque barrier: clear any available
             // expressions and pass the bytes through unchanged.
             IrStmt::Asm { bytes, span } => {

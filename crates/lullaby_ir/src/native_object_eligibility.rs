@@ -383,7 +383,9 @@ fn stmt_param_read_only(stmt: &BytecodeInstruction, param: &str) -> bool {
                 && step.as_ref().is_none_or(|s| expr_param_read_only(s, param))
                 && param_is_read_only(body, param)
         }
-        BytecodeInstruction::Loop { body, .. } => param_is_read_only(body, param),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            param_is_read_only(body, param)
+        }
         BytecodeInstruction::Try {
             body, catch_body, ..
         } => param_is_read_only(body, param) && param_is_read_only(catch_body, param),
@@ -748,7 +750,9 @@ fn instruction_has_call(instruction: &BytecodeInstruction) -> bool {
                 || step.as_ref().is_some_and(expr_has_call)
                 || body_has_call(body)
         }
-        BytecodeInstruction::Loop { body, .. } => body_has_call(body),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            body_has_call(body)
+        }
         // A `match` needs shadow space if its scrutinee (often a call) or any arm
         // body issues a call.
         BytecodeInstruction::Match {
@@ -1061,7 +1065,9 @@ fn collect_type_refs_in_instruction(inst: &BytecodeInstruction, out: &mut Vec<Ty
             }
             collect_type_refs_in_body(body, out);
         }
-        BytecodeInstruction::Loop { body, .. } => collect_type_refs_in_body(body, out),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            collect_type_refs_in_body(body, out)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {
@@ -1204,7 +1210,9 @@ fn instruction_touches_heap(
                     .is_some_and(|s| expr_touches_heap(s, heap_aggs))
                 || body_touches_heap(body, heap_aggs)
         }
-        BytecodeInstruction::Loop { body, .. } => body_touches_heap(body, heap_aggs),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            body_touches_heap(body, heap_aggs)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {
@@ -1302,7 +1310,9 @@ fn instruction_calls_user(
                     .is_some_and(|s| expr_calls_user(s, user_names))
                 || body_calls_user(body, user_names)
         }
-        BytecodeInstruction::Loop { body, .. } => body_calls_user(body, user_names),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            body_calls_user(body, user_names)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {
@@ -1330,6 +1340,11 @@ fn instruction_loop_nesting(instruction: &BytecodeInstruction) -> usize {
         BytecodeInstruction::While { body, .. }
         | BytecodeInstruction::For { body, .. }
         | BytecodeInstruction::Loop { body, .. } => 1 + max_loop_nesting(body),
+        // A region block is NOT a loop, so it adds no nesting level — but a loop
+        // nested inside it still needs a mark word, so recurse without the `+1`
+        // (like `if`/`match`/`try`). Missing this would under-size the loop mark pool
+        // for a loop inside a region block.
+        BytecodeInstruction::RegionBlock { body, .. } => max_loop_nesting(body),
         BytecodeInstruction::If {
             branches,
             else_body,
@@ -1399,7 +1414,12 @@ fn instruction_is_unbounded_heap_loop(
     match instruction {
         BytecodeInstruction::While { body, .. }
         | BytecodeInstruction::For { body, .. }
-        | BytecodeInstruction::Loop { body, .. } => body_has_unbounded_heap_loop(body, heap_aggs),
+        | BytecodeInstruction::Loop { body, .. }
+        | BytecodeInstruction::RegionBlock { body, .. } => {
+            // A region block is not itself a loop, but a nested unbounded heap loop
+            // inside it disqualifies the function just the same; recurse into it.
+            body_has_unbounded_heap_loop(body, heap_aggs)
+        }
         BytecodeInstruction::If {
             branches,
             else_body,

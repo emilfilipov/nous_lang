@@ -1229,6 +1229,12 @@ impl<'a> IrRuntime<'a> {
                 }
                 Ok(Control::Value(Value::Void))
             }
+            // The explicit `region` block runs its body once in a **fresh nested
+            // scope** (so a block-local shadow gets its own binding, matching the AST
+            // interpreter), then falls through. Value-neutral: the IR interpreter
+            // never reclaims, so `region` is observably a plain scoped block.
+            // `return`/`break`/`continue` propagate out unchanged.
+            IrStmt::RegionBlock { body, .. } => self.eval_scoped_block(body, env),
             // Inline assembly cannot run on the IR interpreter (raw machine code
             // requires native codegen + linking); reject it with `L0425`.
             IrStmt::Asm { .. } => Err(asm_interpreter_error()),

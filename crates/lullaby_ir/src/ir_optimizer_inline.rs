@@ -216,6 +216,11 @@ impl Inliner {
                 body: self.inline_block(body),
                 span: *span,
             },
+            // A region block is preserved as its own node; inline within its body.
+            IrStmt::RegionBlock { body, span } => IrStmt::RegionBlock {
+                body: self.inline_block(body),
+                span: *span,
+            },
             IrStmt::Asm { bytes, span } => IrStmt::Asm {
                 bytes: bytes.clone(),
                 span: *span,

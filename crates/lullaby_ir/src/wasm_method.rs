@@ -341,6 +341,10 @@ impl<'a> MethodExpander<'a> {
                 body: self.transform_stmts(body, subst),
                 span: *span,
             },
+            IrStmt::RegionBlock { body, span } => IrStmt::RegionBlock {
+                body: self.transform_stmts(body, subst),
+                span: *span,
+            },
             IrStmt::Asm { bytes, span } => IrStmt::Asm {
                 bytes: bytes.clone(),
                 span: *span,
@@ -530,7 +534,7 @@ fn stmt_contains_closure(stmt: &IrStmt) -> bool {
                 || step.as_ref().is_some_and(expr_contains_closure)
                 || stmts_contain_closure(body)
         }
-        IrStmt::Loop { body, .. } => stmts_contain_closure(body),
+        IrStmt::Loop { body, .. } | IrStmt::RegionBlock { body, .. } => stmts_contain_closure(body),
         IrStmt::Try {
             body, catch_body, ..
         } => stmts_contain_closure(body) || stmts_contain_closure(catch_body),

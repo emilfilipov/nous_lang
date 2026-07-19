@@ -329,7 +329,9 @@ fn instr_allocates_box(instr: &BytecodeInstruction, cls: &[BytecodeClosureDef]) 
                 || step.as_ref().is_some_and(|s| expr_allocates_box(s, cls))
                 || alloc_defeats_arena(body, cls)
         }
-        BytecodeInstruction::Loop { body, .. } => alloc_defeats_arena(body, cls),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            alloc_defeats_arena(body, cls)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {

@@ -250,9 +250,14 @@ explicit/drop-to-metal when needed.
    idempotently, and type-checks its body in a **lexically scoped** block — a
    binding declared inside is dead after dedent (referencing one afterward is the
    same `L0306` a post-loop read raises, so block-local values are sound with no
-   escape analysis). It lowers **value-neutrally**: the body is inlined into the
-   enclosing IR block (exactly like `unsafe`), so all four interpreter/native tiers
-   run it and NO tier reclaims — native == interpreters trivially. **Deferred to a
+   escape analysis). It lowers **value-neutrally** to its own scoped IR/bytecode
+   node (`RegionBlock`) — deliberately NOT flattened like `unsafe` — so every tier
+   (AST/IR/bytecode interpreters, native, WASM) runs its body in a fresh nested
+   scope and a block-local shadow gets its own slot; NO tier reclaims, so native ==
+   interpreters. (Flattening it collapses the scope before slot planning and makes a
+   shadowing inner `let` alias the outer binding on the IR/bytecode/native tiers — a
+   wrong value now, a use-after-free once reclamation lands; that regression is
+   pinned by `suite25`'s `native_region_block_shadow_keeps_outer`.) **Deferred to a
    follow-up:** native bulk-reclamation of the block's sub-region (saving
    `__lullaby_heap_next` at entry, rewinding at dedent). Reclamation must reclaim
    only when the block provably **confines** its heap — nothing stored into a

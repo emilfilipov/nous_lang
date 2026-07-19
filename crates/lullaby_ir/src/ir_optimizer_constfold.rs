@@ -121,6 +121,12 @@ impl ConstantFolder {
                 body: self.fold_block(body),
                 span: *span,
             },
+            // A region block is preserved as its own node (never flattened) so the
+            // downstream scope structure survives; fold its body in place.
+            IrStmt::RegionBlock { body, span } => IrStmt::RegionBlock {
+                body: self.fold_block(body),
+                span: *span,
+            },
             // Inline assembly is opaque bytes; folding leaves it unchanged.
             IrStmt::Asm { bytes, span } => IrStmt::Asm {
                 bytes: bytes.clone(),

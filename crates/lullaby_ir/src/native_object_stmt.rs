@@ -994,6 +994,13 @@ pub(crate) fn lower_native_stmt(
             condition, body, ..
         } => lower_native_while(ctx, condition, body, code, loops),
         BytecodeInstruction::Loop { body, .. } => lower_native_loop(ctx, body, code, loops),
+        // The explicit `region` block lowers **value-neutrally**: emit its body
+        // statements in sequence in the current frame. The scope-renamer
+        // (`alpha_rename_shadowing_bindings`) has already given any block-local
+        // shadow its own slot, so no aliasing occurs and no reclamation is emitted
+        // (that is the scoped follow-up). `break`/`continue`/`return` inside the body
+        // target the enclosing loop/function exactly as if the block were absent.
+        BytecodeInstruction::RegionBlock { body, .. } => lower_native_stmts(ctx, body, code, loops),
         BytecodeInstruction::For {
             name,
             start,

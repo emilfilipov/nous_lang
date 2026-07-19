@@ -182,6 +182,14 @@ impl CopyPropagator {
                 aliases.clear();
                 IrStmt::Loop { body, span: *span }
             }
+            // A region block is a run-once nested scope preserved as its own node.
+            // Propagate its body conservatively (fresh alias map, then clear), exactly
+            // like a loop body, so a block-local rebind never leaks a stale alias.
+            IrStmt::RegionBlock { body, span } => {
+                let body = self.propagate_block(body, &mut HashMap::new());
+                aliases.clear();
+                IrStmt::RegionBlock { body, span: *span }
+            }
             // Inline assembly is opaque: clear aliases and pass the bytes through.
             IrStmt::Asm { bytes, span } => {
                 aliases.clear();

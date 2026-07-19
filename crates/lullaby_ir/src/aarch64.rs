@@ -644,6 +644,10 @@ fn lower_stmt(fg: &mut FnGen, stmt: &BytecodeInstruction) -> Result<(), String> 
             condition, body, ..
         } => lower_while(fg, condition, body),
         BytecodeInstruction::Loop { body, .. } => lower_loop(fg, body),
+        // The explicit `region` block lowers value-neutrally: emit its body inline in
+        // the current frame (no reclamation, no extra control flow). The scope
+        // renamer has already given any block-local shadow its own slot.
+        BytecodeInstruction::RegionBlock { body, .. } => lower_stmts(fg, body),
         BytecodeInstruction::For {
             name,
             start,

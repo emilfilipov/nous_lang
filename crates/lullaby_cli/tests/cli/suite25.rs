@@ -263,6 +263,93 @@ fn native_arena_heap_shadow_does_not_reclaim_outer() {
     );
 }
 
+/// A **`region` block** `let v` shadows an outer `v` and mutates the inner copy; the
+/// outer value must survive dedent. This is the exact slot-aliasing class this suite
+/// guards, extended to the explicit region block. It regressed once: flattening the
+/// region body into the enclosing block (like `unsafe`) collapsed the region scope
+/// before slot planning, so `native_object_rename` never saw a region scope and the
+/// inner `let v` aliased the outer slot — IR/bytecode/native returned 5 while the AST
+/// interpreter returned 17. Preserving the region as its own scoped IR/bytecode node
+/// (so the renamer descends into it) restores agreement at 17.
+#[test]
+fn native_region_block_shadow_keeps_outer() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn main -> i64\n",
+            "    let v = 17\n",
+            "    region\n",
+            "        let v = 5\n",
+            "        v = v + 100\n",
+            "    v\n",
+        ),
+        "shadow_region_block",
+        17,
+    );
+}
+
+/// A region block nested inside another region block: each re-`let`s `v`; the
+/// outermost `v` must be untouched. Exercises the region scope descent recursing
+/// through a nested region node on every tier. `v` stays 100.
+#[test]
+fn native_nested_region_shadow_keeps_outer() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn main -> i64\n",
+            "    let v = 100\n",
+            "    region\n",
+            "        let v = 5\n",
+            "        region\n",
+            "            let v = 9\n",
+            "        v = v + 1\n",
+            "    v\n",
+        ),
+        "shadow_nested_region",
+        100,
+    );
+}
+
+/// A region block inside a loop, each re-`let`ing `v`: the region's scope composes
+/// with the loop's per-iteration scope, and the function-level `v` must stay 100.
+#[test]
+fn native_region_in_loop_shadow_keeps_outer() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn main -> i64\n",
+            "    let v = 100\n",
+            "    let i = 0\n",
+            "    while i < 3\n",
+            "        region\n",
+            "            let v = 5\n",
+            "        i = i + 1\n",
+            "    v\n",
+        ),
+        "shadow_region_in_loop",
+        100,
+    );
+}
+
+/// The arena-active use-after-free variant for the region block. Outer `v = "A"`; a
+/// region block shadows it with a fresh heap `string`. Once native region-sub-region
+/// reclamation lands, reclaiming the region's arena while the outer `v` aliased the
+/// inner slot would free the outer string — so the distinct-slot guarantee this pins
+/// is what keeps `char_code(v[0])` reading the OUTER `'A'` (65), not the inner `'Z'`
+/// (90). Every tier returns 65 today (value-neutral), which is the floor reclamation
+/// must preserve.
+#[test]
+fn native_region_heap_shadow_does_not_reclaim_outer() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn main -> i64\n",
+            "    let v = \"A\"\n",
+            "    region\n",
+            "        let v = \"ZZZZZZZZ\"\n",
+            "    char_code(v[0])\n",
+        ),
+        "shadow_region_heap",
+        65,
+    );
+}
+
 /// Control: distinct names never shadow, so the fix must leave this unchanged and
 /// correct. `a = 7 + 5*3 = 22`.
 #[test]

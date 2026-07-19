@@ -432,7 +432,9 @@ fn stmt_closure_use_ok(
                     .is_none_or(|s| expr_closure_use_ok(s, name, hof_index))
                 && body_closure_use_ok(body, name, hof_index)
         }
-        BytecodeInstruction::Loop { body, .. } => body_closure_use_ok(body, name, hof_index),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            body_closure_use_ok(body, name, hof_index)
+        }
         BytecodeInstruction::Try {
             body, catch_body, ..
         } => {

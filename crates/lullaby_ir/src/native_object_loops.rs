@@ -324,7 +324,7 @@ pub(crate) fn string_local_borrow_only_stmt(
                     .is_none_or(|s| string_local_borrow_only_expr(name, s, allow_index))
                 && string_local_borrow_only_stmts(name, body, allow_index)
         }
-        BytecodeInstruction::Loop { body, .. } => {
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
             string_local_borrow_only_stmts(name, body, allow_index)
         }
         BytecodeInstruction::Match {
@@ -508,7 +508,7 @@ pub(crate) fn struct_field_borrow_only_stmt(
                     .is_none_or(|s| struct_field_borrow_only_expr(name, string_fields, s))
                 && struct_field_borrow_only_stmts(name, string_fields, body)
         }
-        BytecodeInstruction::Loop { body, .. } => {
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
             struct_field_borrow_only_stmts(name, string_fields, body)
         }
         BytecodeInstruction::Match {
@@ -1193,7 +1193,9 @@ fn stmt_mentions_var(stmt: &BytecodeInstruction, name: &str) -> bool {
                 || step.as_ref().is_some_and(|s| expr_mentions_var(s, name))
                 || stmts_mention_var(body, name)
         }
-        BytecodeInstruction::Loop { body, .. } => stmts_mention_var(body, name),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            stmts_mention_var(body, name)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {
@@ -1227,9 +1229,9 @@ fn stmt_rebinds_var(stmt: &BytecodeInstruction, name: &str) -> bool {
             branches.iter().any(|b| stmts_rebind_var(&b.body, name))
                 || stmts_rebind_var(else_body, name)
         }
-        BytecodeInstruction::While { body, .. } | BytecodeInstruction::Loop { body, .. } => {
-            stmts_rebind_var(body, name)
-        }
+        BytecodeInstruction::While { body, .. }
+        | BytecodeInstruction::Loop { body, .. }
+        | BytecodeInstruction::RegionBlock { body, .. } => stmts_rebind_var(body, name),
         BytecodeInstruction::For { name: n, body, .. } => n == name || stmts_rebind_var(body, name),
         BytecodeInstruction::Match { arms, .. } => arms.iter().any(|a| {
             matches!(&a.pattern, BytecodeMatchPattern::Variant { bindings, .. }

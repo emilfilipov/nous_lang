@@ -156,12 +156,15 @@ fn instruction_heap_escapes(
         }
         BytecodeInstruction::While { body, .. }
         | BytecodeInstruction::For { body, .. }
-        | BytecodeInstruction::Loop { body, .. } => {
-            // A nested inner loop: its own top-level lets are ALSO iteration-local
-            // w.r.t. the loop being confined (they die at the inner edge, which is
-            // within one outer iteration), so union them in for the descent. The
-            // inner loop's OWN confinement is judged separately by its own
-            // `loop_body_confines_heap` call.
+        | BytecodeInstruction::Loop { body, .. }
+        | BytecodeInstruction::RegionBlock { body, .. } => {
+            // A nested inner loop OR a nested `region` block: its own top-level lets
+            // are ALSO iteration-local w.r.t. the loop being confined (they die at the
+            // inner edge / at region dedent, both within one outer iteration), so
+            // union them in for the descent. A store to a binding declared OUTSIDE
+            // still escapes (default-deny). A region block's OWN (deferred) sub-region
+            // reclamation is judged separately; here it only affects the enclosing
+            // loop's confinement, treated conservatively like an inner loop.
             let mut nested = locals.clone();
             nested.extend(top_level_let_names(body));
             body_heap_escapes(body, heap_aggs, &nested, widenable)
@@ -243,7 +246,9 @@ fn instruction_blocks_widening(instruction: &BytecodeInstruction) -> bool {
                 || step.as_ref().is_some_and(expr_blocks_widening)
                 || body_has_widening_blocker(body)
         }
-        BytecodeInstruction::Loop { body, .. } => body_has_widening_blocker(body),
+        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
+            body_has_widening_blocker(body)
+        }
         BytecodeInstruction::Match {
             scrutinee, arms, ..
         } => {

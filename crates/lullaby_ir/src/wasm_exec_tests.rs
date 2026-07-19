@@ -510,3 +510,36 @@ fn main -> i64
 ";
     assert_parity(source, 42);
 }
+
+#[test]
+fn region_block_runs_value_neutrally_under_wasm() {
+    // The explicit `region` block runs value-neutrally on WASM: its body executes as
+    // an ordinary nested scope and the linear-memory heap never reclaims, so WASM
+    // agrees with the IR interpreter. `len("7!!")` folded into an outer scalar = 3.
+    let source = "\
+fn main -> i64
+    let total i64 = 0
+    region
+        let s string = to_string(7) + \"!!\"
+        total = total + len(s)
+    total
+";
+    assert_parity(source, 3);
+}
+
+#[test]
+fn region_block_shadow_keeps_outer_under_wasm() {
+    // A region-block `let v` shadows an outer `v`: the WASM lowering snapshots and
+    // restores the name->local maps around the region body, so the block-local
+    // shadow does not leak its slot past dedent — the WASM counterpart of the native
+    // scope-renamer / interpreter scope push. The outer `v` (17) survives.
+    let source = "\
+fn main -> i64
+    let v i64 = 17
+    region
+        let v i64 = 5
+        v = v + 100
+    v
+";
+    assert_parity(source, 17);
+}
