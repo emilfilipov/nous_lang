@@ -752,6 +752,76 @@ fn gen_arena_program(seed: u64) -> String {
     format!("{h}{main}")
 }
 
+/// Generates one program that exercises the **cross-call arena** (increment I2): a
+/// caller `h a i64 -> i64` that invokes one or two helper functions, so the retention
+/// summary + criterion 3 admit or deny `h` from the arena depending on whether every
+/// callee is provably non-retaining.
+///
+/// Two helper flavours are chosen per seed, both value-correct on every tier:
+/// * **scalar-returning heap-reader** (`help0 a i64 -> i64` building a local string and
+///   returning `len`): non-retaining, so `h` becomes a cross-call arena caller. Because
+///   `help0` is itself an arena leaf, this nests arena mode (an arena caller invoking an
+///   arena callee) — and `h` allocates a string BOTH BEFORE and AFTER the call, which is
+///   exactly the shape that exercises the `alloc_mode` save/restore. A regression there
+///   corrupts the free-list/bump interleave and diverges from the interpreters.
+/// * **heap-returning** (`help0 a i64 -> string`): retaining (R1), so `h` is DENIED the
+///   arena (default-deny) but stays value-correct (`h` reads it through `len`).
+///
+/// A second helper `help1` sometimes forwards through a deeper `leaf1`, so the summary
+/// sweeps a two-level call chain. Every string op is native-subset and all-backend
+/// agreeing (ASCII `len`, valid bounds), so the program is divergence-free like the
+/// other arena generators, and every function is scalar/string (no recursion, closure,
+/// or extern), so the whole program is natively compilable.
+fn gen_arena_callgraph_program(seed: u64) -> String {
+    let mut rng = Rng(seed ^ 0x5C4D_2B19_77E3_A0F1u64);
+    let hi = rng.range(4, 20);
+    let bias = rng.range(-30, 30);
+
+    // Helper 0: scalar heap-reader (non-retaining ⇒ `h` admitted) OR heap-returning
+    // (retaining ⇒ `h` denied). Both are value-correct.
+    let (help0_src, call0) = if rng.below(3) == 0 {
+        (
+            "fn help0 a i64 -> string\n    to_string(a * 2) + \"_h0\"\n\n".to_string(),
+            "len(help0(a))".to_string(),
+        )
+    } else {
+        (
+            "fn help0 a i64 -> i64\n    let s string = to_string(a) + \"_h0\"\n    len(s)\n\n"
+                .to_string(),
+            "help0(a)".to_string(),
+        )
+    };
+
+    // Helper 1 (sometimes): a scalar heap-reader that forwards through a deeper leaf, so
+    // the summary sweeps `h -> help1 -> leaf1`. Omitted otherwise (its call site is `0`).
+    let (help1_src, call1) = if rng.below(2) == 0 {
+        (
+            concat!(
+                "fn leaf1 s string -> i64\n    len(s)\n\n",
+                "fn help1 a i64 -> i64\n    let t string = to_string(a) + \"_h1\"\n    ",
+                "leaf1(t) + leaf1(to_string(a * 3))\n\n",
+            )
+            .to_string(),
+            "help1(a)".to_string(),
+        )
+    } else {
+        (String::new(), "0".to_string())
+    };
+
+    // `h`: allocate a string BEFORE the call(s), combine the callee scalars, then
+    // allocate a string AFTER — the arena-mode save/restore stress shape.
+    let h = format!(
+        "fn h a i64 -> i64\n    let before string = to_string(a) + \"_before\"\n    \
+         let x i64 = {call0} + {call1}\n    let after string = to_string(a * 2) + \"_after__\"\n    \
+         len(before) + x + len(after)\n\n"
+    );
+    let main = format!(
+        "fn main -> i64\n    let total i64 = 0\n    for i from 0 to {hi}\n        \
+         total = total + h(i)\n    total + {bias}\n"
+    );
+    format!("{help0_src}{help1_src}{h}{main}")
+}
+
 /// Generates one program that exercises **arena-first memory with a heap-typed
 /// aggregate field**: an arena-eligible LEAF helper `h a i64 -> i64` that constructs
 /// a `struct Rec { name string, id i64 }` — a struct whose `string` field is a
@@ -1532,6 +1602,83 @@ fn fuzz_arena_native_matches_interpreter_when_linkable() {
     assert!(
         ran > 0,
         "the native arena oracle executed no program — it must run a non-empty batch"
+    );
+}
+
+#[test]
+fn fuzz_arena_callgraph_interpreters_agree() {
+    // Cross-check the three engines on cross-call arena programs (I2): a caller `h`
+    // over one or two helpers with mixed scalar/heap returns. Always runs (no toolchain
+    // needed); a divergence prints the reproducing program.
+    const PROGRAMS: u64 = 2000;
+    let base_seed = 0x6B21_D8F4_39AC_1E07u64;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_arena_callgraph_program(seed);
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "cross-call arena backend divergence on program #{i} (seed {seed:#x}):\n{source}\n\
+             ast={ast:?} ir={ir:?} bytecode={bc:?}"
+        );
+        assert!(
+            ast != Outcome::Other,
+            "cross-call arena generator produced a non-i64 main on seed {seed:#x}:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn fuzz_arena_callgraph_native_matches_interpreter_when_linkable() {
+    // The high-value oracle for the CROSS-CALL arena (I2): compile each generated
+    // program (a caller `h` over one or two helpers) to a real `.exe` and check its exit
+    // code against the interpreter. When the helpers are non-retaining, `h` is a
+    // cross-call arena caller that NESTS arena mode into an arena callee and allocates
+    // both before and after the call — so this batch randomly covers the `alloc_mode`
+    // save/restore and the retention classification. The arena is value-neutral, so ANY
+    // divergence here is an arena-induced miscompile (a broken nested reset, a clobbered
+    // return value, or an unsound rewind). Gated on the link toolchain; skips when absent.
+    if !native_exe_runnable() {
+        eprintln!("not a Windows host; skipping native cross-call arena fuzz");
+        return;
+    }
+    ensure_msvc_env();
+
+    const PROGRAMS: u64 = 100;
+    let base_seed = 0xC17E_5A93_2D80_4BF6u64;
+    let dir = ScratchDir::new("arena_callgraph");
+
+    let mut ran = 0usize;
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let source = gen_arena_callgraph_program(seed);
+
+        let (ast, ir, bc) = run_interpreters(&source);
+        assert!(
+            ast == ir && ir == bc,
+            "interpreter divergence on native-callgraph-fuzz #{i} (seed {seed:#x}):\n{source}"
+        );
+        let expected = match ast {
+            Outcome::Value(n) => n,
+            other => panic!("callgraph generator produced {other:?} on seed {seed:#x}:\n{source}"),
+        };
+
+        let Some(exit) = fuzz_native_exit(&source, &dir, &format!("fuzz_arena_cg_{i}")) else {
+            break;
+        };
+        assert_eq!(
+            exit, expected as i32,
+            "NATIVE MISCOMPILE (cross-call arena) on #{i} (seed {seed:#x}):\n{source}\n\
+             interpreter={expected}, native exit={exit}"
+        );
+        ran += 1;
+    }
+    // Every generated program is scalar/string only (no recursion/closure/extern), so on
+    // a Windows host every one produces and runs an exe. A batch that executed nothing
+    // would mean the oracle proved nothing (a silent-pass regression).
+    assert!(
+        ran > 0,
+        "the native cross-call arena oracle executed no program — it must run a non-empty batch"
     );
 }
 

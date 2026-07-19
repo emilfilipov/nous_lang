@@ -191,7 +191,16 @@ explicit/drop-to-metal when needed.
 ### Semantics
 
 - **Implicit function region:** reset on *every* return/exit edge (reuses the
-  proven multi-edge drop-insertion machinery from the RC work).
+  proven multi-edge drop-insertion machinery from the RC work). A function earns a
+  region only when its heap provably stays local (default-deny). The gate no longer
+  requires the function to be a **leaf** w.r.t. user code: as of increment **I2** a
+  caller keeps its region when **every callee it invokes is provably non-retaining**,
+  proven by an inferred per-function **retention summary** (below). This is what lets
+  a real call graph — not just leaf helpers — reclaim across returns. When an arena
+  caller invokes an arena callee, arena mode **nests**: the prologue SAVES the prior
+  arena-mode flag and the reset RESTORES it (never hard-zeroes), so the callee's reset
+  leaves the caller still in arena mode and the caller's own return-edge rewind stays
+  sound.
 - **Implicit loop sub-region:** reset per iteration, so a hot loop inside a long
   function reclaims its per-iteration intermediates each pass. This is exactly the
   case per-object RC struggled with (collection grow/copy intermediates,
@@ -269,6 +278,21 @@ explicit/drop-to-metal when needed.
    (reclaiming across calls in a NON-leaf function) needs interprocedural retention
    analysis. The value-neutral fixtures in `suite26.rs` (esp. the escaping-store
    channel) pin the floor that reclamation must preserve.
+   **Cross-call retention analysis DELIVERED (increment I2):** the interprocedural
+   retention analysis the server-loop case needed now ships as a bottom-up
+   **retention summary** (`crates/lullaby_ir/src/native_object_retain.rs`). A module
+   function is **non-retaining** iff it (R1) returns a native scalar — never a heap or
+   `fn` value; (R2) has no closure literal / `await` / `spawn`/`tell`/`ask` and is not
+   `async`; (R3) has no raw pointer, inline `asm`, or `alloc`; and (R4) every call it
+   makes is to a native builtin or a proven-non-retaining module function — an
+   `extern` C call or an **indirect** (`fn`-param / closure) call is retaining
+   (default-deny; the critical inversion vs the old "unknown name = builtin"
+   assumption). It is one reverse-topological sweep with **cycles pre-poisoned** (any
+   self/mutual recursion / SCC ⇒ retaining, no fixpoint), so it stays `O(nodes+edges)`
+   and preserves the compile-speed moat. Criterion 3 of `arena_eligible_functions`
+   now admits a caller iff `all_callees_non_retaining` holds. **Deferred past slice
+   1:** heap-returning-but-fresh callees (relax R1), provably-non-escaping closures
+   (relax R2), and recursion/SCC relaxation (keep default-deny).
 4. **Escape/promotion** — auto-copy on escape; `ref` for shared/dynamic.
 5. **Freestanding static-buffer arenas** — folds into the `no-runtime` tier work.
 

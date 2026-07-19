@@ -4116,22 +4116,25 @@ fn struct_string_field_loop_temp_uses_recursive_drop() {
 #[test]
 fn struct_string_field_reclaim_on_rc_free_list_path() {
     // The recursive struct-string drop-glue composing with the RC / free-list path:
-    // `sweep` calls a user function (`tick`), so it is NOT arena-eligible (a leaf
-    // requirement fails) and keeps the RC codegen — its per-iteration `rc_dec` of the
+    // `sweep` calls a RETAINING user function (`tick`, which RETURNS A HEAP VALUE), so
+    // under the I2 cross-call retention summary it is NOT arena-eligible (criterion 3:
+    // a retaining callee) and keeps the RC codegen — its per-iteration `rc_dec` of the
     // struct's `string` field actually frees the record onto the free list, which the
-    // next iteration's alloc reuses (bounded heap). The struct is borrow-only (read
-    // only via `len(r.name)` + the scalar `r.id`), so exactly ONE `rc_dec` fires per
-    // record: no double-free, no leak. Assert the function compiles, is NOT arena
-    // (so `rc_free` really frees), and the per-field `rc_dec` drop is present.
+    // next iteration's alloc reuses (bounded heap). (A NON-retaining callee would now
+    // admit `sweep` to the arena — the widening — so the RC path is exercised here with
+    // a genuinely retaining callee.) The struct is borrow-only (read only via
+    // `len(r.name)` + the scalar `r.id`), so exactly ONE `rc_dec` fires per record: no
+    // double-free, no leak. Assert the function compiles, is NOT arena (so `rc_free`
+    // really frees), and the per-field `rc_dec` drop is present.
     let program = emit_native_program(&module_for(concat!(
         "struct Rec\n    name string\n    id i64\n\n",
-        "fn tick x i64 -> i64\n    x\n\n",
+        "fn tick x i64 -> string\n    to_string(x)\n\n",
         "fn sweep n i64 -> i64\n",
         "    let total i64 = 0\n",
         "    for i from 0 to n\n",
         "        let r Rec = Rec(to_string(i) + \"!!!!!!!!!!\", i)\n",
         "        total = total + len(r.name) + r.id\n",
-        "    tick(total)\n\n",
+        "    len(tick(total))\n\n",
         "fn main -> i64\n    sweep(3)\n",
     )))
     .expect("emit struct-string RC reclaim program");

@@ -494,6 +494,29 @@ dropped natively; those paths leak safely until their increments land. See
 [native_backend_contract.md](native_backend_contract.md) for the exact per-edge
 drop contract and its verification.
 
+**Cross-call arena reclamation (increment I2).** The function-scoped arena (which
+rewinds the shared bump pointer on every return edge, reclaiming a provably-local
+function's whole heap in bulk) no longer requires the function to be a **leaf** w.r.t.
+user code. A caller keeps its arena region when **every callee it invokes is provably
+non-retaining** — proven by a bottom-up per-function **retention summary**
+(`native_object_retain.rs`): a module function is non-retaining iff it returns a
+native scalar (never a heap or `fn` value), has no closure / `await` / `spawn`/`tell`/
+`ask` / `async`, has no raw pointer / inline `asm` / `alloc`, and calls only native
+builtins or other non-retaining module functions. An `extern` C call, an **indirect**
+(`fn`-param / closure) call, and any function on a recursion cycle are **retaining**
+(default-deny); the summary is one reverse-topological sweep with cycles pre-poisoned
+(no fixpoint). This is sound because Lullaby's structural gifts close every other
+escape channel: **no mutable module globals** (a callee cannot stash a pointer in
+one), **value semantics** (a callee cannot write through a by-value parameter), and an
+**arena caller returns a scalar** (so nothing it allocated is reachable after its
+rewind). When an arena caller invokes an arena callee, arena mode **nests** — the
+prologue saves the prior mode flag and the reset restores it — so the callee's return
+leaves the caller still reclaiming into its own region. Deferred past this slice:
+fresh-heap-returning callees, provably-non-escaping closures, and recursion
+relaxation. See [native_backend_contract.md](native_backend_contract.md) for the exact
+predicate, the `alloc_mode` nesting fix, and the injection-verified use-after-free the
+gate prevents.
+
 ### Cycles
 
 Non-cycle-collecting RC leaks reference cycles (`a → b → a`). Lullaby mitigates

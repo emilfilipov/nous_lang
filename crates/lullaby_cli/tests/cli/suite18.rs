@@ -559,3 +559,105 @@ fn native_i4_store_into_outer_string_stays_denied() {
         96,
     );
 }
+
+// -- Cross-call arena (increment I2) -----------------------------------------
+
+/// The POSITIVE widening, end-to-end: `describe` is a NON-LEAF caller — it calls the
+/// scalar-returning heap-reading leaf `width` — so under the old LEAF-only rule it was
+/// denied the arena. The I2 retention summary proves `width` non-retaining, so
+/// `describe` is now arena-routed too (a cross-call arena over `main`'s hot loop). The
+/// arena is value-neutral, so every tier must still agree on **45**; a mis-scoped rewind
+/// (freeing a string `describe` or `width` still reads) would surface as a divergence.
+#[test]
+fn native_cross_call_arena_matches_interpreters() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn width s string -> i64\n",
+            "    len(s)\n\n",
+            "fn describe a i64 -> i64\n",
+            "    let s string = to_string(a) + \"_row\"\n",
+            "    width(s) + width(to_string(a * 3))\n\n",
+            "fn main -> i64\n",
+            "    let total i64 = 0\n",
+            "    for i from 0 to 6\n",
+            "        total = total + describe(i)\n",
+            "    total\n",
+        ),
+        "lullaby_cross_call_arena",
+        45,
+    );
+}
+
+/// The `alloc_mode` NESTING prerequisite, end-to-end. With I2 an arena caller (`outer`)
+/// calls an arena callee (`inner`) — a shape the old leaf rule made impossible. `outer`
+/// allocates `before`, calls `inner`, then allocates `after` AFTER the call. The prologue
+/// SAVES the prior arena-mode flag and the reset RESTORES it (not hard-zero), so `outer`
+/// stays in arena mode across `inner`'s return and its own return-edge rewind bounds its
+/// whole region. Every tier agrees on **274**.
+///
+/// **Teeth (measured).** Reverting the save/restore to the old hard `mov 1` / `xor 0`
+/// makes `inner`'s reset drop `outer` into the free-list allocation path mid-body, and
+/// `outer`'s rewind then reclaims a free-listed block: native diverges from the
+/// interpreters (verified by injection — see the increment report).
+#[test]
+fn native_arena_nested_alloc_mode_matches_interpreters() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn inner a i64 -> i64\n",
+            "    let s string = to_string(a) + \"_inner\"\n",
+            "    len(s)\n\n",
+            "fn outer a i64 -> i64\n",
+            "    let before string = to_string(a) + \"_before\"\n",
+            "    let x i64 = inner(a + 1)\n",
+            "    let after string = to_string(a * 2) + \"_after_padding\"\n",
+            "    len(before) + x + len(after)\n\n",
+            "fn main -> i64\n",
+            "    let total i64 = 0\n",
+            "    for i from 0 to 8\n",
+            "        total = total + outer(i)\n",
+            "    total\n",
+        ),
+        "lullaby_arena_nested_alloc_mode",
+        274,
+    );
+}
+
+/// The retention gate's cross-call UAF guard, end-to-end. `make_box` uses `alloc` — a
+/// raw heap box invisible to the escape analysis — so the retention summary (R3) marks it
+/// RETAINING and criterion 3 keeps its caller `boxed_sum` off the arena. `boxed_sum`'s own
+/// body has no `alloc` (criterion 5 alone would NOT deny it), so the ONLY thing keeping it
+/// off the arena is the retention summary. On the RC path nothing reclaims the boxes, so
+/// `ptr_read(q)` reads the live last box and every tier agrees on **2116**.
+///
+/// **Teeth (measured).** This is the cross-call generalization of
+/// [`native_alloc_is_not_reclaimed_by_an_arena_rewind`]. If the summary wrongly admitted
+/// `make_box` as non-retaining, `boxed_sum` would become arena, its confined loop would
+/// get a per-iteration sub-region that reclaims the box `q` still names, and the post-loop
+/// `z` string would overwrite it — native diverges from the interpreters (verified by
+/// injection — see the increment report).
+#[test]
+fn native_cross_call_retaining_callee_stays_off_arena() {
+    assert_all_four_tiers_agree(
+        concat!(
+            "fn make_box a i64 -> ptr_i64\n",
+            "    unsafe\n",
+            "        let p = alloc(a * 100 + 7)\n",
+            "        p\n\n",
+            "fn boxed_sum a i64 -> i64\n",
+            "    unsafe\n",
+            "        let q ptr_i64 = make_box(0)\n",
+            "        for j from 0 to 5\n",
+            "            q = make_box(j)\n",
+            "            let s string = to_string(a + j)\n",
+            "        let z string = to_string(a) + \"clobberclobberclobber\"\n",
+            "        ptr_read(q) + len(z)\n\n",
+            "fn main -> i64\n",
+            "    let total i64 = 0\n",
+            "    for i from 0 to 3\n",
+            "        total = total + boxed_sum(i)\n",
+            "    total\n",
+        ),
+        "lullaby_cross_call_retaining_off_arena",
+        2116,
+    );
+}

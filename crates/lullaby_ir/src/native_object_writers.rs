@@ -1492,3 +1492,10 @@ mod native_object_portio_tests;
 #[cfg(test)]
 #[path = "native_object_heapbox_tests.rs"]
 mod native_object_heapbox_tests;
+
+// The cross-call arena retention summary (I2): the per-function `retaining`
+// classification and the widened criterion-3 eligibility matrix. Own file for the
+// size-cap reason.
+#[cfg(test)]
+#[path = "native_object_retain_tests.rs"]
+mod native_object_retain_tests;

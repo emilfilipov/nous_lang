@@ -308,6 +308,17 @@ pub(crate) struct NativeCtx<'a> {
     /// The frame slot (`[rbp - arena_mark_slot]`) holding the saved bump pointer
     /// when `is_arena`; `0` otherwise (unused).
     arena_mark_slot: i32,
+    /// The frame slot (`[rbp - arena_saved_mode_slot]`) holding the arena-mode flag's
+    /// value on entry, when `is_arena`; `0` otherwise (unused). The prologue SAVES the
+    /// prior `__lullaby_alloc_mode` here and sets it to `1`; the return reset RESTORES
+    /// this saved value rather than hard-zeroing. This makes arena mode nest correctly
+    /// across a call from one arena function into another (I2): when an arena caller A
+    /// calls an arena callee B, B's reset restores the flag to A's saved `1` — not to
+    /// `0` — so A's allocations after the call keep taking the arena bump path and A's
+    /// return-edge rewind stays sound. Without it, B's hard-zero would drop A into the
+    /// free-list path mid-body and A's own rewind could then reclaim a free-listed
+    /// block (heap corruption / cross-call use-after-free).
+    arena_saved_mode_slot: i32,
     /// Arena-first memory (stage 2): base frame slot of a region of per-loop-depth
     /// "sub-region mark" words. A loop nested `d` levels deep (0 = outermost) saves
     /// its entry bump pointer into `[rbp - (arena_loop_mark_base + 8*d)]`; sibling
@@ -493,10 +504,21 @@ impl<'a> NativeCtx<'a> {
         // Reserve scratch words for `match` scrutinees that are not plain locals
         // (a call result or freshly-constructed enum is spilled to scratch before
         // the tag dispatch), and for aggregate call arguments / aggregate returns,
-        // which are materialized into scratch and then copied by pointer. One
-        // shared region sized to the widest such temporary across the function
-        // suffices, since each is fully consumed before the next runs. The scratch
+        // which are materialized into scratch and then copied by pointer. The scratch
         // base is the first word past the planned locals.
+        //
+        // A `match` scrutinee stays in scratch across its ARMS (the cursor is restored
+        // only after all arms are lowered — see `native_object_match.rs`), so a call
+        // inside a match arm materializes its aggregate arguments ON TOP of the held
+        // scrutinee. The scrutinee scratch and the arm's call-argument scratch are
+        // therefore **simultaneously live**, so the region must be sized to their SUM,
+        // not their max — a `max` under-reserves and the arm's argument materialization
+        // spills into whatever sits just past the region, which for an arena function is
+        // the arena mark word (clobbering it → the return-edge rewind reads a garbage
+        // mark → the next allocation faults). This was a pre-existing latent
+        // under-reservation that only became reachable once the I2 cross-call widening
+        // let a function containing `match … -> user_call(aggregate)` route through the
+        // arena (a leaf never passed an aggregate to a user call).
         let match_scratch = max_match_scratch_words(&function.instructions, structs, enums)?;
         // The return value, when an aggregate, is materialized in scratch before
         // being copied through the hidden return pointer.
@@ -517,7 +539,14 @@ impl<'a> NativeCtx<'a> {
         )?;
         // The scratch cursor starts one word past `scratch_base` (word 0 of the
         // region is a reserved guard), so reserve one extra word of headroom.
-        let scratch_words = match_scratch.max(return_scratch).max(arg_scratch);
+        //
+        // `match_scratch + arg_scratch` because a call's aggregate-argument scratch
+        // stacks on TOP of a held match scrutinee (see above). `.max(return_scratch)`:
+        // the aggregate-return materialization is a separate tail-position use that is
+        // not simultaneously live with the body's match/arg scratch, so it only needs to
+        // fit, not add. `max_match_scratch_words` itself sums nested match scrutinees, so
+        // a `match` inside a `match` arm is accounted for too.
+        let scratch_words = (match_scratch + arg_scratch).max(return_scratch);
         let scratch_base = next_slot;
         next_slot += (scratch_words as i32 + 1) * 8;
 
@@ -547,6 +576,17 @@ impl<'a> NativeCtx<'a> {
         // Arena-first memory (stage 1): reserve one frame word to save the bump
         // pointer (`__lullaby_heap_next`) on entry, restored on every return edge.
         let arena_mark_slot = if is_arena {
+            next_slot += 8;
+            next_slot
+        } else {
+            0
+        };
+
+        // Cross-call arena nesting (I2): reserve one frame word to save the prior
+        // arena-mode flag on entry, restored (not hard-zeroed) on every return edge, so
+        // an arena callee returning into an arena caller leaves the caller's arena mode
+        // intact. See `arena_saved_mode_slot`.
+        let arena_saved_mode_slot = if is_arena {
             next_slot += 8;
             next_slot
         } else {
@@ -637,6 +677,7 @@ impl<'a> NativeCtx<'a> {
             fast_math: false,
             is_arena,
             arena_mark_slot,
+            arena_saved_mode_slot,
             arena_loop_mark_base,
             arena_buffers,
             // Non-generic heap-carrying aggregate NAMES plus the heap-`T`
@@ -809,6 +850,10 @@ pub(crate) use eligibility::*;
 #[path = "native_object_confine.rs"]
 mod confine;
 pub(crate) use confine::*;
+
+#[path = "native_object_retain.rs"]
+mod retain;
+pub(crate) use retain::*;
 
 #[path = "native_object_method.rs"]
 mod method;

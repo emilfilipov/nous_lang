@@ -421,6 +421,24 @@ fn emit_arena_prologue(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
     // mov [rbp - mark], rax  (save the entry bump pointer)
     code.extend_from_slice(&[0x48, 0x89, 0x85]);
     code.extend_from_slice(&(-mark).to_le_bytes());
+
+    // Cross-call arena nesting (I2): SAVE the prior arena-mode flag before setting it,
+    // so the return reset can RESTORE it. When this arena function was itself called by
+    // another arena function the prior value is `1` (still in arena mode); at the top
+    // level it is `0`. `rax` is free here (parameters are already seated).
+    let saved_mode = ctx.arena_saved_mode_slot;
+    // mov rax, [rip + alloc_mode]  (prior mode)
+    code.extend_from_slice(&[0x48, 0x8B, 0x05]);
+    let prior_site = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    ctx.relocations.push(CodeRelocation {
+        offset: prior_site as u32,
+        symbol: ALLOC_MODE_SYMBOL.to_string(),
+    });
+    // mov [rbp - saved_mode], rax  (save the prior mode for the reset to restore)
+    code.extend_from_slice(&[0x48, 0x89, 0x85]);
+    code.extend_from_slice(&(-saved_mode).to_le_bytes());
+
     // mov eax, 1 ; mov [rip + alloc_mode], rax  (enter arena mode)
     code.extend_from_slice(&[0xB8, 0x01, 0x00, 0x00, 0x00]);
     code.extend_from_slice(&[0x48, 0x89, 0x05]);
@@ -452,8 +470,15 @@ fn emit_arena_reset(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
         offset: next_site as u32,
         symbol: HEAP_NEXT_SYMBOL.to_string(),
     });
-    // xor r10d, r10d ; mov [rip + alloc_mode], r10  (leave arena mode)
-    code.extend_from_slice(&[0x45, 0x31, 0xD2]);
+    // Cross-call arena nesting (I2): RESTORE the saved prior arena-mode flag rather
+    // than hard-zeroing it. At the top level the saved value is `0` (this reset leaves
+    // arena mode, exactly as before); when an arena caller invoked this arena function
+    // the saved value is `1`, so the caller stays in arena mode after this returns.
+    // `r10` is scratch (the return value in `rax`/`xmm0` is preserved).
+    let saved_mode = ctx.arena_saved_mode_slot;
+    // mov r10, [rbp - saved_mode] ; mov [rip + alloc_mode], r10  (restore prior mode)
+    code.extend_from_slice(&[0x4C, 0x8B, 0x95]);
+    code.extend_from_slice(&(-saved_mode).to_le_bytes());
     code.extend_from_slice(&[0x4C, 0x89, 0x15]);
     let mode_site = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);

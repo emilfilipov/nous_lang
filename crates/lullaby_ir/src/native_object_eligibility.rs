@@ -1228,8 +1228,12 @@ fn instruction_touches_heap(
 }
 
 /// Whether an expression calls a user-defined or `extern` function (as opposed to
-/// a native builtin). A heap value passed to user code could be retained past the
-/// function's return, so any such call disqualifies arena eligibility.
+/// a native builtin), by NAME membership in `user_names`. Used by the native closure
+/// escape analysis (`native_object_closure.rs`). NOTE: arena eligibility no longer
+/// uses this coarse "any user call denies" test — the cross-call retention summary
+/// ([`all_callees_non_retaining`], `native_object_retain.rs`) admits a caller whose
+/// module callees are all provably non-retaining, while denying `extern`/indirect
+/// callees, which this name-membership test cannot distinguish.
 pub(crate) fn expr_calls_user(
     expr: &BytecodeExpr,
     user_names: &std::collections::HashSet<&str>,
@@ -1259,71 +1263,6 @@ pub(crate) fn expr_calls_user(
         | BytecodeExprKind::Char(_)
         | BytecodeExprKind::Variable(_)
         | BytecodeExprKind::Closure { .. } => false,
-    }
-}
-
-/// Whether a body calls any user-defined or `extern` function anywhere.
-fn body_calls_user(
-    body: &[BytecodeInstruction],
-    user_names: &std::collections::HashSet<&str>,
-) -> bool {
-    body.iter().any(|i| instruction_calls_user(i, user_names))
-}
-
-fn instruction_calls_user(
-    instruction: &BytecodeInstruction,
-    user_names: &std::collections::HashSet<&str>,
-) -> bool {
-    match instruction {
-        BytecodeInstruction::Let { value, .. }
-        | BytecodeInstruction::Assign { value, .. }
-        | BytecodeInstruction::Return(Some(value))
-        | BytecodeInstruction::Expr(value)
-        | BytecodeInstruction::Throw { value, .. } => expr_calls_user(value, user_names),
-        BytecodeInstruction::Return(None)
-        | BytecodeInstruction::Break(_)
-        | BytecodeInstruction::Continue(_)
-        | BytecodeInstruction::Asm { .. } => false,
-        BytecodeInstruction::If {
-            branches,
-            else_body,
-            ..
-        } => {
-            branches.iter().any(|b| {
-                expr_calls_user(&b.condition, user_names) || body_calls_user(&b.body, user_names)
-            }) || body_calls_user(else_body, user_names)
-        }
-        BytecodeInstruction::While {
-            condition, body, ..
-        } => expr_calls_user(condition, user_names) || body_calls_user(body, user_names),
-        BytecodeInstruction::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            expr_calls_user(start, user_names)
-                || expr_calls_user(end, user_names)
-                || step
-                    .as_ref()
-                    .is_some_and(|s| expr_calls_user(s, user_names))
-                || body_calls_user(body, user_names)
-        }
-        BytecodeInstruction::Loop { body, .. } | BytecodeInstruction::RegionBlock { body, .. } => {
-            body_calls_user(body, user_names)
-        }
-        BytecodeInstruction::Match {
-            scrutinee, arms, ..
-        } => {
-            expr_calls_user(scrutinee, user_names)
-                || arms
-                    .iter()
-                    .any(|arm| body_calls_user(&arm.body, user_names))
-        }
-        BytecodeInstruction::Try {
-            body, catch_body, ..
-        } => body_calls_user(body, user_names) || body_calls_user(catch_body, user_names),
     }
 }
 
@@ -1457,10 +1396,13 @@ fn body_has_unbounded_heap_loop(
 /// a function qualifies only when ALL hold — (1) its return type is a native
 /// scalar (`i64`/`bool`/fixed-width lowered as `i64`, `f64`, `f32` — never a heap
 /// type, so no heap value can escape via the return), (2) it actually touches the
-/// heap (else the arena is a no-op), (3) it calls no user-defined / `extern`
-/// function (a leaf w.r.t. user code, so no heap pointer can be passed to and
-/// retained by code that outlives it, and arena mode never leaks into RC-freeing
-/// code), and (4) it has no **unbounded** heap loop — every heap-touching loop
+/// heap (else the arena is a no-op), (3) **every callee it invokes is provably
+/// non-retaining** — a native builtin, or a module function the cross-call retention
+/// summary ([`all_callees_non_retaining`], I2) proves cannot stash a pointer to a
+/// heap cell this function's return-edge rewind frees; an `extern` call, an indirect
+/// (`fn`-param / closure) call, or a retaining module callee keeps it off the arena
+/// (this subsumes and widens the earlier LEAF-only rule), and (4) it has no
+/// **unbounded** heap loop — every heap-touching loop
 /// **confines** its allocations to the iteration (stage 2), so each such loop gets
 /// a per-iteration sub-region that bounds it; a loop whose heap escapes the
 /// iteration would grow the region unboundedly and keeps the function on the RC
@@ -1473,12 +1415,6 @@ pub(crate) fn arena_eligible_functions(
     eligible_names: &[String],
     signatures: &HashMap<String, NativeSignature>,
 ) -> std::collections::HashSet<String> {
-    let user_names: std::collections::HashSet<&str> = module
-        .functions
-        .iter()
-        .map(|f| f.name.as_str())
-        .chain(module.extern_functions.iter().map(String::as_str))
-        .collect();
     // Aggregate types that transitively carry a heap field/payload (a struct with a
     // `string` field, an `option<string>`/user enum with a heap payload). The escape
     // analysis treats storing one of these into an iteration-outliving location as a
@@ -1500,6 +1436,17 @@ pub(crate) fn arena_eligible_functions(
         .collect();
     heap_aggs.extend(generic_heap);
 
+    // Cross-call arena (I2): the per-function retention summary over the WHOLE module,
+    // computed once. A caller stays arena-eligible (criterion 3 below) iff every callee
+    // it invokes is provably non-retaining per this summary. Default-deny; cycles
+    // pre-poisoned; one reverse-topological sweep, no fixpoint. See
+    // `native_object_retain.rs`.
+    let summary = retaining_summary(module, &heap_aggs);
+    let module_fns: std::collections::HashSet<&str> =
+        module.functions.iter().map(|f| f.name.as_str()).collect();
+    let extern_fns: std::collections::HashSet<&str> =
+        module.extern_functions.iter().map(String::as_str).collect();
+
     let mut arena = std::collections::HashSet::new();
     for name in eligible_names {
         let Some(sig) = signatures.get(name) else {
@@ -1516,8 +1463,14 @@ pub(crate) fn arena_eligible_functions(
         if !body_touches_heap(&function.instructions, &heap_aggs) {
             continue;
         }
-        // (3) Leaf w.r.t. user code.
-        if body_calls_user(&function.instructions, &user_names) {
+        // (3) Every user/`extern`/indirect callee is provably NON-retaining (I2). A
+        // caller is no longer required to be a leaf: it may call module functions the
+        // retention summary proves cannot stash a pointer to a heap cell this caller's
+        // return-edge rewind frees. An `extern` call, an indirect (`fn`-param /
+        // closure) call, or a module callee that is (or transitively reaches) retaining
+        // keeps the function off the arena (default-deny). This subsumes the old leaf
+        // test — a leaf calls only builtins, which are always non-retaining.
+        if !all_callees_non_retaining(function, &module_fns, &extern_fns, &summary) {
             continue;
         }
         // (4) No UNBOUNDED heap loop — every heap-touching loop confines its

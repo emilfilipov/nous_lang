@@ -298,6 +298,11 @@ fn expr_blocks_widening(expr: &BytecodeExpr) -> bool {
 }
 
 /// Whether a type is a raw pointer (`ptr<T>`, or the bare `ptr` spelling).
-fn is_pointer_type(ty: &TypeRef) -> bool {
+///
+/// `pub(crate)` so the cross-call retention analysis (`native_object_retain.rs`)
+/// reuses the exact same raw-pointer test for its R3 (no-raw-memory-aliasing)
+/// local property — an `addr_of`/`ptr_offset`/`ptr_cast`/`int_to_ptr`/every raw
+/// builtin is caught uniformly by TYPE here, with no fragile name list.
+pub(crate) fn is_pointer_type(ty: &TypeRef) -> bool {
     ty.name == "ptr" || ty.name.starts_with("ptr<")
 }

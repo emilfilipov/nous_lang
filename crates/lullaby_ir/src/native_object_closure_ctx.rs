@@ -61,6 +61,7 @@ impl<'a> NativeCtx<'a> {
             fast_math: false,
             is_arena: false,
             arena_mark_slot: 0,
+            arena_saved_mode_slot: 0,
             arena_loop_mark_base: 0,
             // A synthesized closure body never declares a static-buffer arena: a
             // closure literal needs a heap-allocated capture environment and is

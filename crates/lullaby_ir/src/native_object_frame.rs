@@ -33,15 +33,24 @@ pub(crate) fn max_match_scratch_words(
             BytecodeInstruction::Match {
                 scrutinee, arms, ..
             } => {
-                let mut here = 0usize;
+                // A materialized (non-variable) scrutinee is spilled to scratch and
+                // stays there across ALL arms (the match cursor is restored only after
+                // every arm is lowered). A `match` nested inside an arm therefore
+                // materializes its OWN scrutinee ON TOP of this one, so the two scratch
+                // regions are simultaneously live and must be SUMMED — a `max` would
+                // under-reserve a nested-match chain and let the inner scrutinee spill
+                // past the region (into an arena mark, a saved register, or another
+                // live temporary).
+                let mut scrutinee_words = 0usize;
                 if !matches!(scrutinee.kind, BytecodeExprKind::Variable(_)) {
                     let layout = resolve_native_type(&scrutinee.ty, structs, enums)?;
-                    here = layout.words();
+                    scrutinee_words = layout.words();
                 }
+                let mut arm_max = 0usize;
                 for arm in arms {
-                    here = here.max(max_match_scratch_words(&arm.body, structs, enums)?);
+                    arm_max = arm_max.max(max_match_scratch_words(&arm.body, structs, enums)?);
                 }
-                here
+                scrutinee_words + arm_max
             }
             BytecodeInstruction::If {
                 branches,
