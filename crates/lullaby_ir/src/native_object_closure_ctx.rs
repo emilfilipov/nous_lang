@@ -60,6 +60,8 @@ impl<'a> NativeCtx<'a> {
             saved_reg_slots: Vec::new(),
             fast_math: false,
             is_arena: false,
+            // A synthesized closure body is never itself an arena factory.
+            promotes_closure_return: false,
             arena_mark_slot: 0,
             arena_saved_mode_slot: 0,
             arena_loop_mark_base: 0,

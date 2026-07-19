@@ -121,14 +121,19 @@ fn gen_closure_program(seed: u64) -> String {
     // Chosen for a substantial fraction of programs so the HOF ABI is exercised
     // heavily while the direct-call ABI stays covered too.
     let hof = rng.chance(2);
-    // Factory mode (arena stage-4 increment a): instead of creating the closure with a
-    // local literal, hoist it into a `make_closure` FACTORY that takes the captured
-    // values as parameters and RETURNS the closure, then bind `f` to the factory call.
-    // This exercises the returned-closure path — a `fn(...)` return admitted as a block
-    // pointer, and `f` as a call-returned indirect callable invoked through the same
-    // ABI. Mutually exclusive with `hof` (combining a call-returned closure with a HOF
-    // sink is a separate, unsupported escape); chosen for a substantial fraction of the
-    // non-HOF programs so both the direct-literal and the factory paths stay covered.
+    // Factory mode (arena stage-4): instead of creating the closure with a local
+    // literal, hoist it into a `make_closure` FACTORY that takes the captured values as
+    // parameters and RETURNS the closure, then bind `f` to the factory call. Such a
+    // factory is now a PROMOTING arena function (stage-4b): its return-edge reset
+    // relocates the returned `[code_ptr][captures…]` survivor DOWN to the region mark
+    // (a memmove of the whole — possibly mixed int/float — capture block, so a
+    // mis-relocated word changes the exit) and advances `heap_next` past it, reclaiming
+    // any per-call scratch. This exercises both the returned-closure invoke ABI (a
+    // `fn(...)` return as a block pointer, `f` a call-returned indirect callable) and
+    // the promoting reset. Mutually exclusive with `hof` (combining a call-returned
+    // closure with a HOF sink is a separate, unsupported escape); chosen for a
+    // substantial fraction of the non-HOF programs so the direct-literal, factory, and
+    // promoting paths all stay covered.
     let factory = !hof && rng.chance(2);
     // Float width for this program: exercise f32 sometimes, f64 mostly (f64 is the
     // common shape and has the richer arithmetic surface).
@@ -143,6 +148,14 @@ fn gen_closure_program(seed: u64) -> String {
     // the program would not parse.
     let needs_float = matches!(shape, Shape::FloatThreshold | Shape::MixedChain);
     let needs_int = matches!(shape, Shape::IntWeights | Shape::MixedChain);
+    // Factory-SCRATCH mode (arena stage-4b): a promoting factory that also allocates a
+    // per-call heap string BELOW its returned closure. The promoting return-edge reset
+    // relocates the survivor DOWN to the region mark and advances `heap_next` past it,
+    // reclaiming the scratch — so a hot loop over such a factory stays heap-bounded (a
+    // wrong reset frees the survivor or fails to reclaim). The scratch's length is
+    // folded into the captured `k`, so it cannot be optimized away and the value stays
+    // interpreter-checked. Only when the factory captures an integer (`needs_int`).
+    let factory_scratch = needs_int && rng.chance(2);
 
     // Parameter classes. Counts run up to 6 so positions 4+ spill to the stack (a 4th
     // parameter is already the 5th argument once the env pointer is counted). A shape
@@ -334,8 +347,18 @@ fn gen_closure_program(seed: u64) -> String {
             names.join(", "),
         )
     } else if factory {
+        // In scratch mode the factory allocates a per-call heap string and folds its
+        // length into the captured `k` (a shadowing `let`), so the promoting reset has
+        // real scratch to reclaim below the survivor. `factory_scratch` is only set when
+        // `needs_int`, so `k` is always a live capture parameter here.
+        let scratch = if factory && factory_scratch {
+            "    let __sc string = \"promoting-factory-scratch-reclaimed-every-call-in-the-body\"\n\
+             \x20   let k i64 = k + len(__sc)\n"
+        } else {
+            ""
+        };
         format!(
-            "fn make_closure {} -> fn({}) -> {ret_ty}\n    {closure_literal}\n",
+            "fn make_closure {} -> fn({}) -> {ret_ty}\n{scratch}    {closure_literal}\n",
             factory_cap_params(needs_int, needs_float, fclass),
             sig_types.join(", "),
         )
@@ -422,6 +445,7 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
     let mut compiled = 0u64;
     let mut hof_ran = 0u64;
     let mut factory_ran = 0u64;
+    let mut factory_scratch_ran = 0u64;
     for i in 0..PROGRAMS {
         let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
         let source = gen_closure_program(seed);
@@ -431,6 +455,9 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
         // lets the batch prove those ABIs were actually exercised end-to-end.
         let is_hof = source.contains("apply_hof");
         let is_factory = source.contains("make_closure");
+        // A scratch factory (stage-4b) allocates a per-call heap string it reclaims via
+        // the promoting reset — detected by the `__sc` scratch local it declares.
+        let is_factory_scratch = source.contains("__sc");
 
         let (ast, ir, bc) = run_interpreters(&source);
         assert!(
@@ -454,6 +481,9 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
         if is_factory {
             factory_ran += 1;
         }
+        if is_factory_scratch {
+            factory_scratch_ran += 1;
+        }
         assert_eq!(
             exit, expected as i32,
             "NATIVE MISCOMPILE on closure #{i} (seed {seed:#x}):\n{source}\n\
@@ -467,7 +497,8 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
     // into producing skipping programs and is no longer testing codegen.
     eprintln!(
         "closure native fuzz: ran {ran}/{PROGRAMS} real exes ({compiled} compiled natively, \
-         {hof_ran} higher-order, {factory_ran} factory-returned)"
+         {hof_ran} higher-order, {factory_ran} factory-returned, \
+         {factory_scratch_ran} promoting-with-scratch)"
     );
     // The higher-order path must have been exercised by a non-trivial batch, or the
     // stage-3a ABI (closure-pointer argument + indirect call through a fn parameter)
@@ -483,5 +514,13 @@ fn fuzz_closure_native_matches_interpreter_when_linkable() {
     assert!(
         factory_ran >= PROGRAMS / 8,
         "expected a substantial factory-returned batch, ran only {factory_ran}/{ran}"
+    );
+    // The stage-4b PROMOTING path with real per-call scratch (a factory that allocates a
+    // heap string it reclaims by relocating the survivor to the region mark) must have
+    // run a non-trivial batch, or the mark-advance reset's compaction of mixed
+    // int/float capture blocks over reclaimed scratch would be silently untested.
+    assert!(
+        factory_scratch_ran >= PROGRAMS / 32,
+        "expected a promoting-with-scratch batch, ran only {factory_scratch_ran}/{ran}"
     );
 }

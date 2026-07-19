@@ -290,9 +290,23 @@ explicit/drop-to-metal when needed.
    assumption). It is one reverse-topological sweep with **cycles pre-poisoned** (any
    self/mutual recursion / SCC ⇒ retaining, no fixpoint), so it stays `O(nodes+edges)`
    and preserves the compile-speed moat. Criterion 3 of `arena_eligible_functions`
-   now admits a caller iff `all_callees_non_retaining` holds. **Deferred past slice
-   1:** heap-returning-but-fresh callees (relax R1), provably-non-escaping closures
-   (relax R2), and recursion/SCC relaxation (keep default-deny).
+   now admits a caller iff `all_callees_non_retaining` holds.
+   **Escape→promotion DELIVERED for returned closures (increment 4b / owner decision
+   D4, Option A):** a factory whose every return edge is a fresh, flat, scalar-capture
+   closure literal (≤ 8 words) is now **arena-eligible and PROMOTING** —
+   `arena_eligible_functions` criterion 1b admits it, and its return-edge reset
+   (`emit_arena_reset`) relocates the returned `[code_ptr][captures…]` survivor DOWN to
+   the region mark and advances `heap_next = markF + size` past it. The survivor lands
+   in the caller's region (`markF ≥ markC`) and dies at the caller's rewind, so the
+   factory **reclaims its per-call scratch** without dangling. The R1 carve-out treating
+   such a factory as **non-retaining** (so a caller may arena over it) is computed
+   **purely locally** (F's body + closure layouts only, never F's own arena status),
+   avoiding a summary→eligibility→summary cycle the single-sweep DFS cannot express;
+   R2's spawn/`await` sub-channel and all of R3/R4 still apply. A non-promotable `fn`
+   return (a returned parameter, a heap-capturing / above-cap / call-returned closure)
+   stays OFF the arena (stage-4a — no reclamation, sound). **Deferred past slice 1:**
+   other heap-returning-but-fresh callees (relax R1 further), `string`/deep-aggregate/
+   loop-edge promotion, and recursion/SCC relaxation (keep default-deny).
 4. **Escape/promotion** — auto-copy on escape; `ref` for shared/dynamic.
 5. **Freestanding static-buffer arenas** — folds into the `no-runtime` tier work.
 

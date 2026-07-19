@@ -571,7 +571,7 @@ Under these conditions every heap block the function allocates is provably dead 
 - **Overflow-guard test** `native_heap_overflow_traps_cleanly` (`suite1.rs`): an escaping accumulator `grow n -> i64` (`acc = acc + "0123456789"`, `acc` outlives the iteration → kept on the RC path, never reclaimed) fills the fixed heap. Before the guard it wrote past the region and access-violated (segfaulted); now it traps with `ud2` and the process exits with `STATUS_ILLEGAL_INSTRUCTION` (`0xC000001D`). The test asserts that exact clean, defined exit status — the safety proof. Verified on this host.
 - **Differential fuzzer** (`crates/lullaby_cli/tests/cli/fuzz.rs`): `gen_arena_program` generates an arena-eligible leaf helper in several shapes — stage-1 straight-line string ops, and a stage-2 **confined loop** in three flavors: per-iteration borrow-only scratch (scalar accumulate), an I4 **rebound loop-local** (`s = s + <suffix>`), and an I4 **nested-loop iteration-local scratch** (inner loop rebinds its own top-level `let`). `gen_arena_struct_string_program` likewise adds an I4 **rebound loop-local struct-with-string**. `fuzz_arena_interpreters_agree` cross-checks the three interpreters over 2000 programs; `fuzz_arena_native_matches_interpreter_when_linkable` links and runs 100 as real `.exe`s and asserts native == interpreter (and that a non-empty batch executed) — so any arena-induced miscompile (a return value clobbered by a reset, or a mis-scoped rewind that frees a still-live value or leaks to exhaustion) surfaces as an exit-code divergence. The I4 shapes are value-neutral, so the same oracle covers the newly-admitted reclamation.
 - **Unit tests** (`native_program_tests.rs`): `arena_region_used_for_provably_local_heap_function` asserts the arena prologue (`mov eax, 1; mov [rip + __lullaby_alloc_mode], rax`) IS emitted for a qualifying stage-1 function; `arena_not_used_when_a_heap_value_escapes` asserts it is NOT when the value is returned or passed to a user function; `arena_sub_region_used_for_confined_heap_loop` asserts the arena prologue AND the per-iteration rewind (`mov r10, [rbp-mark]; mov [rip+heap_next], r10`) ARE emitted for a confined heap loop; `arena_sub_region_not_used_when_loop_accumulator_escapes` / `..._when_loop_value_stored_outside` assert neither is emitted when the loop's heap escapes; `alloc_helper_has_heap_overflow_guard` asserts the `cmp r9,r11; jbe +2; ud2` exhaustion guard is present in `__lullaby_alloc`. For the I4 target-aware widening: `arena_widening_fires_for_rebound_loop_local` / `..._nested_loop_iteration_local` / `..._rebound_struct_string_local` assert the arena prologue AND rewind ARE now emitted for a rebound loop-local / nested iteration-local / rebound struct-string (with an in-test control that the same store into an OUTER-declared target stays non-arena), and `arena_widening_denied_for_closure_capturing_loop_local` / `..._heap_field_store_into_outer_aggregate` / `..._inner_local_stored_into_outer_carried` assert the widening refuses each escape channel. End-to-end, `suite18::native_i4_rebound_loop_local_matches_interpreters` runs the newly-admitted shape as a real exe (native == interpreter) and `..._store_into_outer_string_stays_denied` pins the string analogue of the `92-vs-2116` use-after-free (native == interpreter == **96**; dropping the iteration-local guard makes native answer **48**).
-- **Cross-call retention (increment I2)** — classification unit tests in `native_object_retain_tests.rs`: `non_leaf_caller_of_a_non_retaining_leaf_is_non_retaining` and `cross_call_caller_and_leaf_are_both_arena_eligible` prove the widening admits a non-leaf caller (the old leaf rule denied it); one negative control per retaining channel (`heap_returning_callee_and_its_caller_are_retaining`, `closure_capturing_callee_is_retaining`, `extern_calling_callee_is_retaining`, `recursive_and_mutually_recursive_functions_are_retaining`, `indirect_fn_param_call_makes_the_caller_retaining`, `alloc_using_callee_is_retaining`) and `caller_of_a_mixed_callee_set_is_denied` assert the exact `retaining` boolean / arena absence. End-to-end in `suite18.rs`: `native_cross_call_arena_matches_interpreters` runs a real cross-call arena (`describe` calling the leaf `width`, native == interpreters == **45**); `native_arena_nested_alloc_mode_matches_interpreters` runs an arena caller into an arena callee with allocations before AND after the call (native == interpreters == **274**), the fixture that crashes (`0xC0000005`) when the `alloc_mode` save/restore is reverted to hard-zero; `native_cross_call_retaining_callee_stays_off_arena` is the cross-call generalization of the `92-vs-2116` UAF — a caller of an `alloc`-using callee stays off the arena (native == interpreters == **2116**), and forcing that callee non-retaining makes native diverge to **92** (the confined-loop sub-region reclaims the box the post-loop string then overwrites). The differential fuzzer adds `gen_arena_callgraph_program` (a caller over one or two mixed scalar/heap-returning helpers) with `fuzz_arena_callgraph_interpreters_agree` (2000 programs) and `fuzz_arena_callgraph_native_matches_interpreter_when_linkable` (100 linked+run programs), which randomly covers the cross-call arena, the arena-mode nesting, and the retention classification — reverting the `alloc_mode` save/restore makes it crash on program #0.
+- **Cross-call retention (increment I2)** — classification unit tests in `native_object_retain_tests.rs`: `non_leaf_caller_of_a_non_retaining_leaf_is_non_retaining` and `cross_call_caller_and_leaf_are_both_arena_eligible` prove the widening admits a non-leaf caller (the old leaf rule denied it); one negative control per retaining channel (`heap_returning_callee_and_its_caller_are_retaining`, `heap_capturing_closure_callee_is_retaining`, `extern_calling_callee_is_retaining`, `recursive_and_mutually_recursive_functions_are_retaining`, `indirect_fn_param_call_makes_the_caller_retaining`, `alloc_using_callee_is_retaining`) and `caller_of_a_mixed_callee_set_is_denied` assert the exact `retaining` boolean / arena absence. The stage-4b R1 carve-out is pinned by `promotable_closure_factory_is_non_retaining` (a scalar-capture factory is now non-retaining, so a caller may arena over it) and `promotable_factory_calling_extern_is_retaining` (the carve-out is narrow — every other retention channel still applies). End-to-end in `suite18.rs`: `native_cross_call_arena_matches_interpreters` runs a real cross-call arena (`describe` calling the leaf `width`, native == interpreters == **45**); `native_arena_nested_alloc_mode_matches_interpreters` runs an arena caller into an arena callee with allocations before AND after the call (native == interpreters == **274**), the fixture that crashes (`0xC0000005`) when the `alloc_mode` save/restore is reverted to hard-zero; `native_cross_call_retaining_callee_stays_off_arena` is the cross-call generalization of the `92-vs-2116` UAF — a caller of an `alloc`-using callee stays off the arena (native == interpreters == **2116**), and forcing that callee non-retaining makes native diverge to **92** (the confined-loop sub-region reclaims the box the post-loop string then overwrites). The differential fuzzer adds `gen_arena_callgraph_program` (a caller over one or two mixed scalar/heap-returning helpers) with `fuzz_arena_callgraph_interpreters_agree` (2000 programs) and `fuzz_arena_callgraph_native_matches_interpreter_when_linkable` (100 linked+run programs), which randomly covers the cross-call arena, the arena-mode nesting, and the retention classification — reverting the `alloc_mode` save/restore makes it crash on program #0.
 
 **Two latent bugs the widening exposed (both fixed here).** (1) A **scratch under-reservation**: a `match` scrutinee stays in scratch across its arms, so a call inside a match arm materializes its aggregate arguments ON TOP of the held scrutinee — the two are simultaneously live, but `NativeCtx::plan` sized the scratch region as their `max`, not their sum. A leaf never passed an aggregate to a user call, so this was unreachable in an arena function until I2; once `map_point_value` (a `match map_get(…) -> point_sum(p)` shape) routed through the arena, the arm's argument materialization spilled past the region into the arena mark word, so the return-edge rewind read a garbage mark and the next allocation faulted (`native_list_struct` segfaulted). Fixed by reserving `match_scratch + arg_scratch` (and by summing nested match scrutinees in `max_match_scratch_words`, since an inner `match` scrutinee stacks on the outer). (2) A call to a function's OWN inline **closure-literal** local is treated as non-retaining (like a builtin) — the pre-I2 leaf test also ignored it, and `native_closure_reclaim` (a closure allocated and called per iteration) depends on its function staying arena-routed to reclaim the per-iteration closure block; a `fn`-typed PARAMETER or a `fn`-typed local bound to a non-literal stays a retaining indirect target.
 
@@ -1429,11 +1429,16 @@ to another Lullaby function that *calls* it (`apply(f, x)`) — see the "Non-esc
 higher-order functions (stage 3a)" subsection below. **Stage 4 (increment a)** adds
 **returned closures** — a factory returning a locally-created literal closure, and a
 caller invoking the call-returned closure (`let g = make_adder(5) … g(3)`) — see the
-"Returned closures" subsection below; the factory stays off the arena so the returned
-block is never reclaimed. The remaining heap/escape work (a heap capture, an
-onward-passed or stored closure, a returned fn parameter or call-returned closure, and
-the arena PROMOTION that would let a factory reclaim — increment b) is deliberately NOT
-here — see "Deferred" below.
+"Returned closures" subsection below. **Stage 4 (increment b) — the mark-advance
+PROMOTION — is now shipped:** a factory whose every return edge is a fresh, flat,
+scalar-capture closure literal is now **arena-eligible and promoting** — its
+return-edge reset relocates the returned `[code_ptr][captures…]` survivor DOWN to the
+region mark and advances `heap_next` past it, so the factory **reclaims its per-call
+scratch** while the survivor lands in the caller's region (`markF ≥ markC`) and stays
+live until the caller's own rewind. See "Returned-closure promotion (stage 4b)" below.
+The remaining heap/escape work (a heap capture, an onward-passed or stored closure, a
+returned fn parameter or call-returned closure, `string`/deep-aggregate/loop-edge
+promotion) is deliberately NOT here — see "Deferred" below.
 
 ### A closure body is a single expression (not a backend limitation)
 
@@ -1672,9 +1677,79 @@ factory call (a `fn` return is retaining), so a caller's rewind cannot reclaim t
 block either. `native_returned_closure_survives_heap_churn` pins this: a factory
 capture read back after the caller allocates heavily reads correctly — a
 reclaimed/dangling block would fault (proven by injection: removing the off-arena
-criterion turns it into a `0xC0000005`). Increment b will instead **promote** the block
-into the caller's region (mark-advance) and lift the off-arena restriction; this
-increment deliberately does not.
+criterion turns it into a `0xC0000005`). **Increment b (below) now supersedes this for a
+*promotable* factory** — it becomes arena-eligible and PROMOTES the survivor into the
+caller's region — while a non-promotable `fn`-return factory (a returned parameter, a
+heap-capturing / above-cap / call-returned closure) keeps this exact off-arena
+treatment.
+
+### Returned-closure promotion (arena stage-4, increment b — the mark-advance PROMOTION)
+
+A factory whose every return edge is a **fresh, flat, scalar-capture closure literal**
+small enough to relocate (≤ 8 words, `1 + captures`) is now **arena-eligible and
+promoting**: `arena_eligible_functions` criterion 1b admits it (in place of refusing
+every `fn` return), and its return-edge reset PROMOTES the survivor.
+
+**The promoting reset (`emit_arena_reset`, exact instruction order).** On a return edge
+`lower_return_value` runs first, leaving the survivor's `[code_ptr][captures…]` block
+**payload pointer in `rax`**; then the reset (with a per-return-**site** survivor
+`size = 8·(1 + captures)`, a compile-time immediate from the returned closure's
+`ClosureLayout`):
+
+1. `mov r10, [rbp - mark]` — `r10 = markF`, the relocation dest.
+2. for `k` in `0 .. size/8`: `mov rdx, [rax + 8k]` ; `mov [r10 + 8k], rdx` — copy each
+   survivor word down. The block is flat scalar-capture (no internal pointers), so a
+   straight word copy IS a correct relocation; `markF ≤ rax` (the mark is below the
+   just-allocated block), so this ascending copy is memmove-safe.
+3. `mov rax, r10` — the return value is the relocated survivor at `markF`.
+4. `lea r10, [r10 + size]` ; `mov [rip + heap_next], r10` — **`heap_next = markF + size`,
+   NOT `markF`**. This is load-bearing: the survivor stays reserved above the cursor, so
+   the caller's next allocation starts past it and the caller's own rewind reclaims it
+   exactly once. A plain `heap_next = markF` would leave the survivor above the free
+   cursor → the caller's next allocation overwrites the live block (a cross-call UAF).
+5. the I2 **arena-mode-flag restore is byte-identical and stays LAST** (restore the
+   saved prior `alloc_mode`, never hard-zero).
+
+The prologue **seeds `heap_next` to `heap_base`** for a promoting factory (idempotent),
+because `heap_next` starts at `0` (unseeded) and a factory whose closure is the
+program's first allocation would otherwise save mark `0` and step 2 would `mov [0], …` —
+a null write. Only a promoting factory emits the seed; every other arena function's
+prologue stays byte-identical.
+
+**Soundness (the induction).** Arena caller **C** (mark `markC` at its prologue) calls
+promoting factory **F** (`markF = heap_next` at F's prologue, `markF ≥ markC`). F
+allocates scratch + the closure block, then on its return edge relocates the survivor
+to `[markF, markF+size)` — which is `≥ markC`, **inside C's live region** — sets
+`heap_next = markF+size` (C's next allocation starts above it; F's advance IS C's
+reservation) and returns `rax = markF`. At C's return, C rewinds to `markC ≤ markF`,
+reclaiming the survivor **exactly once, never prematurely**. The survivor's lifetime is
+structurally nested inside C's region lifetime, and C's own R1–R4 arena-eligibility
+forbid it leaking past `markC`. When C is *not* arena (the common `make_adder(5) …
+g(3)` case — the caller invokes `g` through an indirect call, which R4 denies, so the
+caller stays off the arena), F still promotes and its survivor simply lives to program
+end — no reclamation, no UAF. Either way F reclaims its own per-call scratch.
+
+**The promoting factory is `non_retaining` (the R1 carve-out — PURELY LOCAL).** For a
+caller to arena over F, F must be non-retaining. A promotable factory is classified
+non-retaining by dropping the R1 `is_function()` penalty (and treating its own returned
+closure literal as the survivor, not an R2 capture channel) — but this is a function of
+**F's body + closure layouts ONLY**, never of whether F is itself arena. That locality
+is mandatory: the retention summary is computed *before* `arena_eligible_functions` and
+criterion 3 reads the summary, so gating the carve-out on arena status would close a
+summary→eligibility→summary cycle the single-sweep DFS cannot express. It is sound
+because a fresh flat closure return lands in the caller's region whether F promotes
+(arena) or bump-allocates (off-arena). **R2's spawn/`await`/`tell`/`ask` sub-channel and
+all of R3/R4 still apply** — a promotable factory that also spawns, uses a raw pointer,
+`alloc`s, or calls an `extern`/indirect target stays retaining.
+
+**Scope (phase-1 boundary).** The closure scalar-capture block is the ONLY genuinely
+flat, self-contained heap block in the language (a scalar struct returns via `sret` with
+no heap block; a heap-carrying aggregate needs pointer relocation, violating the
+pure-memmove boundary), so it is the sole stage-4b target. A factory returning a
+non-fresh survivor (a fn parameter, a call-returned closure), a non-scalar-capture or
+above-cap closure, or one whose tail is a value-`if`/`match`/`asm` (no per-edge survivor
+expression to size) stays OFF the arena — stage-4a behavior, sound with no promotion.
+`string`/deep-aggregate/loop-edge promotion is deferred.
 
 ### Reclamation soundness
 
@@ -1800,21 +1875,37 @@ escape/indirect ABIs are exercised with the same positional-XMM and stack-spill 
 `.exe`s against it, reporting the counts so a silent skip cannot hide a regression (all
 128 compile natively; the run also asserts non-trivial higher-order AND factory batches
 — a recent run reported `128/128 real exes (128 compiled natively, 68 higher-order, 32
-factory-returned)` — so neither indirect path can be silently untested). The fuzzer is
-likewise proven to have teeth: the sequential-XMM injection fails it at program #9, the
-spill-offset injection at program #1, and forcing returned closures to skip
-(`returns_only_local_closure_literals → false`) fails it at the first factory program.
+factory-returned, 6 promoting-with-scratch)` — so neither indirect path can be silently
+untested). Every factory program now routes through the **stage-4b promoting reset** (the
+capture block is relocated by a memmove, so a mis-relocated word changes the exit); a
+scratch-factory variant additionally allocates a per-call heap string the promoting reset
+reclaims. The fuzzer is likewise proven to have teeth: the sequential-XMM injection fails
+it at program #9, the spill-offset injection at program #1, and forcing returned closures
+to skip (`returns_only_local_closure_literals → false`) fails it at the first factory
+program.
 
 **Returned-closure four-tier parity** (`crates/lullaby_cli/tests/cli/returned_closure.rs`)
 pins the increment against a real `.exe` exit code vs the three interpreters: the adder
 factory, a non-capturing and a multi-capture returned closure, the local-literal return
 shape, a float factory (positional-XMM, threshold-counted), multi-invoke, multi-return-edge,
-the off-arena no-dangling stress (`native_returned_closure_survives_heap_churn`), and the
-refusal boundary (a returned fn parameter, a heap-capturing returned closure, and a
-stored/aliased closure each skip cleanly while the interpreters answer). Its teeth are
-proven by injection: removing the off-arena criterion turns the no-dangle pin into a
-`0xC0000005`, dropping the invoke recognition makes the factory ineligible, and a wrong
-env pointer makes the multi-capture read garbage.
+the no-dangling stress (`native_returned_closure_survives_heap_churn`), and the refusal
+boundary (a returned fn parameter, a heap-capturing returned closure, and a
+stored/aliased closure each skip cleanly while the interpreters answer). **The stage-4b
+promotion pins** add `native_promoting_factory_reclaims_scratch_bounded_heap` (a
+20 000-iteration hot loop over a scratch-allocating factory whose native heap stays
+bounded ONLY because the promoting reset reclaims the per-call scratch — without it the
+1 MB heap `ud2`-traps), `native_promoting_survivor_survives_more_allocation` (the promoted
+survivor read back after the caller allocates more), `native_promoting_multiple_arity_edges`
+(different-arity closures per return edge → per-site survivor size), and
+`native_promoting_float_captures_relocated` (float capture words survive the relocation).
+Teeth proven by injection: emitting a **plain reset** (`heap_next = markF`, dropping the
+`+size`) turns the churn pin into a `0xC0000005` cross-call UAF; a **wrong size**
+(`size − 8`) makes the adder read a stale word (`8 → 4`); and admitting a **non-fresh
+survivor** (a returned fn parameter) is refused at five independent layers (the signature
+HOF-parameter check, `returns_only_local_closure_literals`, `returns_promotable_closure`,
+the per-site survivor-size resolution, and the caller-side callable classification), so
+even relaxing the stage-4b guards leaves the shape a clean `L0339` skip — never a
+miscompile.
 
 Unit tests in `native_program_tests` assert the compiled/skip boundary (`__closure_0`
 compiled, the indirect `call rax` present, the direct-PE image produced) and pin the

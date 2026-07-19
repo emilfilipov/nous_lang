@@ -302,7 +302,8 @@ fn an_alloc_using_function_is_excluded_from_arena_routing() {
     );
     let eligible: Vec<String> = program.compiled.clone();
     let signatures = native_signatures_for(&module, &eligible);
-    let arena = arena_eligible_functions(&module, &eligible, &signatures);
+    let closure_layouts = compute_module_closure_layouts(&module);
+    let arena = arena_eligible_functions(&module, &eligible, &signatures, &closure_layouts);
     assert!(
         !arena.contains("h"),
         "an `alloc`-using function must NOT be arena-routed (use-after-free): {arena:?}"
@@ -486,7 +487,8 @@ fn an_alloc_free_function_keeps_its_arena() {
     );
     let program = emit_native_program(&module).expect("emit");
     let signatures = native_signatures_for(&module, &program.compiled);
-    let arena = arena_eligible_functions(&module, &program.compiled, &signatures);
+    let closure_layouts = compute_module_closure_layouts(&module);
+    let arena = arena_eligible_functions(&module, &program.compiled, &signatures, &closure_layouts);
     assert!(
         arena.contains("h"),
         "an alloc-free confined-loop function must keep its arena: {arena:?}"

@@ -304,7 +304,8 @@ pub fn emit_native_program_for_target(
         // provably stay local, so they route through a function-scoped arena
         // (reclaimed by rewinding the bump pointer on every return edge). Default-
         // deny; every other function keeps its unchanged RC / free-list codegen.
-        let arena_names = arena_eligible_functions(module, &eligible_names, &signatures);
+        let arena_names =
+            arena_eligible_functions(module, &eligible_names, &signatures, &closure_layouts);
 
         for name in &eligible_names {
             let function = module

@@ -303,18 +303,24 @@ pub(crate) fn lower_native_function(
         if let BytecodeInstruction::Asm { bytes, .. } = &tail[0] {
             code.extend_from_slice(bytes);
         }
-        emit_arena_reset(&mut ctx, &mut code);
+        // A tail `asm` carries no closure survivor expression; a promoting factory
+        // never has one (`returns_promotable_closure` excludes a tail `asm`), so a
+        // plain rewind (`None`) is correct here.
+        emit_arena_reset(&mut ctx, &mut code, None)?;
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
     } else if tail_is_value_expr {
         let (head, tail) = instructions.split_at(instructions.len() - 1);
         lower_native_stmts(&mut ctx, head, &mut code, &mut loops)?;
-        if let BytecodeInstruction::Expr(expr) = &tail[0] {
-            // Route the tail to the function's return convention: an aggregate
-            // through the hidden result pointer, a float in `xmm0`, any other
-            // scalar in `rax`.
-            lower_return_value(&mut ctx, expr, &mut code)?;
-        }
-        emit_arena_reset(&mut ctx, &mut code);
+        let BytecodeInstruction::Expr(expr) = &tail[0] else {
+            unreachable!("tail_is_value_expr matched a non-Expr tail");
+        };
+        // Route the tail to the function's return convention: an aggregate through the
+        // hidden result pointer, a float in `xmm0`, any other scalar in `rax`.
+        lower_return_value(&mut ctx, expr, &mut code)?;
+        // Pass the tail expression so a promoting closure factory (whose tail is its
+        // returned closure literal / literal-bound local) sizes and relocates the
+        // survivor; a non-factory arena function ignores it and plain-rewinds.
+        emit_arena_reset(&mut ctx, &mut code, Some(expr))?;
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
     } else if tail_is_value_match {
         let (head, tail) = instructions.split_at(instructions.len() - 1);
@@ -325,7 +331,10 @@ pub(crate) fn lower_native_function(
         {
             lower_native_match(&mut ctx, scrutinee, arms, true, &mut code, &mut loops)?;
         }
-        emit_arena_reset(&mut ctx, &mut code);
+        // A value tail `match` routes its per-arm value through one post-convergence
+        // reset with no single survivor expression; a promoting factory never has this
+        // tail (`returns_promotable_closure` excludes it), so `None` (plain rewind).
+        emit_arena_reset(&mut ctx, &mut code, None)?;
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
     } else if tail_is_value_if {
         // The tail `if` lowers in value position: each branch routes the function's
@@ -342,7 +351,9 @@ pub(crate) fn lower_native_function(
         {
             lower_native_if(&mut ctx, branches, else_body, true, &mut code, &mut loops)?;
         }
-        emit_arena_reset(&mut ctx, &mut code);
+        // A value tail `if` likewise routes each branch's value through one
+        // post-convergence reset; excluded from promoting factories, so `None`.
+        emit_arena_reset(&mut ctx, &mut code, None)?;
         emit_native_epilogue(&mut code, ctx.frame_size, &ctx.saved_reg_slots);
     } else {
         lower_native_stmts(&mut ctx, instructions, &mut code, &mut loops)?;
@@ -410,6 +421,46 @@ pub(crate) fn emit_native_epilogue(
 /// and `rax` may be used as scratch). Only called when `ctx.is_arena`.
 fn emit_arena_prologue(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
     let mark = ctx.arena_mark_slot;
+
+    // Stage-4b: a PROMOTING factory relocates its survivor DOWN to the saved mark, so
+    // the mark must be a real, writable heap address. `__lullaby_heap_next` starts at
+    // `0` (unseeded) and is only lazily seeded to `__lullaby_heap_base` by the first
+    // allocation, so a factory whose closure is the program's first allocation would
+    // save mark `0` and the promoting reset would `mov [0], …` — a null write. Seed
+    // `heap_next` here (idempotent: a no-op once seeded), so the mark is always a valid
+    // address BELOW the survivor. Only a promoting factory emits this, so every other
+    // arena function's prologue stays byte-identical. The plain (non-promoting) rewind
+    // tolerates a `0` mark (it just restores the unseeded cursor), so it needs no seed.
+    if ctx.promotes_closure_return {
+        // mov rax, [rip + heap_next]
+        code.extend_from_slice(&[0x48, 0x8B, 0x05]);
+        let load_site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+        ctx.relocations.push(CodeRelocation {
+            offset: load_site as u32,
+            symbol: HEAP_NEXT_SYMBOL.to_string(),
+        });
+        // test rax, rax ; jnz +7 (skip the lea when already seeded)
+        code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        code.extend_from_slice(&[0x75, 0x07]);
+        // lea rax, [rip + heap_base]  (rax = heap region base)
+        code.extend_from_slice(&[0x48, 0x8D, 0x05]);
+        let base_site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+        ctx.relocations.push(CodeRelocation {
+            offset: base_site as u32,
+            symbol: HEAP_BASE_SYMBOL.to_string(),
+        });
+        // mov [rip + heap_next], rax  (store back — idempotent when already non-zero)
+        code.extend_from_slice(&[0x48, 0x89, 0x05]);
+        let store_site = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+        ctx.relocations.push(CodeRelocation {
+            offset: store_site as u32,
+            symbol: HEAP_NEXT_SYMBOL.to_string(),
+        });
+    }
+
     // mov rax, [rip + heap_next]
     code.extend_from_slice(&[0x48, 0x8B, 0x05]);
     let site = code.len();
@@ -450,30 +501,114 @@ fn emit_arena_prologue(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
     });
 }
 
-/// Arena-first memory (stage 1) return reset: restore the bump pointer to the entry
-/// mark (reclaiming, in one bulk rewind, every heap block the function allocated)
-/// and clear the arena-mode flag. Emitted at EVERY return/exit edge, immediately
-/// before the epilogue. Uses `r10`/`r10d` as scratch so the return value in `rax`
-/// (or `xmm0`) is preserved. A no-op unless `ctx.is_arena`.
-fn emit_arena_reset(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
+/// Arena-first memory return reset: reclaim the function's heap and restore the
+/// prior arena-mode flag. Emitted at EVERY return/exit edge, immediately AFTER
+/// `lower_return_value` and before the epilogue. A no-op unless `ctx.is_arena`.
+///
+/// Two variants, selected by whether this function PROMOTES a returned closure
+/// (`ctx.promotes_closure_return`, arena stage-4b):
+///
+/// - **Plain rewind** (every non-factory arena function, `return_expr` irrelevant):
+///   `heap_next = markF`, reclaiming in one bulk rewind every heap block the function
+///   allocated. Uses `r10` as scratch, so the return value in `rax`/`xmm0` is
+///   preserved.
+///
+/// - **Promoting rewind** (a promoting closure factory): on entry `rax` holds the
+///   returned survivor's `[code_ptr][captures…]` block pointer. The block is FLAT
+///   scalar-capture (no internal pointers — [`returns_promotable_closure`] guarantees
+///   it), so a straight word copy relocates it. Copy the `size/8` survivor words down
+///   to `markF` (`markF ≤ rax`, so the ascending copy is memmove-safe), set
+///   `heap_next = markF + size` (NOT `markF` — the survivor stays reserved above the
+///   cursor, so the caller's next allocation starts past it and the caller's later
+///   rewind reclaims it exactly once), and return `rax = markF`. This reclaims the
+///   factory's per-call scratch while promoting the survivor into the caller's region
+///   (`markF ≥ markC`). `r10`/`rdx` are scratch; `size` is a per-return-site
+///   compile-time immediate from the returned closure's layout.
+///
+/// In BOTH variants the arena-mode-flag restore (I2's co-fix) is byte-identical and
+/// stays LAST: restore the saved prior `__lullaby_alloc_mode` (`1` when an arena
+/// caller invoked this arena function, `0` at the top level) rather than hard-zeroing,
+/// so a nested arena call leaves the caller's arena mode intact.
+///
+/// `return_expr` is the return edge's value (a closure literal / literal-bound local
+/// for a promoting factory), used to size the survivor. Default-deny: a promoting
+/// factory reaching a reset site whose survivor cannot be sized returns `Err` (the
+/// function demotes cleanly) rather than emitting a plain rewind that would free the
+/// live survivor.
+fn emit_arena_reset(
+    ctx: &mut NativeCtx,
+    code: &mut Vec<u8>,
+    return_expr: Option<&BytecodeExpr>,
+) -> Result<(), String> {
     if !ctx.is_arena {
-        return;
+        return Ok(());
     }
     let mark = ctx.arena_mark_slot;
-    // mov r10, [rbp - mark] ; mov [rip + heap_next], r10  (rewind the bump pointer)
-    code.extend_from_slice(&[0x4C, 0x8B, 0x95]);
-    code.extend_from_slice(&(-mark).to_le_bytes());
-    code.extend_from_slice(&[0x4C, 0x89, 0x15]);
-    let next_site = code.len();
-    code.extend_from_slice(&[0, 0, 0, 0]);
-    ctx.relocations.push(CodeRelocation {
-        offset: next_site as u32,
-        symbol: HEAP_NEXT_SYMBOL.to_string(),
-    });
+
+    // Stage-4b: resolve the per-site survivor size for a promoting factory. Any
+    // promoting-factory reset site that cannot resolve a flat closure survivor is a
+    // demote (Err), never a plain rewind that would reclaim the live survivor.
+    let survivor_size = if ctx.promotes_closure_return {
+        let expr = return_expr.ok_or_else(|| {
+            "a promoting closure factory reached a return edge with no survivor \
+             expression to relocate; refusing to plain-rewind a live block"
+                .to_string()
+        })?;
+        Some(ctx.promoted_survivor_bytes(expr).ok_or_else(|| {
+            "a promoting closure factory's return edge does not resolve to a flat \
+             scalar-capture closure survivor; refusing to plain-rewind a live block"
+                .to_string()
+        })?)
+    } else {
+        None
+    };
+
+    match survivor_size {
+        None => {
+            // Plain rewind: mov r10, [rbp - mark] ; mov [rip + heap_next], r10.
+            code.extend_from_slice(&[0x4C, 0x8B, 0x95]);
+            code.extend_from_slice(&(-mark).to_le_bytes());
+            code.extend_from_slice(&[0x4C, 0x89, 0x15]);
+            let next_site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            ctx.relocations.push(CodeRelocation {
+                offset: next_site as u32,
+                symbol: HEAP_NEXT_SYMBOL.to_string(),
+            });
+        }
+        Some(size) => {
+            let word_count = size / 8;
+            // 1. mov r10, [rbp - mark]  (r10 = markF, the relocation dest).
+            code.extend_from_slice(&[0x4C, 0x8B, 0x95]);
+            code.extend_from_slice(&(-mark).to_le_bytes());
+            // 2. copy each survivor word from src (`rax`, preserved) down to dest
+            //    (`r10`): mov rdx, [rax + 8k] ; mov [r10 + 8k], rdx. Ascending k, and
+            //    dest ≤ src, so this is a memmove-safe forward copy.
+            for k in 0..word_count {
+                let disp = (k * 8).to_le_bytes();
+                code.extend_from_slice(&[0x48, 0x8B, 0x90]); // mov rdx, [rax + disp32]
+                code.extend_from_slice(&disp);
+                code.extend_from_slice(&[0x49, 0x89, 0x92]); // mov [r10 + disp32], rdx
+                code.extend_from_slice(&disp);
+            }
+            // 3. mov rax, r10  (return value = relocated survivor at markF).
+            code.extend_from_slice(&[0x4C, 0x89, 0xD0]);
+            // 4. lea r10, [r10 + size] ; mov [rip + heap_next], r10  (heap_next =
+            //    markF + size; the survivor stays reserved above the cursor).
+            code.extend_from_slice(&[0x4D, 0x8D, 0x92]);
+            code.extend_from_slice(&size.to_le_bytes());
+            code.extend_from_slice(&[0x4C, 0x89, 0x15]);
+            let next_site = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+            ctx.relocations.push(CodeRelocation {
+                offset: next_site as u32,
+                symbol: HEAP_NEXT_SYMBOL.to_string(),
+            });
+        }
+    }
+
     // Cross-call arena nesting (I2): RESTORE the saved prior arena-mode flag rather
-    // than hard-zeroing it. At the top level the saved value is `0` (this reset leaves
-    // arena mode, exactly as before); when an arena caller invoked this arena function
-    // the saved value is `1`, so the caller stays in arena mode after this returns.
+    // than hard-zeroing it — UNCHANGED across both reset variants, and still LAST.
     // `r10` is scratch (the return value in `rax`/`xmm0` is preserved).
     let saved_mode = ctx.arena_saved_mode_slot;
     // mov r10, [rbp - saved_mode] ; mov [rip + alloc_mode], r10  (restore prior mode)
@@ -486,6 +621,7 @@ fn emit_arena_reset(ctx: &mut NativeCtx, code: &mut Vec<u8>) {
         offset: mode_site as u32,
         symbol: ALLOC_MODE_SYMBOL.to_string(),
     });
+    Ok(())
 }
 
 /// Arena-first memory (stage 2): decide whether a loop gets a per-iteration
@@ -916,7 +1052,11 @@ pub(crate) fn lower_native_stmt(
             // through the hidden result pointer, a float in `xmm0`, any other scalar
             // in `rax`.
             lower_return_value(ctx, expr, code)?;
-            emit_arena_reset(ctx, code);
+            // Pass the returned expression so a promoting closure factory sizes and
+            // relocates its survivor from THIS return edge (per-site — different edges
+            // may return different-arity closures); a non-factory arena function
+            // ignores it and plain-rewinds.
+            emit_arena_reset(ctx, code, Some(expr))?;
             emit_native_epilogue(code, ctx.frame_size, &ctx.saved_reg_slots);
             Ok(())
         }
@@ -938,7 +1078,9 @@ pub(crate) fn lower_native_stmt(
                         .to_string(),
                 );
             }
-            emit_arena_reset(ctx, code);
+            // A bare `return` is only legal in a VOID function, which never promotes a
+            // closure return; a plain rewind (`None`) is correct.
+            emit_arena_reset(ctx, code, None)?;
             emit_native_epilogue(code, ctx.frame_size, &ctx.saved_reg_slots);
             Ok(())
         }

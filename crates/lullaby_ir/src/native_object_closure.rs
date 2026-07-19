@@ -620,6 +620,122 @@ pub(crate) fn native_fn_return_eligibility(function: &BytecodeFunction) -> Resul
     Ok(())
 }
 
+/// The maximum survivor size (in 8-byte words, `1 + captures`) a returned closure may
+/// have to be **promoted** by the mark-advance reset (arena stage-4b). At or below
+/// this cap the block is compacted by a short unrolled memmove on the return edge;
+/// above it the factory stays OFF the arena (stage-4a: the returned block is simply
+/// never reclaimed, which is sound with no promotion). Owner decision D4.
+pub(crate) const MAX_PROMOTED_CLOSURE_WORDS: usize = 8;
+
+/// Whether `function` is a factory the arena may make **promoting** (stage-4b): every
+/// return edge yields a FRESH, FLAT, scalar-capture closure literal small enough to
+/// relocate to the region mark. This is the single shared predicate gating both the
+/// eligibility side (criterion 1b admitting the factory onto the arena — see
+/// `arena_eligible_functions`) and the retention side (the local R1 carve-out in
+/// `function_is_locally_retaining`, treating the factory as non-retaining so an arena
+/// caller may rewind over it).
+///
+/// **PURELY LOCAL** — a function of `function`'s own body and the module closure
+/// layouts ONLY, never of whether `function` is itself arena-eligible. That is
+/// mandatory: the retention summary is computed BEFORE `arena_eligible_functions` and
+/// criterion 3 reads the summary, so gating this on arena status would close a
+/// summary→eligibility→summary cycle the single-sweep DFS cannot express. Locality is
+/// sound because a fresh flat closure return lands in the caller's region
+/// (`markF ≥ markC`) whether the factory promotes (arena) or merely bump-allocates into
+/// the caller's region (off-arena) — either way it dies at the caller's rewind (see
+/// `documents/lullaby_memory_management.md`).
+///
+/// Requires, in order: (1) a `fn(...)` return whose every edge is a locally-created
+/// closure literal with a native-scalar signature ([`native_fn_return_eligibility`]);
+/// (2) the tail is not a value-`if`/`match`/`asm` — those route their value through a
+/// single post-convergence reset with no per-edge survivor expression, so the per-site
+/// promoting size cannot be resolved and the factory stays off-arena; and (3) every
+/// returned closure has a resolved [`ClosureLayout`] (all captures native scalars — a
+/// pure-memmove block with no internal pointers to relocate) at or below
+/// [`MAX_PROMOTED_CLOSURE_WORDS`]. Default-deny: any unresolved edge ⇒ not promotable.
+pub(crate) fn returns_promotable_closure(
+    function: &BytecodeFunction,
+    closure_layouts: &HashMap<usize, ClosureLayout>,
+) -> bool {
+    if !function.return_type.is_function() {
+        return false;
+    }
+    if native_fn_return_eligibility(function).is_err() {
+        return false;
+    }
+    // A value tail `if`/`match` (its branches route through one post-convergence
+    // reset) or a tail `asm` (leaves `rax` by contract, no closure expression) has no
+    // per-edge survivor expression the promoting reset can size, so refuse promotion —
+    // the factory stays off-arena (stage-4a, still sound). A fn-returning factory with
+    // such a tail is in fact already native-INeligible today (its tail-branch closures
+    // are not collected as return edges, so `returns_only_local_closure_literals`
+    // fails), but this keeps the promotion gate self-contained and default-deny.
+    if matches!(
+        function.instructions.last(),
+        Some(
+            BytecodeInstruction::If { .. }
+                | BytecodeInstruction::Match { .. }
+                | BytecodeInstruction::Asm { .. }
+        )
+    ) {
+        return false;
+    }
+    // Every return edge must resolve to a closure id whose flat scalar-capture layout
+    // exists and fits the promotion cap.
+    let Some(ids) = return_edge_closure_ids(function) else {
+        return false;
+    };
+    ids.iter().all(|id| {
+        closure_layouts
+            .get(id)
+            // The survivor block is `1 + captures` words; `+1 ≤ CAP` ⟺ `captures < CAP`.
+            .is_some_and(|layout| layout.captures.len() < MAX_PROMOTED_CLOSURE_WORDS)
+    })
+}
+
+/// The closure `id` of every return-edge value of `function`, or `None` if any edge is
+/// not a resolvable closure literal (a direct `fn …` literal, or a local bound to
+/// one). Mirrors [`returns_only_local_closure_literals`]'s edge collection but yields
+/// the ids (so the promoting reset can size each survivor per-site), resolving a
+/// returned literal-bound local through its `let`.
+fn return_edge_closure_ids(function: &BytecodeFunction) -> Option<Vec<usize>> {
+    let mut literal_ids: HashMap<String, usize> = HashMap::new();
+    collect_closure_literal_local_ids(&function.instructions, &mut literal_ids);
+    let mut edges: Vec<&BytecodeExpr> = Vec::new();
+    collect_return_value_exprs(&function.instructions, &mut edges);
+    if edges.is_empty() {
+        return None;
+    }
+    let mut ids = Vec::with_capacity(edges.len());
+    for e in edges {
+        match &e.kind {
+            BytecodeExprKind::Closure { id } => ids.push(*id),
+            BytecodeExprKind::Variable(n) => ids.push(*literal_ids.get(n)?),
+            _ => return None,
+        }
+    }
+    Some(ids)
+}
+
+/// Collect every local `name` bound by `let name = <closure literal>` to its closure
+/// `id` — the name→id analogue of [`collect_closure_literal_lets`], so a returned
+/// literal-bound local can be sized for the promoting reset.
+fn collect_closure_literal_local_ids(
+    body: &[BytecodeInstruction],
+    out: &mut HashMap<String, usize>,
+) {
+    for stmt in body {
+        if let BytecodeInstruction::Let { name, value, .. } = stmt
+            && let BytecodeExprKind::Closure { id } = &value.kind
+        {
+            out.insert(name.clone(), *id);
+        }
+        for nested in stmt_nested_bodies(stmt) {
+            collect_closure_literal_local_ids(nested, out);
+        }
+    }
+}
+
 /// Collect every local `name` bound anywhere in `body` by `let name = <closure
 /// literal>`, so [`returns_only_local_closure_literals`] can tell a returned
 /// literal-bound local from a returned fn parameter or factory result.

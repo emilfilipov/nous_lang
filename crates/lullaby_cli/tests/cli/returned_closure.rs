@@ -341,3 +341,137 @@ fn main -> i64
 ";
     assert_native_skips("ret_stored_skip", source, 42);
 }
+
+// -- Arena stage-4b: MARK-ADVANCE PROMOTION of a returned closure --------------
+//
+// The factory is now ARENA-eligible (criterion 1b admits a promotable closure
+// factory): its return-edge reset PROMOTES the survivor — relocates the returned
+// `[code_ptr][captures…]` block DOWN to the region mark and advances `heap_next`
+// past it (`heap_next = markF + size`, NOT `markF`) — so the factory reclaims its
+// per-call scratch while the survivor lands in the caller's region and stays live
+// until the caller's own rewind. These pins are four-tier (interpreters via stdout,
+// native via a real `.exe` exit code); the teeth (a plain reset, a wrong size, an
+// admitted non-fresh survivor) are proven by injection in this suite's history and
+// the closure fuzzer.
+
+/// Four-tier agreement WITHOUT a hardcoded expected: the interpreters establish the
+/// ground truth and native must reproduce it. Used for loop-sum shapes whose exact
+/// value is tedious to hand-compute but must be identical across tiers.
+fn assert_native_matches_interp(tag: &str, source: &str) -> i64 {
+    let dir = ScratchDir::new(tag);
+    let interp = interp_value(&dir, tag, source);
+    let native = native_exit(&dir, tag, source);
+    assert_eq!(
+        native as i64, interp,
+        "native must agree with the interpreters ({interp}) for {tag}"
+    );
+    interp
+}
+
+/// **Bounded-heap proof that promotion + reclamation FIRES.** A hot loop calls a
+/// factory 20 000 times; the factory allocates a ~130-byte scratch string per call and
+/// returns a closure capturing an `i64` derived from it. WITH the promoting reset the
+/// factory reclaims that scratch each call (only the 16-byte survivor accumulates:
+/// 20 000 × 16 B ≈ 320 KB, under the 1 MB native heap), so native runs to completion
+/// and agrees with the interpreters. WITHOUT reclamation the scratch would leak
+/// (20 000 × ~150 B ≈ 3 MB) and the native allocator's exhaustion guard would `ud2`-trap
+/// — a divergent (crashing) exit. Native matching the interpreters is therefore only
+/// possible because the promoting reset reclaims the per-call scratch.
+#[test]
+fn native_promoting_factory_reclaims_scratch_bounded_heap() {
+    let source = "\
+fn make_val n i64 -> fn(i64) -> i64
+    let pad string = \"PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING-PADDING\"
+    let m i64 = n + len(pad)
+    fn x i64 -> x + m
+fn hot -> i64
+    let acc i64 = 0
+    let i i64 = 0
+    while i < 20000
+        let g fn(i64) -> i64 = make_val(i)
+        acc = acc + g(0)
+        i = i + 1
+    acc
+fn main -> i64
+    hot()
+";
+    assert_native_matches_interp("promote_bounded", source);
+}
+
+/// The promoted survivor stays live in the caller's region until the caller's own
+/// rewind — even after the caller does MORE heap allocation. The factory is now
+/// arena-eligible (promoting); after obtaining the closure `main` runs a heap-churning
+/// helper (`churn`, itself an arena function whose confined loop reclaims per
+/// iteration) and only THEN invokes the closure. Reading back exactly `222` proves the
+/// survivor was promoted into `main`'s region and never reclaimed by the factory's or
+/// churn's rewinds.
+#[test]
+fn native_promoting_survivor_survives_more_allocation() {
+    let source = "\
+fn make_const n i64 -> fn(i64) -> i64
+    let pad string = \"factory-scratch-reclaimed-by-the-promoting-reset\"
+    let m i64 = n + len(pad) - len(pad)
+    fn x i64 -> x + m
+fn churn -> i64
+    let total i64 = 0
+    let i i64 = 0
+    while i < 50
+        let s string = \"reuse-the-heap-region-aggressively\"
+        total = total + len(s)
+        i = i + 1
+    total
+fn main -> i64
+    let g fn(i64) -> i64 = make_const(222)
+    let junk i64 = churn()
+    g(junk - junk)
+";
+    assert_four_tiers("promote_survive_alloc", source, 222);
+}
+
+/// MULTIPLE return edges returning DIFFERENT-arity closures, so the promoting reset
+/// sizes the survivor PER RETURN SITE: the `return` edge yields a 1-capture (2-word)
+/// closure and the tail edge a 2-capture (3-word) closure. A single function-wide size
+/// would mis-relocate one of them.
+#[test]
+fn native_promoting_multiple_arity_edges() {
+    let source = "\
+fn pick c bool a i64 b i64 -> fn(i64) -> i64
+    if c
+        return fn x i64 -> x + a
+    fn x i64 -> x + a + b
+fn main -> i64
+    let g fn(i64) -> i64 = pick(false, 10, 20)
+    let h fn(i64) -> i64 = pick(true, 10, 20)
+    g(1) + h(1)
+";
+    // g = x+10+20 → g(1)=31; h = x+10 → h(1)=11; 31 + 11 = 42.
+    assert_four_tiers("promote_multi_arity", source, 42);
+}
+
+/// FLOAT captures survive the relocation (the promoting reset copies raw words, so an
+/// `f64` capture's bits are preserved), while the factory's per-call scratch is
+/// reclaimed. A hot loop of 8 000 iterations over a float factory with scratch stays
+/// heap-bounded (proving reclamation) AND computes the same float-threshold count on
+/// every tier (proving the relocated float captures are read from the right words).
+#[test]
+fn native_promoting_float_captures_relocated() {
+    let source = "\
+fn make_lin a f64 b f64 -> fn(f64, f64) -> f64
+    let pad string = \"float-factory-scratch-string-reclaimed-by-the-promoting-reset-each-call\"
+    let n i64 = len(pad)
+    fn x f64 y f64 -> a * x + b * y
+fn run -> i64
+    let total i64 = 0
+    let i i64 = 0
+    while i < 8000
+        let g fn(f64, f64) -> f64 = make_lin(2.0, 3.0)
+        if g(10.0, 5.0) > 30.0
+            total = total + 1
+        i = i + 1
+    total
+fn main -> i64
+    run()
+";
+    // g(10,5) = 2*10 + 3*5 = 35 > 30 every iteration → total = 8000.
+    assert_four_tiers("promote_float", source, 8000);
+}

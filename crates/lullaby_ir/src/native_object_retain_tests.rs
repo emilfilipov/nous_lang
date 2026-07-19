@@ -44,7 +44,8 @@ fn heap_aggs_for(module: &BytecodeModule) -> std::collections::HashSet<String> {
 fn summary_for(source: &str) -> HashMap<String, bool> {
     let module = module_for(source);
     let heap_aggs = heap_aggs_for(&module);
-    retaining_summary(&module, &heap_aggs)
+    let closure_layouts = compute_module_closure_layouts(&module);
+    retaining_summary(&module, &heap_aggs, &closure_layouts)
 }
 
 /// The native signatures of `names`, built exactly as the program driver builds them, so
@@ -73,7 +74,8 @@ fn arena_for(source: &str) -> std::collections::HashSet<String> {
     let program = emit_native_program(&module).expect("emit native program");
     let eligible = program.compiled.clone();
     let signatures = native_signatures_for(&module, &eligible);
-    arena_eligible_functions(&module, &eligible, &signatures)
+    let closure_layouts = compute_module_closure_layouts(&module);
+    arena_eligible_functions(&module, &eligible, &signatures, &closure_layouts)
 }
 
 // -- Positive classification: non-retaining leaf + non-retaining non-leaf caller ----
@@ -174,23 +176,72 @@ fn heap_returning_callee_and_its_caller_are_retaining() {
     );
 }
 
-/// R2 — a callee that captures into a RETURNED closure is retaining (a closure literal
-/// is present, and it returns a `fn` value that carries the capture).
+/// R1/R2 — a callee that returns a closure capturing a HEAP value is retaining: the
+/// returned `fn` carries a live heap pointer (a `string`), which is NOT a flat
+/// scalar-capture survivor the stage-4b promotion can relocate, so it stays retaining.
 #[test]
-fn closure_capturing_callee_is_retaining() {
+fn heap_capturing_closure_callee_is_retaining() {
     let summary = summary_for(concat!(
-        "fn trap a i64 -> fn() -> i64\n",
-        "    let f fn() -> i64 = fn -> a + 1\n",
+        "fn trap p string -> fn() -> string\n",
+        "    let f fn() -> string = fn -> p\n",
         "    f\n",
         "\n",
         "fn main -> i64\n",
-        "    let g fn() -> i64 = trap(5)\n",
-        "    g()\n",
+        "    let g fn() -> string = trap(\"x\")\n",
+        "    len(g())\n",
     ));
     assert_eq!(
         summary.get("trap"),
         Some(&true),
-        "a closure-capturing/fn-returning callee is retaining (R2/R1)"
+        "a heap-capturing / non-scalar-return closure factory is retaining (R1/R2)"
+    );
+}
+
+/// Stage-4b R1 carve-out — a PROMOTABLE closure factory (every return edge a fresh,
+/// flat, scalar-capture closure literal small enough to relocate) is NON-retaining:
+/// its survivor lands in the caller's region (`markF ≥ markC`) and dies at the
+/// caller's rewind, so a caller may arena over it. This is the local carve-out that
+/// makes stage-4b callers arena-eligible; it must NOT depend on the factory's own
+/// arena status.
+#[test]
+fn promotable_closure_factory_is_non_retaining() {
+    let summary = summary_for(concat!(
+        "fn make_adder n i64 -> fn(i64) -> i64\n",
+        "    fn x i64 -> x + n\n",
+        "\n",
+        "fn main -> i64\n",
+        "    let g fn(i64) -> i64 = make_adder(5)\n",
+        "    g(3)\n",
+    ));
+    assert_eq!(
+        summary.get("make_adder"),
+        Some(&false),
+        "a promotable scalar-capture closure factory is non-retaining (stage-4b R1 carve-out)"
+    );
+}
+
+/// The stage-4b carve-out is narrow: it neutralizes ONLY the R1 `fn`-return penalty
+/// and the R2 closure-literal penalty for a promotable factory — every OTHER retention
+/// channel still applies. Here a promotable factory also calls an `extern` C function
+/// (R4 denied, since C can stash a pointer), so it stays retaining despite its
+/// promotable return. This proves the carve-out does not blanket-clear retention.
+#[test]
+fn promotable_factory_calling_extern_is_retaining() {
+    let summary = summary_for(concat!(
+        "extern fn c_side a i64 -> i64\n",
+        "\n",
+        "fn make_adder n i64 -> fn(i64) -> i64\n",
+        "    let m i64 = c_side(n)\n",
+        "    fn x i64 -> x + m\n",
+        "\n",
+        "fn main -> i64\n",
+        "    let g fn(i64) -> i64 = make_adder(5)\n",
+        "    g(3)\n",
+    ));
+    assert_eq!(
+        summary.get("make_adder"),
+        Some(&true),
+        "a promotable factory that also calls an extern C fn stays retaining (R4)"
     );
 }
 

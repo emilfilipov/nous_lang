@@ -1397,7 +1397,8 @@ fn body_has_unbounded_heap_loop(
 /// Compute the set of arena-eligible function names for a module. Default-deny:
 /// a function qualifies only when ALL hold — (1) its return type is a native
 /// scalar (`i64`/`bool`/fixed-width lowered as `i64`, `f64`, `f32` — never a heap
-/// type, so no heap value can escape via the return), (2) it actually touches the
+/// type, so no heap value can escape via the return) OR a **promotable closure
+/// factory** (criterion 1b), (2) it actually touches the
 /// heap (else the arena is a no-op), (3) **every callee it invokes is provably
 /// non-retaining** — a native builtin, or a module function the cross-call retention
 /// summary ([`all_callees_non_retaining`], I2) proves cannot stash a pointer to a
@@ -1416,6 +1417,7 @@ pub(crate) fn arena_eligible_functions(
     module: &BytecodeModule,
     eligible_names: &[String],
     signatures: &HashMap<String, NativeSignature>,
+    closure_layouts: &HashMap<usize, ClosureLayout>,
 ) -> std::collections::HashSet<String> {
     // Aggregate types that transitively carry a heap field/payload (a struct with a
     // `string` field, an `option<string>`/user enum with a heap payload). The escape
@@ -1443,7 +1445,7 @@ pub(crate) fn arena_eligible_functions(
     // it invokes is provably non-retaining per this summary. Default-deny; cycles
     // pre-poisoned; one reverse-topological sweep, no fixpoint. See
     // `native_object_retain.rs`.
-    let summary = retaining_summary(module, &heap_aggs);
+    let summary = retaining_summary(module, &heap_aggs, closure_layouts);
     let module_fns: std::collections::HashSet<&str> =
         module.functions.iter().map(|f| f.name.as_str()).collect();
     let extern_fns: std::collections::HashSet<&str> =
@@ -1461,12 +1463,16 @@ pub(crate) fn arena_eligible_functions(
         let Some(function) = module.functions.iter().find(|f| &f.name == name) else {
             continue;
         };
-        // (1b) A function that RETURNS a closure (a `fn(...)`, admitted as `I64` so it
-        // passes criterion 1) must NEVER arena: the returned block outlives the call, so
-        // a return-edge rewind would reclaim a live block (use-after-free). Callers are
-        // kept off it by the retention summary (R1); this keeps the FACTORY itself off.
-        // (Increment b instead PROMOTES the block and lifts this.)
-        if function.return_type.is_function() {
+        // (1b, stage-4b) A `fn(...)`-returning function (admitted as `I64`, so it passes
+        // criterion 1) arenas ONLY when it is a PROMOTABLE factory — every return edge a
+        // fresh flat scalar-capture literal the return-edge PROMOTING reset relocates to
+        // the region mark (`emit_arena_reset`). A non-promotable `fn` return (returned
+        // param, heap-capturing / above-cap / call-returned closure) stays off-arena
+        // (stage-4a — a plain rewind would reclaim the live returned block).
+        // See `returns_promotable_closure`.
+        if function.return_type.is_function()
+            && !returns_promotable_closure(function, closure_layouts)
+        {
             continue;
         }
         // (2) Actually uses the heap.

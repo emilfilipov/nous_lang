@@ -517,6 +517,30 @@ relaxation. See [native_backend_contract.md](native_backend_contract.md) for the
 predicate, the `alloc_mode` nesting fix, and the injection-verified use-after-free the
 gate prevents.
 
+**Escape→promotion of a returned closure (increment 4b, owner decision D4 — Option A).**
+A **closure factory** — a function whose every return edge is a fresh, flat,
+scalar-capture closure literal small enough to relocate (≤ 8 words) — is now
+**arena-eligible and PROMOTING**, the first delivered case of the escape→promotion
+policy above. Instead of a plain bump-pointer rewind, its return-edge reset **relocates
+the returned `[code_ptr][captures…]` survivor down to the region mark** (a pure memmove
+— the block is flat scalar-capture, so there are no internal pointers to fix up) and
+advances `heap_next = markF + size` past it. The survivor therefore lands in the
+**caller's** region (`markF ≥ markC`) and stays live until the caller's own rewind,
+while the factory **reclaims its per-call scratch** (everything it allocated below the
+survivor). The load-bearing detail is the advance: leaving `heap_next = markF` (a plain
+rewind) would put the live survivor above the free cursor, so the caller's next
+allocation overwrites it — a cross-call use-after-free (verified by injection). The
+factory is classified **non-retaining** so a caller may rewind over it, computed
+**purely locally** (the factory's body + closure layouts, never its own arena status) to
+avoid a summary→eligibility→summary cycle the single-sweep analysis cannot express; the
+spawn/`await` and raw-pointer/`alloc`/`extern` channels still keep a factory retaining. A
+non-promotable `fn`-returning function (a returned parameter, a heap-capturing,
+above-cap, or call-returned closure) stays **off the arena** — its returned block is
+simply never reclaimed, which is sound with no promotion. Deferred: `string`,
+deep-aggregate, and loop-edge promotion. See
+[native_backend_contract.md](native_backend_contract.md) for the exact promoting-reset
+instruction sequence, the soundness induction, and the injection-verified teeth.
+
 ### Cycles
 
 Non-cycle-collecting RC leaks reference cycles (`a → b → a`). Lullaby mitigates

@@ -308,6 +308,17 @@ pub(crate) struct NativeCtx<'a> {
     /// The frame slot (`[rbp - arena_mark_slot]`) holding the saved bump pointer
     /// when `is_arena`; `0` otherwise (unused).
     arena_mark_slot: i32,
+    /// Arena stage-4b: this arena function is a **promoting closure factory** — it
+    /// returns a fresh flat scalar-capture closure literal, so its return-edge reset
+    /// must PROMOTE the survivor (relocate it to `arena_mark_slot` and advance
+    /// `heap_next` past it) rather than plain-rewind past it (which would free the live
+    /// survivor — a cross-call use-after-free). `true` iff `is_arena` AND the return
+    /// type is a `fn(...)`, which — because criterion 1b only admits a *promotable*
+    /// factory onto the arena — implies the factory is promotable. The per-return-site
+    /// survivor size is resolved from each return edge's closure layout in
+    /// `emit_arena_reset`. `false` for every non-factory arena function (a plain
+    /// bump-pointer rewind).
+    promotes_closure_return: bool,
     /// The frame slot (`[rbp - arena_saved_mode_slot]`) holding the arena-mode flag's
     /// value on entry, when `is_arena`; `0` otherwise (unused). The prologue SAVES the
     /// prior `__lullaby_alloc_mode` here and sets it to `1`; the return reset RESTORES
@@ -728,6 +739,10 @@ impl<'a> NativeCtx<'a> {
             saved_reg_slots,
             fast_math: false,
             is_arena,
+            // Stage-4b: an arena factory returning a `fn(...)` is promotable by
+            // construction (criterion 1b admits only promotable factories onto the
+            // arena), so its return-edge reset promotes the survivor.
+            promotes_closure_return: is_arena && function.return_type.is_function(),
             arena_mark_slot,
             arena_saved_mode_slot,
             arena_loop_mark_base,
@@ -794,6 +809,25 @@ impl<'a> NativeCtx<'a> {
         self.locals
             .get(name)
             .ok_or_else(|| format!("unknown native local `{name}`"))
+    }
+
+    /// The survivor block size in BYTES to PROMOTE at a return edge whose value is
+    /// `expr`, when this function is a promoting closure factory — or `None` when
+    /// `expr` does not resolve to a closure literal whose flat scalar-capture layout is
+    /// known. The block is `1 + captures` words (a code pointer plus one raw word per
+    /// scalar capture); the promoting reset relocates exactly these words to the region
+    /// mark and sets `heap_next = mark + size`. `expr` is a direct `Closure { id }`
+    /// literal or a local bound to one (`closure_locals`), matching the return edges
+    /// `returns_promotable_closure` admits.
+    fn promoted_survivor_bytes(&self, expr: &BytecodeExpr) -> Option<i32> {
+        let id = match &expr.kind {
+            BytecodeExprKind::Closure { id } => *id,
+            BytecodeExprKind::Variable(name) => *self.closure_locals.get(name)?,
+            _ => return None,
+        };
+        let layout = self.closure_layouts.get(&id)?;
+        let words = 1 + layout.captures.len();
+        Some((words as i32) * 8)
     }
 }
 

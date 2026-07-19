@@ -29,10 +29,20 @@
 //! * **R1 — scalar return.** `f`'s return type is not a heap value
 //!   (`!type_is_heap(return_type, heap_aggs)`, the exact criterion-1 test) and is not
 //!   a `fn(...)` value (a closure return can carry heap captures). Returning a *fresh*
-//!   heap value is provably safe but is DEFERRED past slice 1.
+//!   heap value is provably safe but is DEFERRED past slice 1. **Stage-4b carve-out:** a
+//!   `fn(...)` return that is a **promotable closure factory** ([`returns_promotable_closure`]
+//!   — every edge a fresh, flat, scalar-capture closure literal ≤ 8 words) is NON-retaining,
+//!   because its survivor lands in the caller's region (`markF ≥ markC`) and dies at the
+//!   caller's rewind. This is computed PURELY LOCALLY (`f`'s body + closure layouts, never
+//!   `f`'s own arena status) to avoid a summary→eligibility→summary cycle the single sweep
+//!   cannot express.
 //! * **R2 — no escaping capture.** No closure literal, no `await`, and no
 //!   `spawn`/`tell`/`ask` call, and `f` is not an `async fn`. A capture block or a
-//!   spawned task can outlive the call carrying a heap pointer.
+//!   spawned task can outlive the call carrying a heap pointer. **Stage-4b carve-out:** a
+//!   promotable factory's own closure LITERALS are not counted (they are the promoted
+//!   survivor / non-escaping helpers), so it checks only the residual
+//!   `spawn`/`await`/`tell`/`ask` sub-channel ([`body_has_spawn_or_await_channel`]); every
+//!   other function still treats a closure literal itself as a capture channel.
 //! * **R3 — no raw-memory aliasing.** No `ptr<…>`-typed expression (reuse
 //!   [`is_pointer_type`] — it uniformly catches `addr_of`/`ptr_offset`/`ptr_cast`/
 //!   `int_to_ptr`/every raw builtin by TYPE), no inline `asm`, and no `alloc` heap box
@@ -94,6 +104,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn retaining_summary(
     module: &BytecodeModule,
     heap_aggs: &HashSet<String>,
+    closure_layouts: &HashMap<usize, ClosureLayout>,
 ) -> HashMap<String, bool> {
     let module_fns: HashSet<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
     let extern_fns: HashSet<&str> = module.extern_functions.iter().map(String::as_str).collect();
@@ -106,8 +117,9 @@ pub(crate) fn retaining_summary(
     for f in &module.functions {
         let fn_typed = fn_typed_binding_names(f);
         let calls = analyze_calls(&f.instructions, &module_fns, &extern_fns, &fn_typed);
-        let local = function_is_locally_retaining(f, module, heap_aggs, &async_fns)
-            || calls.has_denied_call;
+        let local =
+            function_is_locally_retaining(f, module, heap_aggs, &async_fns, closure_layouts)
+                || calls.has_denied_call;
         local_retaining.insert(f.name.as_str(), local);
         callees.insert(f.name.as_str(), calls.module_callees);
     }
@@ -206,20 +218,49 @@ fn function_is_locally_retaining(
     module: &BytecodeModule,
     heap_aggs: &HashSet<String>,
     async_fns: &HashSet<&str>,
+    closure_layouts: &HashMap<usize, ClosureLayout>,
 ) -> bool {
+    // A PROMOTABLE closure factory (arena stage-4b): its returned closure literal is a
+    // fresh, flat, scalar-capture block that lands in the CALLER's region (`markF ≥
+    // markC`) and dies at the caller's rewind, so the factory does NOT retain a heap
+    // pointer past its return — whether it promotes (arena) or bump-allocates
+    // (off-arena). This is the R1 carve-out: it is computed PURELY LOCALLY (a function
+    // of `f`'s body + the closure layouts, never of whether `f` is itself arena) so
+    // the summary→eligibility→summary cycle the single-sweep DFS cannot express is
+    // avoided. See `returns_promotable_closure`.
+    let promotable = returns_promotable_closure(f, closure_layouts);
     // R1 — scalar return. A heap return (string/list/map/array<string>, or a
     // heap-carrying struct/enum/generic instantiation) lets a live heap value leave
-    // the call; a `fn(...)` return can carry heap captures. Both ⇒ retaining. (A fresh
-    // heap return is provably safe but DEFERRED.)
-    if type_is_heap(&f.return_type, heap_aggs) || f.return_type.is_function() {
+    // the call ⇒ retaining. (A fresh heap return is provably safe but DEFERRED.)
+    if type_is_heap(&f.return_type, heap_aggs) {
+        return true;
+    }
+    // R1 — a `fn(...)` return retains UNLESS it is a promotable closure factory (its
+    // survivor lands in the caller's region, per the carve-out above). A returned fn
+    // PARAMETER, a heap-capturing / above-cap / call-returned closure return is not
+    // promotable and still retains.
+    if f.return_type.is_function() && !promotable {
         return true;
     }
     // R2 — no escaping capture: an `async fn` spawns a thread carrying its arguments.
     if async_fns.contains(f.name.as_str()) {
         return true;
     }
-    // R2 — no closure literal, no `await`, no `spawn`/`tell`/`ask`.
-    if body_has_capture_channel(&f.instructions) {
+    // R2 — the capture channels. For a PROMOTABLE factory its closure LITERALS are not
+    // a retention channel: each is either the returned survivor (promoted into the
+    // caller's region) or a non-escaping helper closure dead at its return (reclaimed
+    // by `f`'s own rewind, or below the survivor in `f`'s region), and — with no
+    // mutable globals in the language — a fresh flat closure has no way to hand a heap
+    // pointer to a third party EXCEPT `spawn`/`tell`/`ask`/`await`. So a promotable
+    // factory checks only that residual sub-channel; every other function treats a
+    // closure literal itself as a capture channel. This is the R2 half of the stage-4b
+    // carve-out.
+    let has_channel = if promotable {
+        body_has_spawn_or_await_channel(&f.instructions)
+    } else {
+        body_has_capture_channel(&f.instructions)
+    };
+    if has_channel {
         return true;
     }
     // R3 — no `alloc` heap box (manually managed; invisible to the escape analysis).
@@ -269,6 +310,57 @@ fn expr_has_capture_channel(expr: &BytecodeExpr) -> bool {
         }
         BytecodeExprKind::Field { target, .. } => expr_has_capture_channel(target),
         BytecodeExprKind::Array(elements) => elements.iter().any(expr_has_capture_channel),
+        BytecodeExprKind::Integer(_)
+        | BytecodeExprKind::Float(_)
+        | BytecodeExprKind::Bool(_)
+        | BytecodeExprKind::String(_)
+        | BytecodeExprKind::Char(_)
+        | BytecodeExprKind::Variable(_) => false,
+    }
+}
+
+/// Whether a body contains the R2 sub-channel that survives the stage-4b promotable-
+/// factory carve-out: an `await`, or a `spawn`/`tell`/`ask` call. This is
+/// [`body_has_capture_channel`] MINUS the closure-literal channel — a promotable
+/// factory's own closure literals are the promoted survivor / non-escaping helpers, so
+/// only handing a heap pointer to another thread/actor (or blocking on one) can still
+/// leak past its return. See [`function_is_locally_retaining`].
+fn body_has_spawn_or_await_channel(body: &[BytecodeInstruction]) -> bool {
+    body.iter().any(instruction_has_spawn_or_await_channel)
+}
+
+fn instruction_has_spawn_or_await_channel(instruction: &BytecodeInstruction) -> bool {
+    if fold_instruction_bodies_any(instruction, &mut |body| {
+        body_has_spawn_or_await_channel(body)
+    }) {
+        return true;
+    }
+    instruction_exprs(instruction)
+        .iter()
+        .any(|e| expr_has_spawn_or_await_channel(e))
+}
+
+fn expr_has_spawn_or_await_channel(expr: &BytecodeExpr) -> bool {
+    match &expr.kind {
+        // A closure literal is NOT counted here (that is exactly the carve-out): a
+        // promotable factory's literals are the survivor / non-escaping helpers.
+        BytecodeExprKind::Closure { .. } => false,
+        // `await` blocks on a future produced by a spawned task; `spawn`/`tell`/`ask`
+        // hand a value to another thread/actor that can retain it.
+        BytecodeExprKind::Await { .. } => true,
+        BytecodeExprKind::Call { name, args } => {
+            matches!(name.as_str(), "spawn" | "tell" | "ask")
+                || args.iter().any(expr_has_spawn_or_await_channel)
+        }
+        BytecodeExprKind::Binary { left, right, .. } => {
+            expr_has_spawn_or_await_channel(left) || expr_has_spawn_or_await_channel(right)
+        }
+        BytecodeExprKind::Unary { expr, .. } => expr_has_spawn_or_await_channel(expr),
+        BytecodeExprKind::Index { target, index } => {
+            expr_has_spawn_or_await_channel(target) || expr_has_spawn_or_await_channel(index)
+        }
+        BytecodeExprKind::Field { target, .. } => expr_has_spawn_or_await_channel(target),
+        BytecodeExprKind::Array(elements) => elements.iter().any(expr_has_spawn_or_await_channel),
         BytecodeExprKind::Integer(_)
         | BytecodeExprKind::Float(_)
         | BytecodeExprKind::Bool(_)
