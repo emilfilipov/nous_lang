@@ -766,3 +766,355 @@ fn main -> i64
 ";
     assert_parity(source, 17);
 }
+
+// -- Generated out-of-bounds / boundary index fuzzing (trap-vs-value parity) ----
+//
+// The pinned OOB cases above are hand-written. This section GENERATES the class
+// continuously so the memory-safety miscompile it guards (a WASM element access
+// with no bounds check silently reading/writing a neighboring heap object) can
+// never silently regress, and nearby variants get discovered automatically.
+//
+// The generator emits random small programs that build `array<i64>` /
+// `list<i64>` / struct-array-field aggregates and read/write at an index drawn
+// from a mix of: clearly in-bounds, the exact boundaries (`0`, `len-1`, `len`),
+// negative, and far-out-of-range — some as constant literals, some as **opaque
+// dynamic** expressions the optimizer cannot constant-fold (a function parameter
+// or a loop-derived local). For each program it runs all four in-process tiers
+// (AST, IR, bytecode interpreters + `wasmi`) and enforces the parity rule:
+//
+//   * in-bounds     ⇒ every tier returns the SAME `i64` value;
+//   * out-of-bounds ⇒ every interpreter raises `L0413` AND `wasmi` TRAPS
+//     (`main.call` returns `Err`) — never a value.
+//
+// The generator PREDICTS oob/in-bounds from the drawn index and the known length,
+// and the oracle cross-checks that prediction against the interpreters' actual
+// behavior, so a wrong prediction is itself a loud failure — the fuzzer cannot
+// silently classify everything as in-bounds and pass toothless. The teeth for the
+// real bug are the wasm-vs-interpreter comparisons: a tier returning a value where
+// another traps, or two tiers returning different values, fails with the seed and
+// the reproducing program.
+
+/// Deterministic xorshift64 PRNG — seed-reproducible, no external `rand`, so a
+/// discovered mismatch reproduces exactly from its printed seed.
+struct OobRng(u64);
+
+impl OobRng {
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    /// Uniform in `0..n` (n > 0).
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+
+    /// Uniform in `lo..=hi`.
+    fn range(&mut self, lo: i64, hi: i64) -> i64 {
+        let span = (hi - lo + 1) as u64;
+        lo + (self.next_u64() % span) as i64
+    }
+}
+
+/// Normalize an interpreter result to `Ok(i64)` on any integer/bool value or
+/// `Err(code)` on a runtime error (the diagnostic code string, e.g. `"L0413"`).
+fn oob_norm(r: Result<Value, lullaby_runtime::RuntimeError>) -> Result<i64, String> {
+    match r {
+        Ok(Value::I64(n)) => Ok(n),
+        Ok(Value::Int { value, .. }) => Ok(value),
+        Ok(Value::Bool(b)) => Ok(b as i64),
+        Ok(other) => Err(format!("non-i64:{other:?}")),
+        Err(e) => Err(e.code.to_string()),
+    }
+}
+
+/// Run `source` on the three interpreter tiers (AST tree-walker, IR, bytecode VM)
+/// and return each tier's normalized result. A value-vs-error divergence between
+/// the three is itself a finding the caller asserts against.
+fn oob_interp_results(source: &str) -> [Result<i64, String>; 3] {
+    let tokens = lex(source).expect("lex oob program");
+    let program = parse(&tokens).expect("parse oob program");
+    let checked = validate(&program).expect("validate oob program");
+    let ast = oob_norm(lullaby_runtime::run_main_with_args(
+        &checked.program,
+        Vec::new(),
+    ));
+    let module = lower(&checked).expect("lower oob program");
+    let ir = oob_norm(crate::run_main_with_args(&module, Vec::new()));
+    let bc = crate::lower_to_bytecode(&module);
+    let bcr = oob_norm(crate::run_bytecode_main_with_args(&bc, Vec::new()));
+    [ast, ir, bcr]
+}
+
+/// Emit + run the WASM module for `source` under `wasmi`, returning `Ok(value)`
+/// when `main` returns and `Err(())` when it TRAPS (the `unreachable` the bounds
+/// check emits). A pipeline/instantiation failure still panics loudly, so a broken
+/// emission is a test failure, never mistaken for a trap.
+fn oob_wasm_result(source: &str) -> Result<i64, ()> {
+    let module = module_for(source);
+    let artifact = emit_wasm_module(&module).expect("emit wasm");
+    let engine = Engine::default();
+    let wmodule = WasmiModule::new(&engine, &artifact.bytes).expect("wasmi parse/validate module");
+    let mut store = Store::new(&engine, ());
+    let mut linker = <Linker<()>>::new(&engine);
+    linker
+        .func_wrap("env", "log_i64", |_: i64| {})
+        .expect("link log_i64");
+    linker
+        .func_wrap("env", "console_log", |_: i32, _: i32| {})
+        .expect("link console_log");
+    linker
+        .func_wrap("env", "dom_set_text", |_: i32, _: i32, _: i32, _: i32| {})
+        .expect("link dom_set_text");
+    let instance = linker
+        .instantiate_and_start(&mut store, &wmodule)
+        .expect("instantiate");
+    let main = instance
+        .get_typed_func::<(), i64>(&store, "main")
+        .expect("main export with signature () -> i64");
+    main.call(&mut store, ()).map_err(|_| ())
+}
+
+/// Draw an index for a container of length `len` (>= 1) from the mixed pool:
+/// interior in-bounds, the exact boundaries (`0`, `len-1`, `len`), negatives, and
+/// far-out-of-range on both sides. Roughly half the draws land out of bounds.
+fn oob_draw_index(rng: &mut OobRng, len: i64) -> i64 {
+    match rng.below(9) {
+        0 => rng.range(0, len - 1),  // interior, in-bounds
+        1 => 0,                      // low boundary, in-bounds
+        2 => len - 1,                // high boundary, in-bounds
+        3 => len,                    // just past the end, OOB
+        4 => -1,                     // negative boundary, OOB
+        5 => rng.range(-40, -2),     // far negative, OOB
+        6 => len + rng.range(1, 20), // far positive, OOB
+        7 => len + 1,                // just-past + 1, OOB
+        _ => rng.range(0, len + 3),  // mixed: may land either side
+    }
+}
+
+/// Build a `list<i64>` of `len` random elements via a `list_new()` + `push` chain,
+/// leaving the final list in local `l{len}`. Returns the source lines.
+fn oob_build_list(rng: &mut OobRng, len: i64) -> String {
+    let mut s = String::from("    let l0 list<i64> = list_new()\n");
+    for k in 0..len {
+        let e = rng.range(-40, 40);
+        s.push_str(&format!("    let l{} list<i64> = push(l{k}, {e})\n", k + 1));
+    }
+    s
+}
+
+/// Generate one OOB/boundary program and predict whether its access is out of
+/// bounds. Shapes rotate over `array<i64>` reads/writes (constant, opaque-param,
+/// and loop-derived indices), `list<i64>` `get`/`set`/`pop`, and a struct
+/// array-field read — every construct the WASM emitter and all three interpreters
+/// support and agree on. The returned `bool` is the predicted-OOB flag the oracle
+/// cross-checks against the interpreters' actual behavior.
+fn gen_oob_program(seed: u64) -> (String, bool) {
+    let mut rng = OobRng(seed | 1);
+    let len = rng.range(1, 6);
+    let idx = oob_draw_index(&mut rng, len);
+    let oob = idx < 0 || idx >= len;
+    let elems: Vec<String> = (0..len).map(|_| rng.range(-40, 40).to_string()).collect();
+    let arr = format!("[{}]", elems.join(", "));
+    let elems2: Vec<String> = (0..len).map(|_| rng.range(-40, 40).to_string()).collect();
+    let arr2 = format!("[{}]", elems2.join(", "));
+    let v = rng.range(-99, 99);
+    let n = rng.range(-30, 30);
+
+    // A loop that lands `j` exactly on `idx` — an index the optimizer cannot
+    // constant-fold. Only valid for idx >= 0 (a `for` up-count reaches it).
+    let loop_to_idx = |target: i64| -> String {
+        format!("    let j i64 = 0\n    for k from 0 to {target}\n        j = k\n")
+    };
+
+    match rng.below(9) {
+        // array read, constant index.
+        0 => (
+            format!("fn main -> i64\n    let xs array<i64> = {arr}\n    return xs[{idx}]\n"),
+            oob,
+        ),
+        // array read, OPAQUE parameter index (any sign — the index is a callee
+        // parameter, so no caller-side folding can prove it in range).
+        1 => (
+            format!(
+                "fn at a array<i64> i i64 -> i64\n    return a[i]\n\n\
+                 fn main -> i64\n    let xs array<i64> = {arr}\n    return at(xs, {idx})\n"
+            ),
+            oob,
+        ),
+        // array read, LOOP-DERIVED index (idx >= 0); else fall back to opaque param.
+        2 if idx >= 0 => (
+            format!(
+                "fn main -> i64\n    let xs array<i64> = {arr}\n{loop}    return xs[j]\n",
+                loop = loop_to_idx(idx)
+            ),
+            oob,
+        ),
+        2 => (
+            format!(
+                "fn at a array<i64> i i64 -> i64\n    return a[i]\n\n\
+                 fn main -> i64\n    let xs array<i64> = {arr}\n    return at(xs, {idx})\n"
+            ),
+            oob,
+        ),
+        // array WRITE + neighbor read: the exact heap-corruption shape. A constant
+        // OOB write into `xs` must trap, not scribble on the neighbor `ys`.
+        3 => (
+            format!(
+                "fn main -> i64\n    let xs array<i64> = {arr}\n    \
+                 let ys array<i64> = {arr2}\n    xs[{idx}] = {v}\n    return ys[0]\n"
+            ),
+            oob,
+        ),
+        // array WRITE, loop-derived index (idx >= 0); else a constant write.
+        4 if idx >= 0 => (
+            format!(
+                "fn main -> i64\n    let xs array<i64> = {arr}\n{loop}    xs[j] = {v}\n    \
+                 return xs[0]\n",
+                loop = loop_to_idx(idx)
+            ),
+            oob,
+        ),
+        4 => (
+            format!(
+                "fn main -> i64\n    let xs array<i64> = {arr}\n    \
+                 let ys array<i64> = {arr2}\n    xs[{idx}] = {v}\n    return ys[0]\n"
+            ),
+            oob,
+        ),
+        // list get, constant index.
+        5 => (
+            format!(
+                "fn main -> i64\n{list}    return get(l{len}, {idx})\n",
+                list = oob_build_list(&mut rng, len)
+            ),
+            oob,
+        ),
+        // list set, constant index (the write path shares the same bounds check).
+        6 => (
+            format!(
+                "fn main -> i64\n{list}    let m list<i64> = set(l{len}, {idx}, {v})\n    \
+                 return get(m, 0)\n",
+                list = oob_build_list(&mut rng, len)
+            ),
+            oob,
+        ),
+        // list pop: pop `pop_count` times; popping past empty (pop_count > len) is
+        // the L0413 shape. This shape computes its OWN oob flag from pop_count.
+        7 => {
+            let pop_count = rng.range(1, len + 1);
+            let oob_pop = pop_count > len;
+            let mut body = format!(
+                "fn main -> i64\n{list}    let p0 list<i64> = l{len}\n",
+                list = oob_build_list(&mut rng, len)
+            );
+            for k in 0..pop_count {
+                body.push_str(&format!("    let p{} list<i64> = pop(p{k})\n", k + 1));
+            }
+            body.push_str(&format!("    return len(p{pop_count})\n"));
+            (body, oob_pop)
+        }
+        // struct array-field read: `a.xs[idx]` folds a Field then an Index hop.
+        _ => (
+            format!(
+                "struct Box\n    xs array<i64>\n    n i64\n\n\
+                 fn main -> i64\n    let a Box = Box({arr}, {n})\n    return a.xs[{idx}]\n"
+            ),
+            oob,
+        ),
+    }
+}
+
+/// The oracle: run all four tiers on `source`, cross-check the predicted-OOB flag
+/// against the interpreters, and enforce the trap-vs-value parity rule. Returns
+/// `true` iff the program's access was out of bounds (for coverage counting).
+fn check_oob_parity(seed: u64, source: &str, predicted_oob: bool) -> bool {
+    let [ast, ir, bc] = oob_interp_results(source);
+    // The three interpreters must agree with each other first — a value on one and
+    // an error on another is a backend divergence, never blamed on WASM.
+    assert!(
+        ast == ir && ir == bc,
+        "interpreter divergence on oob-fuzz (seed {seed:#x}):\n{source}\n\
+         ast={ast:?} ir={ir:?} bytecode={bc:?}"
+    );
+    let wasm = oob_wasm_result(source);
+
+    if predicted_oob {
+        // Predicted OOB: every interpreter must raise L0413, and WASM must TRAP.
+        // A mismatch here is EITHER a generator misprediction (interp returned a
+        // value) OR the miscompile this fuzzer exists to catch (WASM returned a
+        // value where the interpreters trap).
+        assert_eq!(
+            ast,
+            Err("L0413".to_string()),
+            "predicted OOB but the interpreters did not raise L0413 (seed {seed:#x}):\n{source}\n\
+             got {ast:?} — the generator mispredicted, or the interpreter bounds check regressed"
+        );
+        assert!(
+            wasm.is_err(),
+            "WASM did NOT trap on an out-of-bounds access — it returned {wasm:?}, the \
+             linear-memory overrun miscompile (seed {seed:#x}):\n{source}"
+        );
+        true
+    } else {
+        // Predicted in-bounds: every tier must return the SAME value.
+        let expected = match &ast {
+            Ok(n) => *n,
+            Err(code) => panic!(
+                "predicted in-bounds but the interpreters raised {code} (seed {seed:#x}):\n{source}\n\
+                 the generator mispredicted an in-bounds index as reachable"
+            ),
+        };
+        assert_eq!(
+            wasm,
+            Ok(expected),
+            "WASM diverged from the interpreters on an in-bounds access (wasm={wasm:?}, \
+             expected {expected}) (seed {seed:#x}):\n{source}"
+        );
+        false
+    }
+}
+
+#[test]
+fn fuzz_oob_wasm_and_interpreters_parity() {
+    // The four-tier (AST/IR/bytecode + wasmi) out-of-bounds oracle. Always runs —
+    // everything is in-process, no toolchain needed. Asserts a nonzero count of
+    // BOTH out-of-bounds and in-bounds programs, so a batch that generated only
+    // in-bounds indices (and would prove nothing about the trap) is itself a
+    // failure.
+    const PROGRAMS: u64 = 500;
+    let base_seed = 0x0B0D_5A17_C3E9_1F42u64;
+    let mut oob_count = 0u64;
+    let mut inbounds_count = 0u64;
+
+    for i in 0..PROGRAMS {
+        let seed = base_seed.wrapping_add(i.wrapping_mul(0xA076_1D64_78BD_642F));
+        let (source, predicted_oob) = gen_oob_program(seed);
+        if check_oob_parity(seed, &source, predicted_oob) {
+            oob_count += 1;
+        } else {
+            inbounds_count += 1;
+        }
+    }
+
+    // Coverage must be legible AND real: both classes must have been exercised, or
+    // the parity assertion above proved nothing about the regime it targets.
+    assert!(
+        oob_count > 0,
+        "the OOB fuzz generated NO out-of-bounds programs — it is toothless (in-bounds \
+         {inbounds_count})"
+    );
+    assert!(
+        inbounds_count > 0,
+        "the OOB fuzz generated NO in-bounds programs — the bounds check's correctness \
+         (no false trap) went unchecked (oob {oob_count})"
+    );
+    eprintln!(
+        "oob wasm/interp fuzz: {PROGRAMS} programs — {oob_count} out-of-bounds (interp L0413 + \
+         wasmi trap), {inbounds_count} in-bounds (four-tier value parity)"
+    );
+}

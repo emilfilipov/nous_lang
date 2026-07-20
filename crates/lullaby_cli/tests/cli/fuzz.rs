@@ -2599,3 +2599,10 @@ mod fuzz_narrow;
 // to host-abort the interpreters and blind this fuzzer) lives in its own file for
 // the same reason.
 mod fuzz_recursion;
+
+// The out-of-bounds / boundary-index oracle (array/list element access at indices
+// drawn from in-bounds, the boundaries, negative, and far-out-of-range — a trap-vs-
+// value parity between the interpreters and native) lives in its own file for the
+// same access to `Rng`/`ScratchDir`/`fuzz_native_exit` via `use super::*`. Its WASM
+// counterpart is `lullaby_ir::wasm::exec_tests::fuzz_oob_wasm_and_interpreters_parity`.
+mod fuzz_oob;
