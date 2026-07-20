@@ -33,8 +33,14 @@ pub fn run_main(program: &Program) -> Result<Value, RuntimeError> {
 /// to hand to spawned threads. These are two separate handles to the same shared
 /// data — not a self-referential struct.
 pub fn run_main_with_args(program: &Program, args: Vec<String>) -> Result<Value, RuntimeError> {
-    let arc = Arc::new(program.clone());
-    run_main_shared(arc, args)
+    // Run the whole evaluation on a dedicated large-stack thread so a deeply
+    // recursive program cannot overflow the host thread's default stack (see
+    // `interp_stack`). The uniform depth bound turns genuinely unbounded recursion
+    // into a clean `L0466` before even this large stack can overflow.
+    crate::run_on_interpreter_stack(move || {
+        let arc = Arc::new(program.clone());
+        run_main_shared(arc, args)
+    })
 }
 
 /// Shared-program entry: build an interpreter borrowing `&*arc` while retaining
@@ -59,11 +65,16 @@ fn run_main_shared(arc: Arc<Program>, args: Vec<String>) -> Result<Value, Runtim
 /// function's value on success, or the propagated `RuntimeError` — including a
 /// user `throw` / failed `assert` (code `L0420`) — on failure.
 pub fn run_named_function(program: &Program, name: &str) -> Result<Value, RuntimeError> {
-    let arc = Arc::new(program.clone());
-    let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
-    let result = runtime.call_function(name, Vec::new())?;
-    runtime.drain_actors()?;
-    Ok(result)
+    // Same large-stack evaluation as `run_main_with_args` (this is the `lullaby
+    // test` entry point), so a deeply recursive test body cannot overflow the host
+    // stack and instead ends in a clean `L0466` at the shared bound.
+    crate::run_on_interpreter_stack(move || {
+        let arc = Arc::new(program.clone());
+        let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
+        let result = runtime.call_function(name, Vec::new())?;
+        runtime.drain_actors()?;
+        Ok(result)
+    })
 }
 
 /// Register every `ExprKind::Closure` reachable from a block of statements into
@@ -530,7 +541,7 @@ impl<'a> Runtime<'a> {
     fn spawn_async(&self, name: &str, args: Vec<Value>) -> Value {
         let arc = Arc::clone(&self.program_arc);
         let func_name = name.to_string();
-        let handle = std::thread::spawn(move || {
+        let handle = crate::spawn_interpreter_thread(move || {
             let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
             runtime.call_function(&func_name, args)
         });

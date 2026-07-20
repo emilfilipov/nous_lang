@@ -2594,3 +2594,8 @@ mod fuzz_arena;
 // through raw pointers, where a wrong stride is silent corruption) live in their
 // own file for the same reason.
 mod fuzz_narrow;
+
+// The deep-recursion oracle (recursion nested thousands of frames deep, which used
+// to host-abort the interpreters and blind this fuzzer) lives in its own file for
+// the same reason.
+mod fuzz_recursion;

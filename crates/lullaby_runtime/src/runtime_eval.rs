@@ -486,9 +486,21 @@ impl<'a> Runtime<'a> {
     pub(crate) fn annotate_error(&self, error: RuntimeError, span: Span) -> RuntimeError {
         let error = error.with_span(span);
         match self.call_stack.last() {
-            Some(frame) => error
-                .with_function(frame.function.to_string())
-                .with_traceback(self.build_traceback()),
+            Some(frame) => {
+                let error = error.with_function(frame.function.to_string());
+                // Build the traceback only when this frame will actually record it.
+                // `with_traceback` is a no-op once one is set, but `build_traceback`
+                // is O(depth) and `annotate_error` runs at every `eval_expr` frame on
+                // the way up — so calling it unconditionally made an error unwinding
+                // out of deep recursion O(depth²). Guarding it keeps the unwind
+                // O(depth) and yields the identical error (traceback captured at the
+                // innermost frame). Mirrors the IR tier's `annotate_error`.
+                if error.traceback.is_empty() {
+                    error.with_traceback(self.build_traceback())
+                } else {
+                    error
+                }
+            }
             None => error,
         }
     }

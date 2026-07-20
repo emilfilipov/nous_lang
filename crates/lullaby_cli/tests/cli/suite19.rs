@@ -2,21 +2,28 @@
 //! road_to_1_0_stable item B3.
 //!
 //! suite17 pins the runner's *surface* (discovery, filtering, ordering, summary)
-//! and its containment of ordinary runtime errors. This suite pins the two
-//! failure shapes that are NOT runtime errors and therefore escape the `Result`
-//! the interpreter returns:
+//! and its containment of ordinary runtime errors. This suite pins the failure
+//! shapes around unbounded work:
 //!
-//! * a **stack overflow** faults on the guard page and terminates the process
-//!   running the test — there is no unwinding to catch (which is exactly why
-//!   Rust's own libtest can `catch_unwind` a panic and this runner cannot); and
+//! * **runaway recursion** — a recursion with no base case. It used to be NOT a
+//!   runtime error: it faulted on the guard page and terminated the process
+//!   running the test, escaping the `Result` the interpreter returns (which is why
+//!   Rust's own libtest can `catch_unwind` a panic and this runner could not). The
+//!   interpreters now bound recursion uniformly (`L0466`, see
+//!   `crates/lullaby_runtime/src/interp_stack.rs`), so it IS an ordinary runtime
+//!   error now — the runner reports it as a clean failure and keeps going. A
+//!   pure-Lullaby program can no longer fault the host stack.
 //! * a **non-terminating** test never returns at all.
 //!
 //! Both used to take the runner down with them: the overflow aborted it with no
 //! summary, and the hang ran until someone killed it. They were untestable for
 //! precisely that reason — a pin for either would have killed this test binary or
-//! stalled CI forever. The runner now runs the suite in a child process under a
-//! per-test deadline, so both are contained and both are pinnable, which is what
-//! these tests do.
+//! stalled CI forever. The runner runs the suite in a child process under a
+//! per-test deadline, so the hang is contained; and the recursion bound turns the
+//! former guard-page fault into a reportable diagnostic — both are now pinnable,
+//! which is what these tests do. The runner's containment of a genuinely
+//! *abnormally-terminating* child (killed without unwinding) is still real and is
+//! exercised by the timeout test, whose hung child is killed by the deadline.
 //!
 //! A third shape is pinned alongside them: a test that **spawns a long-running
 //! grandchild**. `sys_status`/`sys_output`/`proc_spawn` are ordinary builtins and
@@ -54,23 +61,32 @@
 //! an ordinary failure, **every other test still runs**, and the summary is still
 //! correct with a non-zero exit.
 //!
-//! Exit codes here are deliberately NOT pinned to a value: a stack overflow is
-//! `0xC00000FD` (`STATUS_STACK_OVERFLOW`) on Windows and 127 (or a signal) on
-//! POSIX. These tests assert the *observable* — the run survives and reports —
-//! never a platform-specific number.
+//! Exit codes here are deliberately NOT pinned to a value: a killed (timed-out)
+//! child terminates by `TerminateProcess`/a signal, whose numeric code is
+//! platform-specific. These tests assert the *observable* — the run survives and
+//! reports, and the recursion case names the recursion-limit diagnostic — never a
+//! platform-specific number.
 
 use std::time::{Duration, Instant};
 
 use super::{ScratchDir, lullaby, stderr, stdout, workspace_root};
 
-/// A test that OVERFLOWS THE STACK (unbounded recursion) as the 2nd of 4 must be
-/// reported as a failure, must not prevent the other three from running, and must
-/// still produce a correct `3 passed, 1 failed` summary with a non-zero exit.
+/// A test whose body recurses without a base case USED to overflow the host stack
+/// and abort the child process with a guard-page fault. The interpreters now bound
+/// recursion uniformly (`L0466`, `crates/lullaby_runtime/src/interp_stack.rs`): the
+/// same runaway recursion instead ends with a clean, catchable recursion-limit
+/// diagnostic, which the runner reports as an ordinary test failure. As the 2nd of
+/// 4 tests it must be reported as a failure naming that limit, must not prevent the
+/// other three from running, and must still produce a correct `3 passed, 1 failed`
+/// summary with a non-zero exit.
 ///
-/// Before subprocess isolation this aborted the runner outright: tests 3 and 4
-/// never ran and no summary was printed.
+/// (Before subprocess isolation this aborted the runner outright — tests 3 and 4
+/// never ran and no summary printed. The runner's containment of a genuinely
+/// *abnormally-terminating* child — one killed without unwinding — is now exercised
+/// by the timeout test below, whose hung child is killed; a pure-Lullaby program can
+/// no longer fault the host stack to reach that path.)
 #[test]
-fn test_runner_survives_a_stack_overflowing_test() {
+fn test_runner_reports_runaway_recursion_as_a_recursion_limit_failure() {
     let fixture = workspace_root().join("tests/fixtures/test_runner/stack_overflow.lby");
     let output = lullaby()
         .arg("test")
@@ -79,18 +95,19 @@ fn test_runner_survives_a_stack_overflowing_test() {
         .expect("run lullaby test");
     let text = stdout(&output);
 
-    // The overflowing test is reported as an ordinary failure...
+    // The runaway-recursion test is reported as an ordinary failure whose reason is
+    // the uniform recursion-limit diagnostic — not a host-process abort.
     assert!(text.contains("FAIL test_b_overflows"), "stdout: {text}");
     assert!(
-        text.contains("terminated abnormally"),
-        "the failure must name abnormal termination as the reason: {text}"
+        text.contains("recursion limit exceeded"),
+        "the failure must name the recursion limit as the reason: {text}"
     );
     // ...and, crucially, the tests AFTER it still ran.
     assert!(text.contains("PASS test_a_passes"), "stdout: {text}");
     assert!(text.contains("PASS test_c_passes"), "stdout: {text}");
     assert!(text.contains("PASS test_d_passes"), "stdout: {text}");
 
-    // The summary exists at all (it did not, before) and is correct.
+    // The summary is correct and the exit is non-zero.
     assert!(text.contains("3 passed, 1 failed"), "stdout: {text}");
     assert!(!output.status.success(), "must exit non-zero on failure");
 }

@@ -1070,10 +1070,17 @@ fn run_main_shared(
     args: Vec<String>,
     use_vm: bool,
 ) -> Result<Value, RuntimeError> {
-    let mut runtime = IrRuntime::new(&arc, Arc::clone(&arc))?;
-    runtime.program_args = args;
-    runtime.use_vm = use_vm;
-    runtime.call_function("main", Vec::new())
+    // Run the IR/bytecode evaluation on a dedicated large-stack thread — the same
+    // treatment the AST tier gets — so a deeply recursive program cannot overflow
+    // the host thread's default stack, and the shared depth bound (`L0466`) turns
+    // genuinely unbounded recursion into a clean diagnostic first. This is the
+    // single chokepoint both `--backend ir` and `--backend bytecode` route through.
+    lullaby_runtime::run_on_interpreter_stack(move || {
+        let mut runtime = IrRuntime::new(&arc, Arc::clone(&arc))?;
+        runtime.program_args = args;
+        runtime.use_vm = use_vm;
+        runtime.call_function("main", Vec::new())
+    })
 }
 
 pub fn analyze_memory_operations(module: &IrModule) -> Vec<IrMemoryOperation> {

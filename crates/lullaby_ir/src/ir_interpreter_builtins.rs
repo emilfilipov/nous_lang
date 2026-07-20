@@ -304,17 +304,24 @@ impl<'a> IrRuntime<'a> {
                     let callable = callable.clone();
                     let value = value.clone();
                     let arc = Arc::clone(module_arc);
-                    scope.spawn(move || {
-                        let mut runtime = IrRuntime::new(module, arc)?;
-                        match callable {
-                            IrParallelCallable::Func(name) => {
-                                runtime.call_function(&name, vec![value])
+                    // Large-stack worker (see `lullaby_runtime::interp_stack`) so a
+                    // recursive callable applied here matches the main evaluation's
+                    // deep-recursion capacity rather than the OS default thread stack.
+                    std::thread::Builder::new()
+                        .stack_size(lullaby_runtime::INTERPRETER_STACK_SIZE)
+                        .name("lullaby-interp".to_string())
+                        .spawn_scoped(scope, move || {
+                            let mut runtime = IrRuntime::new(module, arc)?;
+                            match callable {
+                                IrParallelCallable::Func(name) => {
+                                    runtime.call_function(&name, vec![value])
+                                }
+                                IrParallelCallable::Closure(closure) => {
+                                    runtime.invoke_closure(&closure, vec![value])
+                                }
                             }
-                            IrParallelCallable::Closure(closure) => {
-                                runtime.invoke_closure(&closure, vec![value])
-                            }
-                        }
-                    })
+                        })
+                        .expect("spawn interpreter worker thread")
                 })
                 .collect();
             handles
@@ -402,7 +409,7 @@ impl<'a> IrRuntime<'a> {
         let chan = expect_chan("spawn", chan)?;
         let value = expect_i64("spawn", value)?;
         let arc = Arc::clone(&self.module_arc);
-        let handle = std::thread::spawn(move || {
+        let handle = lullaby_runtime::spawn_interpreter_thread(move || {
             let mut runtime = IrRuntime::new(&arc, Arc::clone(&arc))?;
             runtime.call_function(&func_name, vec![Value::Chan(chan), Value::I64(value)])
         });

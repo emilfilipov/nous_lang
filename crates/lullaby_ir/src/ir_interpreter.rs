@@ -203,7 +203,7 @@ impl<'a> IrRuntime<'a> {
     fn spawn_async(&self, name: &str, args: Vec<Value>) -> Value {
         let arc = Arc::clone(&self.module_arc);
         let func_name = name.to_string();
-        let handle = std::thread::spawn(move || {
+        let handle = lullaby_runtime::spawn_interpreter_thread(move || {
             let mut runtime = IrRuntime::new(&arc, Arc::clone(&arc))?;
             runtime.call_function(&func_name, args)
         });
@@ -771,6 +771,16 @@ impl<'a> IrRuntime<'a> {
                     args.len()
                 ),
             ));
+        }
+
+        // Uniform recursion bound, identical to the AST tier's. `call_stack` grows
+        // by one frame per user-function invocation on both the tree-walk and the
+        // bytecode-VM path below, so its length is the live Lullaby call depth;
+        // refuse to descend past the shared bound with a clean, catchable `L0466`
+        // instead of overflowing the (large but finite) evaluation stack. See
+        // `lullaby_runtime::interp_stack`.
+        if self.call_stack.len() >= lullaby_runtime::INTERPRETER_RECURSION_LIMIT {
+            return Err(lullaby_runtime::recursion_limit_error());
         }
 
         // Bytecode tier: run the flat dispatch-loop VM for eligible functions
@@ -1543,9 +1553,22 @@ impl<'a> IrRuntime<'a> {
     fn annotate_error(&self, error: RuntimeError, span: Span) -> RuntimeError {
         let error = error.with_span(span);
         match self.call_stack.last() {
-            Some(frame) => error
-                .with_function(frame.function.to_string())
-                .with_traceback(self.build_traceback()),
+            Some(frame) => {
+                let error = error.with_function(frame.function.to_string());
+                // Build the traceback only when this frame is the one that will
+                // actually record it (the error carries none yet). `with_traceback`
+                // is a no-op once a traceback is set, but `build_traceback` is
+                // O(depth), and `annotate_error` runs at *every* `eval_expr` frame on
+                // the way up — so calling it unconditionally made an error unwinding
+                // out of deep recursion O(depth²) (a 50 000-frame `L0466` took ~87 s).
+                // Guarding it keeps the unwind O(depth) while producing the identical
+                // error (traceback still captured at the innermost frame).
+                if error.traceback.is_empty() {
+                    error.with_traceback(self.build_traceback())
+                } else {
+                    error
+                }
+            }
             None => error,
         }
     }

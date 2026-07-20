@@ -25,6 +25,7 @@
 
 use std::fmt;
 
+mod interp_stack;
 mod interpreter;
 mod raw_pointer;
 mod runtime_concurrency;
@@ -36,6 +37,10 @@ mod runtime_map;
 mod runtime_net;
 mod runtime_os;
 
+pub use interp_stack::{
+    INTERPRETER_RECURSION_LIMIT, INTERPRETER_STACK_SIZE, recursion_limit_error,
+    run_on_interpreter_stack, spawn_interpreter_thread,
+};
 pub use interpreter::{run_main, run_main_with_args, run_named_function};
 pub use raw_pointer::{
     RAW_POINTER_BASE, RawPointerMemory, RawResolve, RootSlot, arena_key, dangling_place,

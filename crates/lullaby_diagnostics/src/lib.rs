@@ -711,6 +711,13 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
         root_cause: "The `MemoryOrder` variant passed to the operation is not one of the orderings that operation permits; the invalid combination is rejected statically when the ordering is a literal variant and guarded at runtime for dynamically chosen orderings.",
         suggested_fix: "Use `relaxed`/`acquire`/`seq_cst` for a load and for a CAS failure ordering, `relaxed`/`release`/`seq_cst` for a store, any of the five for a read-modify-write or a CAS success ordering, and `acquire`/`release`/`acq_rel`/`seq_cst` for a `fence`.",
     },
+    DiagnosticEntry {
+        code: "L0466",
+        phase: DiagnosticPhase::Runtime,
+        explanation: "A program recursed past the interpreter's uniform call-depth bound. Every interpreter tier (AST, IR, bytecode) evaluates on a large dedicated stack and shares this bound, so an unbounded recursion ends with this one catchable diagnostic on every tier instead of overflowing the host process — which used to abort with STATUS_STACK_OVERFLOW at a depth that differed by tier.",
+        root_cause: "A recursive function (or closure-driven recursion) nested more call frames than the shared interpreter bound allows — usually a missing or wrong base case, or a recursion genuinely deeper than the interpreter's stack is sized for.",
+        suggested_fix: "Check the recursion's base case terminates, rewrite very deep recursion iteratively (a loop with an explicit stack), or compile with `lullaby native` to use the operating system's own call stack. `L0466` is catchable with `try`/`catch`.",
+    },
 ];
 
 pub fn render_concise(report: &DiagnosticReport) -> String {

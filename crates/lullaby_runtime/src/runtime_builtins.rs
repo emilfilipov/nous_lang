@@ -86,17 +86,24 @@ impl<'a> Runtime<'a> {
                     let callable = callable.clone();
                     let value = value.clone();
                     let arc = Arc::clone(program_arc);
-                    scope.spawn(move || {
-                        let mut runtime = Runtime::new(program, arc)?;
-                        match callable {
-                            ParallelCallable::Func(name) => {
-                                runtime.call_function(&name, vec![value])
+                    // Large-stack worker (see `interp_stack`) so a recursive
+                    // callable applied here has the same deep-recursion capacity as
+                    // the main evaluation instead of the OS default thread stack.
+                    std::thread::Builder::new()
+                        .stack_size(crate::INTERPRETER_STACK_SIZE)
+                        .name("lullaby-interp".to_string())
+                        .spawn_scoped(scope, move || {
+                            let mut runtime = Runtime::new(program, arc)?;
+                            match callable {
+                                ParallelCallable::Func(name) => {
+                                    runtime.call_function(&name, vec![value])
+                                }
+                                ParallelCallable::Closure(closure) => {
+                                    runtime.invoke_closure(&closure, vec![value])
+                                }
                             }
-                            ParallelCallable::Closure(closure) => {
-                                runtime.invoke_closure(&closure, vec![value])
-                            }
-                        }
-                    })
+                        })
+                        .expect("spawn interpreter worker thread")
                 })
                 .collect();
             handles
@@ -190,7 +197,7 @@ impl<'a> Runtime<'a> {
         // Hand the detached thread an owned share of the program so it can outlive
         // this call and build its own interpreter over `&*arc` independently.
         let arc = Arc::clone(&self.program_arc);
-        let handle = std::thread::spawn(move || {
+        let handle = crate::spawn_interpreter_thread(move || {
             let mut runtime = Runtime::new(&arc, Arc::clone(&arc))?;
             runtime.call_function(&func_name, vec![Value::Chan(chan), Value::I64(value)])
         });
@@ -939,6 +946,17 @@ impl<'a> Runtime<'a> {
                     args.len()
                 ),
             ));
+        }
+
+        // Uniform recursion bound (shared verbatim with the IR and bytecode tiers).
+        // `call_stack` holds one frame per active user-function invocation, so its
+        // length is the current Lullaby call depth; refuse to descend past the bound
+        // with a clean, catchable `L0466` rather than let the (large but finite)
+        // evaluation stack overflow the process. Any unbounded recursion — direct or
+        // closure-driven — passes through a function frame each cycle, so guarding
+        // here is sufficient to prevent a host abort. See `crate::interp_stack`.
+        if self.call_stack.len() >= crate::INTERPRETER_RECURSION_LIMIT {
+            return Err(crate::recursion_limit_error());
         }
 
         // Borrow a reset environment from the pool (or make a fresh one) instead
