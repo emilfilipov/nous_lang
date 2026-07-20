@@ -71,6 +71,33 @@ into the permanent fuzzers.
   tier, FFI, generics, actors. **Exit criterion for Phase 1 (and the stable gate):
   N consecutive sweep lanes find nothing real.**
 
+## Phase 1 — progress log
+
+- **Sweep #1 (2026-07-20, base `2b52b96`) — the codegen surface came up CLEAN.**
+  ~45 aggressive probes across the newest subsystems (arena cross-call + promotion,
+  asm operands, escaping closures, the native heap-aggregate value-semantics matrix,
+  const/narrow/fixed arrays, and the cross-feature seams) on all interpreters +
+  native + WASM: **zero native/WASM miscompiles, zero use-after-frees/segfaults.**
+  The first empty-with-real-breadth result — the first data point toward the defect
+  rate decaying. Two items surfaced, neither a codegen miscompile:
+  - **Finding 1 (MEDIUM, oracle-integrity — fix in flight):** the three interpreters
+    stack-overflow the *host process* on deep recursion (AST ~200 / IR ~300 /
+    bytecode ~1000) at *different* depths, while native handles 20000+. So a valid
+    recursive program crashes the reference tier, AND the differential fuzzers are
+    blind to recursion deeper than ~200. Fixing it (large-stack interpreter eval +
+    a deep-recursion fuzzer shape) hardens the primary oracle itself.
+  - **Finding 2 (LOW, documented limitation — noted, not a defect):** the fixed
+    ~1 MiB bump heap. Non-arena code that leaks (e.g. a promoting factory in a loop
+    under a *non-arena* caller) traps cleanly with `ud2` at ~100k iterations where
+    the interpreters (unbounded host heap) complete. Correct-but-conservative (native
+    traps deterministically, never corrupts); the arena-eligible counterpart runs
+    bounded and correct. **Owner-visible limitation:** a growable/larger native heap
+    is a post-sweep design option if larger non-arena programs need it — not a
+    miscompile, not a stable blocker.
+  Continue: further sweeps after the oracle fix (which lets them go deeper), each
+  folding its shapes into the permanent fuzzers, until a sweep + a fuzzer run over
+  the whole surface finds nothing real.
+
 ## Phase 2 — Completions (the spanning-set "100%")
 
 Each design→build→adversarial-review, serialized where files collide.
