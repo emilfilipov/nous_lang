@@ -955,6 +955,10 @@ pub(crate) use types::*;
 mod eligibility;
 pub(crate) use eligibility::*;
 
+#[path = "native_object_heap_class.rs"]
+mod heap_class;
+pub(crate) use heap_class::*;
+
 #[path = "native_object_confine.rs"]
 mod confine;
 pub(crate) use confine::*;
