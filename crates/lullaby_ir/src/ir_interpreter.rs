@@ -776,7 +776,7 @@ impl<'a> IrRuntime<'a> {
         // Uniform recursion bound, identical to the AST tier's. `call_stack` grows
         // by one frame per user-function invocation on both the tree-walk and the
         // bytecode-VM path below, so its length is the live Lullaby call depth;
-        // refuse to descend past the shared bound with a clean, catchable `L0466`
+        // refuse to descend past the shared bound with a clean (non-catchable) `L0466`
         // instead of overflowing the (large but finite) evaluation stack. See
         // `lullaby_runtime::interp_stack`.
         if self.call_stack.len() >= lullaby_runtime::INTERPRETER_RECURSION_LIMIT {

@@ -951,7 +951,7 @@ impl<'a> Runtime<'a> {
         // Uniform recursion bound (shared verbatim with the IR and bytecode tiers).
         // `call_stack` holds one frame per active user-function invocation, so its
         // length is the current Lullaby call depth; refuse to descend past the bound
-        // with a clean, catchable `L0466` rather than let the (large but finite)
+        // with a clean (non-catchable) `L0466` rather than let the (large but finite)
         // evaluation stack overflow the process. Any unbounded recursion — direct or
         // closure-driven — passes through a function frame each cycle, so guarding
         // here is sufficient to prevent a host abort. See `crate::interp_stack`.

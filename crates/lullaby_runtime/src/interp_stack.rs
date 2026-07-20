@@ -30,7 +30,7 @@
 //! still eventually exhaust even a gigabyte stack and abort the process — and again
 //! at a tier-dependent depth. [`INTERPRETER_RECURSION_LIMIT`] is a single shared
 //! bound, checked identically by all three interpreters at each user-function /
-//! closure invocation, that raises the catchable [`recursion_limit_error`]
+//! closure invocation, that raises the [`recursion_limit_error`]
 //! (`L0466`) *before* the large stack can overflow. The bound is deliberately far
 //! below the depth at which the shallowest tier (the AST interpreter, which has the
 //! largest per-call frame) would exhaust [`INTERPRETER_STACK_SIZE`], so the
@@ -69,9 +69,11 @@ pub const INTERPRETER_STACK_SIZE: usize = 2 << 30; // 2 GiB
 pub const INTERPRETER_RECURSION_LIMIT: usize = 20_000;
 
 /// The error every interpreter raises when a program's call depth reaches
-/// [`INTERPRETER_RECURSION_LIMIT`]. `L0466` is a catchable runtime error (an
-/// enclosing `try`/`catch` can observe it) rather than a host-process abort, and is
-/// identical across the AST, IR, and bytecode tiers.
+/// [`INTERPRETER_RECURSION_LIMIT`]. `L0466` is a **non-catchable** runtime fault —
+/// like a bounds violation (`L0413`) or divide-by-zero (`L0404`), it aborts the
+/// program and an enclosing `try`/`catch` does NOT observe it (only `throw`/`catch`/
+/// `?` values are recoverable). It replaces a bare host-process abort with a clean,
+/// deterministic diagnostic, identical across the AST, IR, and bytecode tiers.
 pub fn recursion_limit_error() -> RuntimeError {
     RuntimeError::new(
         "L0466",

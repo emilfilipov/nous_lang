@@ -714,9 +714,9 @@ const DIAGNOSTIC_CATALOG: &[DiagnosticEntry] = &[
     DiagnosticEntry {
         code: "L0466",
         phase: DiagnosticPhase::Runtime,
-        explanation: "A program recursed past the interpreter's uniform call-depth bound. Every interpreter tier (AST, IR, bytecode) evaluates on a large dedicated stack and shares this bound, so an unbounded recursion ends with this one catchable diagnostic on every tier instead of overflowing the host process — which used to abort with STATUS_STACK_OVERFLOW at a depth that differed by tier.",
+        explanation: "A program recursed past the interpreter's uniform call-depth bound. Every interpreter tier (AST, IR, bytecode) evaluates on a large dedicated stack and shares this bound, so an unbounded recursion ends with this one deterministic diagnostic on every tier instead of overflowing the host process — which used to abort with STATUS_STACK_OVERFLOW at a depth that differed by tier.",
         root_cause: "A recursive function (or closure-driven recursion) nested more call frames than the shared interpreter bound allows — usually a missing or wrong base case, or a recursion genuinely deeper than the interpreter's stack is sized for.",
-        suggested_fix: "Check the recursion's base case terminates, rewrite very deep recursion iteratively (a loop with an explicit stack), or compile with `lullaby native` to use the operating system's own call stack. `L0466` is catchable with `try`/`catch`.",
+        suggested_fix: "Check the recursion's base case terminates, or rewrite very deep recursion iteratively (a loop with an explicit stack). `L0466` is a non-catchable runtime fault (like a bounds violation or divide-by-zero) — a `try`/`catch` does not observe it, so fix the recursion rather than trying to catch it. `lullaby native` uses the operating system's own call stack (deeper capacity, no uniform bound).",
     },
 ];
 
