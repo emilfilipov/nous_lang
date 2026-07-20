@@ -29,12 +29,18 @@ declaring stable on a green feature checklist. **Feature-complete ≠ stable.**
 Clears the known infrastructure debt so later phases run clean.
 - **P0.1 — Split `native_object_eligibility.rs`** (6 lines over the ~1500 cap;
   already chipped). Behavior-preserving.
-- **P0.2 — TCP fixture TOCTOU** (`cli.rs`/`suite2.rs` probe-and-release): the one
-  acknowledged fixture race. Redesign so the Lullaby-server program binds `:0` and
-  reports its port back over streamed child stdout — closes the last harness race.
-- **P0.3 — Test-runner robustness (roadmap B3 funded follow-up):** `lullaby test`
-  aborts on a stack-overflowing test and hangs on a non-terminating one. Add
-  subprocess isolation + a per-test timeout so one bad test can't kill/hang the run.
+- **P0.2 — TCP fixture TOCTOU: verified real but LOW-SEVERITY, deprioritized**
+  (`cli.rs:261`/`:637` probe-and-release; comment already acknowledges "a small race
+  window but adequate"; never fired across 1536 executions). The fix needs a
+  streamed-stdout fixture redesign (a server can't use `.output()` without
+  deadlocking) — disproportionate effort for a non-firing test race. Left as a known
+  low-priority item; hardening the compiler outranks polishing a test race.
+- **P0.3 — Test-runner robustness: ALREADY DELIVERED** (`60eff81` + follow-ups;
+  verified 2026-07-20 — the plan mis-listed it from a stale roadmap read). `lullaby
+  test` already runs each test in an isolated child with a 60s default `--timeout`;
+  a crash → reported FAIL, a hang → reported timeout, the run continues with a clean
+  summary. No work remains. **Lesson: verify each plan item against the repo before
+  dispatching — the roadmap/assessment can lag the code.**
 
 ## Phase 1 — Hardening (THE 1.0-stable gate) — the priority
 
