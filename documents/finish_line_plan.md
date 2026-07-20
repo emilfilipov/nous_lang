@@ -102,6 +102,33 @@ into the permanent fuzzers.
   Continue: further sweeps after the oracle fix (which lets them go deeper), each
   folding its shapes into the permanent fuzzers, until a sweep + a fuzzer run over
   the whole surface finds nothing real.
+- **Sweep #2 (2026-07-21, base `7174ca7`) — three disjoint hunter lanes; ONE REAL
+  MISCOMPILE found and fixed.** Ran against the now-deep-recursion-valid oracle.
+  - **Lane A (deep recursion × arena) — CLEAN.** ~45 programs; every native outcome
+    was exact agreement with all three interpreters, a clean `L0339` refusal, or a
+    clean output-free trap at a documented capacity limit (the OS-stack ceiling
+    ~13k frames; the ~1 MiB bump-heap under *arena-denied* recursion). No wrong
+    value, no corruption, no interpreter divergence. Positively confirmed arena
+    reclamation: `confined_200k` (200k allocs in a confined loop) runs correct on
+    native because per-iteration sub-regions reclaim.
+  - **Lane B (heap-aggregate value semantics under generics/nesting) — FOUND A
+    MISCOMPILE (fixed `3ec6495`).** The historical `let g = f` aliasing class swept
+    clean on all four tiers, but the hunt surfaced a *different*, high-severity hole:
+    **WASM array/list element access had no bounds check** — an OOB index computed a
+    raw linear-memory offset and silently read/**wrote** a neighboring heap object,
+    where native traps (`ud2`) and the interpreters raise `L0413`. Green across the
+    entire existing suite; found only by asking "what if the index is out of range?"
+    Fixed by an unsigned-compare + `unreachable` trap on every checked element path
+    (array read/write incl. struct-array-field, `list` get/set, empty-`list` pop),
+    with 8 OOB exec-parity tests under `wasmi` **proven to fail pre-fix**. Reviewed
+    PASS (teeth reproduced independently; whole-class completeness audited — no other
+    unchecked element path survives; string `s[i]` is unsupported on WASM so emits no
+    offset; maps are key-hashed). One reviewer FAIL round-tripped: a stale
+    "relies on linear-memory trapping" claim in `wasm.rs`'s overview, corrected
+    before merge. **This is the permanent-fuzzer gap to close next (P1.2): the
+    differential fuzzers generate no OOB indices — fold OOB index generation in so
+    the class is generated, not just pinned.**
+  - **Lane C (freestanding/pointer/asm/FFI) — running.**
 
 ## Phase 2 — Completions (the spanning-set "100%")
 
