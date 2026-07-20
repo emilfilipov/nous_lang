@@ -895,8 +895,10 @@ pub(crate) fn lower_field_read(
 }
 
 /// Lower an array element read `target[index]`: compute the slot address, then
-/// load it. WASM traps on out-of-bounds memory access (no explicit bounds check
-/// this increment).
+/// load it. [`lower_array_slot_offset`] emits an explicit unsigned bounds check
+/// against the array length header, so an out-of-range index TRAPS (`unreachable`)
+/// — matching native (`ud2`) and the interpreters (`L0413`) — instead of reading a
+/// neighboring heap object out of WASM linear memory.
 pub(crate) fn lower_index_read(
     ctx: &mut LowerCtx,
     target: &IrExpr,

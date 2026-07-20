@@ -189,8 +189,13 @@ a pointer (nested strings/structs/arrays).
 - **Arrays:** a fixed `array` literal is a pointer to `[len: i32][elem slots...]`,
   one 8-byte slot per element. `a[i]` computes `base + 4 + i*8` (index truncated
   `i64 -> i32`) and loads; `a[i] = v` stores; `len(a)` loads the leading `i32`.
-  WASM traps on out-of-bounds memory access, so no explicit bounds check is
-  emitted this increment.
+  Both the read and the write path emit an explicit **unsigned bounds check**
+  against the length header before forming the address: the index and base are
+  stashed in locals, `len` is loaded from offset 0, and `index >= len` (`i32.ge_u`,
+  which also folds a negative index to a huge value and trips) TRAPS via
+  `unreachable`. This makes an out-of-range index abort — matching native's
+  `ud2`/SIGILL and the interpreters' `L0413` — instead of silently reading or
+  writing a neighboring heap object elsewhere in linear memory.
 - **Assignment paths:** `a.b.c = v` and `xs[i].f = v` fold each hop into a running
   address; non-final hops load the nested pointer, the final hop leaves the slot
   address for the store (or a load-op-store for compound assignment).
@@ -441,11 +446,15 @@ nested inside a struct field or array element is deep-copied recursively by the
 existing aggregate copy paths.
 
 **Bounds behavior.** The interpreters bounds-check `get`/`set` and raise `L0413`
-on an out-of-range index. The WASM backend performs an in-bounds `get`/`set`
-identically to the interpreters; a truly out-of-range index **traps** on the
-linear-memory access (a consistent, documented behavior) rather than returning a
-poisoned value. In-bounds programs — the common case, and what every parity
-fixture exercises — agree bit-for-bit.
+on an out-of-range index. The WASM backend emits an explicit **unsigned bounds
+check** against the list's live `len` header (at `LIST_LEN_OFF`) before forming
+the element address: `index >= len` (`i32.ge_u`, which also folds a negative index
+to a huge value and trips) TRAPS via `unreachable`. `pop` on an EMPTY list
+likewise traps (`len == 0` → `unreachable`), matching the interpreters' `L0413`.
+So an out-of-range access aborts (agreeing with native and the interpreters)
+rather than reading or writing a neighboring heap object past the live elements. An
+in-bounds `get`/`set` is byte-identical to before the check; in-bounds programs —
+the common case, and what every parity fixture exercises — agree bit-for-bit.
 
 **Mutable-aggregate elements (landed).** A `list<struct>` and a one-level
 `list<list<scalar|string>>` now compile: the element is an `i32` pointer, and the

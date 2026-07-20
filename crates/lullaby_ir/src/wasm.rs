@@ -40,8 +40,10 @@
 //!   `__alloc`s the run and stores each field; `.field` reads a slot; `p.field =
 //!   v` writes a slot.
 //! - A fixed `array` literal is a pointer to `[len: i32][elem slots...]` with one
-//!   8-byte slot per element. `a[i]` loads a slot (WASM traps on out-of-bounds
-//!   memory access); `a[i] = v` stores one; `len(a)` loads the leading `i32`.
+//!   8-byte slot per element. `a[i]` loads a slot and `a[i] = v` stores one, each
+//!   guarded by an explicit unsigned bounds check against the leading `len` that
+//!   traps (`unreachable`) on an out-of-range index — matching native's `ud2` and
+//!   the interpreters' `L0413`; `len(a)` loads the leading `i32`.
 //!   Element/field values may themselves be scalars or pointers (nested
 //!   strings/structs/arrays), stored by their WASM slot type.
 //! - An `enum` value with SCALAR payloads is a pointer to

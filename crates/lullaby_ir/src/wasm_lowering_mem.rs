@@ -602,10 +602,12 @@ pub(crate) fn emit_list_grow(
 }
 
 /// Lower `get(l, i) -> T`: load element `i` from `l + LIST_DATA_OFF + i*SLOT_SIZE`.
-/// The interpreters bounds-check and raise `L0413`; the WASM backend relies on
-/// linear-memory trapping for a truly out-of-range index, so in-bounds reads match
-/// the interpreters exactly and an OOB read traps (a consistent, documented
-/// behavior) instead of returning a poisoned value.
+/// The interpreters bounds-check and raise `L0413`; [`emit_list_elem_offset`]
+/// emits the matching explicit check on this backend — an index `>= len` (or a
+/// negative index, via the unsigned compare) TRAPS (`unreachable`) before the
+/// address is formed, so an OOB read aborts (agreeing with native's `ud2` and the
+/// interpreters' `L0413`) instead of reading a neighboring heap object, while an
+/// in-bounds read matches the interpreters exactly.
 ///
 /// The interpreters return `values[i].clone()` — a DEEP CLONE of the element — so a
 /// mutable-aggregate element (`struct`/nested `list`) is loaded and then
@@ -640,8 +642,10 @@ pub(crate) fn lower_list_get(
 
 /// Lower `set(l, i, x) -> list<T>` (value-semantic replace): deep-copy `l`, store
 /// `x` into element slot `i` of the copy, and leave the fresh list pointer on the
-/// stack. In-bounds writes match the interpreters; an OOB index traps on the
-/// linear-memory store, consistent with `get`.
+/// stack. In-bounds writes match the interpreters; an OOB index (`>= len`, or a
+/// negative index via the unsigned compare) TRAPS at the explicit
+/// [`emit_index_bounds_check`] before the store, consistent with `get` and the
+/// interpreters' `L0413` — never silently writing a neighboring heap object.
 pub(crate) fn lower_list_set(
     ctx: &mut LowerCtx,
     list: &IrExpr,
@@ -679,9 +683,10 @@ pub(crate) fn lower_list_set(
 /// Lower `pop(l) -> list<T>` (value-semantic remove-last): deep-copy `l`, decrement
 /// the copy's `len` (dropping the last element in place — the slot stays allocated,
 /// exactly like the interpreters' `Vec::pop` shrinks the length), and leave the
-/// fresh list pointer on the stack. Popping an empty list is `L0413` on the
-/// interpreters; the WASM path decrements to `-1` len, so the enclosing program is
-/// expected to keep the same non-empty precondition the interpreters require.
+/// fresh list pointer on the stack. Popping an EMPTY list is `L0413` on the
+/// interpreters; the WASM path traps (`unreachable`) when `len == 0` so the
+/// observable agrees (aborts, no value) instead of storing a bogus `-1` length that
+/// would then corrupt a later index.
 pub(crate) fn lower_list_pop(
     ctx: &mut LowerCtx,
     list: &IrExpr,
@@ -697,6 +702,14 @@ pub(crate) fn lower_list_pop(
     emit_list_deep_copy(ctx, &elem_ty, out)?;
     let lst = ctx.add_local(WasmValType::I32);
     set_local(out, lst);
+    // Trap on an empty list (the interpreters' `L0413`): if len == 0 { unreachable }.
+    get_local(out, lst);
+    emit_load_at(WasmValType::I32, LIST_LEN_OFF, out);
+    out.push(0x45); // i32.eqz  (len == 0)
+    out.push(0x04); // if -> void
+    out.push(0x40);
+    out.push(0x00); // unreachable (uncatchable WASM trap)
+    out.push(0x0b); // end if
     // len -= 1
     get_local(out, lst);
     get_local(out, lst);
@@ -709,16 +722,35 @@ pub(crate) fn lower_list_pop(
     Ok(())
 }
 
-/// After a list base pointer is on the stack, add `LIST_DATA_OFF + index*SLOT_SIZE`
-/// so the top of stack is the element slot address. The `index` expression is an
-/// `i64`, truncated to `i32` (`i32.wrap_i64`) exactly like array indexing.
+/// After a list base pointer is on the stack, bounds-check `index` against the
+/// list's live `len` header and, if in range, add `LIST_DATA_OFF +
+/// index*SLOT_SIZE` so the top of stack is the element slot address. The `index`
+/// expression is an `i64`, truncated to `i32` (`i32.wrap_i64`) exactly like array
+/// indexing.
+///
+/// The base pointer and the `i32` index are stashed in locals so the `len` word
+/// (at `LIST_LEN_OFF`) can be loaded for the [`emit_index_bounds_check`] compare
+/// while the base is still available to form the address. An out-of-range index
+/// (`>= len`, unsigned so a negative index also trips) TRAPS here — matching the
+/// interpreters' `L0413` on `get`/`set` — instead of reading or writing a
+/// neighboring heap object past the live elements.
 pub(crate) fn emit_list_elem_offset(
     ctx: &mut LowerCtx,
     index: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
+    // Stash the base pointer (already on the stack) so we can load `len` and still
+    // reuse the base to form the element address.
+    let base = ctx.add_local(WasmValType::I32);
+    set_local(out, base);
     lower_expr(ctx, index, out)?; // index (i64)
     out.push(0xa7); // i32.wrap_i64
+    let idx = ctx.add_local(WasmValType::I32);
+    set_local(out, idx);
+    // Trap on an out-of-bounds index (unsigned compare against the live `len`).
+    emit_index_bounds_check(base, idx, LIST_LEN_OFF, out);
+    get_local(out, base);
+    get_local(out, idx);
     out.push(0x41); // i32.const SLOT_SIZE
     write_sleb(out, SLOT_SIZE as i64);
     out.push(0x6c); // i32.mul -> index * SLOT_SIZE
@@ -1484,17 +1516,62 @@ pub(crate) fn struct_field_slot(
     Ok((position as i32 * SLOT_SIZE, slot_ty))
 }
 
-/// Given a base pointer already on the stack, add `LEN_HEADER + index*SLOT_SIZE`
-/// so the top of stack is the element slot address. The `index` expression is an
+/// Emit an UNSIGNED bounds check that TRAPS (`unreachable`, opcode `0x00`) when
+/// `idx >= len`, where `len` is the collection's runtime length word loaded from
+/// `base + len_off` (offset 0 for an array, `LIST_LEN_OFF` for a list — both hold
+/// the live element count). `base` and `idx` are `i32` locals holding the
+/// collection base pointer and the already-`i32.wrap_i64`'d index.
+///
+/// The compare is `i32.ge_u` (opcode `0x4f`), not `ge_s`: an unsigned compare
+/// folds a NEGATIVE index to a huge value, so `a[-1]` trips the same trap as a
+/// too-large index — a single compare catches both ends, exactly like native's
+/// `emit_bounds_check_rax_against_slot`. This makes the WASM observable
+/// ("aborts, no value") agree with the native `ud2`/SIGILL and the interpreters'
+/// `L0413 index out of bounds` error, closing the linear-memory overrun hole
+/// where an OOB index silently read or WROTE a neighboring heap object.
+///
+/// Operand-stack neutral: it pushes `idx` and `len`, consumes both in the
+/// compare, and the `if` body/trap leaves nothing behind.
+pub(crate) fn emit_index_bounds_check(base: u32, idx: u32, len_off: i32, out: &mut Vec<u8>) {
+    get_local(out, idx);
+    get_local(out, base);
+    emit_load_at(WasmValType::I32, len_off, out); // len = i32.load [base + len_off]
+    out.push(0x4f); // i32.ge_u  (unsigned: a negative index folds to huge and trips)
+    out.push(0x04); // if -> void
+    out.push(0x40);
+    out.push(0x00); // unreachable (uncatchable WASM trap)
+    out.push(0x0b); // end if
+}
+
+/// Given a base pointer already on the stack, bounds-check `index` against the
+/// array's length header and, if in range, add `LEN_HEADER + index*SLOT_SIZE` so
+/// the top of stack is the element slot address. The `index` expression is an
 /// `i64`; it is truncated to `i32` for the address arithmetic.
+///
+/// The base pointer and the `i32` index are stashed in locals so the length word
+/// (at offset 0) can be loaded for the [`emit_index_bounds_check`] compare while
+/// the base is still available to form the address. An out-of-range index TRAPS
+/// here — matching native (`ud2`) and the interpreters (`L0413`) — instead of
+/// computing a raw offset into a neighboring heap object.
 pub(crate) fn lower_array_slot_offset(
     ctx: &mut LowerCtx,
     index: &IrExpr,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    // offset = LEN_HEADER + index * SLOT_SIZE (index is i64 -> i32).
+    // Stash the base pointer (already on the stack) so we can load the length word
+    // and still reuse the base to form the element address.
+    let base = ctx.add_local(WasmValType::I32);
+    set_local(out, base);
+    // Evaluate the index (i64 -> i32) into a local.
     lower_expr(ctx, index, out)?;
     out.push(0xa7); // i32.wrap_i64
+    let idx = ctx.add_local(WasmValType::I32);
+    set_local(out, idx);
+    // Trap on an out-of-bounds index (unsigned compare against the length header).
+    emit_index_bounds_check(base, idx, 0, out);
+    // address = base + LEN_HEADER + index * SLOT_SIZE.
+    get_local(out, base);
+    get_local(out, idx);
     out.push(0x41); // i32.const SLOT_SIZE
     write_sleb(out, SLOT_SIZE as i64);
     out.push(0x6c); // i32.mul
