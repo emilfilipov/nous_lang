@@ -527,6 +527,229 @@ fn main -> i64
     assert_parity(source, 3);
 }
 
+// -- Out-of-bounds element access: WASM must TRAP where the interpreter errors --
+//
+// For an out-of-range index the IR interpreter raises `L0413` (an ERROR, not a
+// value), and the WASM backend's explicit unsigned bounds check must TRAP (wasmi
+// returns `Err`) at the same access — a trap-vs-error parity, not the
+// value-vs-value parity `assert_parity` checks. Before the bounds-check fix the
+// WASM path computed a raw linear-memory offset and returned a (corrupted) value
+// instead of trapping, so each case below FAILS on the pre-fix emitter (the
+// `wasm_main_traps` assert fires: it returned a value) and PASSES after it.
+
+/// `true` iff running `main` on the IR interpreter raises the `L0413`
+/// out-of-bounds error (not `Ok`, and not a different error code).
+fn interp_main_is_l0413(source: &str) -> bool {
+    matches!(run_main(&module_for(source)), Err(e) if e.code == "L0413")
+}
+
+/// Emit + run the WASM module for `source` and return `true` iff calling `main`
+/// TRAPS (wasmi returns `Err` — the `unreachable` the bounds check emits). A
+/// pipeline/instantiation failure still panics loudly, so a broken emission is a
+/// test failure, never mistaken for a trap.
+fn wasm_main_traps(source: &str) -> bool {
+    let module = module_for(source);
+    let artifact = emit_wasm_module(&module).expect("emit wasm");
+    let engine = Engine::default();
+    let wmodule = WasmiModule::new(&engine, &artifact.bytes).expect("wasmi parse/validate module");
+    let mut store = Store::new(&engine, ());
+    let mut linker = <Linker<()>>::new(&engine);
+    linker
+        .func_wrap("env", "log_i64", |_: i64| {})
+        .expect("link log_i64");
+    linker
+        .func_wrap("env", "console_log", |_: i32, _: i32| {})
+        .expect("link console_log");
+    linker
+        .func_wrap("env", "dom_set_text", |_: i32, _: i32, _: i32, _: i32| {})
+        .expect("link dom_set_text");
+    let instance = linker
+        .instantiate_and_start(&mut store, &wmodule)
+        .expect("instantiate");
+    let main = instance
+        .get_typed_func::<(), i64>(&store, "main")
+        .expect("main export with signature () -> i64");
+    main.call(&mut store, ()).is_err()
+}
+
+/// Assert the IR interpreter raises `L0413` AND the WASM module TRAPS for
+/// `source` — the out-of-bounds analogue of [`assert_parity`].
+fn assert_oob_traps_like_interp(source: &str) {
+    assert!(
+        interp_main_is_l0413(source),
+        "expected the IR interpreter to raise L0413 (out of bounds) for:\n{source}"
+    );
+    assert!(
+        wasm_main_traps(source),
+        "WASM did NOT trap on the out-of-bounds access (it returned a value — the \
+         linear-memory overrun bug) for:\n{source}"
+    );
+}
+
+#[test]
+fn array_oob_read_traps() {
+    // Reading past the end of a fixed array: interpreter L0413, WASM must trap
+    // rather than load a neighboring heap word.
+    let source = "\
+fn main -> i64
+    let a array<i64> = [10, 20, 30, 40]
+    return a[4]
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn array_oob_write_corrupts_neighbor_now_traps() {
+    // The task's minimal repro: `a[5] = 777` on a len-4 array silently overwrote a
+    // neighboring array `b` on the pre-fix WASM emitter (no trap). It must now trap
+    // exactly where the interpreters raise L0413.
+    let source = "\
+fn main -> i64
+    let a array<i64> = [1, 1, 1, 1]
+    let b array<i64> = [2, 2, 2, 2]
+    a[5] = 777
+    return b[0] * 1000 + b[1] * 100 + a[0]
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn array_negative_index_traps() {
+    // A negative index must trip the SAME trap (the check is `i32.ge_u`, so a
+    // negative index folds to a huge unsigned value and exceeds len). The
+    // interpreters raise L0413 for a negative index too.
+    let source = "\
+fn main -> i64
+    let a array<i64> = [10, 20, 30, 40]
+    let i i64 = 0 - 1
+    return a[i]
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn array_oob_with_opaque_loop_index_traps() {
+    // An index the optimizer cannot fold (derived by a runtime loop) still traps:
+    // the check is emitted for every index, constant or dynamic. `j` ends at 9.
+    let source = "\
+fn main -> i64
+    let a array<i64> = [10, 20, 30, 40]
+    let i i64 = 0
+    let j i64 = 0
+    while i < 10
+        j = i
+        i = i + 1
+    return a[j]
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn struct_array_field_oob_write_traps() {
+    // OOB write through a struct's array field (`a.xs[6] = 777`) folds a Field then
+    // an Index hop; the Index hop routes through the same bounds check and must
+    // trap, matching the interpreters' L0413.
+    let source = "\
+struct Box
+    xs array<i64>
+    n i64
+
+fn main -> i64
+    let a Box = Box([1, 2, 3, 4], 9)
+    a.xs[6] = 777
+    return a.n
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn list_get_oob_traps() {
+    // `get(l, i)` past the live length: interpreter L0413, WASM must trap on the
+    // explicit `len`-header check rather than read an unused backing slot.
+    let source = "\
+fn main -> i64
+    let xs list<i64> = list_new()
+    let a list<i64> = push(xs, 5)
+    let b list<i64> = push(a, 10)
+    return get(b, 5)
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn list_set_oob_traps() {
+    // `set(l, i, x)` past the live length must trap too (the write path shares the
+    // same `emit_list_elem_offset` bounds check as `get`).
+    let source = "\
+fn main -> i64
+    let xs list<i64> = list_new()
+    let a list<i64> = push(xs, 5)
+    let b list<i64> = set(a, 3, 99)
+    return get(b, 0)
+";
+    assert_oob_traps_like_interp(source);
+}
+
+#[test]
+fn list_pop_empty_traps() {
+    // Popping an empty list is L0413 on the interpreters; the WASM path traps on
+    // `len == 0` instead of storing a bogus -1 length.
+    let source = "\
+fn main -> i64
+    let xs list<i64> = list_new()
+    let a list<i64> = pop(xs)
+    return len(a)
+";
+    assert_oob_traps_like_interp(source);
+}
+
+// -- In-bounds boundary parity: the check must NOT break correct programs -------
+
+#[test]
+fn array_last_valid_index_still_reads() {
+    // The highest in-range index (len-1) must load normally — the unsigned check
+    // is `index >= len`, so `a[3]` on a len-4 array is allowed.
+    let source = "\
+fn main -> i64
+    let a array<i64> = [10, 20, 30, 40]
+    return a[3]
+";
+    assert_parity(source, 40);
+}
+
+#[test]
+fn array_dynamic_in_bounds_index_reads_and_writes() {
+    // A runtime-derived in-range index reads and writes correctly through the
+    // bounds check (no false trap on a valid dynamic index).
+    let source = "\
+fn main -> i64
+    let a array<i64> = [10, 20, 30, 40]
+    let i i64 = 0
+    let sum i64 = 0
+    while i < 4
+        a[i] = a[i] + 1
+        sum = sum + a[i]
+        i = i + 1
+    return sum
+";
+    assert_parity(source, 104);
+}
+
+#[test]
+fn list_last_valid_index_get_and_set_ok() {
+    // In-bounds `get`/`set` at the highest live index stay byte-correct after the
+    // check is added.
+    let source = "\
+fn main -> i64
+    let xs list<i64> = list_new()
+    let a list<i64> = push(xs, 5)
+    let b list<i64> = push(a, 10)
+    let c list<i64> = set(b, 1, 100)
+    return get(c, 1) + get(b, 1)
+";
+    assert_parity(source, 110);
+}
+
 #[test]
 fn region_block_shadow_keeps_outer_under_wasm() {
     // A region-block `let v` shadows an outer `v`: the WASM lowering snapshots and
