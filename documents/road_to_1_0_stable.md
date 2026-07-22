@@ -209,9 +209,15 @@ What a bounds-fail / unwrap-on-`none` / divide-by-zero does in the safe tier.
   defended in depth). Only a fresh flat scalar-capture literal return lowers; a returned
   param / heap capture / stored / re-returned closure skips cleanly (`L0339`).
 - **Still deferred (stage 3c+):** heap/aggregate captures, mutable-capture rebind,
-  onward-passed (multi-level) HOF chains, stored (not returned) closures, and **arena
-  reclamation of the factory's scratch** — that last is stage-4b (mark-advance promotion
-  of the returned block into the caller's region), the next and final arena increment.
+  onward-passed (multi-level) HOF chains, and stored (not returned) closures. (**Arena
+  reclamation of the factory's scratch — stage-4b — has since SHIPPED** at `c356b2f`
+  via mark-advance promotion of the returned block into the caller's region; the arena
+  model is complete.) Everything still deferred skips cleanly to the interpreters via
+  `L0339`, so these are native-coverage gaps, not correctness or expressiveness gaps.
+  Note D5's strict-RC policy bounds what is implementable: an **escaping** heap-capture
+  closure that promotion cannot reach stays `L0339`-deferred by decision rather than
+  being RC-managed — so stage 3c is not simply "unblocked", it needs a design pass to
+  separate the soundly-implementable cases from the policy-bounded ones.
 
 ### B2. Concrete stdlib contents — **PLANNED**
 The API-stability *posture* is decided (freeze a small core, version the rest) but
