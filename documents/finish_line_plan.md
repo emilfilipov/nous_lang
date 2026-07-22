@@ -128,7 +128,41 @@ into the permanent fuzzers.
     before merge. **This is the permanent-fuzzer gap to close next (P1.2): the
     differential fuzzers generate no OOB indices — fold OOB index generation in so
     the class is generated, not just pinned.**
-  - **Lane C (freestanding/pointer/asm/FFI) — running.**
+  - **Lane C (freestanding/pointer/asm/FFI) — FOUND A HIGH-SEVERITY SOUNDNESS HOLE.**
+    34 programs; FFI, both pointer models, arena region tracking, byte reinterpretation
+    and the asm register-promotion exclusion all swept **clean** (every documented
+    deferral refuses exactly as specified — no silent miscompile on those surfaces).
+    But **inline-`asm` operand expressions are invisible to semantic passes**:
+    `Stmt::Asm { .. } => {}` is grouped with genuinely-childless statements
+    (`Break`/`Continue`/`Return(None)`) and returns without walking the operand block,
+    so every check reachable only from `check_expr` never runs on `in <reg> = <expr>`.
+    Consequence: **a real heap allocation compiles and RUNS inside a `no-runtime`
+    freestanding binary** (`len(to_string(addr))` from a runtime stack address →
+    exe returns 707; `check` exits 0 where `L0441` is required) — violating the tier's
+    hard rule #1. The same blind spot **defeats the use-after-free analysis** (`L0350`
+    disappears when the `load(p)` moves into an operand). Traced to **six more passes**
+    with the identical skip-without-descending pattern (array-extent ×2, actor-ownership,
+    consts, semantics lib, loader). Fix in flight — the whole class, with a shape that
+    makes reintroduction a compile error. **Cause: the arm predates the operand block
+    and was written by analogy with childless statements; no pass that matched it that
+    way was revisited when operands were added.**
+  - **Lane C findings 2–3 (queued — they touch `loader.rs`, so they sequence AFTER the
+    Finding-1 fix merges).** (2) MEDIUM: `no-runtime` is **contagious across imports** —
+    a hosted program that merely imports a freestanding module is forced into the
+    freestanding tier and wrongly rejected, with a diagnostic naming a directive the
+    file does not contain. Known in a code comment as "conservative default-deny", but
+    it contradicts `freestanding_tier_design.md` §1's stated goal (unit-test a
+    `no-runtime` driver in a hosted harness), appears in no doc, and is unactionable
+    from the message. Over-rejection only — the soundness-relevant direction is correct.
+    (3) LOW: cross-module `L0441` reports the *importing* file's path with the
+    *imported* file's line numbers (flat module merge loses per-module span attribution).
+  - **Lane C note (accepted, not a defect):** an **undeclared** `asm` clobber of a
+    callee-saved register silently corrupts a caller's promoted local (returns 222 vs 3).
+    Correctly the author's contract — the body is opaque bytes, exactly as in C and
+    Rust's `asm!` — but it is the one place a `no-runtime` author gets silent corruption
+    with no diagnostic and no interpreter cross-check, and only the *declared* case is
+    pinned. **Add a negative fixture documenting it as intended** so the suite records
+    the accepted edge.
 
 ## Phase 2 — Completions (the spanning-set "100%")
 
